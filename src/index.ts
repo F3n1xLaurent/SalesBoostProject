@@ -446,7 +446,14 @@ async function main() {
         }
       }, 60000);
     } else {
-      process.exit(1);
+      // process.exit(1);
+      console.error('[ERROR] Failed to start:', error instanceof Error ? error.message : error);
+
+      if (error instanceof Error && error.stack) {
+        console.error(error.stack);
+      }
+
+      console.warn('[BOT] Telegram недоступен. Бэкенд продолжает работать без бота.');
     }
   }
 }

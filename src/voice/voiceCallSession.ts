@@ -27,9 +27,21 @@ export interface VoxWebhookPayload {
   vox_call_id?: number | string;
 }
 
+function normalizeWebhookEventName(rawEvent: unknown): string {
+  const event = String(rawEvent ?? '').trim().toLowerCase();
+  if (!event) return '';
+  if (event === 'hangup' || event === 'disconnect' || event === 'completed' || event === 'ended') {
+    return 'disconnected';
+  }
+  if (event === 'answer') return 'connected';
+  if (event === 'ringing') return 'progress';
+  return event;
+}
+
 function normalizeOutcome(event: string, details?: { reason?: string; code?: number }): string {
-  if (event === 'no_answer' || event === 'busy' || event === 'failed') return event;
-  if (event === 'disconnected') return 'disconnected';
+  const normalizedEvent = normalizeWebhookEventName(event);
+  if (normalizedEvent === 'no_answer' || normalizedEvent === 'busy' || normalizedEvent === 'failed') return normalizedEvent;
+  if (normalizedEvent === 'disconnected') return 'disconnected';
   return 'completed';
 }
 
@@ -46,7 +58,7 @@ function dialogHistoryFromTranscript(transcript: TranscriptTurn[]): Array<{ role
 export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Promise<void> {
   const callId = payload.call_id;
   const to = payload.to;
-  const event = (payload.event || 'disconnected') as VoxWebhookEvent;
+  const event = (normalizeWebhookEventName(payload.event) || 'disconnected') as VoxWebhookEvent;
 
   if (!callId || !to) {
     console.warn('[voice/session] finalizeVoiceCallSession: missing call_id or to', payload);
@@ -54,10 +66,14 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   }
 
   const record = getRecordByCallId(callId);
-  const resolvedVoxSessionId =
+  const payloadVoxSessionId =
     payload.vox_session_id ??
     (payload.vox_call_id != null ? Number.parseInt(String(payload.vox_call_id), 10) || null : null) ??
-    (record?.voxSessionId ?? null);
+    null;
+  const recordVoxSessionId = record?.voxSessionId ?? null;
+  // Prefer call_session_history_id saved from StartScenarios response (record),
+  // then fallback to webhook payload IDs.
+  const resolvedVoxSessionId = recordVoxSessionId ?? payloadVoxSessionId;
   const startedAt = record ? new Date(record.startedAt) : new Date();
   const endedAt = new Date();
   const durationSec = record ? Math.round((endedAt.getTime() - startedAt.getTime()) / 1000) : 0;
@@ -69,6 +85,9 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
     hasPayloadTranscript: Array.isArray(payload.transcript) ? payload.transcript.length : 0,
     hasMemoryTranscript: record?.transcript?.length ?? 0,
     voxSessionId: resolvedVoxSessionId,
+    voxSessionIdSource: recordVoxSessionId ? 'record' : (payloadVoxSessionId ? 'webhook' : 'none'),
+    payloadVoxSessionId,
+    recordVoxSessionId,
   });
 
   // Prefer transcript from webhook payload (e.g. realtime_pure sends it); fallback to in-memory record (dialog scenario)

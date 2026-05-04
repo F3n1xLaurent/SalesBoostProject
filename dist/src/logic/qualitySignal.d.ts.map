@@ -1,1 +1,0 @@
-{"version":3,"file":"qualitySignal.d.ts","sourceRoot":"","sources":["../../../src/logic/qualitySignal.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,aAAa;IAC5B,UAAU,EAAE,OAAO,CAAC;IACpB,QAAQ,EAAE,OAAO,CAAC;IAClB,SAAS,EAAE,OAAO,CAAC;IACnB,YAAY,EAAE,MAAM,CAAC;IACrB,eAAe,EAAE,MAAM,CAAC;CACzB;AAqCD,wBAAgB,oBAAoB,CAAC,OAAO,EAAE,MAAM,GAAG,aAAa,CAoBnE"}

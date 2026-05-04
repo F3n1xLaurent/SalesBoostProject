@@ -1987,6 +1987,9 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
       return res.status(400).json({ error: result.error });
     }
     addCall(result.callId, to);
+    if (result.callSessionHistoryId) {
+      setVoxSessionId(result.callId, result.callSessionHistoryId);
+    }
     const toNormalized = '+' + String(to).replace(/\D/g, '');
     try {
       await prisma.voiceCallSession.create({
@@ -2022,6 +2025,9 @@ app.post('/api/public/demo-call/start', async (req, res) => {
       return res.status(400).json({ error: result.error });
     }
     addCall(result.callId, toRaw);
+    if (result.callSessionHistoryId) {
+      setVoxSessionId(result.callId, result.callSessionHistoryId);
+    }
     const toNormalized = '+' + String(toRaw).replace(/\D/g, '');
     try {
       await prisma.voiceCallSession.create({
@@ -2222,15 +2228,89 @@ app.post('/api/admin/call-batches/:id/cancel', async (req, res) => {
   }
 });
 
+function normalizeVoxWebhookEvent(rawEvent: unknown): string {
+  const event = String(rawEvent ?? '').trim().toLowerCase();
+  if (!event) return '';
+  if (event === 'hangup' || event === 'disconnect' || event === 'completed' || event === 'ended') {
+    return 'disconnected';
+  }
+  if (event === 'answer') return 'connected';
+  if (event === 'ringing') return 'progress';
+  return event;
+}
+
+const voxFinalWatchdogs = new Map<string, NodeJS.Timeout>();
+const voxWatchdogMeta = new Map<string, { to: string; voxSessionId?: number | null }>();
+const VOX_FINAL_WEBHOOK_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.VOX_FINAL_WEBHOOK_TIMEOUT_MS || 6 * 60 * 1000);
+  return Number.isFinite(raw) && raw >= 30_000 ? raw : 6 * 60 * 1000;
+})();
+
+function clearVoxFinalWatchdog(callId: string): void {
+  const timer = voxFinalWatchdogs.get(callId);
+  if (timer) {
+    clearTimeout(timer);
+    voxFinalWatchdogs.delete(callId);
+  }
+}
+
+function armVoxFinalWatchdog(callId: string): void {
+  clearVoxFinalWatchdog(callId);
+  const timer = setTimeout(() => {
+    const meta = voxWatchdogMeta.get(callId);
+    if (!meta?.to) return;
+    console.warn('[webhooks/vox] final webhook timeout -> synthetic finalize', {
+      callId,
+      to: meta.to,
+      voxSessionId: meta.voxSessionId ?? null,
+      timeoutMs: VOX_FINAL_WEBHOOK_TIMEOUT_MS,
+    });
+    const syntheticPayload = {
+      call_id: callId,
+      to: meta.to,
+      event: 'failed',
+      details: { reason: 'final_webhook_timeout' },
+      vox_session_id: meta.voxSessionId ?? undefined,
+    };
+    finalizeVoiceCallSession(syntheticPayload).catch((err) => {
+      console.error('[webhooks/vox] synthetic finalizeVoiceCallSession error:', err instanceof Error ? err.message : err);
+    });
+    onVoxBatchWebhook(syntheticPayload).catch((err) => {
+      console.error('[webhooks/vox] synthetic onVoxBatchWebhook error:', err instanceof Error ? err.message : err);
+    });
+    voxFinalWatchdogs.delete(callId);
+  }, VOX_FINAL_WEBHOOK_TIMEOUT_MS);
+  voxFinalWatchdogs.set(callId, timer);
+}
+
+function safeVoxPayloadPreview(value: unknown, maxLen = 4000): string {
+  try {
+    const text = JSON.stringify(value);
+    if (!text) return '';
+    return text.length > maxLen ? `${text.slice(0, maxLen)}... [truncated ${text.length - maxLen} chars]` : text;
+  } catch {
+    return '[unserializable payload]';
+  }
+}
+
 app.use('/webhooks/vox', (req, _res, next) => {
   const body = req.body && typeof req.body === 'object' ? req.body : null;
+  const requestId = `vox_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  (req as express.Request & { voxRequestId?: string }).voxRequestId = requestId;
   console.log('[webhooks/vox] request', {
+    requestId,
+    at: new Date().toISOString(),
     method: req.method,
+    originalUrl: req.originalUrl,
     path: req.path,
+    query: req.query,
     ip: req.ip,
+    forwardedFor: req.get('x-forwarded-for') || null,
+    host: req.get('host') || null,
     userAgent: req.get('user-agent') || null,
     contentType: req.get('content-type') || null,
     bodyKeys: body ? Object.keys(body) : [],
+    bodyPreview: safeVoxPayloadPreview(body ?? req.body),
   });
   next();
 });
@@ -2245,6 +2325,7 @@ app.get('/webhooks/vox', (_req, res) => {
 // Voximplant webhook: call events (disconnected, failed, no_answer, busy)
 app.post('/webhooks/vox', async (req, res) => {
   res.status(200).end();
+  const requestId = (req as express.Request & { voxRequestId?: string }).voxRequestId || null;
   const payload = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
   const voxSessionIdRaw =
     (payload as { vox_session_id?: unknown }).vox_session_id ??
@@ -2273,13 +2354,21 @@ app.post('/webhooks/vox', async (req, res) => {
     voxSessionId != null
       ? { ...payload, vox_session_id: voxSessionId }
       : payload;
-  const event = String((payload as any).event ?? (payload as any).event_type ?? '');
+  const event = normalizeVoxWebhookEvent((payload as any).event ?? (payload as any).event_type ?? '');
   const hasTranscript = Array.isArray((normalizedPayload as { transcript?: unknown }).transcript);
   const callIdStr = String((normalizedPayload as { call_id?: unknown }).call_id ?? '');
   if (callIdStr && voxSessionId != null) {
     setVoxSessionId(callIdStr, voxSessionId);
   }
+  const toStr = String((normalizedPayload as { to?: unknown }).to ?? '').trim();
+  if (callIdStr && toStr) {
+    voxWatchdogMeta.set(callIdStr, {
+      to: toStr,
+      voxSessionId: voxSessionId ?? null,
+    });
+  }
   console.log('[webhooks/vox] received', {
+    requestId,
     event,
     callId: (normalizedPayload as { call_id?: unknown }).call_id,
     to: (normalizedPayload as { to?: unknown }).to ?? null,
@@ -2288,12 +2377,44 @@ app.post('/webhooks/vox', async (req, res) => {
     keys: Object.keys(normalizedPayload),
     transcriptTurns: hasTranscript ? (normalizedPayload as { transcript: unknown[] }).transcript.length : 0,
   });
-  if (['disconnected', 'failed', 'no_answer', 'busy'].includes(event)) {
+  const isFinalEvent = ['disconnected', 'failed', 'no_answer', 'busy'].includes(event);
+  if (!isFinalEvent) {
+    if (callIdStr) {
+      armVoxFinalWatchdog(callIdStr);
+    }
+    console.log('[webhooks/vox] non-final event (ignored for finalize)', {
+      requestId,
+      event,
+      callId: (normalizedPayload as { call_id?: unknown }).call_id ?? null,
+    });
+    return;
+  }
+
+  console.log('[webhooks/vox] final event -> start finalize', {
+    requestId,
+    event,
+    callId: (normalizedPayload as { call_id?: unknown }).call_id ?? null,
+  });
+  if (callIdStr) {
+    clearVoxFinalWatchdog(callIdStr);
+  }
+
+  if (isFinalEvent) {
     finalizeVoiceCallSession(normalizedPayload).catch((err) => {
-      console.error('[webhooks/vox] finalizeVoiceCallSession error:', err instanceof Error ? err.message : err);
+      console.error('[webhooks/vox] finalizeVoiceCallSession error:', {
+        requestId,
+        event,
+        callId: (normalizedPayload as { call_id?: unknown }).call_id ?? null,
+        error: err instanceof Error ? err.message : err,
+      });
     });
     onVoxBatchWebhook(normalizedPayload).catch((err) => {
-      console.error('[webhooks/vox] onVoxBatchWebhook error:', err instanceof Error ? err.message : err);
+      console.error('[webhooks/vox] onVoxBatchWebhook error:', {
+        requestId,
+        event,
+        callId: (normalizedPayload as { call_id?: unknown }).call_id ?? null,
+        error: err instanceof Error ? err.message : err,
+      });
     });
   }
 });

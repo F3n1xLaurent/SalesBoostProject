@@ -1,5 +1,5 @@
 import { prisma } from '../db';
-import { addCall } from './callHistory';
+import { addCall, setVoxSessionId } from './callHistory';
 import { startVoiceCall, type VoiceCallScenario } from './startVoiceCall';
 import type { VoxWebhookPayload } from './voiceCallSession';
 import { listDealershipCallTargets } from './dealershipCallSource';
@@ -62,8 +62,17 @@ function retryDelayMs(attempt: number): number {
 
 function normalizeWebhookOutcome(event: string | undefined): string {
   if (!event) return 'disconnected';
-  if (event === 'busy' || event === 'no_answer' || event === 'failed') return event;
-  if (event === 'disconnected') return 'disconnected';
+  const normalizedEvent = String(event).trim().toLowerCase();
+  if (normalizedEvent === 'busy' || normalizedEvent === 'no_answer' || normalizedEvent === 'failed') return normalizedEvent;
+  if (
+    normalizedEvent === 'disconnected' ||
+    normalizedEvent === 'hangup' ||
+    normalizedEvent === 'disconnect' ||
+    normalizedEvent === 'completed' ||
+    normalizedEvent === 'ended'
+  ) {
+    return 'disconnected';
+  }
   return 'disconnected';
 }
 
@@ -298,6 +307,9 @@ async function dispatchOneJob(batchId: string, scenario: VoiceCallScenario): Pro
   }
 
   addCall(result.callId, fresh.phone);
+  if (result.callSessionHistoryId) {
+    setVoxSessionId(result.callId, result.callSessionHistoryId);
+  }
   await prisma.callBatchAttempt.create({
     data: {
       jobId: fresh.id,

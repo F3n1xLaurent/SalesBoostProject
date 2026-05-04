@@ -16,6 +16,20 @@ function normalizePhone(v: string): string {
   return digits ? '+' + digits : v;
 }
 
+function isPublicHttpUrl(value: string): boolean {
+  const v = String(value || '').trim();
+  if (!/^https?:\/\//i.test(v)) return false;
+  try {
+    const u = new URL(v);
+    const host = u.hostname.toLowerCase();
+    if (!host) return false;
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure';
 
 export interface StartVoiceCallOptions {
@@ -27,6 +41,8 @@ export interface StartVoiceCallResult {
   callId: string;
   startedAt: string;
   scenario?: VoiceCallScenario;
+  /** Vox call_session_history_id from StartScenarios (used by GetCallHistory). */
+  callSessionHistoryId?: number | null;
 }
 
 export interface StartVoiceCallError {
@@ -45,17 +61,21 @@ export function resolveVoiceCallUrls(): VoiceCallResolvedUrls {
   const miniAppUrl = String(process.env.MINI_APP_URL || '').replace(/\/$/, '');
   const voiceDialogBaseUrl = String(process.env.VOICE_DIALOG_BASE_URL || '').replace(/\/$/, '');
   const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  const miniAppPublicUrl = isPublicHttpUrl(miniAppUrl) ? miniAppUrl : '';
 
-  // Prefer stable HTTPS URLs from env for webhooks so they don't break on local tunnel restart.
+  // For webhook/event URL use only public URLs.
+  // If env has only local MINI_APP_URL (localhost), fallback to live tunnel.
   const eventUrlBase =
     publicBaseUrl ||
-    miniAppUrl ||
-    tunnelUrl ||
     voiceDialogBaseUrl ||
+    miniAppPublicUrl ||
+    tunnelUrl ||
     '';
 
-  // For dialog_url / stream_url: prefer explicit VOICE_DIALOG_BASE_URL, then MINI_APP_URL, then live tunnel.
-  const baseUrl = (voiceDialogBaseUrl || miniAppUrl || tunnelUrl || '').replace(/\/$/, '');
+  // For dialog_url / stream_url:
+  // prefer explicit VOICE_DIALOG_BASE_URL, then public MINI_APP_URL, then live tunnel.
+  // As a last resort keep MINI_APP_URL (may be localhost) for local-only tests.
+  const baseUrl = (voiceDialogBaseUrl || miniAppPublicUrl || tunnelUrl || miniAppUrl || '').replace(/\/$/, '');
   const eventUrl = eventUrlBase ? `${eventUrlBase}/webhooks/vox` : '';
   return { tunnelUrl, baseUrl, eventUrlBase, eventUrl };
 }
@@ -171,8 +191,18 @@ export async function startVoiceCall(
       });
       return { error: `Vox API HTTP ${statusCode}: ${text.slice(0, 200)}` };
     }
+    let callSessionHistoryId: number | null = null;
     try {
       const parsed = JSON.parse(text);
+      const parsedHistoryId =
+        typeof parsed?.call_session_history_id === 'number'
+          ? parsed.call_session_history_id
+          : typeof parsed?.call_session_history_id === 'string'
+            ? Number.parseInt(parsed.call_session_history_id, 10)
+            : null;
+      if (parsedHistoryId && Number.isFinite(parsedHistoryId) && parsedHistoryId > 0) {
+        callSessionHistoryId = parsedHistoryId;
+      }
       const debugEnabled = process.env.VOX_DEBUG === '1' || process.env.VOX_DEBUG === 'true';
       if (debugEnabled) {
         console.log('[vox] StartScenarios OK', {
@@ -201,7 +231,7 @@ export async function startVoiceCall(
       // ignore parse
     }
     const startedAt = new Date().toISOString();
-    return { callId, startedAt, scenario };
+    return { callId, startedAt, scenario, callSessionHistoryId };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `StartScenarios failed: ${message}` };

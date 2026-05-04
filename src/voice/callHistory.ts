@@ -46,6 +46,8 @@ export function setVoxSessionId(callId: string, voxSessionId: number): void {
   const record = byCallId.get(callId);
   if (!record) return;
   if (!Number.isFinite(voxSessionId) || voxSessionId <= 0) return;
+  // Keep the first known ID (preferably from StartScenarios.call_session_history_id).
+  if (record.voxSessionId && record.voxSessionId > 0) return;
   record.voxSessionId = voxSessionId;
 }
 

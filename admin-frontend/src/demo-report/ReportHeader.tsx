@@ -99,7 +99,7 @@ export function ReportHeader(props: {
           <div className="demo-first-block__tech-row">
             <div className="demo-first-block__tech-k">Статус звонка</div>
             <div className="demo-first-block__tech-v">
-              {detail.outcome === 'completed' ? 'Завершён' : detail.outcome === 'failed' ? 'Неуспешно' : detail.outcome ?? '—'}
+              {detail.outcome === 'completed' | detail.outcome === 'disconnected' ? 'Завершён' : detail.outcome === 'failed' ? 'Неуспешно' : detail.outcome ?? '—'}
             </div>
           </div>
           <div className="demo-first-block__tech-row">
