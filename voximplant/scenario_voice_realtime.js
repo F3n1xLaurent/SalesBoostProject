@@ -5,6 +5,19 @@
 
 require(Modules.OpenAI);
 
+var DEFAULT_REALTIME_MODEL = "gpt-realtime-2";
+
+function getRealtimeModel(data) {
+  return (data && data.model && data.model.length) ? data.model : DEFAULT_REALTIME_MODEL;
+}
+
+function getRealtimeReasoning(data) {
+  var effort = (data && data.realtime_reasoning_effort && data.realtime_reasoning_effort.length)
+    ? String(data.realtime_reasoning_effort)
+    : "low";
+  return { effort: effort };
+}
+
 function postEvent(eventUrl, payload) {
   if (!eventUrl) return;
   Net.httpRequest(
@@ -204,13 +217,17 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
               });
             });
           try {
+            var session = {
+              type: "realtime",
+              instructions: instructions,
+              tools: tools,
+              tool_choice: "auto",
+            };
+            if (getRealtimeModel(data) === "gpt-realtime-2") {
+              session.reasoning = getRealtimeReasoning(data);
+            }
             realtimeClient.sessionUpdate({
-              session: {
-                type: "realtime",
-                instructions: instructions,
-                tools: tools,
-                tool_choice: "auto",
-              },
+              session: session,
             });
           } catch (suErr) {
             Logger.write("voice_realtime: sessionUpdate warning: " + suErr);
@@ -228,7 +245,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
         });
         OpenAI.createRealtimeAPIClient({
           apiKey: openaiApiKey,
-          model: (data.model && data.model.length) ? data.model : "gpt-realtime",
+          model: getRealtimeModel(data),
           onWebSocketClose: function (event) {
             Logger.write("voice_realtime: WebSocket closed");
             finish({ reason: "websocket_closed" });
@@ -244,7 +261,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
       } else {
         OpenAI.createRealtimeAPIClient({
           apiKey: openaiApiKey,
-          model: (data.model && data.model.length) ? data.model : "gpt-realtime",
+          model: getRealtimeModel(data),
           onWebSocketClose: function (event) {
             Logger.write("voice_realtime: WebSocket closed");
             finish({ reason: "websocket_closed" });
@@ -264,11 +281,15 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
             ? data.instructions
             : "Ты дружелюбный голосовой помощник. Отвечай только на русском языке. Говори кратко и по делу.";
           try {
+            var session = {
+              type: "realtime",
+              instructions: instructions,
+            };
+            if (getRealtimeModel(data) === "gpt-realtime-2") {
+              session.reasoning = getRealtimeReasoning(data);
+            }
             realtimeClient.sessionUpdate({
-              session: {
-                type: "realtime",
-                instructions: instructions,
-              },
+              session: session,
             });
           } catch (suErr) {
             Logger.write("voice_realtime: sessionUpdate warning: " + suErr);

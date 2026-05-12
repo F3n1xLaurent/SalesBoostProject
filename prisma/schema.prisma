@@ -39,6 +39,7 @@ model Holding {
   id          String   @id @default(cuid())
   name        String
   code        String?  @unique
+  type        String   @default("own") // "own" | "franchised"
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

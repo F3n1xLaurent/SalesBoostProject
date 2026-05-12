@@ -41,6 +41,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
     "@heroui/react": "^2.8.9",
     "@prisma/client": "^5.7.1",
     "@tailwindcss/postcss": "^4.2.1",
@@ -60,6 +62,7 @@
     "postcss": "^8.5.6",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
+    "react-router": "^7.15.0",
     "tailwindcss": "^4.2.1",
     "telegraf": "^4.15.4",
     "undici": "^7.20.0",
