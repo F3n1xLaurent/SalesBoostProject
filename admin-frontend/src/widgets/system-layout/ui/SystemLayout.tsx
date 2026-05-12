@@ -8,6 +8,7 @@ import { HoldingsPage } from '../../../pages/holdings/ui/HoldingsPage';
 import { Companies } from '../../../pages/companies/ui/CompaniesPage';
 import { DealershipDetail } from '../../../pages/dealership-detail/ui/DealershipDetailPage';
 import { UsersPage } from '../../../pages/users/ui/UsersPage';
+import { TypesNumbersPage } from '../../../pages/types-numbers/ui/TypesNumbersPage';
 import { Autodealers } from '../../../pages/autodealers/ui/AutodealersPage';
 import { EmployeeDetail } from '../../../pages/employee-detail/ui/EmployeeDetailPage';
 import { Audits } from '../../../pages/audits/ui/AuditsPage';
@@ -126,6 +127,16 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
   const [dataLoading, setDataLoading] = useState(true);
   const [backendNotRunning, setBackendNotRunning] = useState(false);
   const [hasActiveBatch, setHasActiveBatch] = useState(false);
+
+  const handleDealershipSaved = (dealership: DealershipItem) => {
+    setRealDealerships((current) => {
+      const exists = current.some((item) => item.id === dealership.id);
+      const next = exists
+        ? current.map((item) => (item.id === dealership.id ? dealership : item))
+        : [...current, dealership];
+      return [...next].sort((a, b) => (a.city || '').localeCompare(b.city || '', 'ru') || a.name.localeCompare(b.name, 'ru'));
+    });
+  };
 
   useEffect(() => {
     if (role !== 'super' && role !== 'company') {
@@ -289,6 +300,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
                   loading={dataLoading}
                   onSelectDealership={(id) => navigate(buildDealershipPath(id))}
                   onOpenBatchInAudits={navigateToBatch}
+                  onDealershipSaved={handleDealershipSaved}
                 />
               )}
               {activeTab === 'companies' && selectedDealershipId && (
@@ -296,6 +308,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
                   dealershipId={selectedDealershipId}
                   dealership={realDealerships.find((item) => item.id === selectedDealershipId) ?? null}
                   onBack={() => navigate('/companies')}
+                  onDealershipSaved={handleDealershipSaved}
                   onOpenEmployee={(empId) => {
                     const sourceId = selectedDealershipId;
                     const sourceName = sourceId
@@ -312,6 +325,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
               )}
               {activeTab === 'users' && (
                 <UsersPage role={role} />
+              )}
+              {activeTab === 'typesNumbers' && role === 'super' && (
+                <TypesNumbersPage />
               )}
               {activeTab === 'autodealers' && !selectedEmployeeId && (
                 <Autodealers

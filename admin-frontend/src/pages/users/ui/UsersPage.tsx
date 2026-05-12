@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { AdminRole } from '../../../widgets/admin-sidebar/ui/AdminSidebar';
 import {
+  changeUserPassword,
   createPermissionTemplate,
   createUser,
   deletePermissionTemplate,
@@ -155,6 +156,7 @@ export function UsersPage({ role }: Props) {
   const [viewUserOpen, setViewUserOpen] = useState(false);
   const [editUserOpen, setEditUserOpen] = useState(false);
   const [deleteUserOpen, setDeleteUserOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   const [createTemplateOpen, setCreateTemplateOpen] = useState(false);
   const [viewTemplateOpen, setViewTemplateOpen] = useState(false);
@@ -162,6 +164,7 @@ export function UsersPage({ role }: Props) {
   const [deleteTemplateOpen, setDeleteTemplateOpen] = useState(false);
 
   const [userForm, setUserForm] = useState<UserFormState>(EMPTY_USER_FORM);
+  const [passwordForm, setPasswordForm] = useState('');
   const [templateForm, setTemplateForm] = useState<TemplateFormState>(EMPTY_TEMPLATE_FORM);
   const [savingUser, setSavingUser] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -369,6 +372,24 @@ export function UsersPage({ role }: Props) {
       setNotice('Пользователь удалён.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось удалить пользователя.');
+    } finally {
+      setSavingUser(false);
+    }
+  }
+
+  async function handleChangePasswordSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!activeUserId || !passwordForm) return;
+    setSavingUser(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await changeUserPassword(activeUserId, passwordForm);
+      setPasswordForm('');
+      setChangePasswordOpen(false);
+      setNotice('Пароль у пользователя успешно изменен');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось изменить пароль пользователя.');
     } finally {
       setSavingUser(false);
     }
@@ -703,6 +724,9 @@ export function UsersPage({ role }: Props) {
                       <button type="button" className="sa-btn-outline" onClick={() => { setActiveUserId(item.id); fillUserForm(item); setEditUserOpen(true); }}>
                         Редактировать
                       </button>
+                      <button type="button" className="sa-btn-outline" onClick={() => { setActiveUserId(item.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
+                        Сменить пароль
+                      </button>
                       <button type="button" className="sa-btn-danger" onClick={() => { setActiveUserId(item.id); setDeleteUserOpen(true); }}>
                         Удалить
                       </button>
@@ -854,6 +878,36 @@ export function UsersPage({ role }: Props) {
               </button>
             </div>
           </div>
+        )}
+      </ModalFrame>
+
+      <ModalFrame
+        title="Сменить пароль"
+        subtitle={activeUser ? `Пользователь: ${activeUser.displayName || activeUser.email}` : undefined}
+        open={changePasswordOpen && !!activeUser}
+        onClose={() => setChangePasswordOpen(false)}
+        width={520}
+      >
+        {activeUser && (
+          <form onSubmit={handleChangePasswordSubmit} style={{ display: 'grid', gap: 14 }}>
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span>Новый пароль</span>
+              <input
+                type="password"
+                className="sa-input"
+                value={passwordForm}
+                onChange={(event) => setPasswordForm(event.target.value)}
+                autoComplete="new-password"
+                required
+              />
+            </label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button type="button" className="sa-btn-outline" onClick={() => setChangePasswordOpen(false)}>Отмена</button>
+              <button type="submit" className="sa-btn-primary" disabled={savingUser || !passwordForm}>
+                {savingUser ? 'Сохраняем...' : 'Сменить пароль'}
+              </button>
+            </div>
+          </form>
         )}
       </ModalFrame>
 

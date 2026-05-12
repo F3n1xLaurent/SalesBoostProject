@@ -7,6 +7,7 @@ import {
   type DealershipStatus,
 } from '../../../shared/lib/admin-panel/mockData';
 import type { DealershipItem } from '../../../shared/api/adminPanel';
+import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { ratingClass, answerRateClass, answerTimeClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import {
   ACTIVE_BATCH_STORAGE_KEY,
@@ -24,15 +25,17 @@ type CompaniesProps = {
   loading?: boolean;
   onSelectDealership?: (id: string) => void;
   onOpenBatchInAudits?: (batchId: string) => void;
+  onDealershipSaved?: (dealership: DealershipItem) => void;
 };
 
 /* ────────────────────── Sort config ────────────────────── */
 
-type SortKey = 'name' | 'aiRating' | 'answerRate' | 'avgAnswerTimeSec' | 'auditsCount' | 'employeesCount' | 'deltaRating' | 'status';
+type SortKey = 'name' | 'workingHours' | 'aiRating' | 'answerRate' | 'avgAnswerTimeSec' | 'auditsCount' | 'employeesCount' | 'deltaRating' | 'status';
 type SortDir = 'asc' | 'desc';
 
 const COLUMN_DEFS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'name', label: 'Автосалон' },
+  { key: 'workingHours', label: 'Время работы' },
   { key: 'aiRating', label: 'AI-рейтинг', align: 'right' },
   { key: 'answerRate', label: 'Дозвон, %', align: 'right' },
   { key: 'avgAnswerTimeSec', label: 'Время ответа', align: 'right' },
@@ -47,6 +50,8 @@ function comparator(key: SortKey, dir: SortDir) {
     let cmp = 0;
     if (key === 'name') {
       cmp = a.name.localeCompare(b.name, 'ru');
+    } else if (key === 'workingHours') {
+      cmp = (a as CompanyRow).workingHours.localeCompare((b as CompanyRow).workingHours, 'ru');
     } else if (key === 'status') {
       cmp = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
     } else {
@@ -61,16 +66,18 @@ function comparator(key: SortKey, dir: SortDir) {
 /* ────────────────────── Period helper ────────────────────── */
 
 type Period = '7d' | '30d' | 'custom';
+type CompanyRow = DealershipRow & { workingHours: string };
 
 /* ────────────────────── Component ────────────────────── */
 
-export function Companies({ dealerships, loading = false, onSelectDealership, onOpenBatchInAudits }: CompaniesProps) {
-  const rows = useMemo<DealershipRow[]>(
+export function Companies({ dealerships, loading = false, onSelectDealership, onOpenBatchInAudits, onDealershipSaved }: CompaniesProps) {
+  const rows = useMemo<CompanyRow[]>(
     () =>
       dealerships.map((item) => ({
         id: item.id,
         name: item.name,
         city: item.city || '—',
+        workingHours: formatWorkingHours(item),
         aiRating: 0,
         answerRate: null,
         avgAnswerTimeSec: null,
@@ -101,6 +108,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [activeBatch, setActiveBatch] = useState<CallBatchSnapshot | null>(null);
   const [dealershipSummary, setDealershipSummary] = useState<Record<string, DealershipBatchSummary>>({});
+  const [createDealershipOpen, setCreateDealershipOpen] = useState(false);
 
   const hasActiveManual = !!activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'paused');
 
@@ -349,6 +357,9 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             </svg>
             Фильтры
           </button>
+          <button className="sa-btn-primary" onClick={() => setCreateDealershipOpen(true)}>
+            Создать автосалон
+          </button>
           <button
             className="sa-btn-danger"
             onClick={handleStartAllChecks}
@@ -442,9 +453,9 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="sa-meta" style={{ padding: 32 }}>Загрузка…</td></tr>
+              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Загрузка…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={9} className="sa-meta" style={{ padding: 32 }}>Нет автосалонов по заданным фильтрам</td></tr>
+              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Нет автосалонов по заданным фильтрам</td></tr>
             ) : (
               filtered.map((r) => {
                 const delta = deltaDisplay(r.deltaRating);
@@ -466,6 +477,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                         </div>
                       )}
                     </td>
+                    <td>{r.workingHours}</td>
                     <td className="sa-text-right"><span className={ratingClass(r.aiRating)}>{r.aiRating}</span></td>
                     <td className="sa-text-right">
                       {r.answerRate !== null
@@ -523,6 +535,9 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                 </div>
                 <div className="sa-mobile-chips">
                   <span className="sa-metric-chip">
+                    Время: {r.workingHours}
+                  </span>
+                  <span className="sa-metric-chip">
                     Дозвон: {r.answerRate !== null ? <span className={answerRateClass(r.answerRate)}>{r.answerRate}%</span> : '—'}
                   </span>
                   <span className="sa-metric-chip">
@@ -538,6 +553,13 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           })
         )}
       </div>
+
+      <DealershipModal
+        mode="create"
+        open={createDealershipOpen}
+        onClose={() => setCreateDealershipOpen(false)}
+        onSaved={(saved) => onDealershipSaved?.(saved)}
+      />
     </>
   );
 }

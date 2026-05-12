@@ -7,6 +7,8 @@ import {
   type DealershipDetail as Detail,
 } from '../../../shared/lib/admin-panel/mockData';
 import type { DealershipItem } from '../../../shared/api/adminPanel';
+import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
+import { DealershipPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { ratingClass, answerRateClass, answerTimeClass, statusBadgeClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
 import {
   ACTIVE_BATCH_STORAGE_KEY,
@@ -23,6 +25,7 @@ type Props = {
   onBack: () => void;
   onOpenEmployee?: (id: string) => void;
   onOpenBatchDetail?: (batchId: string) => void;
+  onDealershipSaved?: (dealership: DealershipItem) => void;
 };
 
 /* ────────────────────── KPI Card ────────────────────── */
@@ -34,6 +37,28 @@ function KPI({ label, value, cls, suffix }: { label: string; value: string | num
       <div className={`sa-kpi-value sa-kpi-value-large ${cls ?? ''}`}>{value}{suffix ?? ''}</div>
     </div>
   );
+}
+
+function buildFallbackDetail(dealership: DealershipItem): Detail {
+  return {
+    id: dealership.id,
+    name: dealership.name,
+    city: dealership.city || '—',
+    aiRating: 0,
+    answerRate: null,
+    avgAnswerTimeSec: null,
+    auditsCount: 0,
+    employeesCount: dealership.managersCount,
+    deltaRating: null,
+    status: 'no-data',
+    employees: [],
+    audits: [],
+    timeSeries: [],
+    hourlyAnswerRate: Array.from({ length: 24 }, () => 0),
+    topIssues: [],
+    topQuestions: [],
+    recommendedTrainings: [],
+  };
 }
 
 /* ────────────────────── Performance Trend (line chart) ────────────────────── */
@@ -259,37 +284,19 @@ function AuditHistory({ audits }: { audits: Detail['audits'] }) {
 
 /* ────────────────────── Main Component ────────────────────── */
 
-export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmployee, onOpenBatchDetail }: Props) {
+export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmployee, onOpenBatchDetail, onDealershipSaved }: Props) {
   const detail = useMemo(
-    () => getMockDealershipDetail(dealershipId) || (dealership?.name ? getMockDealershipDetailByName(dealership.name) : null),
-    [dealershipId, dealership?.name],
+    () => getMockDealershipDetail(dealershipId) || (dealership?.name ? getMockDealershipDetailByName(dealership.name) : null) || (dealership ? buildFallbackDetail(dealership) : null),
+    [dealershipId, dealership],
   );
   const [checkLoading, setCheckLoading] = useState(false);
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [activeBatch, setActiveBatch] = useState<CallBatchSnapshot | null>(null);
   const [batchSummary, setBatchSummary] = useState<DealershipBatchSummary | null>(null);
+  const [editDealershipOpen, setEditDealershipOpen] = useState(false);
+  const [phoneNumbersOpen, setPhoneNumbersOpen] = useState(false);
   const hasActiveManual = !!activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'paused');
-
-  if (!detail) {
-    return (
-      <div>
-        <button className="sa-btn-text" onClick={onBack}>← Автосалоны</button>
-        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Автосалон не найден</div>
-      </div>
-    );
-  }
-
-  const deltaSign = detail.deltaRating !== null ? (detail.deltaRating > 0 ? '+' : '') : '';
-  const deltaText = detail.deltaRating !== null ? `${deltaSign}${detail.deltaRating}` : '—';
-  const deltaCls = detail.deltaRating !== null
-    ? detail.deltaRating > 0 ? 'sa-score-green' : detail.deltaRating < -5 ? 'sa-score-red' : 'sa-score-orange'
-    : '';
-
-  function segmentWidth(count: number, total: number): string {
-    if (total <= 0 || count <= 0) return '0%';
-    return `${Math.max(3, (count / total) * 100)}%`;
-  }
 
   useEffect(() => {
     try {
@@ -303,7 +310,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   }, []);
 
   useEffect(() => {
-    if (!activeBatchId) return;
+    if (!activeBatchId || !detail) return;
     let cancelled = false;
     const poll = async () => {
       if (cancelled) return;
@@ -331,7 +338,22 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
     return () => {
       cancelled = true;
     };
-  }, [activeBatchId, detail.id, detail.name]);
+  }, [activeBatchId, detail?.id, detail?.name]);
+
+  if (!detail) {
+    return (
+      <div>
+        <button className="sa-btn-text" onClick={onBack}>← Автосалоны</button>
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Автосалон не найден</div>
+      </div>
+    );
+  }
+
+  const deltaSign = detail.deltaRating !== null ? (detail.deltaRating > 0 ? '+' : '') : '';
+  const deltaText = detail.deltaRating !== null ? `${deltaSign}${detail.deltaRating}` : '—';
+  const deltaCls = detail.deltaRating !== null
+    ? detail.deltaRating > 0 ? 'sa-score-green' : detail.deltaRating < -5 ? 'sa-score-red' : 'sa-score-orange'
+    : '';
 
   async function handleDealershipCheck() {
     setCheckLoading(true);
@@ -390,10 +412,14 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       <div className="sa-detail-header">
         <div>
           <h1 className="sa-page-title" style={{ marginBottom: 4 }}>{detail.name}</h1>
-          <p className="sa-page-subtitle" style={{ marginBottom: 0 }}>{dealership?.city || detail.city}</p>
+          <p className="sa-page-subtitle" style={{ marginBottom: 0 }}>
+            {dealership?.city || detail.city} · {formatWorkingHours(dealership)}
+          </p>
         </div>
         <div className="sa-detail-header-right">
           <span className={statusBadgeClass(detail.status)}>{STATUS_LABELS[detail.status]}</span>
+          <button className="sa-btn-outline" onClick={() => setPhoneNumbersOpen(true)}>Номера телефонов</button>
+          <button className="sa-btn-outline" onClick={() => setEditDealershipOpen(true)}>Редактировать</button>
           <button
             className="sa-btn-danger"
             onClick={handleDealershipCheck}
@@ -419,6 +445,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         <KPI label="Динамика" value={deltaText} cls={deltaCls} />
         <KPI label="Проверки" value={detail.auditsCount} />
         <KPI label="Сотрудники" value={detail.employeesCount} />
+        <KPI label="Время работы" value={formatWorkingHours(dealership)} />
         <KPI
           label="Дозвон"
           value={detail.answerRate !== null ? `${detail.answerRate}%` : '—'}
@@ -459,6 +486,19 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         <h2 className="sa-section-title">История проверок</h2>
         <AuditHistory audits={detail.audits} />
       </section>
+
+      <DealershipModal
+        mode="edit"
+        open={editDealershipOpen}
+        dealership={dealership}
+        onClose={() => setEditDealershipOpen(false)}
+        onSaved={(saved) => onDealershipSaved?.(saved)}
+      />
+      <DealershipPhoneNumbersModal
+        dealershipId={dealershipId}
+        open={phoneNumbersOpen}
+        onClose={() => setPhoneNumbersOpen(false)}
+      />
     </div>
   );
 }

@@ -19,13 +19,14 @@ const SUPER_NAV: NavItem[] = [
   { id: 'dashboard', label: 'Дашборд', icon: <DashboardIcon /> },
   { id: 'holdings', label: 'Холдинги', icon: <CompaniesIcon /> },
   { id: 'companies', label: 'Автосалоны', icon: <CompaniesIcon /> },
+  { id: 'typesNumbers', label: 'Типы номеров', icon: <PhoneIcon /> },
   { id: 'users', label: 'Пользователи', icon: <DealersIcon /> },
   { id: 'autodealers', label: 'Сотрудники', icon: <DealersIcon /> },
   { id: 'audits', label: 'Проверки', icon: <AuditsIcon /> },
   { id: 'analytics', label: 'Аналитика', icon: <AnalyticsIcon /> },
 ];
 
-const COMPANY_NAV: NavItem[] = SUPER_NAV.filter((item) => item.id !== 'holdings');
+const COMPANY_NAV: NavItem[] = SUPER_NAV.filter((item) => item.id !== 'holdings' && item.id !== 'typesNumbers');
 
 const DEALER_NAV: NavItem[] = [
   { id: 'dealer-companies', label: 'Автосалон', icon: <CompaniesIcon /> },
