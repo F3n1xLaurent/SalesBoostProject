@@ -28,6 +28,7 @@ model Account {
   telegramLinkCodes TelegramLinkCode[]
   memberships    AccountMembership[]
   managerProfiles ManagerProfile[]
+  phoneNumbers   PhoneNumber[]
   createdPermissionTemplates PermissionTemplate[] @relation("PermissionTemplateCreatedBy")
   permissionTemplateAssignments AccountPermissionTemplateAssignment[]
 
@@ -58,6 +59,8 @@ model Dealership {
   code        String?  @unique
   city        String?
   address     String?
+  workingHoursFrom String   @default("09:00")
+  workingHoursTo   String   @default("21:00")
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -65,9 +68,44 @@ model Dealership {
   holding         Holding?            @relation(fields: [holdingId], references: [id], onDelete: SetNull)
   memberships     AccountMembership[]
   managerProfiles ManagerProfile[]
+  phoneNumbers    PhoneNumber[]
 
   @@index([holdingId])
   @@map("dealerships")
+}
+
+model PhoneNumberType {
+  id        String   @id @default(cuid())
+  name      String
+  ownership String   // "dealership" | "user"
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  phoneNumbers PhoneNumber[]
+
+  @@index([ownership, isActive])
+  @@map("phone_number_types")
+}
+
+model PhoneNumber {
+  id           String   @id @default(cuid())
+  typeId       String
+  phone        String
+  dealershipId String?
+  accountId    String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  type        PhoneNumberType @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  dealership  Dealership?     @relation(fields: [dealershipId], references: [id], onDelete: Cascade)
+  account     Account?        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([typeId])
+  @@index([dealershipId])
+  @@index([accountId])
+  @@map("phone_numbers")
 }
 
 /// Business profile of a dealership employee/manager.

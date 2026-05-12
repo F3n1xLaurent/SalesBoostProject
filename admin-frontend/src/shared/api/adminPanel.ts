@@ -109,6 +109,8 @@ export interface HoldingItem {
     code: string | null;
     city: string | null;
     address: string | null;
+    workingHoursFrom: string | null;
+    workingHoursTo: string | null;
     isActive: boolean;
     holdingId: string | null;
   }>;
@@ -120,6 +122,8 @@ export interface DealershipItem {
   code: string | null;
   city: string | null;
   address: string | null;
+  workingHoursFrom: string | null;
+  workingHoursTo: string | null;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -208,6 +212,29 @@ export interface CallBatchJobItem {
   linkReason?: string | null;
 }
 
+export type PhoneNumberOwnership = 'dealership' | 'user';
+
+export interface PhoneNumberTypeItem {
+  id: string;
+  name: string;
+  ownership: PhoneNumberOwnership;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PhoneNumberItem {
+  id: string;
+  typeId: string;
+  typeName: string;
+  phone: string;
+  dealershipId: string | null;
+  accountId: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export async function fetchSummary(): Promise<PlatformSummary | null> {
   const res = await apiFetch(`${API_BASE}/api/admin/summary`);
   if (!res.ok) return null;
@@ -289,6 +316,8 @@ export async function createDealership(payload: {
   code?: string | null;
   city?: string | null;
   address?: string | null;
+  workingHoursFrom: string;
+  workingHoursTo: string;
   holdingId?: string | null;
   isActive?: boolean;
 }): Promise<DealershipItem> {
@@ -309,6 +338,8 @@ export async function updateDealership(
     code?: string | null;
     city?: string | null;
     address?: string | null;
+    workingHoursFrom?: string;
+    workingHoursTo?: string;
     holdingId?: string | null;
     isActive?: boolean;
   },
@@ -329,6 +360,96 @@ export async function deleteDealership(dealershipId: string): Promise<void> {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось удалить автосалон.');
+}
+
+export async function fetchPhoneNumberTypes(filters?: {
+  ownership?: PhoneNumberOwnership;
+  active?: boolean;
+}): Promise<PhoneNumberTypeItem[]> {
+  const params = new URLSearchParams();
+  if (filters?.ownership) params.set('ownership', filters.ownership);
+  if (filters?.active) params.set('active', 'true');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/phone-number-types${suffix}`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as PhoneNumberTypeItem[] : [];
+}
+
+export async function createPhoneNumberType(payload: {
+  name: string;
+  ownership: PhoneNumberOwnership;
+  isActive?: boolean;
+}): Promise<PhoneNumberTypeItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/phone-number-types`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать тип номера.');
+  return data.item as PhoneNumberTypeItem;
+}
+
+export async function updatePhoneNumberType(
+  typeId: string,
+  payload: {
+    name?: string;
+    ownership?: PhoneNumberOwnership;
+    isActive?: boolean;
+  },
+): Promise<PhoneNumberTypeItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/phone-number-types/${typeId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить тип номера.');
+  return data.item as PhoneNumberTypeItem;
+}
+
+export async function fetchDealershipPhoneNumbers(dealershipId: string): Promise<PhoneNumberItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealerships/${dealershipId}/phone-numbers`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as PhoneNumberItem[] : [];
+}
+
+export async function createDealershipPhoneNumber(
+  dealershipId: string,
+  payload: { typeId: string; phone: string; isActive?: boolean },
+): Promise<PhoneNumberItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealerships/${dealershipId}/phone-numbers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось добавить номер телефона.');
+  return data.item as PhoneNumberItem;
+}
+
+export async function updateDealershipPhoneNumber(
+  phoneNumberId: string,
+  payload: { typeId?: string; phone?: string; isActive?: boolean },
+): Promise<PhoneNumberItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealership-phone-numbers/${phoneNumberId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить номер телефона.');
+  return data.item as PhoneNumberItem;
+}
+
+export async function deleteDealershipPhoneNumber(phoneNumberId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealership-phone-numbers/${phoneNumberId}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить номер телефона.');
 }
 
 export async function syncMockOrganization(): Promise<{
@@ -442,6 +563,26 @@ export async function updateUser(accountId: string, payload: Record<string, unkn
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось обновить пользователя');
   return (data.item ?? null) as UserAccountItem | null;
+}
+
+export async function changeOwnPassword(password: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/me/password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось изменить пароль');
+}
+
+export async function changeUserPassword(accountId: string, password: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/users/${accountId}/password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось изменить пароль пользователя');
 }
 
 export async function deleteUser(accountId: string): Promise<void> {

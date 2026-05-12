@@ -39,18 +39,27 @@ import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
 import {
   handleCreateDealership,
+  handleCreateDealershipPhoneNumber,
   handleCreateHolding,
+  handleCreatePhoneNumberType,
   handleDeleteDealership,
+  handleDeleteDealershipPhoneNumber,
   handleDeleteHolding,
   handleListDealerships,
+  handleListDealershipPhoneNumbers,
   handleListHoldings,
+  handleListPhoneNumberTypes,
   handleSyncMockOrganization,
   handleUpdateDealership,
+  handleUpdateDealershipPhoneNumber,
   handleUpdateHolding,
+  handleUpdatePhoneNumberType,
 } from './auth/organizationManagement';
 import {
   handleCreatePermissionTemplate,
   handleCreateUser,
+  handleChangeOwnPassword,
+  handleChangeUserPassword,
   handleDeletePermissionTemplate,
   handleDeleteUser,
   handleListPermissionTemplates,
@@ -914,6 +923,55 @@ app.delete('/api/admin/dealerships/:dealershipId', (req, res) => {
   });
 });
 
+app.get('/api/admin/phone-number-types', (req, res) => {
+  handleListPhoneNumberTypes(req, res).catch((error) => {
+    console.error('List phone number types route error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить типы номеров.' });
+  });
+});
+
+app.post('/api/admin/phone-number-types', (req, res) => {
+  handleCreatePhoneNumberType(req, res).catch((error) => {
+    console.error('Create phone number type route error:', error);
+    res.status(500).json({ error: 'Не удалось создать тип номера.' });
+  });
+});
+
+app.patch('/api/admin/phone-number-types/:typeId', (req, res) => {
+  handleUpdatePhoneNumberType(req, res).catch((error) => {
+    console.error('Update phone number type route error:', error);
+    res.status(500).json({ error: 'Не удалось обновить тип номера.' });
+  });
+});
+
+app.get('/api/admin/dealerships/:dealershipId/phone-numbers', (req, res) => {
+  handleListDealershipPhoneNumbers(req, res).catch((error) => {
+    console.error('List dealership phone numbers route error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить номера телефонов.' });
+  });
+});
+
+app.post('/api/admin/dealerships/:dealershipId/phone-numbers', (req, res) => {
+  handleCreateDealershipPhoneNumber(req, res).catch((error) => {
+    console.error('Create dealership phone number route error:', error);
+    res.status(500).json({ error: 'Не удалось добавить номер телефона.' });
+  });
+});
+
+app.patch('/api/admin/dealership-phone-numbers/:phoneNumberId', (req, res) => {
+  handleUpdateDealershipPhoneNumber(req, res).catch((error) => {
+    console.error('Update dealership phone number route error:', error);
+    res.status(500).json({ error: 'Не удалось обновить номер телефона.' });
+  });
+});
+
+app.delete('/api/admin/dealership-phone-numbers/:phoneNumberId', (req, res) => {
+  handleDeleteDealershipPhoneNumber(req, res).catch((error) => {
+    console.error('Delete dealership phone number route error:', error);
+    res.status(500).json({ error: 'Не удалось удалить номер телефона.' });
+  });
+});
+
 app.post('/api/admin/organization/sync-mock', (req, res) => {
   handleSyncMockOrganization(req, res).catch((error) => {
     console.error('Sync mock organization route error:', error);
@@ -939,6 +997,20 @@ app.patch('/api/admin/users/:accountId', (req, res) => {
   handleUpdateUser(req, res).catch((error) => {
     console.error('Update user route error:', error);
     res.status(500).json({ error: 'Не удалось обновить пользователя.' });
+  });
+});
+
+app.post('/api/admin/me/password', (req, res) => {
+  handleChangeOwnPassword(req, res).catch((error) => {
+    console.error('Change own password route error:', error);
+    res.status(500).json({ error: 'Не удалось изменить пароль.' });
+  });
+});
+
+app.post('/api/admin/users/:accountId/password', (req, res) => {
+  handleChangeUserPassword(req, res).catch((error) => {
+    console.error('Change user password route error:', error);
+    res.status(500).json({ error: 'Не удалось изменить пароль пользователя.' });
   });
 });
 

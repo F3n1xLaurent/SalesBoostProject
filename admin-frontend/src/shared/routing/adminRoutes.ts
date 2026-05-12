@@ -13,6 +13,7 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
   'dashboard',
   'holdings',
   'companies',
+  'typesNumbers',
   'users',
   'autodealers',
   'audits',
@@ -22,7 +23,7 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
 
 const TABS_BY_ROLE: Record<AdminRole, AdminTab[]> = {
   super: SUPER_COMPANY_TABS,
-  company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'holdings'),
+  company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'holdings' && tab !== 'typesNumbers'),
   dealer: ['dealer-companies', 'dealer-calls', 'dealer-employees', 'dealer-team', 'settings'],
   staff: ['staff-profile', 'staff-trainer', 'settings'],
 };
@@ -50,6 +51,8 @@ export function tabToPath(tab: AdminTab): string {
       return '/holdings';
     case 'companies':
       return '/companies';
+    case 'typesNumbers':
+      return '/typesNumbers';
     case 'users':
       return '/users';
     case 'autodealers':
@@ -89,6 +92,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'dashboard') return { tab: 'dashboard' };
   if (section === 'holdings') return { tab: 'holdings' };
   if (section === 'companies') return { tab: 'companies', dealershipId: resource };
+  if (section === 'typesNumbers') return { tab: 'typesNumbers' };
   if (section === 'users') return { tab: 'users' };
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };
   if (section === 'analytics') return { tab: 'analytics' };

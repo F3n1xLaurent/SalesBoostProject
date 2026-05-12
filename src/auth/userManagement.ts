@@ -566,6 +566,71 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
   }
 }
 
+export async function handleChangeOwnPassword(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const password = String(body.password || '');
+  if (!password) {
+    res.status(400).json({ error: 'Новый пароль обязателен.' });
+    return;
+  }
+
+  try {
+    await prisma.account.update({
+      where: { id: account.id },
+      data: { passwordHash: hashPassword(password) },
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Change own password error:', error);
+    res.status(500).json({ error: 'Не удалось изменить пароль.' });
+  }
+}
+
+export async function handleChangeUserPassword(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const accountId = String(req.params.accountId || '').trim();
+  const body = (req.body || {}) as Record<string, unknown>;
+  const password = String(body.password || '');
+
+  if (!accountId) {
+    res.status(400).json({ error: 'Некорректный accountId.' });
+    return;
+  }
+  if (!password) {
+    res.status(400).json({ error: 'Новый пароль обязателен.' });
+    return;
+  }
+
+  try {
+    await assertAccountInScope(account, accountId);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
+    return;
+  }
+
+  try {
+    await prisma.account.update({
+      where: { id: accountId },
+      data: { passwordHash: hashPassword(password) },
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Change user password error:', error);
+    res.status(500).json({ error: 'Не удалось изменить пароль пользователя.' });
+  }
+}
+
 export async function handleDeleteUser(req: Request, res: Response): Promise<void> {
   const account = req.authAccount;
   if (!account) {
