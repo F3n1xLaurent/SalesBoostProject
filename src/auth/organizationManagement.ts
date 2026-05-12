@@ -5,6 +5,7 @@ import { MOCK_DEALERSHIP_SEEDS, MOCK_HOLDING_SEEDS } from '../super-admin/mockOr
 import { APP_ROLES } from './permissions';
 
 type ScopedAccount = NonNullable<Express.Request['authAccount']>;
+type HoldingType = 'own' | 'franchised';
 
 function isPlatformSuperadmin(account: ScopedAccount): boolean {
   return account.memberships.some((membership) => membership.role === APP_ROLES.platformSuperadmin);
@@ -63,6 +64,7 @@ function normalizeHoldingResponse(
     id: holding.id,
     name: holding.name,
     code: holding.code,
+    type: holding.type as HoldingType,
     isActive: holding.isActive,
     createdAt: holding.createdAt,
     updatedAt: holding.updatedAt,
@@ -123,6 +125,44 @@ function parseDealershipIds(value: unknown): string[] {
   return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))];
 }
 
+function parseHoldingType(value: unknown, fallback: HoldingType = 'own'): HoldingType {
+  return value === 'franchised' ? 'franchised' : fallback;
+}
+
+function slugifyHoldingCode(input: string): string {
+  const translitMap: Record<string, string> = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y',
+    к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f',
+    х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+  };
+  const slug = input
+    .trim()
+    .toLowerCase()
+    .replace(/[а-яё]/g, (char) => translitMap[char] ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-');
+  return slug || 'holding';
+}
+
+async function generateUniqueHoldingCode(tx: Prisma.TransactionClient, name: string): Promise<string> {
+  const base = slugifyHoldingCode(name);
+  let candidate = base;
+  let counter = 2;
+
+  while (true) {
+    const existing = await tx.holding.findUnique({
+      where: { code: candidate },
+      select: { id: true },
+    });
+    if (!existing) return candidate;
+    candidate = `${base}-${counter}`;
+    counter += 1;
+  }
+}
+
 async function getHoldingsSnapshot() {
   return prisma.holding.findMany({
     include: {
@@ -132,6 +172,29 @@ async function getHoldingsSnapshot() {
     },
     orderBy: { name: 'asc' },
   });
+}
+
+function buildHoldingWhere(
+  filters: { search?: string | null; type?: HoldingType | null; isActive?: boolean | null },
+  scope: Prisma.HoldingWhereInput = {},
+): Prisma.HoldingWhereInput {
+  const and: Prisma.HoldingWhereInput[] = [];
+
+  if (filters.type) and.push({ type: filters.type });
+  if (filters.isActive != null) and.push({ isActive: filters.isActive });
+  if (filters.search) {
+    and.push({
+      OR: [
+        { name: { contains: filters.search } },
+        { code: { contains: filters.search } },
+        { dealerships: { some: { name: { contains: filters.search } } } },
+        { dealerships: { some: { code: { contains: filters.search } } } },
+      ],
+    });
+  }
+
+  if (and.length === 0) return scope;
+  return { AND: [scope, ...and] };
 }
 
 async function getDealershipsSnapshot() {
@@ -171,6 +234,7 @@ export async function syncMockOrganization(): Promise<{
           data: {
             name: seed.name,
             code: seed.code,
+            type: seed.type ?? 'own',
             isActive: seed.isActive ?? true,
           },
         });
@@ -180,6 +244,7 @@ export async function syncMockOrganization(): Promise<{
           data: {
             name: seed.name,
             code: seed.code,
+            type: seed.type ?? 'own',
             isActive: seed.isActive ?? true,
           },
         });
@@ -236,12 +301,24 @@ export async function handleListHoldings(req: Request, res: Response): Promise<v
   }
 
   try {
+    const search = parseString(req.query.search);
+    const type = req.query.type != null ? parseHoldingType(req.query.type, 'own') : null;
+    const statusRaw = parseString(req.query.status);
+    const isActive = statusRaw === 'active' ? true : statusRaw === 'inactive' ? false : null;
     let items;
     if (isPlatformSuperadmin(account)) {
-      items = await getHoldingsSnapshot();
+      items = await prisma.holding.findMany({
+        where: buildHoldingWhere({ search, type, isActive }),
+        include: {
+          dealerships: {
+            orderBy: [{ city: 'asc' }, { name: 'asc' }],
+          },
+        },
+        orderBy: { name: 'asc' },
+      });
     } else if (isHoldingAdmin(account)) {
       items = await prisma.holding.findMany({
-        where: { id: { in: getHoldingIds(account) } },
+        where: buildHoldingWhere({ search, type, isActive }, { id: { in: getHoldingIds(account) } }),
         include: {
           dealerships: {
             orderBy: [{ city: 'asc' }, { name: 'asc' }],
@@ -258,7 +335,7 @@ export async function handleListHoldings(req: Request, res: Response): Promise<v
       items = holdingIds.length === 0
         ? []
         : await prisma.holding.findMany({
-            where: { id: { in: holdingIds } },
+            where: buildHoldingWhere({ search, type, isActive }, { id: { in: holdingIds } }),
             include: {
               dealerships: {
                 orderBy: [{ city: 'asc' }, { name: 'asc' }],
@@ -334,6 +411,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
   const body = (req.body || {}) as Record<string, unknown>;
   const name = parseString(body.name);
   const code = parseString(body.code);
+  const type = parseHoldingType(body.type, 'own');
   const isActive = parseBoolean(body.isActive, true);
   const dealershipIds = parseDealershipIds(body.dealershipIds);
 
@@ -344,8 +422,9 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
 
   try {
     const created = await prisma.$transaction(async (tx) => {
+      const resolvedCode = code ?? await generateUniqueHoldingCode(tx, name);
       const holding = await tx.holding.create({
-        data: { name, code, isActive },
+        data: { name, code: resolvedCode, type, isActive },
       });
 
       if (dealershipIds.length > 0) {
@@ -395,6 +474,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
   const body = (req.body || {}) as Record<string, unknown>;
   const name = body.name != null ? parseString(body.name) : undefined;
   const code = body.code != null ? parseString(body.code) : undefined;
+  const type = body.type != null ? parseHoldingType(body.type, 'own') : undefined;
   const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
   const dealershipIds = body.dealershipIds != null ? parseDealershipIds(body.dealershipIds) : undefined;
 
@@ -408,6 +488,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
       const holdingData: Prisma.HoldingUpdateInput = {};
       if (name !== undefined && name !== null) holdingData.name = name;
       if (code !== undefined) holdingData.code = code;
+      if (type !== undefined) holdingData.type = type;
       if (isActive !== undefined) holdingData.isActive = isActive;
 
       await tx.holding.update({

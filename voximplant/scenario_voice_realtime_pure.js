@@ -8,6 +8,19 @@
 require(Modules.OpenAI);
 require(Modules.WebSocket);
 
+var DEFAULT_REALTIME_MODEL = "gpt-realtime-2";
+
+function getRealtimeModel(data) {
+  return (data && data.model && data.model.length) ? data.model : DEFAULT_REALTIME_MODEL;
+}
+
+function getRealtimeReasoning(data) {
+  var effort = (data && data.realtime_reasoning_effort && data.realtime_reasoning_effort.length)
+    ? String(data.realtime_reasoning_effort)
+    : "low";
+  return { effort: effort };
+}
+
 var REALTIME_INSTRUCTIONS = [
   "=== РОЛЬ (КРИТИЧНО) ===",
   "Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ в автосалон по объявлению. На другом конце провода — МЕНЕДЖЕР по продажам. Ты его тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы.",
@@ -191,7 +204,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
 
     OpenAI.createRealtimeAPIClient({
       apiKey: openaiApiKey,
-      model: (data.model && data.model.length) ? data.model : "gpt-realtime",
+      model: getRealtimeModel(data),
       onWebSocketClose: function (event) {
         Logger.write("voice_realtime_pure: WebSocket closed");
         finish({ reason: "websocket_closed" });
@@ -430,28 +443,32 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
           return;
         }
         try {
-          realtimeClient.sessionUpdate({
-            session: {
-              type: "realtime",
-              instructions: instructions,
-              audio: {
-                input: {
-                  turn_detection: {
-                    type: "server_vad",
-                    threshold: 0.5,
-                    prefix_padding_ms: 250,
-                    silence_duration_ms: 300,
-                  },
-                  // Enable input transcription so we get conversation.item.input_audio_transcription.completed (manager speech)
-                  transcription: {
-                    model: "whisper-1",
-                    language: "ru",
-                  },
+          var session = {
+            type: "realtime",
+            instructions: instructions,
+            audio: {
+              input: {
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.5,
+                  prefix_padding_ms: 250,
+                  silence_duration_ms: 300,
+                },
+                // Enable input transcription so we get conversation.item.input_audio_transcription.completed (manager speech)
+                transcription: {
+                  model: "whisper-1",
+                  language: "ru",
                 },
               },
-              tools: tools,
-              tool_choice: "auto",
             },
+            tools: tools,
+            tool_choice: "auto",
+          };
+          if (getRealtimeModel(data) === "gpt-realtime-2") {
+            session.reasoning = getRealtimeReasoning(data);
+          }
+          realtimeClient.sessionUpdate({
+            session: session,
           });
         } catch (suErr) {
           Logger.write("voice_realtime_pure: sessionUpdate warning: " + suErr);

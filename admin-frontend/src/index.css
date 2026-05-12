@@ -1,7 +1,6 @@
 @import "tailwindcss";
-@config "../tailwind.config.cjs";
-@import "@heroui/styles";
 @import "./theme.css";
+@config "../tailwind.config.cjs";
 
 /* Global – clean minimal SaaS dashboard */
 body {
@@ -10,5 +9,3 @@ body {
   background-color: var(--bg-app);
   color: var(--text-primary);
 }
-
-

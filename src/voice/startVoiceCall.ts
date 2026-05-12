@@ -56,6 +56,14 @@ export interface VoiceCallResolvedUrls {
   eventUrl: string;
 }
 
+function getRealtimeModel(): string {
+  return String(process.env.OPENAI_REALTIME_MODEL || 'gpt-realtime-2').trim() || 'gpt-realtime-2';
+}
+
+function getRealtimeReasoningEffort(): string {
+  return String(process.env.OPENAI_REALTIME_REASONING_EFFORT || 'low').trim() || 'low';
+}
+
 export function resolveVoiceCallUrls(): VoiceCallResolvedUrls {
   const tunnelUrl = getTunnelUrl()?.replace(/\/$/, '') || '';
   const miniAppUrl = String(process.env.MINI_APP_URL || '').replace(/\/$/, '');
@@ -117,6 +125,8 @@ export async function startVoiceCall(
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
       openai_api_key: openaiApiKey,
+      model: getRealtimeModel(),
+      realtime_reasoning_effort: getRealtimeReasoningEffort(),
     };
     // No dialog_url: full script is in the scenario prompt.
   } else if (scenario === 'realtime') {
@@ -132,6 +142,8 @@ export async function startVoiceCall(
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
       openai_api_key: openaiApiKey,
+      model: getRealtimeModel(),
+      realtime_reasoning_effort: getRealtimeReasoningEffort(),
     };
     // When baseUrl is set, pass dialog_url so Realtime uses our algorithm (virtual client) via function calling.
     if (baseUrl) {

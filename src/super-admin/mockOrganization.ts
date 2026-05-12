@@ -2,6 +2,7 @@ export type MockHoldingSeed = {
   key: string;
   code: string;
   name: string;
+  type?: 'own' | 'franchised';
   isActive?: boolean;
 };
 
@@ -15,11 +16,11 @@ export type MockDealershipSeed = {
 };
 
 export const MOCK_HOLDING_SEEDS: MockHoldingSeed[] = [
-  { key: 'north', code: 'north-group', name: 'АвтоХолдинг Север' },
-  { key: 'drive', code: 'drive-group', name: 'Drive Group' },
-  { key: 'motor', code: 'motor-service', name: 'МоторСервис' },
-  { key: 'auto-plus', code: 'auto-plus', name: 'Авто Плюс' },
-  { key: 'cardealer', code: 'car-dealer', name: 'КарДилер' },
+  { key: 'north', code: 'north-group', name: 'АвтоХолдинг Север', type: 'own' },
+  { key: 'drive', code: 'drive-group', name: 'Drive Group', type: 'own' },
+  { key: 'motor', code: 'motor-service', name: 'МоторСервис', type: 'own' },
+  { key: 'auto-plus', code: 'auto-plus', name: 'Авто Плюс', type: 'own' },
+  { key: 'cardealer', code: 'car-dealer', name: 'КарДилер', type: 'own' },
 ];
 
 export const MOCK_DEALERSHIP_SEEDS: MockDealershipSeed[] = [
