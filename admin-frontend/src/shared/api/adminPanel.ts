@@ -452,6 +452,49 @@ export async function deleteDealershipPhoneNumber(phoneNumberId: string): Promis
   if (!res.ok) throw new Error(data?.error || 'Не удалось удалить номер телефона.');
 }
 
+export async function fetchUserPhoneNumbers(accountId: string): Promise<PhoneNumberItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/users/${accountId}/phone-numbers`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as PhoneNumberItem[] : [];
+}
+
+export async function createUserPhoneNumber(
+  accountId: string,
+  payload: { typeId: string; phone: string; isActive?: boolean },
+): Promise<PhoneNumberItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/users/${accountId}/phone-numbers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось добавить номер телефона.');
+  return data.item as PhoneNumberItem;
+}
+
+export async function updateUserPhoneNumber(
+  phoneNumberId: string,
+  payload: { typeId?: string; phone?: string; isActive?: boolean },
+): Promise<PhoneNumberItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/user-phone-numbers/${phoneNumberId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить номер телефона.');
+  return data.item as PhoneNumberItem;
+}
+
+export async function deleteUserPhoneNumber(phoneNumberId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/user-phone-numbers/${phoneNumberId}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить номер телефона.');
+}
+
 export async function syncMockOrganization(): Promise<{
   holdingsCreated: number;
   dealershipsCreated: number;
