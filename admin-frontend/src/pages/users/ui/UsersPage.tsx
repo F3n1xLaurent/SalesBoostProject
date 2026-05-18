@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { EmployeeDetail } from '../../employee-detail/ui/EmployeeDetailPage';
 import type { AdminRole } from '../../../widgets/admin-sidebar/ui/AdminSidebar';
 import {
   changeUserPassword,
@@ -16,13 +17,29 @@ import {
   type RbacMeta,
   type UserAccountItem,
 } from '../../../shared/api/adminPanel';
+import {
+  COMM_BADGE_CLASS,
+  COMM_LABELS,
+  MOCK_EMPLOYEES,
+  STATUS_LABELS,
+  type CommunicationFlag,
+  type EmployeeFullRow,
+} from '../../../shared/lib/admin-panel/mockData';
+import { deltaDisplay, ratingClass, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import { UserPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 
 type Props = {
   role: AdminRole;
+  employeeId?: string | null;
+  onSelectEmployee?: (id: string) => void;
+  onBackToUsers?: () => void;
+  onOpenDealership?: (id: string) => void;
+  onOpenCompanies?: () => void;
 };
 
 type PageTab = 'users' | 'templates';
+type UserSortKey = 'fullName' | 'dealershipName' | 'aiRating' | 'deltaRating' | 'auditsCount' | 'failsCount' | 'status';
+type SortDir = 'asc' | 'desc';
 
 type MembershipForm = {
   role: string;
@@ -55,8 +72,32 @@ type SelectOption = {
   label: string;
   description?: string;
 };
+type UserQuickFilter = 'training' | 'fails' | 'best' | 'comm';
+type UserEmployeeRow = {
+  user: UserAccountItem;
+  employee: EmployeeFullRow;
+  fullName: string;
+  dealershipName: string;
+  city: string;
+};
 
 const NO_HOLDING_VALUE = '__no_holding__';
+
+const USER_QUICK_FILTERS: { id: UserQuickFilter; label: string }[] = [
+  { id: 'training', label: 'Нужно обучение' },
+  { id: 'fails', label: 'Провалы' },
+  { id: 'best', label: 'Лучшие' },
+  { id: 'comm', label: 'Проблемы коммуникации' },
+];
+
+const USER_COLUMN_DEFS: { key: UserSortKey; label: string; align?: 'right' }[] = [
+  { key: 'fullName', label: 'Сотрудник' },
+  { key: 'dealershipName', label: 'Автосалон' },
+  { key: 'aiRating', label: 'AI-рейтинг', align: 'right' },
+  { key: 'deltaRating', label: 'Динамика', align: 'right' },
+  { key: 'auditsCount', label: 'Проверки', align: 'right' },
+  { key: 'failsCount', label: 'Провалы', align: 'right' },
+];
 
 const EMPTY_USER_FORM: UserFormState = {
   email: '',
@@ -238,6 +279,34 @@ function statusLabel(status: string): string {
   if (status === 'invited') return 'Приглашение отправлено';
   if (status === 'disabled') return 'Аккаунт выключен';
   return status;
+}
+
+function userFullName(user: UserAccountItem): string {
+  return user.displayName || user.managerProfiles[0]?.fullName || user.email;
+}
+
+function userScopeLabel(user: UserAccountItem): string {
+  const dealershipMembership = user.memberships.find((membership) => membership.dealershipId);
+  return dealershipMembership?.scopeLabel || user.memberships[0]?.scopeLabel || 'Автосалон не указан';
+}
+
+function commTooltip(flag: CommunicationFlag): string {
+  switch (flag) {
+    case 'ok': return 'Коммуникация в норме';
+    case 'fillers': return 'Обнаружены слова-паразиты в речи';
+    case 'aggression': return 'Выявлены признаки агрессии в диалоге';
+    case 'profanity': return 'Обнаружена ненормативная лексика';
+    case 'low-engagement': return 'Низкая вовлеченность в диалог';
+  }
+}
+
+function matchesEmployeeQuickFilter(employee: EmployeeFullRow, filter: UserQuickFilter): boolean {
+  switch (filter) {
+    case 'training': return employee.status === 'critical' || employee.status === 'risk';
+    case 'fails': return employee.failsCount >= 1;
+    case 'best': return employee.aiRating >= 80 && employee.status === 'norm';
+    case 'comm': return employee.communicationFlag !== 'ok';
+  }
 }
 
 function ViewIcon() {
@@ -523,12 +592,16 @@ function KeyValueList(props: { items: Array<{ label: string; value: React.ReactN
   );
 }
 
-export function UsersPage({ role }: Props) {
+export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, onOpenDealership, onOpenCompanies }: Props) {
   const [tab, setTab] = useState<PageTab>('users');
   const [meta, setMeta] = useState<RbacMeta | null>(null);
   const [users, setUsers] = useState<UserAccountItem[]>([]);
   const [templates, setTemplates] = useState<PermissionTemplateItem[]>([]);
   const [search, setSearch] = useState('');
+  const [userSortKey, setUserSortKey] = useState<UserSortKey>('aiRating');
+  const [userSortDir, setUserSortDir] = useState<SortDir>('desc');
+  const [userQuickFilter, setUserQuickFilter] = useState<UserQuickFilter | null>(null);
+  const [showUserFilters, setShowUserFilters] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -556,9 +629,22 @@ export function UsersPage({ role }: Props) {
   const [savingUser, setSavingUser] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
 
-  const canManageTemplates = role === 'super';
+  const canManageTemplates = meta?.canManageTemplates ?? role === 'super';
+  const canManageGlobalUsers = canManageTemplates;
   const activeUser = users.find((item) => item.id === activeUserId) ?? null;
   const activeTemplate = templates.find((item) => item.id === activeTemplateId) ?? null;
+  const detailUserIndex = employeeId ? users.findIndex((item) => item.id === employeeId) : -1;
+  const detailEmployeeIndex = employeeId ? MOCK_EMPLOYEES.findIndex((item) => item.id === employeeId) : -1;
+  const detailActionUser = detailUserIndex >= 0
+    ? users[detailUserIndex]
+    : detailEmployeeIndex >= 0 && users.length > 0
+      ? users[detailEmployeeIndex % users.length]
+      : null;
+  const detailMockEmployee = detailUserIndex >= 0
+    ? MOCK_EMPLOYEES[detailUserIndex % MOCK_EMPLOYEES.length]
+    : detailEmployeeIndex >= 0
+      ? MOCK_EMPLOYEES[detailEmployeeIndex]
+      : null;
   const dealershipMap = useMemo(() => new Map((meta?.dealerships || []).map((item) => [item.id, item])), [meta]);
   const templateOptions = useMemo<SelectOption[]>(
     () => templates.map((template) => ({
@@ -575,11 +661,11 @@ export function UsersPage({ role }: Props) {
       setLoading(true);
       setError(null);
       try {
-        const [metaData, userData, templateData] = await Promise.all([
+        const [metaData, userData] = await Promise.all([
           fetchRbacMeta(),
           fetchUsers(),
-          canManageTemplates ? fetchPermissionTemplates() : Promise.resolve([]),
         ]);
+        const templateData = metaData.canManageTemplates ? await fetchPermissionTemplates() : [];
         if (cancelled) return;
         setMeta(metaData);
         setUsers(userData.items);
@@ -594,20 +680,39 @@ export function UsersPage({ role }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [canManageTemplates]);
+  }, []);
 
-  const filteredUsers = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter((item) =>
-      [
-        item.email,
-        item.displayName || '',
-        ...item.managerProfiles.map((profile) => profile.fullName),
-        ...item.memberships.map((membership) => membership.scopeLabel),
-      ].join(' ').toLowerCase().includes(q),
-    );
-  }, [users, search]);
+  const userEmployeeRows = useMemo<UserEmployeeRow[]>(() => {
+    let list = users.map((user, index) => {
+      const employee = MOCK_EMPLOYEES[index % MOCK_EMPLOYEES.length];
+      return {
+        user,
+        employee,
+        fullName: userFullName(user),
+        dealershipName: userScopeLabel(user),
+        city: employee.city,
+      };
+    });
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((row) =>
+        row.fullName.toLowerCase().includes(q) ||
+        row.user.email.toLowerCase().includes(q) ||
+        row.dealershipName.toLowerCase().includes(q) ||
+        row.city.toLowerCase().includes(q),
+      );
+    }
+    if (userQuickFilter) list = list.filter((row) => matchesEmployeeQuickFilter(row.employee, userQuickFilter));
+
+    return [...list].sort((a, b) => {
+      let cmp = 0;
+      if (userSortKey === 'fullName') cmp = a.fullName.localeCompare(b.fullName, 'ru');
+      else if (userSortKey === 'dealershipName') cmp = a.dealershipName.localeCompare(b.dealershipName, 'ru');
+      else if (userSortKey === 'status') cmp = a.employee.status.localeCompare(b.employee.status, 'ru');
+      else cmp = (a.employee[userSortKey] ?? -Infinity) - (b.employee[userSortKey] ?? -Infinity);
+      return userSortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [search, userQuickFilter, userSortDir, userSortKey, users]);
 
   const filteredTemplates = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -714,12 +819,12 @@ export function UsersPage({ role }: Props) {
 
   useEffect(() => {
     if (!createUserOpen || !canManageTemplates || userForm.templateIds.length > 0) return;
-    const firstRole = role === 'company' ? 'manager' : userForm.memberships[0]?.role;
+    const firstRole = canManageGlobalUsers ? userForm.memberships[0]?.role : 'manager';
     const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
     if (templateId) {
       setUserForm((current) => ({ ...current, templateIds: [templateId] }));
     }
-  }, [canManageTemplates, createUserOpen, role, templates, userForm.memberships, userForm.templateIds.length]);
+  }, [canManageGlobalUsers, canManageTemplates, createUserOpen, templates, userForm.memberships, userForm.templateIds.length]);
 
   function resetUserForm() {
     setUserForm({
@@ -801,7 +906,7 @@ export function UsersPage({ role }: Props) {
 
   async function saveUser(mode: 'create' | 'edit') {
     const fullName = userForm.managerFullName.trim();
-    const memberships = (role === 'company'
+    const memberships = (!canManageGlobalUsers
       ? userForm.memberships.map((membership) => ({ ...membership, role: 'manager' }))
       : userForm.memberships
     )
@@ -969,6 +1074,15 @@ export function UsersPage({ role }: Props) {
     }
   }
 
+  function handleUserSort(key: UserSortKey) {
+    if (userSortKey === key) {
+      setUserSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setUserSortKey(key);
+    setUserSortDir(key === 'fullName' || key === 'dealershipName' || key === 'status' ? 'asc' : 'desc');
+  }
+
   function renderUserForm(onSubmit: (event: React.FormEvent) => void, submitLabel: string, options?: { showStatus?: boolean }) {
     const showStatus = options?.showStatus ?? true;
     return (
@@ -1001,7 +1115,7 @@ export function UsersPage({ role }: Props) {
             {userForm.memberships.map((membership, index) => {
               const dealerships = availableDealerships(membership);
               const holdingId = membership.holdingId || dealershipMap.get(membership.dealershipId)?.holdingId || '';
-              const roleOptions = role === 'company'
+              const roleOptions = !canManageGlobalUsers
                 ? [{ value: 'manager', label: roleLabel('manager'), description: roleDescription('manager') }]
                 : (meta?.roles || []).map((item) => ({ value: item, label: roleLabel(item), description: roleDescription(item) }));
               const holdingOptions = [
@@ -1020,8 +1134,8 @@ export function UsersPage({ role }: Props) {
                   <div style={{ display: 'grid', gap: 10 }}>
                     <SearchableSelect
                       label="Права"
-                      value={role === 'company' ? 'manager' : membership.role}
-                      disabled={role === 'company'}
+                      value={canManageGlobalUsers ? membership.role : 'manager'}
+                      disabled={!canManageGlobalUsers}
                       options={roleOptions}
                       placeholder="Выберите права пользователя"
                       onChange={(value) => updateMembershipRole(index, value)}
@@ -1064,7 +1178,7 @@ export function UsersPage({ role }: Props) {
               );
             })}
           </div>
-          {role === 'super' && (
+          {canManageGlobalUsers && (
             <button type="button" className="sa-btn-text" style={{ marginTop: 10 }} onClick={() => setUserForm((current) => ({ ...current, memberships: [...current.memberships, { role: 'manager', holdingId: '', dealershipId: '' }] }))}>
               + Добавить ещё назначение
             </button>
@@ -1252,6 +1366,41 @@ export function UsersPage({ role }: Props) {
       {error && <div className="sa-card" style={{ marginBottom: 16, color: '#991B1B', background: '#FEF2F2' }}>{error}</div>}
       {notice && <div className="sa-card" style={{ marginBottom: 16, color: '#166534', background: '#F0FDF4' }}>{notice}</div>}
 
+      {employeeId ? (
+        <EmployeeDetail
+          employeeId={detailMockEmployee?.id || employeeId}
+          onBack={() => onBackToUsers?.()}
+          onOpenDealership={onOpenDealership}
+          onOpenCompanies={onOpenCompanies}
+          mockNotice="Часть параметров на странице пока моковая: AI-рейтинг, динамика, проверки, провалы, коммуникация, ошибки и история проверок."
+          detailOverride={detailActionUser ? {
+            fullName: userFullName(detailActionUser),
+            dealershipName: userScopeLabel(detailActionUser),
+            city: detailMockEmployee?.city || '',
+          } : undefined}
+          actionButtons={detailActionUser && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button type="button" className="sa-btn-outline" onClick={() => { setActiveUserId(detailActionUser.id); fillUserForm(detailActionUser); setEditUserOpen(true); }}>
+                <EditIcon />
+                Редактировать
+              </button>
+              <button type="button" className="sa-btn-outline" onClick={() => setPhoneNumbersUserId(detailActionUser.id)}>
+                <PhoneIcon />
+                Номера телефонов
+              </button>
+              <button type="button" className="sa-btn-outline" onClick={() => { setActiveUserId(detailActionUser.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
+                <KeyIcon />
+                Сменить пароль
+              </button>
+              <button type="button" className="sa-btn-danger" onClick={() => { setActiveUserId(detailActionUser.id); setDeleteUserOpen(true); }}>
+                <TrashIcon />
+                Удалить
+              </button>
+            </div>
+          )}
+        />
+      ) : (
+        <>
       <div className="sa-card" style={{ padding: '0 20px', marginBottom: 18 }}>
         <div style={{ display: 'flex', gap: 24, alignItems: 'center', paddingTop: 18 }}>
           <button type="button" style={tabButtonStyle(tab === 'users')} onClick={() => setTab('users')}>
@@ -1266,22 +1415,26 @@ export function UsersPage({ role }: Props) {
       </div>
 
       {tab === 'users' && (
-        <section className="sa-card" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 16 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 22 }}>Список пользователей</h2>
-              <div style={{ fontSize: 13, color: 'var(--sa-text-secondary)', marginTop: 6 }}>
-                {loading ? 'Загрузка...' : `${filteredUsers.length} аккаунтов`}
+        <>
+          <div className="sa-toolbar">
+            <div className="sa-toolbar-row">
+              <div className="sa-search-wrap">
+                <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+                </svg>
+                <input
+                  className="sa-search-input"
+                  placeholder="Поиск по имени / автосалону / городу..."
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
               </div>
-            </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <input
-                className="sa-search-input"
-                style={{ width: 320 }}
-                placeholder="Поиск по email, имени, scope"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
+              <button className="sa-btn-outline" onClick={() => setShowUserFilters((current) => !current)}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                </svg>
+                Фильтры
+              </button>
               <button
                 type="button"
                 className="sa-btn-primary"
@@ -1293,62 +1446,193 @@ export function UsersPage({ role }: Props) {
                 Новый пользователь
               </button>
             </div>
+            <div className="sa-toolbar-chips">
+              {USER_QUICK_FILTERS.map((filter) => (
+                <button
+                  key={filter.id}
+                  type="button"
+                  className={`sa-chip ${userQuickFilter === filter.id ? 'sa-chip-active' : ''}`}
+                  onClick={() => setUserQuickFilter((current) => (current === filter.id ? null : filter.id))}
+                >
+                  {filter.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div style={{ display: 'grid', gap: 10 }}>
-            {filteredUsers.map((item) => {
-              const isDisabled = item.status === 'disabled';
-              return (
-              <div
-                key={item.id}
-                className="sa-card"
-                style={{
-                  padding: 14,
-                  background: isDisabled ? '#F3F4F6' : undefined,
-                  boxShadow: isDisabled ? 'none' : undefined,
-                  opacity: isDisabled ? 0.72 : 1,
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>{item.displayName || item.managerProfiles[0]?.fullName || item.email}</div>
-                    <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>{item.email}</div>
-                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {item.memberships.map((membership) => (
-                        <span key={membership.id} className="sa-metric-chip">
-                          {roleLabel(membership.role)} · {membership.scopeLabel}
-                        </span>
-                      ))}
-                      {item.permissionTemplates.map((template) => (
-                        <span key={template.id} className="sa-metric-chip">{template.name}</span>
-                      ))}
+          {showUserFilters && (
+            <div className="sa-filters-panel">
+              <div className="sa-filter-group">
+                <span className="sa-filter-label">Источник:</span>
+                <div className="sa-meta">
+                  Фильтры и метрики этой таблицы пока используют моковые данные сотрудников. Действия справа привязаны к web-аккаунтам пользователей.
+                </div>
+              </div>
+              <button className="sa-btn-text" onClick={() => setUserQuickFilter(null)}>
+                Сбросить фильтры
+              </button>
+            </div>
+          )}
+
+          <div className="sa-companies-table-wrap sa-desktop-only">
+            <table className="sa-table sa-table-sortable">
+              <thead>
+                <tr>
+                  {USER_COLUMN_DEFS.map((col) => (
+                    <th
+                      key={col.key}
+                      className={`sa-th-sortable ${col.align === 'right' ? 'sa-text-right' : ''}`}
+                      onClick={() => handleUserSort(col.key)}
+                    >
+                      {col.label}{' '}
+                      <span className={userSortKey === col.key ? 'sa-sort-icon' : 'sa-sort-icon sa-sort-icon-inactive'}>
+                        {userSortKey === col.key ? (userSortDir === 'asc' ? '↑' : '↓') : '⇅'}
+                      </span>
+                    </th>
+                  ))}
+                  <th>Коммуникация</th>
+                  <th>ТОП-ошибка</th>
+                  <th className="sa-th-sortable" onClick={() => handleUserSort('status')}>
+                    Статус{' '}
+                    <span className={userSortKey === 'status' ? 'sa-sort-icon' : 'sa-sort-icon sa-sort-icon-inactive'}>
+                      {userSortKey === 'status' ? (userSortDir === 'asc' ? '↑' : '↓') : '⇅'}
+                    </span>
+                  </th>
+                  <th style={{ width: 228 }}>Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
+                ) : userEmployeeRows.length === 0 ? (
+                  <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>
+                    Нет пользователей по выбранным фильтрам
+                    <br /><span style={{ fontSize: 12, opacity: 0.7 }}>Сбросьте фильтры или измените поиск</span>
+                  </td></tr>
+                ) : (
+                  userEmployeeRows.map((row) => {
+                    const { employee } = row;
+                    const actionUser = row.user;
+                    const delta = deltaDisplay(employee.deltaRating);
+                    return (
+                      <tr
+                        key={row.user.id}
+                        className="sa-row-clickable"
+                        onClick={() => onSelectEmployee?.(row.user.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(event) => event.key === 'Enter' && onSelectEmployee?.(row.user.id)}
+                      >
+                        <td>
+                          <div className="sa-emp-name-cell">
+                            <span className="sa-avatar-placeholder">{row.fullName.charAt(0).toUpperCase()}</span>
+                            <div>
+                              <div className="sa-cell-name">{row.fullName}</div>
+                              <div className="sa-cell-city">{row.user.email} · моковые метрики</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <div className="sa-cell-name">{row.dealershipName}</div>
+                          <div className="sa-cell-city">{row.city}</div>
+                        </td>
+                        <td className="sa-text-right"><span className={ratingClass(employee.aiRating)}>{employee.aiRating}</span></td>
+                        <td className="sa-text-right"><span className={delta.cls}>{delta.text}</span></td>
+                        <td className="sa-text-right">{employee.auditsCount}</td>
+                        <td className="sa-text-right">
+                          <span className={employee.failsCount >= 2 ? 'sa-score-red' : employee.failsCount >= 1 ? 'sa-score-orange' : ''}>
+                            {employee.failsCount}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={`sa-comm-badge ${COMM_BADGE_CLASS[employee.communicationFlag]}`} title={commTooltip(employee.communicationFlag)}>
+                            {COMM_LABELS[employee.communicationFlag]}
+                          </span>
+                        </td>
+                        <td><span className="sa-top-mistake" title={employee.topMistakeLabel}>{employee.topMistakeLabel}</span></td>
+                        <td><span className={statusBadgeClass(employee.status)}>{STATUS_LABELS[employee.status]}</span></td>
+                        <td onClick={(event) => event.stopPropagation()}>
+                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                            <IconButton label="Просмотр" onClick={() => onSelectEmployee?.(row.user.id)}>
+                              <ViewIcon />
+                            </IconButton>
+                            <IconButton label="Номера телефонов" onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}>
+                              <PhoneIcon />
+                            </IconButton>
+                            <IconButton label="Редактировать" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); fillUserForm(actionUser); setEditUserOpen(true); }}>
+                              <EditIcon />
+                            </IconButton>
+                            <IconButton label="Сменить пароль" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
+                              <KeyIcon />
+                            </IconButton>
+                            <IconButton label="Удалить" tone="danger" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setDeleteUserOpen(true); }}>
+                              <TrashIcon />
+                            </IconButton>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="sa-mobile-only">
+            {loading ? (
+              <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</div>
+                ) : userEmployeeRows.length === 0 ? (
+              <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Нет пользователей по выбранным фильтрам</div>
+            ) : (
+              userEmployeeRows.map((row) => {
+                const { employee } = row;
+                const delta = deltaDisplay(employee.deltaRating);
+                const actionUser = row.user;
+                return (
+                  <div
+                    key={row.user.id}
+                    className="sa-mobile-row"
+                    onClick={() => onSelectEmployee?.(row.user.id)}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <div className="sa-mobile-row-header">
+                      <div>
+                        <div className="sa-cell-name">{row.fullName}</div>
+                        <div className="sa-cell-city">{row.dealershipName} · {row.city}</div>
+                      </div>
+                      <span className={`sa-mobile-rating ${ratingClass(employee.aiRating)}`}>{employee.aiRating}</span>
                     </div>
-                  </div>
-                  <div style={{ display: 'grid', gap: 8, justifyItems: 'end' }}>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                      <IconButton label="Просмотр" onClick={() => { setActiveUserId(item.id); setViewUserOpen(true); }}>
+                    <div className="sa-mobile-chips">
+                      <span className="sa-metric-chip"><span className={delta.cls}>{delta.text}</span></span>
+                      <span className="sa-metric-chip">Проверки: {employee.auditsCount}</span>
+                      <span className="sa-metric-chip">Провалы: {employee.failsCount}</span>
+                      <span className={`sa-comm-badge ${COMM_BADGE_CLASS[employee.communicationFlag]}`}>{COMM_LABELS[employee.communicationFlag]}</span>
+                      <span className={statusBadgeClass(employee.status)}>{STATUS_LABELS[employee.status]}</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }} onClick={(event) => event.stopPropagation()}>
+                      <IconButton label="Просмотр" onClick={() => onSelectEmployee?.(row.user.id)}>
                         <ViewIcon />
                       </IconButton>
-                      <IconButton label="Номера телефонов" onClick={() => setPhoneNumbersUserId(item.id)}>
+                      <IconButton label="Номера телефонов" onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}>
                         <PhoneIcon />
                       </IconButton>
-                      <IconButton label="Редактировать" onClick={() => { setActiveUserId(item.id); fillUserForm(item); setEditUserOpen(true); }}>
+                      <IconButton label="Редактировать" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); fillUserForm(actionUser); setEditUserOpen(true); }}>
                         <EditIcon />
                       </IconButton>
-                      <IconButton label="Сменить пароль" onClick={() => { setActiveUserId(item.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
+                      <IconButton label="Сменить пароль" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
                         <KeyIcon />
                       </IconButton>
-                      <IconButton label="Удалить" tone="danger" onClick={() => { setActiveUserId(item.id); setDeleteUserOpen(true); }}>
+                      <IconButton label="Удалить" tone="danger" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setDeleteUserOpen(true); }}>
                         <TrashIcon />
                       </IconButton>
                     </div>
                   </div>
-                </div>
-              </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
-        </section>
+        </>
       )}
 
       {tab === 'templates' && canManageTemplates && (
@@ -1419,6 +1703,8 @@ export function UsersPage({ role }: Props) {
             ))}
           </div>
         </section>
+      )}
+        </>
       )}
 
       <ModalFrame

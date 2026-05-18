@@ -6,7 +6,7 @@ import {
   type DealershipRow,
   type DealershipStatus,
 } from '../../../shared/lib/admin-panel/mockData';
-import type { DealershipItem } from '../../../shared/api/adminPanel';
+import type { DealershipDirection, DealershipItem, DealershipType } from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { ratingClass, answerRateClass, answerTimeClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import {
@@ -66,7 +66,15 @@ function comparator(key: SortKey, dir: SortDir) {
 /* ────────────────────── Period helper ────────────────────── */
 
 type Period = '7d' | '30d' | 'custom';
-type CompanyRow = DealershipRow & { workingHours: string };
+type CompanyRow = DealershipRow & { workingHours: string; type: DealershipType; directions: DealershipDirection[] };
+
+function dealershipTypeLabel(type: DealershipType): string {
+  return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
+}
+
+function dealershipDirectionLabel(direction: DealershipDirection): string {
+  return direction === 'used_cars' ? 'Автомобили с пробегом' : 'Новые автомобили';
+}
 
 /* ────────────────────── Component ────────────────────── */
 
@@ -77,6 +85,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
         id: item.id,
         name: item.name,
         city: item.city || '—',
+        type: item.type || 'own',
+        directions: item.directions || [],
         workingHours: formatWorkingHours(item),
         aiRating: 0,
         answerRate: null,
@@ -100,6 +110,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   const [onlyProblematic, setOnlyProblematic] = useState(false);
   const [onlyNoData, setOnlyNoData] = useState(false);
   const [cityFilter, setCityFilter] = useState<string[]>([]);
+  const [typeFilter, setTypeFilter] = useState<DealershipType[]>([]);
+  const [directionFilter, setDirectionFilter] = useState<DealershipDirection[]>([]);
   const [statusFilter, setStatusFilter] = useState<DealershipStatus[]>([]);
   const [showFilters, setShowFilters] = useState(false);
   const [startingBatch, setStartingBatch] = useState(false);
@@ -136,14 +148,28 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     if (cityFilter.length > 0) {
       list = list.filter((r) => cityFilter.includes(r.city));
     }
+    if (typeFilter.length > 0) {
+      list = list.filter((r) => typeFilter.includes(r.type));
+    }
+    if (directionFilter.length > 0) {
+      list = list.filter((r) => directionFilter.some((direction) => r.directions.includes(direction)));
+    }
     if (statusFilter.length > 0) {
       list = list.filter((r) => statusFilter.includes(r.status));
     }
     return [...list].sort(comparator(sortKey, sortDir));
-  }, [rows, search, onlyProblematic, onlyNoData, cityFilter, statusFilter, sortKey, sortDir]);
+  }, [rows, search, onlyProblematic, onlyNoData, cityFilter, typeFilter, directionFilter, statusFilter, sortKey, sortDir]);
 
   const toggleCityFilter = (city: string) => {
     setCityFilter((prev) => (prev.includes(city) ? prev.filter((c) => c !== city) : [...prev, city]));
+  };
+
+  const toggleTypeFilter = (type: DealershipType) => {
+    setTypeFilter((prev) => (prev.includes(type) ? prev.filter((x) => x !== type) : [...prev, type]));
+  };
+
+  const toggleDirectionFilter = (direction: DealershipDirection) => {
+    setDirectionFilter((prev) => (prev.includes(direction) ? prev.filter((x) => x !== direction) : [...prev, direction]));
   };
 
   const toggleStatusFilter = (s: DealershipStatus) => {
@@ -430,7 +456,29 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
               ))}
             </div>
           </div>
-          <button className="sa-btn-text" onClick={() => { setCityFilter([]); setStatusFilter([]); }}>Сбросить фильтры</button>
+          <div className="sa-filter-group">
+            <span className="sa-filter-label">Тип автосалона:</span>
+            <div className="sa-filter-options">
+              {(['own', 'franchised'] as DealershipType[]).map((type) => (
+                <label key={type} className="sa-filter-check">
+                  <input type="checkbox" checked={typeFilter.includes(type)} onChange={() => toggleTypeFilter(type)} />
+                  {dealershipTypeLabel(type)}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="sa-filter-group">
+            <span className="sa-filter-label">Направления:</span>
+            <div className="sa-filter-options">
+              {(['new_cars', 'used_cars'] as DealershipDirection[]).map((direction) => (
+                <label key={direction} className="sa-filter-check">
+                  <input type="checkbox" checked={directionFilter.includes(direction)} onChange={() => toggleDirectionFilter(direction)} />
+                  {dealershipDirectionLabel(direction)}
+                </label>
+              ))}
+            </div>
+          </div>
+          <button className="sa-filter-reset" onClick={() => { setCityFilter([]); setTypeFilter([]); setDirectionFilter([]); setStatusFilter([]); }}>Сбросить фильтры</button>
         </div>
       )}
 
@@ -470,7 +518,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                   >
                     <td>
                       <div className="sa-cell-name">{r.name}</div>
-                      <div className="sa-cell-city">{r.city}</div>
+                      <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)}</div>
                       {dealershipSummary[r.id] && (
                         <div className="sa-inline-batch-status">
                           {dealershipSummary[r.id].completed}/{dealershipSummary[r.id].total} · {dealershipSummary[r.id].status === 'in_progress' ? 'в работе' : dealershipSummary[r.id].status === 'completed' ? 'готово' : dealershipSummary[r.id].status === 'failed' ? 'ошибка' : dealershipSummary[r.id].status === 'partial' ? 'частично' : dealershipSummary[r.id].status === 'cancelled' ? 'отменено' : 'в очереди'}
@@ -529,7 +577,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                 <div className="sa-mobile-row-header">
                   <div>
                     <div className="sa-cell-name">{r.name}</div>
-                    <div className="sa-cell-city">{r.city}</div>
+                    <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)}</div>
                   </div>
                   <span className={`sa-mobile-rating ${ratingClass(r.aiRating)}`}>{r.aiRating}</span>
                 </div>

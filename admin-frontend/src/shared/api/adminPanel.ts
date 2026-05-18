@@ -93,6 +93,8 @@ export interface RbacMeta {
 }
 
 export type HoldingType = 'own' | 'franchised';
+export type DealershipType = 'own' | 'franchised';
+export type DealershipDirection = 'new_cars' | 'used_cars';
 
 export interface HoldingItem {
   id: string;
@@ -120,6 +122,8 @@ export interface DealershipItem {
   id: string;
   name: string;
   code: string | null;
+  type: DealershipType;
+  directions: DealershipDirection[];
   city: string | null;
   address: string | null;
   workingHoursFrom: string | null;
@@ -314,6 +318,8 @@ export async function deleteHolding(holdingId: string): Promise<void> {
 export async function createDealership(payload: {
   name: string;
   code?: string | null;
+  type?: DealershipType;
+  directions?: DealershipDirection[];
   city?: string | null;
   address?: string | null;
   workingHoursFrom: string;
@@ -336,6 +342,8 @@ export async function updateDealership(
   payload: {
     name?: string;
     code?: string | null;
+    type?: DealershipType;
+    directions?: DealershipDirection[];
     city?: string | null;
     address?: string | null;
     workingHoursFrom?: string;
