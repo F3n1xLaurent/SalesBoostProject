@@ -14,6 +14,9 @@ type Props = {
   onOpenDealership?: (id: string) => void;
   onOpenCompanies?: () => void;
   sourceDealership?: { id: string; name: string } | null;
+  actionButtons?: React.ReactNode;
+  mockNotice?: string;
+  detailOverride?: Partial<Pick<EmployeeDetailData, 'fullName' | 'dealershipName' | 'city'>>;
 };
 
 /* ────────────────────── KPI Card ────────────────────── */
@@ -230,8 +233,11 @@ function AuditHistory({ audits }: { audits: EmployeeDetailData['audits'] }) {
 
 /* ════════════════════ Main component ════════════════════ */
 
-export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCompanies, sourceDealership }: Props) {
-  const detail = useMemo(() => getMockEmployeeDetail(employeeId), [employeeId]);
+export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCompanies, sourceDealership, actionButtons, mockNotice, detailOverride }: Props) {
+  const detail = useMemo(() => {
+    const base = getMockEmployeeDetail(employeeId);
+    return base ? { ...base, ...detailOverride } : null;
+  }, [detailOverride, employeeId]);
 
   if (!detail) {
     return (
@@ -281,8 +287,14 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
             {' · '}
             {detail.city}
           </p>
+          {mockNotice && (
+            <div style={{ marginTop: 10, color: '#92400e', fontSize: 13 }}>
+              {mockNotice}
+            </div>
+          )}
         </div>
         <div className="sa-detail-header-right">
+          {actionButtons}
           <span className={statusBadgeClass(detail.status)}>{STATUS_LABELS[detail.status]}</span>
           <button className="sa-btn-outline" onClick={() => exportPageToPdf(`Сотрудник_${detail.fullName}`)}>Экспорт PDF</button>
         </div>

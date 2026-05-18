@@ -93,7 +93,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'holdings') return { tab: 'holdings' };
   if (section === 'companies') return { tab: 'companies', dealershipId: resource };
   if (section === 'typesNumbers') return { tab: 'typesNumbers' };
-  if (section === 'users') return { tab: 'users' };
+  if (section === 'users') return { tab: 'users', employeeId: resource };
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };
   if (section === 'analytics') return { tab: 'analytics' };
   if (section === 'settings') return { tab: 'settings' };
@@ -121,6 +121,10 @@ export function buildDealershipPath(id: string): string {
 
 export function buildEmployeePath(id: string): string {
   return `/autodealers/${encodeURIComponent(id)}`;
+}
+
+export function buildUserEmployeePath(id: string): string {
+  return `/users/${encodeURIComponent(id)}`;
 }
 
 export function buildAuditPath(id: string): string {

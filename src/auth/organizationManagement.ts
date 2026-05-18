@@ -6,6 +6,8 @@ import { APP_ROLES } from './permissions';
 
 type ScopedAccount = NonNullable<Express.Request['authAccount']>;
 type HoldingType = 'own' | 'franchised';
+type DealershipType = 'own' | 'franchised';
+type DealershipDirection = 'new_cars' | 'used_cars';
 type PhoneNumberOwnership = 'dealership' | 'user';
 
 const DEFAULT_WORKING_HOURS_FROM = '09:00';
@@ -77,6 +79,8 @@ function normalizeHoldingResponse(
       id: dealership.id,
       name: dealership.name,
       code: dealership.code,
+      type: dealership.type as DealershipType,
+      directions: parseDealershipDirectionsJson(dealership.directionsJson),
       city: dealership.city,
       address: dealership.address,
       workingHoursFrom: dealership.workingHoursFrom,
@@ -101,6 +105,8 @@ function normalizeDealershipResponse(
     id: dealership.id,
     name: dealership.name,
     code: dealership.code,
+    type: dealership.type as DealershipType,
+    directions: parseDealershipDirectionsJson(dealership.directionsJson),
     city: dealership.city,
     address: dealership.address,
     workingHoursFrom: dealership.workingHoursFrom,
@@ -148,6 +154,25 @@ function parseDealershipIds(value: unknown): string[] {
 
 function parseHoldingType(value: unknown, fallback: HoldingType = 'own'): HoldingType {
   return value === 'franchised' ? 'franchised' : fallback;
+}
+
+function parseDealershipType(value: unknown, fallback: DealershipType = 'own'): DealershipType {
+  return value === 'franchised' ? 'franchised' : fallback;
+}
+
+function parseDealershipDirections(value: unknown): DealershipDirection[] {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set<DealershipDirection>(['new_cars', 'used_cars']);
+  return [...new Set(value.map((item) => String(item || '').trim()).filter((item): item is DealershipDirection => allowed.has(item as DealershipDirection)))];
+}
+
+function parseDealershipDirectionsJson(value: string | null | undefined): DealershipDirection[] {
+  if (!value) return [];
+  try {
+    return parseDealershipDirections(JSON.parse(value));
+  } catch {
+    return [];
+  }
 }
 
 function parsePhoneNumberOwnership(value: unknown, fallback: PhoneNumberOwnership = 'dealership'): PhoneNumberOwnership {
@@ -355,6 +380,8 @@ export async function syncMockOrganization(): Promise<{
           data: {
             name: seed.name,
             code: seed.code,
+            type: 'own',
+            directionsJson: JSON.stringify(['new_cars', 'used_cars']),
             city: seed.city,
             address: seed.address,
             workingHoursFrom: DEFAULT_WORKING_HOURS_FROM,
@@ -369,6 +396,8 @@ export async function syncMockOrganization(): Promise<{
           data: {
             name: seed.name,
             code: seed.code,
+            type: 'own',
+            directionsJson: JSON.stringify(['new_cars', 'used_cars']),
             city: seed.city,
             address: seed.address,
             workingHoursFrom: DEFAULT_WORKING_HOURS_FROM,
@@ -677,6 +706,8 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   const body = (req.body || {}) as Record<string, unknown>;
   const name = parseString(body.name);
   const code = parseString(body.code);
+  const type = parseDealershipType(body.type, 'own');
+  const directions = parseDealershipDirections(body.directions);
   const city = parseString(body.city);
   const address = parseString(body.address);
   const workingHoursFrom = parseTime(body.workingHoursFrom) ?? DEFAULT_WORKING_HOURS_FROM;
@@ -703,6 +734,8 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
       data: {
         name,
         code: resolvedCode,
+        type,
+        directionsJson: JSON.stringify(directions),
         city,
         address,
         workingHoursFrom,
@@ -750,6 +783,8 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
   const body = (req.body || {}) as Record<string, unknown>;
   const name = body.name != null ? parseString(body.name) : undefined;
   const code = body.code != null ? parseString(body.code) : undefined;
+  const type = body.type != null ? parseDealershipType(body.type, 'own') : undefined;
+  const directions = body.directions != null ? parseDealershipDirections(body.directions) : undefined;
   const city = body.city != null ? parseString(body.city) : undefined;
   const address = body.address != null ? parseString(body.address) : undefined;
   const workingHoursFrom = body.workingHoursFrom != null ? parseTime(body.workingHoursFrom) : undefined;
@@ -790,6 +825,8 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
     const dealershipData: Prisma.DealershipUpdateInput = {};
     if (name !== undefined && name !== null) dealershipData.name = name;
     if (code !== undefined) dealershipData.code = code;
+    if (type !== undefined) dealershipData.type = type;
+    if (directions !== undefined) dealershipData.directionsJson = JSON.stringify(directions);
     if (city !== undefined) dealershipData.city = city;
     if (address !== undefined) dealershipData.address = address;
     if (workingHoursFrom !== undefined && workingHoursFrom !== null) dealershipData.workingHoursFrom = workingHoursFrom;

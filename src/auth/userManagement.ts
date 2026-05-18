@@ -2,7 +2,14 @@ import type { Account, AccountMembership, PermissionTemplate, Prisma } from '@pr
 import type { Request, Response } from 'express';
 import { prisma } from '../db';
 import { hashPassword } from './password';
-import { ALL_PERMISSIONS, APP_ROLES, PERMISSION_DEFINITIONS, type AppRole, type PermissionKey } from './permissions';
+import {
+  ALL_PERMISSIONS,
+  APP_ROLES,
+  PERMISSION_DEFINITIONS,
+  SYSTEM_PERMISSION_TEMPLATES,
+  type AppRole,
+  type PermissionKey,
+} from './permissions';
 
 type ScopedAccount = NonNullable<Express.Request['authAccount']>;
 
@@ -94,6 +101,44 @@ function parsePermissionKeys(value: unknown): PermissionKey[] {
   if (!Array.isArray(value)) return [];
   const values = value.map((item) => String(item)).filter((item): item is PermissionKey => ALL_PERMISSIONS.includes(item as PermissionKey));
   return [...new Set(values)];
+}
+
+function parseBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+  }
+  return fallback;
+}
+
+function formatPhoneNumber(value: unknown): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  if (digits.length === 10) return `+7 ${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6, 8)} ${digits.slice(8)}`;
+  const normalized = digits.startsWith('8') ? `7${digits.slice(1)}` : digits;
+  if (normalized.length === 11 && normalized.startsWith('7')) {
+    return `+7 ${normalized.slice(1, 4)} ${normalized.slice(4, 7)} ${normalized.slice(7, 9)} ${normalized.slice(9)}`;
+  }
+  return raw;
+}
+
+function normalizePhoneNumberResponse(
+  phoneNumber: Prisma.PhoneNumberGetPayload<{ include: { type: true } }>,
+) {
+  return {
+    id: phoneNumber.id,
+    typeId: phoneNumber.typeId,
+    typeName: phoneNumber.type.name,
+    phone: phoneNumber.phone,
+    dealershipId: phoneNumber.dealershipId,
+    accountId: phoneNumber.accountId,
+    isActive: phoneNumber.isActive,
+    createdAt: phoneNumber.createdAt,
+    updatedAt: phoneNumber.updatedAt,
+  };
 }
 
 function membershipToScopeLabel(membership: { role: string; holding?: { name: string } | null; dealership?: { name: string } | null }) {
@@ -217,6 +262,10 @@ export async function handleRbacMeta(req: Request, res: Response): Promise<void>
   if (!account) {
     res.status(401).json({ error: 'Требуется авторизация.' });
     return;
+  }
+
+  if (isPlatformSuperadmin(account)) {
+    await ensureSystemPermissionTemplates();
   }
 
   const [holdings, dealerships, templates] = await Promise.all([
@@ -666,10 +715,193 @@ export async function handleDeleteUser(req: Request, res: Response): Promise<voi
   }
 }
 
+export async function handleListUserPhoneNumbers(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const accountId = String(req.params.accountId || '').trim();
+  if (!accountId) {
+    res.status(400).json({ error: 'Некорректный accountId.' });
+    return;
+  }
+
+  try {
+    await assertAccountInScope(account, accountId);
+    const items = await prisma.phoneNumber.findMany({
+      where: { accountId },
+      include: { type: true },
+      orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
+    });
+    res.json({ items: items.map(normalizePhoneNumberResponse) });
+  } catch (error) {
+    console.error('List user phone numbers error:', error);
+    res.status(error instanceof Error && error.message.includes('не найден') ? 404 : 403).json({
+      error: error instanceof Error ? error.message : 'Нет доступа.',
+    });
+  }
+}
+
+export async function handleCreateUserPhoneNumber(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const accountId = String(req.params.accountId || '').trim();
+  const body = (req.body || {}) as Record<string, unknown>;
+  const typeId = String(body.typeId || '').trim();
+  const phone = formatPhoneNumber(body.phone);
+  const isActive = parseBoolean(body.isActive, true);
+
+  if (!accountId) {
+    res.status(400).json({ error: 'Некорректный accountId.' });
+    return;
+  }
+  if (!typeId) {
+    res.status(400).json({ error: 'Выберите тип номера.' });
+    return;
+  }
+  if (!phone) {
+    res.status(400).json({ error: 'Укажите номер телефона.' });
+    return;
+  }
+
+  try {
+    await assertAccountInScope(account, accountId);
+    const type = await prisma.phoneNumberType.findUnique({
+      where: { id: typeId },
+      select: { id: true, ownership: true, isActive: true },
+    });
+    if (!type || type.ownership !== 'user' || !type.isActive) {
+      res.status(400).json({ error: 'Выберите активный тип номера для пользователя.' });
+      return;
+    }
+
+    const created = await prisma.phoneNumber.create({
+      data: { accountId, typeId, phone, isActive },
+      include: { type: true },
+    });
+    res.status(201).json({ item: normalizePhoneNumberResponse(created) });
+  } catch (error) {
+    console.error('Create user phone number error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Не удалось добавить номер телефона.' });
+  }
+}
+
+export async function handleUpdateUserPhoneNumber(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const phoneNumberId = String(req.params.phoneNumberId || '').trim();
+  const body = (req.body || {}) as Record<string, unknown>;
+  const typeId = body.typeId != null ? String(body.typeId).trim() : undefined;
+  const phone = body.phone != null ? formatPhoneNumber(body.phone) : undefined;
+  const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
+
+  if (!phoneNumberId) {
+    res.status(400).json({ error: 'Некорректный phoneNumberId.' });
+    return;
+  }
+  if (body.phone != null && !phone) {
+    res.status(400).json({ error: 'Укажите номер телефона.' });
+    return;
+  }
+
+  try {
+    const existing = await prisma.phoneNumber.findUnique({ where: { id: phoneNumberId } });
+    if (!existing?.accountId) {
+      res.status(404).json({ error: 'Номер телефона не найден.' });
+      return;
+    }
+    await assertAccountInScope(account, existing.accountId);
+
+    if (typeId) {
+      const type = await prisma.phoneNumberType.findUnique({
+        where: { id: typeId },
+        select: { id: true, ownership: true, isActive: true },
+      });
+      if (!type || type.ownership !== 'user' || !type.isActive) {
+        res.status(400).json({ error: 'Выберите активный тип номера для пользователя.' });
+        return;
+      }
+    }
+
+    const updated = await prisma.phoneNumber.update({
+      where: { id: phoneNumberId },
+      data: {
+        ...(typeId !== undefined ? { typeId } : {}),
+        ...(phone !== undefined && phone !== null ? { phone } : {}),
+        ...(isActive !== undefined ? { isActive } : {}),
+      },
+      include: { type: true },
+    });
+    res.json({ item: normalizePhoneNumberResponse(updated) });
+  } catch (error) {
+    console.error('Update user phone number error:', error);
+    res.status(500).json({ error: 'Не удалось обновить номер телефона.' });
+  }
+}
+
+export async function handleDeleteUserPhoneNumber(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const phoneNumberId = String(req.params.phoneNumberId || '').trim();
+  if (!phoneNumberId) {
+    res.status(400).json({ error: 'Некорректный phoneNumberId.' });
+    return;
+  }
+
+  try {
+    const existing = await prisma.phoneNumber.findUnique({ where: { id: phoneNumberId } });
+    if (!existing?.accountId) {
+      res.status(404).json({ error: 'Номер телефона не найден.' });
+      return;
+    }
+    await assertAccountInScope(account, existing.accountId);
+    await prisma.phoneNumber.delete({ where: { id: phoneNumberId } });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete user phone number error:', error);
+    res.status(500).json({ error: 'Не удалось удалить номер телефона.' });
+  }
+}
+
 function assertSuperadmin(account: ScopedAccount): void {
   if (!isPlatformSuperadmin(account)) {
     throw new Error('Доступно только суперадмину.');
   }
+}
+
+async function ensureSystemPermissionTemplates(): Promise<void> {
+  await Promise.all(
+    SYSTEM_PERMISSION_TEMPLATES.map((template) =>
+      prisma.permissionTemplate.upsert({
+        where: { name: template.name },
+        create: {
+          name: template.name,
+          description: template.description,
+          permissionsJson: JSON.stringify(template.permissions),
+          isSystem: true,
+        },
+        update: {
+          description: template.description,
+          permissionsJson: JSON.stringify(template.permissions),
+          isSystem: true,
+        },
+      }),
+    ),
+  );
 }
 
 export async function handleListPermissionTemplates(req: Request, res: Response): Promise<void> {
@@ -685,6 +917,8 @@ export async function handleListPermissionTemplates(req: Request, res: Response)
     res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
     return;
   }
+
+  await ensureSystemPermissionTemplates();
 
   const templates = await prisma.permissionTemplate.findMany({
     include: {
@@ -724,9 +958,14 @@ export async function handleCreatePermissionTemplate(req: Request, res: Response
   const name = String(body.name || '').trim();
   const description = body.description != null ? String(body.description).trim() : null;
   const permissions = parsePermissionKeys(body.permissions);
+  const systemTemplateNames = new Set(SYSTEM_PERMISSION_TEMPLATES.map((template) => template.name));
 
   if (!name) {
     res.status(400).json({ error: 'Название шаблона обязательно.' });
+    return;
+  }
+  if (systemTemplateNames.has(name)) {
+    res.status(400).json({ error: 'Такое название зарезервировано системным шаблоном.' });
     return;
   }
 
@@ -771,6 +1010,16 @@ export async function handleUpdatePermissionTemplate(req: Request, res: Response
   const name = body.name != null ? String(body.name).trim() : undefined;
   const description = body.description != null ? String(body.description).trim() : undefined;
   const permissions = body.permissions != null ? parsePermissionKeys(body.permissions) : undefined;
+
+  const existing = await prisma.permissionTemplate.findUnique({ where: { id: templateId } });
+  if (!existing) {
+    res.status(404).json({ error: 'Шаблон прав не найден.' });
+    return;
+  }
+  if (existing.isSystem) {
+    res.status(400).json({ error: 'Системный шаблон нельзя редактировать вручную.' });
+    return;
+  }
 
   const template = await prisma.permissionTemplate.update({
     where: { id: templateId },
@@ -818,6 +1067,15 @@ export async function handleDeletePermissionTemplate(req: Request, res: Response
   }
 
   try {
+    const existing = await prisma.permissionTemplate.findUnique({ where: { id: templateId } });
+    if (!existing) {
+      res.status(404).json({ error: 'Шаблон прав не найден.' });
+      return;
+    }
+    if (existing.isSystem) {
+      res.status(400).json({ error: 'Системный шаблон нельзя удалить.' });
+      return;
+    }
     await prisma.permissionTemplate.delete({
       where: { id: templateId },
     });

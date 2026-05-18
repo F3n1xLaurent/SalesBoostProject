@@ -57,6 +57,8 @@ model Dealership {
   holdingId   String?
   name        String
   code        String?  @unique
+  type        String   @default("own") // "own" | "franchised"
+  directionsJson String @default("[]")
   city        String?
   address     String?
   workingHoursFrom String   @default("09:00")

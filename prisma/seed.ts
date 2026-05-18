@@ -1,9 +1,30 @@
 import { PrismaClient } from '@prisma/client';
+import { SYSTEM_PERMISSION_TEMPLATES } from '../src/auth/permissions';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('Seeding database...');
+
+  await Promise.all(
+    SYSTEM_PERMISSION_TEMPLATES.map((template) =>
+      prisma.permissionTemplate.upsert({
+        where: { name: template.name },
+        create: {
+          name: template.name,
+          description: template.description,
+          permissionsJson: JSON.stringify(template.permissions),
+          isSystem: true,
+        },
+        update: {
+          description: template.description,
+          permissionsJson: JSON.stringify(template.permissions),
+          isSystem: true,
+        },
+      }),
+    ),
+  );
+  console.log(`Synced ${SYSTEM_PERMISSION_TEMPLATES.length} system permission templates`);
 
   // Check if test already exists
   const existingTest = await prisma.test.findFirst({

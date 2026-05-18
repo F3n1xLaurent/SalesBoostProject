@@ -6,7 +6,7 @@ import {
   STATUS_LABELS,
   type DealershipDetail as Detail,
 } from '../../../shared/lib/admin-panel/mockData';
-import type { DealershipItem } from '../../../shared/api/adminPanel';
+import type { DealershipItem, DealershipType } from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { DealershipPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { ratingClass, answerRateClass, answerTimeClass, statusBadgeClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
@@ -37,6 +37,10 @@ function KPI({ label, value, cls, suffix }: { label: string; value: string | num
       <div className={`sa-kpi-value sa-kpi-value-large ${cls ?? ''}`}>{value}{suffix ?? ''}</div>
     </div>
   );
+}
+
+function dealershipTypeLabel(type?: DealershipType | null): string {
+  return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
 }
 
 function buildFallbackDetail(dealership: DealershipItem): Detail {
@@ -413,7 +417,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         <div>
           <h1 className="sa-page-title" style={{ marginBottom: 4 }}>{detail.name}</h1>
           <p className="sa-page-subtitle" style={{ marginBottom: 0 }}>
-            {dealership?.city || detail.city} · {formatWorkingHours(dealership)}
+            {dealership?.city || detail.city} · {dealershipTypeLabel(dealership?.type)} · {formatWorkingHours(dealership)}
           </p>
         </div>
         <div className="sa-detail-header-right">
@@ -445,6 +449,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         <KPI label="Динамика" value={deltaText} cls={deltaCls} />
         <KPI label="Проверки" value={detail.auditsCount} />
         <KPI label="Сотрудники" value={detail.employeesCount} />
+        <KPI label="Тип автосалона" value={dealershipTypeLabel(dealership?.type)} />
         <KPI label="Время работы" value={formatWorkingHours(dealership)} />
         <KPI
           label="Дозвон"

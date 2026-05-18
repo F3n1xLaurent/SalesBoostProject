@@ -1332,25 +1332,32 @@
 
 /* ─── Filters panel ─── */
 .sa-filters-panel {
-  background: var(--sa-card);
-  border: 1px solid var(--sa-divider);
-  border-radius: 14px;
-  padding: 16px 20px;
-  margin-bottom: 16px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 20px;
-  align-items: flex-start;
+  background: linear-gradient(180deg, #FFFFFF 0%, #F9FAFB 100%);
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 18px;
+  padding: 18px;
+  margin-bottom: 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  box-shadow: 0 10px 30px rgba(17, 24, 39, 0.06);
 }
 .sa-filter-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(17, 24, 39, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
 }
 .sa-filter-label {
   font-size: 12px;
-  font-weight: 600;
-  color: var(--sa-text-secondary);
+  font-weight: 750;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .sa-filter-options {
   display: flex;
@@ -1360,13 +1367,50 @@
 .sa-filter-check {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 8px;
   font-size: 13px;
   color: var(--sa-text);
   cursor: pointer;
+  min-height: 32px;
+  padding: 7px 10px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 999px;
+  background: #FFFFFF;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.sa-filter-check:hover {
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 4px 12px rgba(17, 24, 39, 0.06);
 }
 .sa-filter-check input[type="checkbox"] {
   accent-color: var(--primary, #6366F1);
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+.sa-filter-check:has(input[type="checkbox"]:checked) {
+  border-color: rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--primary, #6366F1);
+  font-weight: 650;
+}
+.sa-filter-reset {
+  align-self: start;
+  justify-self: start;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 999px;
+  background: #FFFFFF;
+  color: var(--sa-text-secondary);
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.sa-filter-reset:hover {
+  color: var(--sa-text);
+  border-color: rgba(17, 24, 39, 0.16);
+  box-shadow: 0 4px 12px rgba(17, 24, 39, 0.06);
 }
 
 /* ─── Sortable table ─── */

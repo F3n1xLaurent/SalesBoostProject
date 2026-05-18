@@ -26,6 +26,7 @@ import {
   buildBatchPath,
   buildDealershipPath,
   buildEmployeePath,
+  buildUserEmployeePath,
   getDefaultTab,
   normalizeTabForRole,
   parseAdminPath,
@@ -324,7 +325,14 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
                 />
               )}
               {activeTab === 'users' && (
-                <UsersPage role={role} />
+                <UsersPage
+                  role={role}
+                  employeeId={selectedEmployeeId}
+                  onSelectEmployee={(id) => navigate(buildUserEmployeePath(id))}
+                  onBackToUsers={() => navigate('/users')}
+                  onOpenDealership={(dealershipId) => navigate(buildDealershipPath(dealershipId))}
+                  onOpenCompanies={() => navigate('/companies')}
+                />
               )}
               {activeTab === 'typesNumbers' && role === 'super' && (
                 <TypesNumbersPage />

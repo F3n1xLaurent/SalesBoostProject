@@ -3,12 +3,16 @@ import {
   createDealership,
   fetchHoldings,
   updateDealership,
+  type DealershipDirection,
+  type DealershipType,
   type DealershipItem,
   type HoldingItem,
 } from '../../api/adminPanel';
 
 type DealershipFormState = {
   name: string;
+  type: DealershipType;
+  directions: DealershipDirection[];
   city: string;
   address: string;
   workingHoursFrom: string;
@@ -27,6 +31,8 @@ type Props = {
 
 const EMPTY_FORM: DealershipFormState = {
   name: '',
+  type: 'own',
+  directions: [],
   city: '',
   address: '',
   workingHoursFrom: '09:00',
@@ -39,6 +45,8 @@ function fillForm(dealership?: DealershipItem | null): DealershipFormState {
   if (!dealership) return EMPTY_FORM;
   return {
     name: dealership.name,
+    type: dealership.type || 'own',
+    directions: dealership.directions || [],
     city: dealership.city || '',
     address: dealership.address || '',
     workingHoursFrom: dealership.workingHoursFrom || '09:00',
@@ -63,6 +71,8 @@ function overlayCardStyle(width = 640): React.CSSProperties {
 function normalizePayload(form: DealershipFormState) {
   return {
     name: form.name.trim(),
+    type: form.type,
+    directions: form.directions,
     city: form.city.trim() || null,
     address: form.address.trim() || null,
     workingHoursFrom: form.workingHoursFrom,
@@ -77,6 +87,11 @@ export function formatWorkingHours(dealership?: Pick<DealershipItem, 'workingHou
   const to = dealership?.workingHoursTo || EMPTY_FORM.workingHoursTo;
   return `${from} - ${to}`;
 }
+
+const DIRECTION_OPTIONS: { value: DealershipDirection; label: string }[] = [
+  { value: 'new_cars', label: 'Новые автомобили' },
+  { value: 'used_cars', label: 'Автомобили с пробегом' },
+];
 
 export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Props) {
   const [form, setForm] = useState<DealershipFormState>(EMPTY_FORM);
@@ -135,6 +150,15 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
     }
   }
 
+  function toggleDirection(direction: DealershipDirection) {
+    setForm((current) => ({
+      ...current,
+      directions: current.directions.includes(direction)
+        ? current.directions.filter((item) => item !== direction)
+        : [...current.directions, direction],
+    }));
+  }
+
   return (
     <div
       style={{
@@ -168,6 +192,46 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
             <span>Название</span>
             <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
           </label>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            <span>Тип автосалона</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+              {[
+                { value: 'own' as DealershipType, label: 'Собственный' },
+                { value: 'franchised' as DealershipType, label: 'Франчайзинговый' },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={form.type === option.value ? 'sa-btn-primary' : 'sa-btn-outline'}
+                  onClick={() => setForm((current) => ({ ...current, type: option.value }))}
+                  style={{
+                    justifyContent: 'center',
+                    textAlign: 'center',
+                    width: '100%',
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            <span>Направления</span>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {DIRECTION_OPTIONS.map((option) => (
+                <label key={option.value} className="sa-filter-check">
+                  <input
+                    type="checkbox"
+                    checked={form.directions.includes(option.value)}
+                    onChange={() => toggleDirection(option.value)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </div>
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Город</span>

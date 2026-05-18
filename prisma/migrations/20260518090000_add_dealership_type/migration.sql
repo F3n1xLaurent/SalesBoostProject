@@ -1,0 +1,1 @@
+ALTER TABLE "dealerships" ADD COLUMN "type" TEXT NOT NULL DEFAULT 'own';

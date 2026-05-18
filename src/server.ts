@@ -62,10 +62,14 @@ import {
   handleChangeUserPassword,
   handleDeletePermissionTemplate,
   handleDeleteUser,
+  handleDeleteUserPhoneNumber,
+  handleCreateUserPhoneNumber,
   handleListPermissionTemplates,
+  handleListUserPhoneNumbers,
   handleListUsers,
   handleRbacMeta,
   handleUpdatePermissionTemplate,
+  handleUpdateUserPhoneNumber,
   handleUpdateUser,
 } from './auth/userManagement';
 import {
@@ -1018,6 +1022,34 @@ app.delete('/api/admin/users/:accountId', (req, res) => {
   handleDeleteUser(req, res).catch((error) => {
     console.error('Delete user route error:', error);
     res.status(500).json({ error: 'Не удалось удалить пользователя.' });
+  });
+});
+
+app.get('/api/admin/users/:accountId/phone-numbers', (req, res) => {
+  handleListUserPhoneNumbers(req, res).catch((error) => {
+    console.error('List user phone numbers route error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить номера телефонов.' });
+  });
+});
+
+app.post('/api/admin/users/:accountId/phone-numbers', (req, res) => {
+  handleCreateUserPhoneNumber(req, res).catch((error) => {
+    console.error('Create user phone number route error:', error);
+    res.status(500).json({ error: 'Не удалось добавить номер телефона.' });
+  });
+});
+
+app.patch('/api/admin/user-phone-numbers/:phoneNumberId', (req, res) => {
+  handleUpdateUserPhoneNumber(req, res).catch((error) => {
+    console.error('Update user phone number route error:', error);
+    res.status(500).json({ error: 'Не удалось обновить номер телефона.' });
+  });
+});
+
+app.delete('/api/admin/user-phone-numbers/:phoneNumberId', (req, res) => {
+  handleDeleteUserPhoneNumber(req, res).catch((error) => {
+    console.error('Delete user phone number route error:', error);
+    res.status(500).json({ error: 'Не удалось удалить номер телефона.' });
   });
 });
 

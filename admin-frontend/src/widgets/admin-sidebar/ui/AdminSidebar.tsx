@@ -21,7 +21,6 @@ const SUPER_NAV: NavItem[] = [
   { id: 'companies', label: 'Автосалоны', icon: <CompaniesIcon /> },
   { id: 'typesNumbers', label: 'Типы номеров', icon: <PhoneIcon /> },
   { id: 'users', label: 'Пользователи', icon: <DealersIcon /> },
-  { id: 'autodealers', label: 'Сотрудники', icon: <DealersIcon /> },
   { id: 'audits', label: 'Проверки', icon: <AuditsIcon /> },
   { id: 'analytics', label: 'Аналитика', icon: <AnalyticsIcon /> },
 ];

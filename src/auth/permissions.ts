@@ -12,6 +12,9 @@ export type AppRole = (typeof APP_ROLES)[keyof typeof APP_ROLES];
 export const PERMISSIONS = {
   dashboard: {
     view: 'dashboard.view',
+    platformView: 'dashboard.platform.view',
+    holdingView: 'dashboard.holding.view',
+    dealershipView: 'dashboard.dealership.view',
   },
   analytics: {
     view: 'analytics.view',
@@ -69,6 +72,10 @@ export const PERMISSIONS = {
   settings: {
     view: 'settings.view',
     edit: 'settings.edit',
+    platformView: 'settings.platform.view',
+    holdingView: 'settings.holding.view',
+    dealershipView: 'settings.dealership.view',
+    managerView: 'settings.manager.view',
   },
   expenses: {
     view: 'expenses.view',
@@ -76,6 +83,49 @@ export const PERMISSIONS = {
   },
   voice: {
     diagnostics: 'voice.diagnostics',
+  },
+  ux: {
+    holdings: {
+      view: 'ux.holdings.view',
+    },
+    dealerships: {
+      list: 'ux.dealerships.list',
+      detail: 'ux.dealerships.detail',
+    },
+    phoneNumberTypes: {
+      view: 'ux.phone_number_types.view',
+    },
+    users: {
+      view: 'ux.users.view',
+    },
+    employees: {
+      list: 'ux.employees.list',
+      detail: 'ux.employees.detail',
+    },
+    audits: {
+      employeesView: 'ux.audits.employees.view',
+      dealershipsView: 'ux.audits.dealerships.view',
+      detail: 'ux.audits.detail',
+      batchesView: 'ux.audits.batches.view',
+    },
+    analytics: {
+      platformView: 'ux.analytics.platform.view',
+      holdingView: 'ux.analytics.holding.view',
+      dealershipTeamView: 'ux.analytics.dealership_team.view',
+    },
+    dealershipWorkspace: {
+      overview: 'ux.dealership_workspace.overview',
+      calls: 'ux.dealership_workspace.calls',
+      employees: 'ux.dealership_workspace.employees',
+      team: 'ux.dealership_workspace.team',
+    },
+    staffWorkspace: {
+      profile: 'ux.staff_workspace.profile',
+      trainer: 'ux.staff_workspace.trainer',
+    },
+    permissionTemplates: {
+      view: 'ux.permission_templates.view',
+    },
   },
 } as const;
 
@@ -113,6 +163,9 @@ export const ALL_PERMISSIONS: PermissionKey[] = flattenPermissions(PERMISSIONS);
 
 export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   { key: PERMISSIONS.dashboard.view, description: 'Просмотр платформенного дашборда и сводных KPI.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.dashboard.platformView, description: 'Просмотр платформенного дашборда суперадмина.', scopes: ['platform'] },
+  { key: PERMISSIONS.dashboard.holdingView, description: 'Просмотр дашборда холдинга.', scopes: ['holding'] },
+  { key: PERMISSIONS.dashboard.dealershipView, description: 'Просмотр дашборда/сводки автосалона.', scopes: ['dealer'] },
   { key: PERMISSIONS.analytics.view, description: 'Просмотр аналитики и AI summary.', scopes: ['platform', 'holding', 'dealer'] },
   { key: PERMISSIONS.analytics.export, description: 'Экспорт аналитических отчётов.', scopes: ['platform', 'holding', 'dealer'] },
   { key: PERMISSIONS.holding.view, description: 'Просмотр холдингов и их агрегированных данных.', scopes: ['platform', 'holding'] },
@@ -146,9 +199,34 @@ export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
   { key: PERMISSIONS.profile.edit, description: 'Редактирование собственного профиля.', scopes: ['manager-self'] },
   { key: PERMISSIONS.settings.view, description: 'Просмотр системных и телеком-настроек.', scopes: ['platform', 'holding', 'dealer'] },
   { key: PERMISSIONS.settings.edit, description: 'Изменение системных и телеком-настроек.', scopes: ['platform'] },
+  { key: PERMISSIONS.settings.platformView, description: 'Просмотр настроек в роли суперадмина платформы.', scopes: ['platform'] },
+  { key: PERMISSIONS.settings.holdingView, description: 'Просмотр настроек в роли администратора холдинга.', scopes: ['holding'] },
+  { key: PERMISSIONS.settings.dealershipView, description: 'Просмотр настроек в роли администратора автосалона.', scopes: ['dealer'] },
+  { key: PERMISSIONS.settings.managerView, description: 'Просмотр настроек аккаунта менеджера.', scopes: ['manager-self'] },
   { key: PERMISSIONS.expenses.view, description: 'Просмотр расходов и служебной финансовой сводки.', scopes: ['platform', 'holding'] },
   { key: PERMISSIONS.expenses.export, description: 'Экспорт расходов и финансовой сводки.', scopes: ['platform', 'holding'] },
   { key: PERMISSIONS.voice.diagnostics, description: 'Просмотр voice env checks, test numbers и оркестраторных диагностик.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.ux.holdings.view, description: 'UX-блок: страница холдингов.', scopes: ['platform'] },
+  { key: PERMISSIONS.ux.dealerships.list, description: 'UX-блок: список автосалонов.', scopes: ['platform', 'holding'] },
+  { key: PERMISSIONS.ux.dealerships.detail, description: 'UX-блок: карточка автосалона.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.ux.phoneNumberTypes.view, description: 'UX-блок: типы телефонных номеров.', scopes: ['platform'] },
+  { key: PERMISSIONS.ux.users.view, description: 'UX-блок: страница пользователей.', scopes: ['platform', 'holding'] },
+  { key: PERMISSIONS.ux.employees.list, description: 'UX-блок: список сотрудников.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.ux.employees.detail, description: 'UX-блок: карточка сотрудника.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.ux.audits.employeesView, description: 'UX-блок: проверки по сотрудникам.', scopes: ['platform', 'holding'] },
+  { key: PERMISSIONS.ux.audits.dealershipsView, description: 'UX-блок: проверки по автосалонам.', scopes: ['platform', 'holding'] },
+  { key: PERMISSIONS.ux.audits.detail, description: 'UX-блок: детальный разбор проверки.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.ux.audits.batchesView, description: 'UX-блок: batch-проверки.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.ux.analytics.platformView, description: 'UX-блок: аналитика платформы.', scopes: ['platform'] },
+  { key: PERMISSIONS.ux.analytics.holdingView, description: 'UX-блок: аналитика холдинга.', scopes: ['holding'] },
+  { key: PERMISSIONS.ux.analytics.dealershipTeamView, description: 'UX-блок: аналитика команды автосалона.', scopes: ['dealer'] },
+  { key: PERMISSIONS.ux.dealershipWorkspace.overview, description: 'UX-блок дилера: автосалон.', scopes: ['dealer'] },
+  { key: PERMISSIONS.ux.dealershipWorkspace.calls, description: 'UX-блок дилера: звонки.', scopes: ['dealer'] },
+  { key: PERMISSIONS.ux.dealershipWorkspace.employees, description: 'UX-блок дилера: сотрудники.', scopes: ['dealer'] },
+  { key: PERMISSIONS.ux.dealershipWorkspace.team, description: 'UX-блок дилера: команда.', scopes: ['dealer'] },
+  { key: PERMISSIONS.ux.staffWorkspace.profile, description: 'UX-блок менеджера: профиль.', scopes: ['manager-self'] },
+  { key: PERMISSIONS.ux.staffWorkspace.trainer, description: 'UX-блок менеджера: тренажёр.', scopes: ['manager-self'] },
+  { key: PERMISSIONS.ux.permissionTemplates.view, description: 'UX-блок: вкладка шаблонов прав.', scopes: ['platform'] },
 ];
 
 function permissionSet(values: PermissionKey[]): ReadonlySet<PermissionKey> {
@@ -157,6 +235,7 @@ function permissionSet(values: PermissionKey[]): ReadonlySet<PermissionKey> {
 
 const HOLDING_ADMIN_PERMISSIONS = permissionSet([
   PERMISSIONS.dashboard.view,
+  PERMISSIONS.dashboard.holdingView,
   PERMISSIONS.analytics.view,
   PERMISSIONS.analytics.export,
   PERMISSIONS.holding.view,
@@ -180,13 +259,25 @@ const HOLDING_ADMIN_PERMISSIONS = permissionSet([
   PERMISSIONS.training.view,
   PERMISSIONS.training.review,
   PERMISSIONS.settings.view,
+  PERMISSIONS.settings.holdingView,
   PERMISSIONS.expenses.view,
   PERMISSIONS.expenses.export,
   PERMISSIONS.voice.diagnostics,
+  PERMISSIONS.ux.dealerships.list,
+  PERMISSIONS.ux.dealerships.detail,
+  PERMISSIONS.ux.users.view,
+  PERMISSIONS.ux.employees.list,
+  PERMISSIONS.ux.employees.detail,
+  PERMISSIONS.ux.audits.employeesView,
+  PERMISSIONS.ux.audits.dealershipsView,
+  PERMISSIONS.ux.audits.detail,
+  PERMISSIONS.ux.audits.batchesView,
+  PERMISSIONS.ux.analytics.holdingView,
 ]);
 
 const DEALERSHIP_ADMIN_PERMISSIONS = permissionSet([
   PERMISSIONS.dashboard.view,
+  PERMISSIONS.dashboard.dealershipView,
   PERMISSIONS.analytics.view,
   PERMISSIONS.analytics.export,
   PERMISSIONS.dealer.view,
@@ -209,7 +300,18 @@ const DEALERSHIP_ADMIN_PERMISSIONS = permissionSet([
   PERMISSIONS.training.view,
   PERMISSIONS.training.review,
   PERMISSIONS.settings.view,
+  PERMISSIONS.settings.dealershipView,
   PERMISSIONS.voice.diagnostics,
+  PERMISSIONS.ux.dealerships.detail,
+  PERMISSIONS.ux.employees.list,
+  PERMISSIONS.ux.employees.detail,
+  PERMISSIONS.ux.audits.detail,
+  PERMISSIONS.ux.audits.batchesView,
+  PERMISSIONS.ux.analytics.dealershipTeamView,
+  PERMISSIONS.ux.dealershipWorkspace.overview,
+  PERMISSIONS.ux.dealershipWorkspace.calls,
+  PERMISSIONS.ux.dealershipWorkspace.employees,
+  PERMISSIONS.ux.dealershipWorkspace.team,
 ]);
 
 const MANAGER_PERMISSIONS = permissionSet([
@@ -218,6 +320,9 @@ const MANAGER_PERMISSIONS = permissionSet([
   PERMISSIONS.training.view,
   PERMISSIONS.training.run,
   PERMISSIONS.training.review,
+  PERMISSIONS.settings.managerView,
+  PERMISSIONS.ux.staffWorkspace.profile,
+  PERMISSIONS.ux.staffWorkspace.trainer,
 ]);
 
 export const ROLE_PERMISSION_PRESETS: Record<AppRole, ReadonlySet<PermissionKey>> = {
@@ -227,22 +332,105 @@ export const ROLE_PERMISSION_PRESETS: Record<AppRole, ReadonlySet<PermissionKey>
   [APP_ROLES.manager]: MANAGER_PERMISSIONS,
 };
 
+function setToPermissions(values: ReadonlySet<PermissionKey>): PermissionKey[] {
+  return Array.from(values);
+}
+
+export type SystemPermissionTemplate = {
+  name: string;
+  description: string;
+  permissions: PermissionKey[];
+};
+
+export const SYSTEM_PERMISSION_TEMPLATES: SystemPermissionTemplate[] = [
+  {
+    name: 'Суперадмин платформы',
+    description: 'Полный доступ ко всем разделам платформы, включая RBAC, шаблоны прав, холдинги, автосалоны, аудиты, аналитику и настройки.',
+    permissions: ALL_PERMISSIONS,
+  },
+  {
+    name: 'Администратор холдинга',
+    description: 'Дашборд холдинга, автосалоны холдинга, сотрудники, пользователи-менеджеры, проверки, аналитика, расходы и настройки холдинга.',
+    permissions: setToPermissions(ROLE_PERMISSION_PRESETS[APP_ROLES.holdingAdmin]),
+  },
+  {
+    name: 'Администратор автосалона',
+    description: 'Рабочее пространство автосалона: карточка салона, звонки, сотрудники, команда, проверки и настройки автосалона.',
+    permissions: setToPermissions(ROLE_PERMISSION_PRESETS[APP_ROLES.dealershipAdmin]),
+  },
+  {
+    name: 'Менеджер автосалона',
+    description: 'Личный профиль менеджера, тренажёр, результаты тренировок и настройки собственного аккаунта.',
+    permissions: setToPermissions(ROLE_PERMISSION_PRESETS[APP_ROLES.manager]),
+  },
+  {
+    name: 'Аудитор звонков',
+    description: 'Просмотр звонков, проверок, batch-проверок и аналитики без управления пользователями и оргструктурой.',
+    permissions: [
+      PERMISSIONS.dashboard.view,
+      PERMISSIONS.analytics.view,
+      PERMISSIONS.audit.view,
+      PERMISSIONS.audit.export,
+      PERMISSIONS.call.view,
+      PERMISSIONS.callBatch.view,
+      PERMISSIONS.ux.audits.employeesView,
+      PERMISSIONS.ux.audits.dealershipsView,
+      PERMISSIONS.ux.audits.detail,
+      PERMISSIONS.ux.audits.batchesView,
+    ],
+  },
+  {
+    name: 'Оператор проверок',
+    description: 'Запуск и управление одиночными и batch-проверками, просмотр истории звонков и результатов.',
+    permissions: [
+      PERMISSIONS.audit.view,
+      PERMISSIONS.audit.run,
+      PERMISSIONS.audit.manage,
+      PERMISSIONS.call.view,
+      PERMISSIONS.call.start,
+      PERMISSIONS.callBatch.view,
+      PERMISSIONS.callBatch.create,
+      PERMISSIONS.callBatch.manage,
+      PERMISSIONS.ux.audits.dealershipsView,
+      PERMISSIONS.ux.audits.detail,
+      PERMISSIONS.ux.audits.batchesView,
+    ],
+  },
+  {
+    name: 'Администратор пользователей',
+    description: 'Управление web-аккаунтами, ролями, назначениями и шаблонами прав без доступа к операционным разделам.',
+    permissions: [
+      PERMISSIONS.user.view,
+      PERMISSIONS.user.create,
+      PERMISSIONS.user.edit,
+      PERMISSIONS.user.delete,
+      PERMISSIONS.permissionTemplate.view,
+      PERMISSIONS.permissionTemplate.create,
+      PERMISSIONS.permissionTemplate.edit,
+      PERMISSIONS.permissionTemplate.assign,
+      PERMISSIONS.permissionTemplate.delete,
+      PERMISSIONS.ux.users.view,
+      PERMISSIONS.ux.permissionTemplates.view,
+    ],
+  },
+];
+
 export const SUPER_ADMIN_TAB_PERMISSIONS = {
-  dashboard: [PERMISSIONS.dashboard.view],
-  holdings: [PERMISSIONS.holding.view, PERMISSIONS.dealer.view],
-  companies: [PERMISSIONS.holding.view, PERMISSIONS.dealer.view],
-  typesNumbers: [PERMISSIONS.dealer.view],
-  users: [PERMISSIONS.user.view],
-  autodealers: [PERMISSIONS.manager.view],
-  audits: [PERMISSIONS.audit.view],
-  analytics: [PERMISSIONS.analytics.view],
-  settings: [PERMISSIONS.settings.view],
-  'dealer-companies': [PERMISSIONS.dealer.view],
-  'dealer-calls': [PERMISSIONS.call.view],
-  'dealer-employees': [PERMISSIONS.manager.view],
-  'dealer-team': [PERMISSIONS.analytics.view],
-  'staff-profile': [PERMISSIONS.profile.view],
-  'staff-trainer': [PERMISSIONS.training.run],
+  dashboard: [PERMISSIONS.dashboard.platformView, PERMISSIONS.dashboard.holdingView],
+  holdings: [PERMISSIONS.ux.holdings.view, PERMISSIONS.holding.view],
+  companies: [PERMISSIONS.ux.dealerships.list, PERMISSIONS.dealer.view],
+  typesNumbers: [PERMISSIONS.ux.phoneNumberTypes.view, PERMISSIONS.dealer.view],
+  users: [PERMISSIONS.ux.users.view, PERMISSIONS.user.view],
+  autodealers: [PERMISSIONS.ux.employees.list, PERMISSIONS.manager.view],
+  audits: [PERMISSIONS.ux.audits.employeesView, PERMISSIONS.ux.audits.dealershipsView, PERMISSIONS.audit.view],
+  analytics: [PERMISSIONS.ux.analytics.platformView, PERMISSIONS.ux.analytics.holdingView, PERMISSIONS.analytics.view],
+  settings: [PERMISSIONS.settings.platformView, PERMISSIONS.settings.holdingView, PERMISSIONS.settings.dealershipView, PERMISSIONS.settings.managerView],
+  'dealer-companies': [PERMISSIONS.ux.dealershipWorkspace.overview, PERMISSIONS.dealer.view],
+  'dealer-calls': [PERMISSIONS.ux.dealershipWorkspace.calls, PERMISSIONS.call.view],
+  'dealer-employees': [PERMISSIONS.ux.dealershipWorkspace.employees, PERMISSIONS.manager.view],
+  'dealer-team': [PERMISSIONS.ux.dealershipWorkspace.team, PERMISSIONS.ux.analytics.dealershipTeamView],
+  'staff-profile': [PERMISSIONS.ux.staffWorkspace.profile, PERMISSIONS.profile.view],
+  'staff-trainer': [PERMISSIONS.ux.staffWorkspace.trainer, PERMISSIONS.training.run],
 } as const;
 
 export const ADMIN_API_PERMISSION_MAP = {
