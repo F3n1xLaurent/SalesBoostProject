@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createDealership,
+  fetchCities,
   fetchHoldings,
   updateDealership,
   type DealershipDirection,
@@ -8,6 +9,7 @@ import {
   type DealershipItem,
   type HoldingItem,
 } from '../../api/adminPanel';
+import { useToast } from '../toast/ToastProvider';
 
 type DealershipFormState = {
   name: string;
@@ -93,13 +95,123 @@ const DIRECTION_OPTIONS: { value: DealershipDirection; label: string }[] = [
   { value: 'used_cars', label: 'Автомобили с пробегом' },
 ];
 
+const CITY_PAGE_SIZE = 100;
+
+function CitySelect(props: {
+  value: string;
+  onChange: (value: string) => void;
+  onError: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [searchValue, setSearchValue] = useState(props.value);
+  const [debouncedSearch, setDebouncedSearch] = useState(props.value);
+  const [options, setOptions] = useState<string[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const requestIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!open) setSearchValue(props.value);
+  }, [open, props.value]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(searchValue.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [searchValue]);
+
+  useEffect(() => {
+    if (!open) return;
+    void loadCities(0, false);
+  }, [debouncedSearch, open]);
+
+  async function loadCities(offset: number, append: boolean) {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    setLoading(true);
+    try {
+      const result = await fetchCities({
+        search: debouncedSearch,
+        limit: CITY_PAGE_SIZE,
+        offset,
+      });
+      if (requestIdRef.current !== requestId) return;
+      setOptions((current) => append ? [...current, ...result.items] : result.items);
+      setHasMore(result.hasMore);
+    } catch (error) {
+      if (requestIdRef.current !== requestId) return;
+      setOptions([]);
+      setHasMore(false);
+      props.onError(error instanceof Error ? error.message : 'Не удалось загрузить города.');
+    } finally {
+      if (requestIdRef.current === requestId) setLoading(false);
+    }
+  }
+
+  function handleScroll(event: React.UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    const nearBottom = target.scrollTop + target.clientHeight >= target.scrollHeight - 24;
+    if (nearBottom && hasMore && !loading) {
+      void loadCities(options.length, true);
+    }
+  }
+
+  function selectCity(city: string) {
+    props.onChange(city);
+    setSearchValue(city);
+    setOpen(false);
+  }
+
+  return (
+    <div
+      className="sa-city-select"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <input
+        className="sa-input"
+        value={searchValue}
+        placeholder="Начните вводить город"
+        onFocus={() => setOpen(true)}
+        onChange={(event) => {
+          const nextValue = event.target.value;
+          setSearchValue(nextValue);
+          setOpen(true);
+          if (nextValue !== props.value) props.onChange('');
+        }}
+        aria-autocomplete="list"
+        aria-expanded={open}
+      />
+      {open && (
+        <div className="sa-city-select__menu" onScroll={handleScroll}>
+          {options.map((city) => (
+            <button
+              key={city}
+              type="button"
+              className="sa-city-select__option"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => selectCity(city)}
+            >
+              {city}
+            </button>
+          ))}
+          {loading && <div className="sa-city-select__status">Загрузка городов...</div>}
+          {!loading && options.length === 0 && (
+            <div className="sa-city-select__status">Города не найдены</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Props) {
   const [form, setForm] = useState<DealershipFormState>(EMPTY_FORM);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const wasOpenRef = useRef(false);
   const initialForm = useMemo(() => fillForm(dealership), [dealership]);
+  const { showToast } = useToast();
 
   const title = mode === 'create' ? 'Создать автосалон' : 'Редактировать автосалон';
   const submitLabel = mode === 'create' ? 'Создать автосалон' : 'Сохранить изменения';
@@ -114,7 +226,6 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
   useEffect(() => {
     if (open && !wasOpenRef.current) {
       setForm(initialForm);
-      setError(null);
       fetchHoldings()
         .then(setHoldings)
         .catch(() => setHoldings([]));
@@ -126,13 +237,12 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    setError(null);
     if (!form.name.trim()) {
-      setError('Название автосалона обязательно.');
+      showToast({ type: 'error', title: 'Не удалось сохранить автосалон', description: 'Название автосалона обязательно.' });
       return;
     }
     if (form.workingHoursTo < form.workingHoursFrom) {
-      setError('Время окончания работы не может быть меньше времени начала.');
+      showToast({ type: 'error', title: 'Не удалось сохранить автосалон', description: 'Время окончания работы не может быть меньше времени начала.' });
       return;
     }
     setSaving(true);
@@ -143,8 +253,17 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
         : await updateDealership(dealership?.id || '', payload);
       onSaved(saved);
       onClose();
+      showToast({
+        type: 'success',
+        title: mode === 'create' ? 'Автосалон создан' : 'Автосалон сохранён',
+        description: saved.name,
+      });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить автосалон.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось сохранить автосалон',
+        description: saveError instanceof Error ? saveError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSaving(false);
     }
@@ -235,7 +354,11 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Город</span>
-            <input className="sa-input" value={form.city} onChange={(event) => setForm((current) => ({ ...current, city: event.target.value }))} />
+            <CitySelect
+              value={form.city}
+              onChange={(city) => setForm((current) => ({ ...current, city }))}
+              onError={(message) => showToast({ type: 'error', title: 'Не удалось загрузить города', description: message })}
+            />
           </label>
 
           <label style={{ display: 'grid', gap: 6 }}>
@@ -277,15 +400,18 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
             </select>
           </label>
 
-          <label className="sa-filter-check">
-            <input type="checkbox" checked={form.isActive} onChange={(event) => setForm((current) => ({ ...current, isActive: event.target.checked }))} />
-            <span>Автосалон включен</span>
-          </label>
-
-          {error && (
-            <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>
-              {error}
-            </div>
+          {mode === 'edit' && (
+            <button
+              type="button"
+              className="sa-toggle-field"
+              aria-pressed={form.isActive}
+              onClick={() => setForm((current) => ({ ...current, isActive: !current.isActive }))}
+            >
+              <span className="sa-toggle-field__text">Автосалон включен</span>
+              <span className="sa-toggle-field__control" aria-hidden="true">
+                <span className="sa-toggle-field__thumb" />
+              </span>
+            </button>
           )}
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>

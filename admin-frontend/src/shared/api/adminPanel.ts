@@ -270,6 +270,24 @@ export async function fetchDealerships(): Promise<DealershipItem[]> {
   return data.items ?? [];
 }
 
+export async function fetchCities(params?: { search?: string; limit?: number; offset?: number }): Promise<{ items: string[]; hasMore: boolean; offset: number; limit: number }> {
+  const query = new URLSearchParams();
+  const search = params?.search?.trim();
+  query.set('limit', String(params?.limit ?? 100));
+  query.set('offset', String(params?.offset ?? 0));
+  if (search) query.set('search', search);
+
+  const res = await apiFetch(`${API_BASE}/api/admin/cities?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить города.');
+  return {
+    items: Array.isArray(data.items) ? data.items : [],
+    hasMore: Boolean(data.hasMore),
+    offset: typeof data.offset === 'number' ? data.offset : params?.offset ?? 0,
+    limit: typeof data.limit === 'number' ? data.limit : params?.limit ?? 100,
+  };
+}
+
 export async function createHolding(payload: {
   name: string;
   type?: HoldingType;

@@ -9,6 +9,7 @@ import {
   type HoldingItem,
   type HoldingType,
 } from '../../../shared/api/adminPanel';
+import { useToast } from '../../../shared/ui/toast/ToastProvider';
 
 type HoldingFormState = {
   name: string;
@@ -79,11 +80,10 @@ function ModalFrame(props: {
 }
 
 export function HoldingsPage() {
+  const { showToast } = useToast();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [dealerships, setDealerships] = useState<DealershipItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [holdingTypeFilter, setHoldingTypeFilter] = useState<'all' | HoldingType>('all');
@@ -102,7 +102,6 @@ export function HoldingsPage() {
 
   async function loadData() {
     setLoading(true);
-    setError(null);
     try {
       const [nextHoldings, nextDealerships] = await Promise.all([
         fetchHoldings({
@@ -117,7 +116,11 @@ export function HoldingsPage() {
       setActiveHolding((current) => (current ? nextHoldings.find((item) => item.id === current.id) || null : current));
       return { nextHoldings, nextDealerships };
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить структуру.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось загрузить структуру',
+        description: loadError instanceof Error ? loadError.message : 'Попробуйте повторить действие.',
+      });
       return null;
     } finally {
       setLoading(false);
@@ -170,7 +173,6 @@ export function HoldingsPage() {
   async function handleCreateHoldingSubmit(event: React.FormEvent) {
     event.preventDefault();
     setSavingHolding(true);
-    setError(null);
     try {
       await createHolding({
         name: holdingForm.name,
@@ -180,10 +182,14 @@ export function HoldingsPage() {
         dealershipIds: [],
       });
       setCreateHoldingOpen(false);
-      setNotice('Холдинг создан.');
+      showToast({ type: 'success', title: 'Холдинг создан', description: holdingForm.name });
       await loadData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Не удалось создать холдинг.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось создать холдинг',
+        description: submitError instanceof Error ? submitError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -203,7 +209,6 @@ export function HoldingsPage() {
     event.preventDefault();
     if (!activeHolding) return;
     setSavingHolding(true);
-    setError(null);
     try {
       await updateHolding(activeHolding.id, {
         name: holdingForm.name,
@@ -213,10 +218,14 @@ export function HoldingsPage() {
         dealershipIds: holdingForm.dealershipIds,
       });
       setEditHoldingOpen(false);
-      setNotice('Холдинг обновлён.');
+      showToast({ type: 'success', title: 'Холдинг сохранён', description: holdingForm.name });
       await loadData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Не удалось обновить холдинг.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось обновить холдинг',
+        description: submitError instanceof Error ? submitError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -225,15 +234,18 @@ export function HoldingsPage() {
   async function handleDeleteHoldingConfirm() {
     if (!activeHolding) return;
     setSavingHolding(true);
-    setError(null);
     try {
       await deleteHolding(activeHolding.id);
       setDeleteHoldingOpen(false);
       setActiveHolding(null);
-      setNotice('Холдинг удалён. Автосалоны отвязаны.');
+      showToast({ type: 'success', title: 'Холдинг удалён', description: 'Автосалоны отвязаны.' });
       await loadData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Не удалось удалить холдинг.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось удалить холдинг',
+        description: submitError instanceof Error ? submitError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -243,7 +255,6 @@ export function HoldingsPage() {
     const targetHolding = holdings.find((item) => item.id === holdingId) || activeHolding;
     if (!targetHolding) return;
     setSavingHolding(true);
-    setError(null);
     try {
       await updateHolding(holdingId, {
         name: targetHolding.name,
@@ -253,10 +264,14 @@ export function HoldingsPage() {
         dealershipIds: [...targetHolding.dealerships.map((item) => item.id), dealershipId],
       });
       setAttachDealershipOpen(false);
-      setNotice('Автосалон привязан к холдингу.');
+      showToast({ type: 'success', title: 'Автосалон привязан к холдингу' });
       await loadData();
     } catch (attachError) {
-      setError(attachError instanceof Error ? attachError.message : 'Не удалось привязать автосалон.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось привязать автосалон',
+        description: attachError instanceof Error ? attachError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -292,10 +307,17 @@ export function HoldingsPage() {
           </div>
         </fieldset>
         {!isCreate && (
-          <label className="sa-filter-check">
-            <input type="checkbox" checked={holdingForm.isActive} onChange={(event) => setHoldingForm((current) => ({ ...current, isActive: event.target.checked }))} />
-            <span>Холдинг включен и пользуется системой</span>
-          </label>
+          <button
+            type="button"
+            className="sa-toggle-field"
+            aria-pressed={holdingForm.isActive}
+            onClick={() => setHoldingForm((current) => ({ ...current, isActive: !current.isActive }))}
+          >
+            <span className="sa-toggle-field__text">Холдинг включен и пользуется системой</span>
+            <span className="sa-toggle-field__control" aria-hidden="true">
+              <span className="sa-toggle-field__thumb" />
+            </span>
+          </button>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button type="button" className="sa-btn-outline" onClick={() => { setCreateHoldingOpen(false); setEditHoldingOpen(false); }}>Отмена</button>
@@ -331,7 +353,7 @@ export function HoldingsPage() {
             className="sa-input"
             value={searchInput}
             onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="Поиск по коду, холдингу или автосалону"
+            placeholder="Поиск по холдингу или автосалону"
           />
           <select className="sa-select" value={holdingTypeFilter} onChange={(event) => setHoldingTypeFilter(event.target.value as 'all' | HoldingType)}>
             <option value="all">Тип холдинга: все</option>
@@ -356,16 +378,6 @@ export function HoldingsPage() {
             Сбросить
           </button>
         </div>
-        {notice && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#ecfdf5', color: '#047857', fontSize: 14 }}>
-            {notice}
-          </div>
-        )}
-        {error && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>
-            {error}
-          </div>
-        )}
       </section>
 
       {loading ? (

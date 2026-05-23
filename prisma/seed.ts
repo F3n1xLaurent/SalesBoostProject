@@ -1,10 +1,18 @@
 import { PrismaClient } from '@prisma/client';
 import { SYSTEM_PERMISSION_TEMPLATES } from '../src/auth/permissions';
+import { seedCityDictionaryIfNeeded } from '../src/data/cityDictionary';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('Seeding database...');
+
+  const seededCities = await seedCityDictionaryIfNeeded(prisma);
+  if (seededCities > 0) {
+    console.log(`Seeded city dictionary with ${seededCities} cities.`);
+  } else {
+    console.log('City dictionary already has data, skipping seed.');
+  }
 
   await Promise.all(
     SYSTEM_PERMISSION_TEMPLATES.map((template) =>

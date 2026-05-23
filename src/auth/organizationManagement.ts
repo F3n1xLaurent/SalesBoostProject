@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
 import { prisma } from '../db';
+import { normalizeCitySearchName, seedCityDictionaryIfNeeded } from '../data/cityDictionary';
 import { MOCK_DEALERSHIP_SEEDS, MOCK_HOLDING_SEEDS } from '../super-admin/mockOrganization';
 import { APP_ROLES } from './permissions';
 
@@ -12,6 +13,8 @@ type PhoneNumberOwnership = 'dealership' | 'user';
 
 const DEFAULT_WORKING_HOURS_FROM = '09:00';
 const DEFAULT_WORKING_HOURS_TO = '21:00';
+const CITY_SEARCH_DEFAULT_LIMIT = 100;
+const CITY_SEARCH_MAX_LIMIT = 100;
 
 function isPlatformSuperadmin(account: ScopedAccount): boolean {
   return account.memberships.some((membership) => membership.role === APP_ROLES.platformSuperadmin);
@@ -123,6 +126,12 @@ function normalizeDealershipResponse(
 function parseString(value: unknown): string | null {
   const parsed = String(value ?? '').trim();
   return parsed ? parsed : null;
+}
+
+function parsePositiveInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.floor(parsed);
 }
 
 function parseBoolean(value: unknown, fallback: boolean): boolean {
@@ -686,6 +695,61 @@ export async function handleDeleteHolding(req: Request, res: Response): Promise<
   } catch (error) {
     console.error('Delete holding error:', error);
     res.status(500).json({ error: 'Не удалось удалить холдинг.' });
+  }
+}
+
+export async function handleListCities(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const search = parseString(req.query.search);
+  const limit = Math.min(parsePositiveInteger(req.query.limit, CITY_SEARCH_DEFAULT_LIMIT), CITY_SEARCH_MAX_LIMIT);
+  const offset = parsePositiveInteger(req.query.offset, 0);
+
+  try {
+    await seedCityDictionaryIfNeeded(prisma);
+    const normalizedSearch = search ? normalizeCitySearchName(search) : null;
+    const items = normalizedSearch
+      ? await prisma.$queryRawUnsafe<Array<{ name: string }>>(
+          `
+            SELECT "name"
+            FROM "city_dictionary"
+            WHERE "searchName" LIKE ?
+            ORDER BY
+              CASE
+                WHEN "searchName" = ? THEN 0
+                WHEN "searchName" LIKE ? THEN 1
+                ELSE 2
+              END,
+              "name" ASC
+            LIMIT ? OFFSET ?
+          `,
+          `%${normalizedSearch}%`,
+          normalizedSearch,
+          `${normalizedSearch}%`,
+          limit + 1,
+          offset,
+        )
+      : await prisma.cityDictionary.findMany({
+          orderBy: { name: 'asc' },
+          skip: offset,
+          take: limit + 1,
+          select: { name: true },
+        });
+    const hasMore = items.length > limit;
+
+    res.json({
+      items: items.slice(0, limit).map((item) => item.name),
+      limit,
+      offset,
+      hasMore,
+    });
+  } catch (error) {
+    console.error('List cities error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить города.' });
   }
 }
 

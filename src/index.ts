@@ -13,6 +13,7 @@ import { startTunnel } from './tunnel';
 import { registerManagerMessageHandlers } from './bot';
 import { isTtsEnabled } from './voice/tts';
 import { resolveVoiceCallUrls } from './voice/startVoiceCall';
+import { seedCityDictionaryIfNeeded } from './data/cityDictionary';
 
 const bot = new Telegraf(config.botToken);
 
@@ -277,6 +278,11 @@ bot.catch((err, ctx) => {
 
 // Seed database if needed
 async function seedIfNeeded() {
+  const seededCities = await seedCityDictionaryIfNeeded(prisma);
+  if (seededCities > 0) {
+    console.log(`Seeded city dictionary with ${seededCities} cities.`);
+  }
+
   const existingTest = await prisma.test.findFirst({
     where: { isActive: true },
   });

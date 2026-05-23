@@ -138,7 +138,7 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
           <select className="sa-select" defaultValue="30d">
             <option value="7d">7 дней</option>
             <option value="30d">30 дней</option>
-            <option value="custom">Произвольно</option>
+            {/* <option value="custom">Произвольно</option> */}
           </select>
           <button className="sa-btn-outline" onClick={() => setShowFilters((v) => !v)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

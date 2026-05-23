@@ -46,6 +46,7 @@ import {
   handleDeleteDealershipPhoneNumber,
   handleDeleteHolding,
   handleListDealerships,
+  handleListCities,
   handleListDealershipPhoneNumbers,
   handleListHoldings,
   handleListPhoneNumberTypes,
@@ -875,6 +876,13 @@ app.get('/api/admin/holdings', (req, res) => {
   handleListHoldings(req, res).catch((error) => {
     console.error('List holdings error:', error);
     res.status(500).json({ error: 'Не удалось загрузить холдинги.' });
+  });
+});
+
+app.get('/api/admin/cities', (req, res) => {
+  handleListCities(req, res).catch((error) => {
+    console.error('List cities route error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить города.' });
   });
 });
 
