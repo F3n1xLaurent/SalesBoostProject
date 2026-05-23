@@ -73,11 +73,13 @@ type SelectOption = {
   description?: string;
 };
 type UserQuickFilter = 'training' | 'fails' | 'best' | 'comm';
+type UserOwnershipFilter = 'all' | 'own' | 'franchised';
 type UserEmployeeRow = {
   user: UserAccountItem;
   employee: EmployeeFullRow;
   fullName: string;
   dealershipName: string;
+  dealershipNames: string[];
   city: string;
 };
 
@@ -92,7 +94,7 @@ const USER_QUICK_FILTERS: { id: UserQuickFilter; label: string }[] = [
 
 const USER_COLUMN_DEFS: { key: UserSortKey; label: string; align?: 'right' }[] = [
   { key: 'fullName', label: 'Сотрудник' },
-  { key: 'dealershipName', label: 'Автосалон' },
+  { key: 'dealershipName', label: 'Автосалоны' },
   { key: 'aiRating', label: 'AI-рейтинг', align: 'right' },
   { key: 'deltaRating', label: 'Динамика', align: 'right' },
   { key: 'auditsCount', label: 'Проверки', align: 'right' },
@@ -290,6 +292,55 @@ function userScopeLabel(user: UserAccountItem): string {
   return dealershipMembership?.scopeLabel || user.memberships[0]?.scopeLabel || 'Автосалон не указан';
 }
 
+function userDealershipNames(user: UserAccountItem): string[] {
+  const names = [
+    ...user.memberships.map((membership) => membership.dealershipName || ''),
+    ...user.managerProfiles.map((profile) => profile.dealershipName),
+  ].map((name) => name.trim()).filter(Boolean);
+  return [...new Set(names)];
+}
+
+function normalizeSearchValue(value: string): string {
+  return value.toLowerCase().replace(/ё/g, 'е').trim();
+}
+
+function normalizePhoneValue(value: string): string {
+  return value.replace(/\D/g, '');
+}
+
+function userPhoneHaystack(user: UserAccountItem): string {
+  return [
+    ...(user.phoneNumbers || []).map((item) => item.phone),
+    ...user.managerProfiles.map((profile) => profile.phone || ''),
+  ].map(normalizePhoneValue).join(' ');
+}
+
+function userMatchesScope(user: UserAccountItem, scopeFilter: string): boolean {
+  if (!scopeFilter) return true;
+  const [scopeType, scopeId] = scopeFilter.split(':');
+  if (!scopeType || !scopeId) return true;
+
+  if (scopeType === 'holding') {
+    return user.memberships.some((membership) => membership.holdingId === scopeId)
+      || user.managerProfiles.some((profile) => profile.holdingId === scopeId);
+  }
+
+  if (scopeType === 'dealership') {
+    return user.memberships.some((membership) => membership.dealershipId === scopeId)
+      || user.managerProfiles.some((profile) => profile.dealershipId === scopeId);
+  }
+
+  return true;
+}
+
+function userMatchesOwnership(user: UserAccountItem, ownership: UserOwnershipFilter): boolean {
+  if (ownership === 'all') return true;
+  return [
+    ...user.memberships.map((membership) => membership.dealershipType),
+    ...user.managerProfiles.map((profile) => profile.dealershipType),
+  ].some((type) => type === ownership);
+}
+
 function commTooltip(flag: CommunicationFlag): string {
   switch (flag) {
     case 'ok': return 'Коммуникация в норме';
@@ -359,7 +410,7 @@ function TrashIcon() {
 }
 
 function SearchableSelect(props: {
-  label: string;
+  label?: string;
   value: string;
   options: SelectOption[];
   placeholder: string;
@@ -408,7 +459,7 @@ function SearchableSelect(props: {
 
   return (
     <div ref={rootRef} style={{ display: 'grid', gap: 6, position: 'relative' }}>
-      <div style={{ fontSize: 13, fontWeight: 600 }}>{props.label}</div>
+      {props.label && <div style={{ fontSize: 13, fontWeight: 600 }}>{props.label}</div>}
       <button
         type="button"
         className="sa-search-input"
@@ -465,6 +516,27 @@ function SearchableSelect(props: {
             }}
           />
           <div style={{ display: 'grid', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+            {props.value && (
+              <button
+                type="button"
+                onClick={() => {
+                  props.onChange('');
+                  setQuery('');
+                  setOpen(false);
+                }}
+                style={{
+                  border: 'none',
+                  borderRadius: 8,
+                  padding: '9px 10px',
+                  background: 'transparent',
+                  color: 'var(--sa-text-secondary)',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                }}
+              >
+                {props.placeholder}
+              </button>
+            )}
             {filtered.length === 0 && (
               <div style={{ padding: 10, color: 'var(--sa-text-secondary)', fontSize: 13 }}>Ничего не найдено</div>
             )}
@@ -598,6 +670,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [users, setUsers] = useState<UserAccountItem[]>([]);
   const [templates, setTemplates] = useState<PermissionTemplateItem[]>([]);
   const [search, setSearch] = useState('');
+  const [fullNameFilter, setFullNameFilter] = useState('');
+  const [emailFilter, setEmailFilter] = useState('');
+  const [phoneFilter, setPhoneFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [holdingFilter, setHoldingFilter] = useState('');
+  const [dealershipFilter, setDealershipFilter] = useState('');
+  const [ownershipFilter, setOwnershipFilter] = useState<UserOwnershipFilter>('all');
   const [userSortKey, setUserSortKey] = useState<UserSortKey>('aiRating');
   const [userSortDir, setUserSortDir] = useState<SortDir>('desc');
   const [userQuickFilter, setUserQuickFilter] = useState<UserQuickFilter | null>(null);
@@ -646,6 +725,21 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       ? MOCK_EMPLOYEES[detailEmployeeIndex]
       : null;
   const dealershipMap = useMemo(() => new Map((meta?.dealerships || []).map((item) => [item.id, item])), [meta]);
+  const holdingFilterOptions = useMemo<SelectOption[]>(
+    () => (meta?.holdings || []).map((holding) => ({
+      value: holding.id,
+      label: holding.name,
+    })),
+    [meta],
+  );
+  const dealershipFilterOptions = useMemo<SelectOption[]>(
+    () => (meta?.dealerships || []).map((dealership) => ({
+      value: dealership.id,
+      label: dealership.name,
+      description: dealership.holdingName || 'Без холдинга',
+    })),
+    [meta],
+  );
   const templateOptions = useMemo<SelectOption[]>(
     () => templates.map((template) => ({
       value: template.id,
@@ -685,22 +779,48 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const userEmployeeRows = useMemo<UserEmployeeRow[]>(() => {
     let list = users.map((user, index) => {
       const employee = MOCK_EMPLOYEES[index % MOCK_EMPLOYEES.length];
+      const dealershipNames = userDealershipNames(user);
       return {
         user,
         employee,
         fullName: userFullName(user),
-        dealershipName: userScopeLabel(user),
+        dealershipNames,
+        dealershipName: dealershipNames.join(', ') || userScopeLabel(user),
         city: employee.city,
       };
     });
     if (search.trim()) {
-      const q = search.trim().toLowerCase();
+      const q = normalizeSearchValue(search);
       list = list.filter((row) =>
-        row.fullName.toLowerCase().includes(q) ||
-        row.user.email.toLowerCase().includes(q) ||
-        row.dealershipName.toLowerCase().includes(q) ||
-        row.city.toLowerCase().includes(q),
+        normalizeSearchValue(row.fullName).includes(q) ||
+        normalizeSearchValue(row.user.email).includes(q) ||
+        normalizeSearchValue(row.dealershipName).includes(q) ||
+        normalizeSearchValue(row.city).includes(q),
       );
+    }
+    if (fullNameFilter.trim()) {
+      const q = normalizeSearchValue(fullNameFilter);
+      list = list.filter((row) => normalizeSearchValue(row.fullName).includes(q));
+    }
+    if (emailFilter.trim()) {
+      const q = normalizeSearchValue(emailFilter);
+      list = list.filter((row) => normalizeSearchValue(row.user.email).includes(q));
+    }
+    if (phoneFilter.trim()) {
+      const q = normalizePhoneValue(phoneFilter);
+      list = list.filter((row) => q && userPhoneHaystack(row.user).includes(q));
+    }
+    if (roleFilter) {
+      list = list.filter((row) => row.user.memberships.some((membership) => membership.role === roleFilter));
+    }
+    if (holdingFilter) {
+      list = list.filter((row) => userMatchesScope(row.user, `holding:${holdingFilter}`));
+    }
+    if (dealershipFilter) {
+      list = list.filter((row) => userMatchesScope(row.user, `dealership:${dealershipFilter}`));
+    }
+    if (ownershipFilter !== 'all') {
+      list = list.filter((row) => userMatchesOwnership(row.user, ownershipFilter));
     }
     if (userQuickFilter) list = list.filter((row) => matchesEmployeeQuickFilter(row.employee, userQuickFilter));
 
@@ -712,7 +832,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       else cmp = (a.employee[userSortKey] ?? -Infinity) - (b.employee[userSortKey] ?? -Infinity);
       return userSortDir === 'asc' ? cmp : -cmp;
     });
-  }, [search, userQuickFilter, userSortDir, userSortKey, users]);
+  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, userQuickFilter, userSortDir, userSortKey, users]);
 
   const filteredTemplates = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1463,12 +1583,91 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           {showUserFilters && (
             <div className="sa-filters-panel">
               <div className="sa-filter-group">
-                <span className="sa-filter-label">Источник:</span>
-                <div className="sa-meta">
-                  Фильтры и метрики этой таблицы пока используют моковые данные сотрудников. Действия справа привязаны к web-аккаунтам пользователей.
+                <span className="sa-filter-label">Данные пользователя:</span>
+                <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
+                  <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={fullNameFilter} onChange={(event) => setFullNameFilter(event.target.value)} placeholder="ФИО" />
+                  <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={emailFilter} onChange={(event) => setEmailFilter(event.target.value)} placeholder="Электронная почта" />
+                  <input className="sa-input" style={{ minWidth: 0, flex: '1 1 160px' }} value={phoneFilter} onChange={(event) => setPhoneFilter(event.target.value)} placeholder="Телефон" />
                 </div>
               </div>
-              <button className="sa-btn-text" onClick={() => setUserQuickFilter(null)}>
+
+              <div className="sa-filter-group">
+                <span className="sa-filter-label">Роль:</span>
+                <div className="sa-filter-options">
+                  {(meta?.roles || []).map((item) => (
+                    <label key={item} className="sa-filter-check">
+                      <input
+                        type="checkbox"
+                        checked={roleFilter === item}
+                        onChange={() => setRoleFilter((current) => (current === item ? '' : item))}
+                      />
+                      {roleLabel(item)}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="sa-filter-group">
+                <span className="sa-filter-label">Холдинг:</span>
+                <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
+                  <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
+                    <SearchableSelect
+                      value={holdingFilter}
+                      options={holdingFilterOptions}
+                      placeholder="Все холдинги"
+                      onChange={setHoldingFilter}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="sa-filter-group">
+                <span className="sa-filter-label">Салон:</span>
+                <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
+                  <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
+                    <SearchableSelect
+                      value={dealershipFilter}
+                      options={dealershipFilterOptions}
+                      placeholder="Все автосалоны"
+                      onChange={setDealershipFilter}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="sa-filter-group">
+                <span className="sa-filter-label">Франшиза / Свои:</span>
+                <div className="sa-filter-options">
+                  {[
+                    { value: 'own' as UserOwnershipFilter, label: 'Свои' },
+                    { value: 'franchised' as UserOwnershipFilter, label: 'Франшиза' },
+                  ].map((option) => (
+                    <label key={option.value} className="sa-filter-check">
+                      <input
+                        type="checkbox"
+                        checked={ownershipFilter === option.value}
+                        onChange={() => setOwnershipFilter((current) => (current === option.value ? 'all' : option.value))}
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="sa-filter-reset"
+                onClick={() => {
+                  setFullNameFilter('');
+                  setEmailFilter('');
+                  setPhoneFilter('');
+                  setRoleFilter('');
+                  setHoldingFilter('');
+                  setDealershipFilter('');
+                  setOwnershipFilter('all');
+                  setUserQuickFilter(null);
+                }}
+              >
                 Сбросить фильтры
               </button>
             </div>
@@ -1533,8 +1732,18 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                           </div>
                         </td>
                         <td>
-                          <div className="sa-cell-name">{row.dealershipName}</div>
-                          <div className="sa-cell-city">{row.city}</div>
+                          {row.dealershipNames.length > 0 ? (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                              {row.dealershipNames.map((name) => (
+                                <span key={name} className="sa-metric-chip">{name}</span>
+                              ))}
+                            </div>
+                          ) : (
+                            <>
+                              <div className="sa-cell-name">{row.dealershipName}</div>
+                              <div className="sa-cell-city">{row.city}</div>
+                            </>
+                          )}
                         </td>
                         <td className="sa-text-right"><span className={ratingClass(employee.aiRating)}>{employee.aiRating}</span></td>
                         <td className="sa-text-right"><span className={delta.cls}>{delta.text}</span></td>

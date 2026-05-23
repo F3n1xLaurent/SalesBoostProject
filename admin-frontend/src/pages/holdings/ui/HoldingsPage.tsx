@@ -9,6 +9,7 @@ import {
   type HoldingItem,
   type HoldingType,
 } from '../../../shared/api/adminPanel';
+import { useToast } from '../../../shared/ui/toast/ToastProvider';
 
 type HoldingFormState = {
   name: string;
@@ -23,6 +24,24 @@ const EMPTY_HOLDING_FORM: HoldingFormState = {
   isActive: true,
   dealershipIds: [],
 };
+
+function buildHoldingForm(item: HoldingItem): HoldingFormState {
+  return {
+    name: item.name,
+    type: item.type,
+    isActive: item.isActive,
+    dealershipIds: item.dealerships.map((dealership) => dealership.id),
+  };
+}
+
+function normalizeHoldingForm(form: HoldingFormState) {
+  return {
+    name: form.name.trim(),
+    type: form.type,
+    isActive: form.isActive,
+    dealershipIds: [...form.dealershipIds].sort(),
+  };
+}
 
 function overlayCardStyle(width = 760): React.CSSProperties {
   return {
@@ -79,11 +98,10 @@ function ModalFrame(props: {
 }
 
 export function HoldingsPage() {
+  const { showToast } = useToast();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [dealerships, setDealerships] = useState<DealershipItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [holdingTypeFilter, setHoldingTypeFilter] = useState<'all' | HoldingType>('all');
@@ -96,13 +114,13 @@ export function HoldingsPage() {
   const [attachDealershipOpen, setAttachDealershipOpen] = useState(false);
 
   const [holdingForm, setHoldingForm] = useState<HoldingFormState>(EMPTY_HOLDING_FORM);
+  const [initialHoldingForm, setInitialHoldingForm] = useState<HoldingFormState>(EMPTY_HOLDING_FORM);
   const [savingHolding, setSavingHolding] = useState(false);
   const [activeHolding, setActiveHolding] = useState<HoldingItem | null>(null);
   const [attachDealershipSearch, setAttachDealershipSearch] = useState('');
 
   async function loadData() {
     setLoading(true);
-    setError(null);
     try {
       const [nextHoldings, nextDealerships] = await Promise.all([
         fetchHoldings({
@@ -117,7 +135,11 @@ export function HoldingsPage() {
       setActiveHolding((current) => (current ? nextHoldings.find((item) => item.id === current.id) || null : current));
       return { nextHoldings, nextDealerships };
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить структуру.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось загрузить структуру',
+        description: loadError instanceof Error ? loadError.message : 'Попробуйте повторить действие.',
+      });
       return null;
     } finally {
       setLoading(false);
@@ -140,18 +162,16 @@ export function HoldingsPage() {
 
   function openCreateHolding() {
     setHoldingForm(EMPTY_HOLDING_FORM);
+    setInitialHoldingForm(EMPTY_HOLDING_FORM);
     setActiveHolding(null);
     setCreateHoldingOpen(true);
   }
 
   function openEditHolding(item: HoldingItem) {
+    const nextForm = buildHoldingForm(item);
     setActiveHolding(item);
-    setHoldingForm({
-      name: item.name,
-      type: item.type,
-      isActive: item.isActive,
-      dealershipIds: item.dealerships.map((dealership) => dealership.id),
-    });
+    setHoldingForm(nextForm);
+    setInitialHoldingForm(nextForm);
     setEditHoldingOpen(true);
   }
 
@@ -170,7 +190,6 @@ export function HoldingsPage() {
   async function handleCreateHoldingSubmit(event: React.FormEvent) {
     event.preventDefault();
     setSavingHolding(true);
-    setError(null);
     try {
       await createHolding({
         name: holdingForm.name,
@@ -180,10 +199,14 @@ export function HoldingsPage() {
         dealershipIds: [],
       });
       setCreateHoldingOpen(false);
-      setNotice('Холдинг создан.');
+      showToast({ type: 'success', title: 'Холдинг создан', description: holdingForm.name });
       await loadData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Не удалось создать холдинг.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось создать холдинг',
+        description: submitError instanceof Error ? submitError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -203,7 +226,6 @@ export function HoldingsPage() {
     event.preventDefault();
     if (!activeHolding) return;
     setSavingHolding(true);
-    setError(null);
     try {
       await updateHolding(activeHolding.id, {
         name: holdingForm.name,
@@ -213,10 +235,14 @@ export function HoldingsPage() {
         dealershipIds: holdingForm.dealershipIds,
       });
       setEditHoldingOpen(false);
-      setNotice('Холдинг обновлён.');
+      showToast({ type: 'success', title: 'Холдинг сохранён', description: holdingForm.name });
       await loadData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Не удалось обновить холдинг.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось обновить холдинг',
+        description: submitError instanceof Error ? submitError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -225,15 +251,18 @@ export function HoldingsPage() {
   async function handleDeleteHoldingConfirm() {
     if (!activeHolding) return;
     setSavingHolding(true);
-    setError(null);
     try {
       await deleteHolding(activeHolding.id);
       setDeleteHoldingOpen(false);
       setActiveHolding(null);
-      setNotice('Холдинг удалён. Автосалоны отвязаны.');
+      showToast({ type: 'success', title: 'Холдинг удалён', description: 'Автосалоны отвязаны.' });
       await loadData();
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Не удалось удалить холдинг.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось удалить холдинг',
+        description: submitError instanceof Error ? submitError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -243,7 +272,6 @@ export function HoldingsPage() {
     const targetHolding = holdings.find((item) => item.id === holdingId) || activeHolding;
     if (!targetHolding) return;
     setSavingHolding(true);
-    setError(null);
     try {
       await updateHolding(holdingId, {
         name: targetHolding.name,
@@ -253,10 +281,14 @@ export function HoldingsPage() {
         dealershipIds: [...targetHolding.dealerships.map((item) => item.id), dealershipId],
       });
       setAttachDealershipOpen(false);
-      setNotice('Автосалон привязан к холдингу.');
+      showToast({ type: 'success', title: 'Автосалон привязан к холдингу' });
       await loadData();
     } catch (attachError) {
-      setError(attachError instanceof Error ? attachError.message : 'Не удалось привязать автосалон.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось привязать автосалон',
+        description: attachError instanceof Error ? attachError.message : 'Попробуйте повторить действие.',
+      });
     } finally {
       setSavingHolding(false);
     }
@@ -265,6 +297,8 @@ export function HoldingsPage() {
   function renderHoldingForm(onSubmit: (event: React.FormEvent) => void, submitLabel: string, options?: { mode: 'create' | 'edit' }) {
     const mode = options?.mode ?? 'edit';
     const isCreate = mode === 'create';
+    const isDirty = JSON.stringify(normalizeHoldingForm(holdingForm)) !== JSON.stringify(normalizeHoldingForm(initialHoldingForm));
+    const isSubmitDisabled = savingHolding || (!isCreate && !isDirty);
 
     return (
       <form onSubmit={onSubmit} style={{ display: 'grid', gap: 16 }}>
@@ -292,14 +326,21 @@ export function HoldingsPage() {
           </div>
         </fieldset>
         {!isCreate && (
-          <label className="sa-filter-check">
-            <input type="checkbox" checked={holdingForm.isActive} onChange={(event) => setHoldingForm((current) => ({ ...current, isActive: event.target.checked }))} />
-            <span>Холдинг включен и пользуется системой</span>
-          </label>
+          <button
+            type="button"
+            className="sa-toggle-field"
+            aria-pressed={holdingForm.isActive}
+            onClick={() => setHoldingForm((current) => ({ ...current, isActive: !current.isActive }))}
+          >
+            <span className="sa-toggle-field__text">Холдинг включен и пользуется системой</span>
+            <span className="sa-toggle-field__control" aria-hidden="true">
+              <span className="sa-toggle-field__thumb" />
+            </span>
+          </button>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button type="button" className="sa-btn-outline" onClick={() => { setCreateHoldingOpen(false); setEditHoldingOpen(false); }}>Отмена</button>
-          <button type="submit" className="sa-btn-primary" disabled={savingHolding}>
+          <button type="submit" className="sa-btn-primary" disabled={isSubmitDisabled}>
             {savingHolding ? 'Сохраняем...' : submitLabel}
           </button>
         </div>
@@ -308,31 +349,25 @@ export function HoldingsPage() {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 20 }}>
-      <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 30 }}>Холдинги</h1>
-            <div style={{ marginTop: 8, color: 'var(--sa-text-secondary)', maxWidth: 740 }}>
-              Отдельный административный контур для управления оргструктурой. Холдинги группируют автосалоны, при этом часть автосалонов может существовать без холдинга.
-            </div>
+    <div>
+      <h1 className="sa-page-title">Холдинги</h1>
+      <p className="sa-page-subtitle">
+        Отдельный административный контур для управления оргструктурой и связями автосалонов.
+      </p>
+
+      <div className="sa-toolbar">
+        <div className="sa-toolbar-row">
+          <div className="sa-search-wrap">
+            <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+            </svg>
+            <input
+              className="sa-search-input"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="Поиск по холдингу или автосалону…"
+            />
           </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="sa-btn-primary" onClick={openCreateHolding}>Новый холдинг</button>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: 'var(--sa-text-secondary)', fontSize: 13 }}>
-          <span>Холдингов: {holdings.length}</span>
-          <span>Автосалонов: {dealerships.length}</span>
-          <span>Без холдинга: {unassignedDealerships.length}</span>
-        </div>
-        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(260px, 1.6fr) repeat(2, minmax(180px, 0.8fr)) auto' }}>
-          <input
-            className="sa-input"
-            value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
-            placeholder="Поиск по коду, холдингу или автосалону"
-          />
           <select className="sa-select" value={holdingTypeFilter} onChange={(event) => setHoldingTypeFilter(event.target.value as 'all' | HoldingType)}>
             <option value="all">Тип холдинга: все</option>
             <option value="own">Собственный</option>
@@ -343,6 +378,7 @@ export function HoldingsPage() {
             <option value="active">Активный</option>
             <option value="inactive">Деактивированный</option>
           </select>
+          <button type="button" className="sa-btn-primary" onClick={openCreateHolding}>Новый холдинг</button>
           <button
             type="button"
             className="sa-btn-outline"
@@ -356,61 +392,117 @@ export function HoldingsPage() {
             Сбросить
           </button>
         </div>
-        {notice && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#ecfdf5', color: '#047857', fontSize: 14 }}>
-            {notice}
-          </div>
-        )}
-        {error && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>
-            {error}
-          </div>
-        )}
-      </section>
-
-      {loading ? (
-        <div className="sa-card" style={{ padding: 20 }}>Загрузка структуры...</div>
-      ) : (
-        <div style={{ display: 'grid', gap: 16 }}>
-          {holdings.map((item) => (
-            <section key={item.id} className="sa-card" style={{ padding: 18, display: 'grid', gap: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                <div>
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <h2 style={{ margin: 0, fontSize: 22 }}>{item.name}</h2>
-                    <span className="sa-metric-chip">{item.type === 'own' ? 'Собственный' : 'Франчайзинговый'}</span>
-                    <span className="sa-metric-chip">{item.isActive ? 'Активен' : 'Выключен'}</span>
-                    <span className="sa-metric-chip">{item.dealershipsCount} салонов</span>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <button type="button" className="sa-btn-outline" onClick={() => openHoldingDealerships(item)}>Автосалоны</button>
-                  <button type="button" className="sa-btn-outline sa-btn-icon" onClick={() => openEditHolding(item)} aria-label="Редактировать холдинг" title="Редактировать">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                      <path d="M12 20h9" />
-                      <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                    </svg>
-                  </button>
-                  <button type="button" className="sa-btn-danger sa-btn-icon" onClick={() => { setActiveHolding(item); setDeleteHoldingOpen(true); }} aria-label="Удалить холдинг" title="Удалить">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                      <path d="M3 6h18" />
-                      <path d="M8 6V4h8v2" />
-                      <path d="M19 6l-1 14H6L5 6" />
-                      <path d="M10 11v6M14 11v6" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </section>
-          ))}
-
-          {holdings.length === 0 && (
-            <div className="sa-card" style={{ padding: 20 }}>
-              По текущим фильтрам холдинги не найдены.
-            </div>
-          )}
+        <div className="sa-toolbar-chips">
+          <span className="sa-chip">Холдингов: {holdings.length}</span>
+          <span className="sa-chip">Автосалонов: {dealerships.length}</span>
+          <span className="sa-chip">Без холдинга: {unassignedDealerships.length}</span>
         </div>
-      )}
+      </div>
+
+      <div className="sa-companies-table-wrap sa-desktop-only">
+        <table className="sa-table sa-table-sortable">
+          <thead>
+            <tr>
+              <th>Холдинг</th>
+              <th>Тип</th>
+              <th className="sa-text-right">Автосалоны</th>
+              <th>Статус</th>
+              <th style={{ width: 148 }}>Действия</th>
+              <th style={{ width: 32 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={6} className="sa-meta" style={{ padding: 32 }}>Загрузка структуры...</td></tr>
+            ) : holdings.length === 0 ? (
+              <tr><td colSpan={6} className="sa-meta" style={{ padding: 32 }}>По текущим фильтрам холдинги не найдены.</td></tr>
+            ) : (
+              holdings.map((item) => (
+                <tr
+                  key={item.id}
+                  className="sa-row-clickable"
+                  onClick={() => openHoldingDealerships(item)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => event.key === 'Enter' && openHoldingDealerships(item)}
+                >
+                  <td>
+                    <div className="sa-cell-name">{item.name}</div>
+                    <div className="sa-cell-city">{item.code || 'Код не указан'}</div>
+                  </td>
+                  <td>{item.type === 'own' ? 'Собственный' : 'Франчайзинговый'}</td>
+                  <td className="sa-text-right">{item.dealershipsCount}</td>
+                  <td>
+                    <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                      {item.isActive ? 'Активен' : 'Выключен'}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 8 }} onClick={(event) => event.stopPropagation()}>
+                      <button type="button" className="sa-btn-outline sa-btn-icon" onClick={() => openEditHolding(item)} aria-label="Редактировать холдинг" title="Редактировать">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                        </svg>
+                      </button>
+                      <button type="button" className="sa-btn-danger sa-btn-icon" onClick={() => { setActiveHolding(item); setDeleteHoldingOpen(true); }} aria-label="Удалить холдинг" title="Удалить">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                          <path d="M3 6h18" />
+                          <path d="M8 6V4h8v2" />
+                          <path d="M19 6l-1 14H6L5 6" />
+                          <path d="M10 11v6M14 11v6" />
+                        </svg>
+                      </button>
+                    </div>
+                  </td>
+                  <td className="sa-row-chevron-cell">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="sa-mobile-only">
+        {loading ? (
+          <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка структуры...</div>
+        ) : holdings.length === 0 ? (
+          <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>По текущим фильтрам холдинги не найдены.</div>
+        ) : (
+          holdings.map((item) => (
+            <div
+              key={item.id}
+              className="sa-mobile-row"
+              onClick={() => openHoldingDealerships(item)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => event.key === 'Enter' && openHoldingDealerships(item)}
+            >
+              <div className="sa-mobile-row-header">
+                <div>
+                  <div className="sa-cell-name">{item.name}</div>
+                  <div className="sa-cell-city">{item.code || 'Код не указан'}</div>
+                </div>
+                <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                  {item.isActive ? 'Активен' : 'Выключен'}
+                </span>
+              </div>
+              <div className="sa-mobile-chips">
+                <span className="sa-metric-chip">{item.type === 'own' ? 'Собственный' : 'Франчайзинговый'}</span>
+                <span className="sa-metric-chip">{item.dealershipsCount} салонов</span>
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }} onClick={(event) => event.stopPropagation()}>
+                <button type="button" className="sa-btn-outline" onClick={() => openEditHolding(item)}>Редактировать</button>
+                <button type="button" className="sa-btn-danger" onClick={() => { setActiveHolding(item); setDeleteHoldingOpen(true); }}>Удалить</button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
 
       <ModalFrame title="Новый холдинг" subtitle="Создание холдинга, к которому после можно привязать автосалоны" open={createHoldingOpen} onClose={() => setCreateHoldingOpen(false)}>
         {renderHoldingForm(handleCreateHoldingSubmit, 'Создать холдинг', { mode: 'create' })}
