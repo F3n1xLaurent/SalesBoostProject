@@ -152,6 +152,7 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
   include: {
     memberships: { include: { holding: true; dealership: { include: { holding: true } } } };
     managerProfiles: { include: { dealership: { include: { holding: true } } } };
+    phoneNumbers: { include: { type: true } };
     permissionTemplateAssignments: { include: { template: true } };
   };
 }>) {
@@ -170,6 +171,7 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
       holdingName: membership.holding?.name ?? membership.dealership?.holding?.name ?? null,
       dealershipId: membership.dealershipId,
       dealershipName: membership.dealership?.name ?? null,
+      dealershipType: membership.dealership?.type ?? null,
       scopeLabel: membershipToScopeLabel(membership),
     })),
     managerProfiles: account.managerProfiles.map((profile) => ({
@@ -180,9 +182,11 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
       status: profile.status,
       dealershipId: profile.dealershipId,
       dealershipName: profile.dealership.name,
+      dealershipType: profile.dealership.type,
       holdingId: profile.dealership.holdingId,
       holdingName: profile.dealership.holding?.name ?? null,
     })),
+    phoneNumbers: account.phoneNumbers.map(normalizePhoneNumberResponse),
     permissionTemplates: account.permissionTemplateAssignments.map((assignment) => ({
       id: assignment.template.id,
       name: assignment.template.name,
@@ -357,6 +361,11 @@ export async function handleListUsers(req: Request, res: Response): Promise<void
           },
         },
       },
+      phoneNumbers: {
+        include: {
+          type: true,
+        },
+      },
       permissionTemplateAssignments: {
         include: {
           template: true,
@@ -470,6 +479,11 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
                 holding: true,
               },
             },
+          },
+        },
+        phoneNumbers: {
+          include: {
+            type: true,
           },
         },
         permissionTemplateAssignments: {
@@ -598,6 +612,11 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
                 holding: true,
               },
             },
+          },
+        },
+        phoneNumbers: {
+          include: {
+            type: true,
           },
         },
         permissionTemplateAssignments: {

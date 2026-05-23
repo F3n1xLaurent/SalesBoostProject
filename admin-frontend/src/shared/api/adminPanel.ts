@@ -162,6 +162,7 @@ export interface UserAccountItem {
     holdingName: string | null;
     dealershipId: string | null;
     dealershipName: string | null;
+    dealershipType: DealershipType | null;
     scopeLabel: string;
   }>;
   managerProfiles: Array<{
@@ -172,9 +173,11 @@ export interface UserAccountItem {
     status: string;
     dealershipId: string;
     dealershipName: string;
+    dealershipType: DealershipType;
     holdingId: string | null;
     holdingName: string | null;
   }>;
+  phoneNumbers: PhoneNumberItem[];
   permissionTemplates: Array<{
     id: string;
     name: string;

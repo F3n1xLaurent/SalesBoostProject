@@ -66,7 +66,7 @@ function comparator(key: SortKey, dir: SortDir) {
 /* ────────────────────── Period helper ────────────────────── */
 
 type Period = '7d' | '30d' | 'custom';
-type CompanyRow = DealershipRow & { workingHours: string; type: DealershipType; directions: DealershipDirection[] };
+type CompanyRow = DealershipRow & { workingHours: string; type: DealershipType; directions: DealershipDirection[]; isActive: boolean };
 
 function dealershipTypeLabel(type: DealershipType): string {
   return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
@@ -88,6 +88,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
         type: item.type || 'own',
         directions: item.directions || [],
         workingHours: formatWorkingHours(item),
+        isActive: item.isActive,
         aiRating: 0,
         answerRate: null,
         avgAnswerTimeSec: null,
@@ -518,7 +519,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                   >
                     <td>
                       <div className="sa-cell-name">{r.name}</div>
-                      <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)}</div>
+                      <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)} · {r.isActive ? 'Активен' : 'Не активен'}</div>
                       {dealershipSummary[r.id] && (
                         <div className="sa-inline-batch-status">
                           {dealershipSummary[r.id].completed}/{dealershipSummary[r.id].total} · {dealershipSummary[r.id].status === 'in_progress' ? 'в работе' : dealershipSummary[r.id].status === 'completed' ? 'готово' : dealershipSummary[r.id].status === 'failed' ? 'ошибка' : dealershipSummary[r.id].status === 'partial' ? 'частично' : dealershipSummary[r.id].status === 'cancelled' ? 'отменено' : 'в очереди'}
@@ -577,7 +578,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                 <div className="sa-mobile-row-header">
                   <div>
                     <div className="sa-cell-name">{r.name}</div>
-                    <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)}</div>
+                    <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)} · {r.isActive ? 'Активен' : 'Не активен'}</div>
                   </div>
                   <span className={`sa-mobile-rating ${ratingClass(r.aiRating)}`}>{r.aiRating}</span>
                 </div>
