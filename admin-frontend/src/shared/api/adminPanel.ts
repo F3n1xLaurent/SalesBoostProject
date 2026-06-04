@@ -6,6 +6,36 @@ import { apiFetch } from '../../entities/session';
 
 const API_BASE = '';
 
+function relabelHoldingError(message: unknown): string | null {
+  if (typeof message !== 'string') return null;
+  return message
+    .replace(/\u0425\u043e\u043b\u0434\u0438\u043d\u0433\u0438/g, 'Компании')
+    .replace(/\u0445\u043e\u043b\u0434\u0438\u043d\u0433\u0438/g, 'компании')
+    .replace(/\u0425\u043e\u043b\u0434\u0438\u043d\u0433\u043e\u0432/g, 'Компаний')
+    .replace(/\u0445\u043e\u043b\u0434\u0438\u043d\u0433\u043e\u0432/g, 'компаний')
+    .replace(/\u0425\u043e\u043b\u0434\u0438\u043d\u0433\u0430/g, 'Компании')
+    .replace(/\u0445\u043e\u043b\u0434\u0438\u043d\u0433\u0430/g, 'компании')
+    .replace(/\u0425\u043e\u043b\u0434\u0438\u043d\u0433\u043e\u043c/g, 'Компанией')
+    .replace(/\u0445\u043e\u043b\u0434\u0438\u043d\u0433\u043e\u043c/g, 'компанией')
+    .replace(/\u0425\u043e\u043b\u0434\u0438\u043d\u0433/g, 'Компания')
+    .replace(/\u0445\u043e\u043b\u0434\u0438\u043d\u0433/g, 'компанию');
+}
+
+function relabelDealershipError(message: unknown): string | null {
+  if (typeof message !== 'string') return null;
+  return message
+    .replace(/\u0410\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u044b/g, 'Точки')
+    .replace(/\u0430\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u044b/g, 'точки')
+    .replace(/\u0410\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u043e\u0432/g, 'Точек')
+    .replace(/\u0430\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u043e\u0432/g, 'точек')
+    .replace(/\u0410\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u0430/g, 'Точки')
+    .replace(/\u0430\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u0430/g, 'точки')
+    .replace(/\u0410\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u043e\u043c/g, 'Точкой')
+    .replace(/\u0430\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d\u043e\u043c/g, 'точкой')
+    .replace(/\u0410\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d/g, 'Точка')
+    .replace(/\u0430\u0432\u0442\u043e\u0441\u0430\u043b\u043e\u043d/g, 'точку');
+}
+
 export interface PlatformSummary {
   totalAttempts: number;
   avgScore: number;
@@ -94,7 +124,7 @@ export interface RbacMeta {
 
 export type HoldingType = 'own' | 'franchised';
 export type DealershipType = 'own' | 'franchised';
-export type DealershipDirection = 'new_cars' | 'used_cars';
+export type DealershipDirection = string;
 
 export interface HoldingItem {
   id: string;
@@ -134,6 +164,17 @@ export interface DealershipItem {
   holdingId: string | null;
   holdingName: string | null;
   managersCount: number;
+}
+
+export interface DealershipDirectionItem {
+  id: string;
+  holdingId: string;
+  holdingName: string;
+  name: string;
+  code: string | null;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PermissionTemplateItem {
@@ -273,6 +314,62 @@ export async function fetchDealerships(): Promise<DealershipItem[]> {
   return data.items ?? [];
 }
 
+export async function fetchDealershipDirections(filters?: {
+  holdingId?: string | null;
+  active?: boolean;
+}): Promise<DealershipDirectionItem[]> {
+  const params = new URLSearchParams();
+  if (filters?.holdingId) params.set('holdingId', filters.holdingId);
+  if (filters?.active) params.set('active', 'true');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/dealership-directions${suffix}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить направления точек.');
+  return Array.isArray(data.items) ? data.items as DealershipDirectionItem[] : [];
+}
+
+export async function createDealershipDirection(payload: {
+  holdingId: string;
+  name: string;
+  code?: string | null;
+  isActive?: boolean;
+}): Promise<DealershipDirectionItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealership-directions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать направление точки.');
+  return data.item as DealershipDirectionItem;
+}
+
+export async function updateDealershipDirection(
+  directionId: string,
+  payload: {
+    name?: string;
+    code?: string | null;
+    isActive?: boolean;
+  },
+): Promise<DealershipDirectionItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealership-directions/${directionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить направление точки.');
+  return data.item as DealershipDirectionItem;
+}
+
+export async function deleteDealershipDirection(directionId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealership-directions/${directionId}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить направление точки.');
+}
+
 export async function fetchCities(params?: { search?: string; limit?: number; offset?: number }): Promise<{ items: string[]; hasMore: boolean; offset: number; limit: number }> {
   const query = new URLSearchParams();
   const search = params?.search?.trim();
@@ -304,7 +401,7 @@ export async function createHolding(payload: {
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось создать холдинг.');
+  if (!res.ok) throw new Error(relabelHoldingError(data?.error) || 'Не удалось создать компанию.');
   return data.item as HoldingItem;
 }
 
@@ -324,7 +421,7 @@ export async function updateHolding(
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить холдинг.');
+  if (!res.ok) throw new Error(relabelHoldingError(data?.error) || 'Не удалось обновить компанию.');
   return data.item as HoldingItem;
 }
 
@@ -333,7 +430,7 @@ export async function deleteHolding(holdingId: string): Promise<void> {
     method: 'DELETE',
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить холдинг.');
+  if (!res.ok) throw new Error(relabelHoldingError(data?.error) || 'Не удалось удалить компанию.');
 }
 
 export async function createDealership(payload: {
@@ -354,7 +451,7 @@ export async function createDealership(payload: {
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось создать автосалон.');
+  if (!res.ok) throw new Error(relabelDealershipError(data?.error) || 'Не удалось создать точку.');
   return data.item as DealershipItem;
 }
 
@@ -379,7 +476,7 @@ export async function updateDealership(
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить автосалон.');
+  if (!res.ok) throw new Error(relabelDealershipError(data?.error) || 'Не удалось обновить точку.');
   return data.item as DealershipItem;
 }
 
@@ -388,7 +485,7 @@ export async function deleteDealership(dealershipId: string): Promise<void> {
     method: 'DELETE',
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить автосалон.');
+  if (!res.ok) throw new Error(relabelDealershipError(data?.error) || 'Не удалось удалить точку.');
 }
 
 export async function fetchPhoneNumberTypes(filters?: {

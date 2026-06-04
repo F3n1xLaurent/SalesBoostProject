@@ -257,7 +257,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
       <div className="sa-breadcrumb">
         {sourceDealership ? (
           <>
-            <button className="sa-btn-text" onClick={() => onOpenCompanies?.()}>Автосалоны</button>
+            <button className="sa-btn-text" onClick={() => onOpenCompanies?.()}>Точки</button>
             <span className="sa-breadcrumb-sep">→</span>
             <button className="sa-btn-text" onClick={() => onOpenDealership?.(sourceDealership.id)}>{sourceDealership.name}</button>
             <span className="sa-breadcrumb-sep">→</span>

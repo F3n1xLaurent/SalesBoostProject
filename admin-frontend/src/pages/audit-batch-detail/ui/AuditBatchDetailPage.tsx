@@ -29,7 +29,7 @@ function statusLabel(status: CallBatchListItem['status'], failedJobs: number): s
 function modeLabel(mode: CallBatchListItem['mode']): string {
   if (mode === 'auto_daily') return 'Авто-ежедневный';
   if (mode === 'all_dealerships') return 'Сеть';
-  if (mode === 'single_dealership') return 'Один салон';
+  if (mode === 'single_dealership') return 'Одна точка';
   return 'Ручной';
 }
 
@@ -109,7 +109,7 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
     if (!batch) return `Batch ${batchId.slice(-8)}`;
     if (batch.title?.trim()) return batch.title;
     if (batch.mode === 'all_dealerships') return 'Проверка сети';
-    if (batch.mode === 'single_dealership') return 'Проверка автосалона';
+    if (batch.mode === 'single_dealership') return 'Проверка точки';
     if (batch.mode === 'auto_daily') return 'Авто-проверка сети';
     return 'Ручная проверка';
   }, [batch, batchId]);
@@ -151,11 +151,11 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
   const previewMockJobs = useMemo<CallBatchJobItem[]>(() => {
     if (!batch || batch.totalJobs <= 0) return [];
     const demoDealerships = [
-      'Автосалон Центральный',
-      'Автосалон Север',
-      'Автосалон Юг',
-      'Автосалон Премиум',
-      'Автосалон Восток',
+      'Точка Центральный',
+      'Точка Север',
+      'Точка Юг',
+      'Точка Премиум',
+      'Точка Восток',
     ];
     const demoOutcomes = ['completed', 'busy', 'no_answer', 'disconnected'] as const;
     const count = Math.min(Math.max(batch.totalJobs, 8), 24);
@@ -225,7 +225,7 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
 
     for (const job of displayJobs) {
       const key = job.dealershipId || job.dealershipName || 'unknown';
-      const name = job.dealershipName || 'Автосалон';
+      const name = job.dealershipName || 'Точка';
       const row = m.get(key) || {
         key, dealershipName: name, total: 0, completed: 0, failed: 0, retry: 0, active: 0, queued: 0,
       };
@@ -378,12 +378,12 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
           </div>
 
       <section className="sa-section" style={{ marginBottom: 16 }}>
-            <h3 className="sa-section-title">Автосалоны в batch</h3>
+            <h3 className="sa-section-title">Точки в batch</h3>
             <div className="sa-companies-table-wrap">
               <table className="sa-table">
                 <thead>
                   <tr>
-                    <th>Автосалон</th>
+                    <th>Точка</th>
                     <th className="sa-text-right">Звонков</th>
                     <th className="sa-text-right">Успешно</th>
                     <th className="sa-text-right">Ошибки</th>
@@ -396,7 +396,7 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
                 </thead>
                 <tbody>
                   {dealershipStats.length === 0 ? (
-                    <tr><td colSpan={9} className="sa-empty-state">Нет данных по автосалонам</td></tr>
+                    <tr><td colSpan={9} className="sa-empty-state">Нет данных по точкам</td></tr>
                   ) : dealershipStats.map((d) => (
                   <tr key={d.key}>
                       <td>{d.dealershipName}</td>
@@ -417,7 +417,7 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
                             className="sa-btn-text sa-btn-sm"
                             onClick={() => onOpenDealership?.(d.key)}
                           >
-                            Открыть салон →
+                            Открыть точку →
                           </button>
                         ) : d.linkedAuditId ? (
                           <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenAudit?.(d.linkedAuditId!)}>
@@ -439,7 +439,7 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
               <thead>
                 <tr>
                   <th>Время</th>
-                  <th>Автосалон</th>
+                  <th>Точка</th>
                   <th>Телефон</th>
                   <th>Статус</th>
                   <th className="sa-text-right">Попытка</th>
@@ -457,7 +457,7 @@ export function AuditBatchDetail({ batchId, initialBatch = null, onBack, onOpenA
                   displayJobs.map((job) => (
                     <tr key={job.id}>
                       <td>{job.startedAt ? new Date(job.startedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
-                      <td>{job.dealershipName || 'Автосалон'}</td>
+                      <td>{job.dealershipName || 'Точка'}</td>
                       <td>{job.phone}</td>
                       <td><span className={`sa-batch-state ${jobStatusClass(job.status)}`}>{jobStatusLabel(job.status)}</span></td>
                       <td className="sa-text-right">{job.attempt}/{job.maxAttempts}</td>

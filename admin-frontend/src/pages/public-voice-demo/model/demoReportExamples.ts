@@ -30,7 +30,7 @@ export const DEMO_REPORT_EXAMPLES: DemoExampleMeta[] = [
     managerLabel: 'Средний менеджер',
     dotClass: 'demo-example-card__dot--mid',
     title: 'Вежливо, но без крючка в календарь',
-    teaser: 'Салон, имя и грубый ориентир по платежу есть, а презентация размытая и финал — «напишите сами», без даты показа.',
+    teaser: 'Точка, имя и грубый ориентир по платежу есть, а презентация размытая и финал — «напишите сами», без даты показа.',
     transcript: T.medium,
   },
   {
@@ -38,7 +38,7 @@ export const DEMO_REPORT_EXAMPLES: DemoExampleMeta[] = [
     managerLabel: 'Сильный менеджер',
     dotClass: 'demo-example-card__dot--good',
     title: '«От дорого» до записи',
-    teaser: 'Салон, вилка по цене, трейд-ин, отработка цены двумя вариантами и жёсткая запись на тест-драйв.',
+    teaser: 'Точка, вилка по цене, трейд-ин, отработка цены двумя вариантами и жёсткая запись на тест-драйв.',
     transcript: T.strong,
   },
 ];

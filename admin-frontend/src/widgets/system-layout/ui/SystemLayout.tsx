@@ -6,6 +6,7 @@ import type { AdminTab, AdminRole } from '../../admin-sidebar/ui/AdminSidebar';
 import { Dashboard } from '../../../pages/dashboard/ui/DashboardPage';
 import { HoldingsPage } from '../../../pages/holdings/ui/HoldingsPage';
 import { Companies } from '../../../pages/companies/ui/CompaniesPage';
+import { DealershipDirectionsPage } from '../../../pages/dealership-directions/ui/DealershipDirectionsPage';
 import { DealershipDetail } from '../../../pages/dealership-detail/ui/DealershipDetailPage';
 import { UsersPage } from '../../../pages/users/ui/UsersPage';
 import { TypesNumbersPage } from '../../../pages/types-numbers/ui/TypesNumbersPage';
@@ -318,11 +319,14 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
                         ?? companies.find((c) => c.id === sourceId)?.name
                         ?? sourceId
                       )
-                      : 'Автосалон';
+                      : 'Точка';
                     navigateToEmployee(empId, sourceId ? { id: sourceId, name: sourceName } : null);
                   }}
                   onOpenBatchDetail={navigateToBatch}
                 />
+              )}
+              {activeTab === 'dealershipDirections' && (
+                <DealershipDirectionsPage />
               )}
               {activeTab === 'users' && (
                 <UsersPage

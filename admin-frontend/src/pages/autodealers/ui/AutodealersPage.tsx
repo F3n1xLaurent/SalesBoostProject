@@ -29,7 +29,7 @@ type SortDir = 'asc' | 'desc';
 
 const COLUMN_DEFS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'fullName', label: 'Сотрудник' },
-  { key: 'dealershipName', label: 'Автосалон' },
+  { key: 'dealershipName', label: 'Точка' },
   { key: 'aiRating', label: 'AI-рейтинг', align: 'right' },
   { key: 'deltaRating', label: 'Динамика', align: 'right' },
   { key: 'auditsCount', label: 'Проверки', align: 'right' },
@@ -133,7 +133,7 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
             <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
             </svg>
-            <input className="sa-search-input" placeholder="Поиск по имени / автосалону / городу…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input className="sa-search-input" placeholder="Поиск по имени / точке / городу…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
           <select className="sa-select" defaultValue="30d">
             <option value="7d">7 дней</option>
@@ -168,7 +168,7 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
             </div>
           </div>
           <div className="sa-filter-group">
-            <span className="sa-filter-label">Автосалон:</span>
+            <span className="sa-filter-label">Точка:</span>
             <div className="sa-filter-options">
               {allDealerships.map((d) => (
                 <label key={d} className="sa-filter-check"><input type="checkbox" checked={dealershipFilter.includes(d)} onChange={() => toggleDealer(d)} />{d}</label>

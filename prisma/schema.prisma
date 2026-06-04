@@ -47,6 +47,7 @@ model Holding {
 
   dealerships Dealership[]
   memberships AccountMembership[]
+  dealershipDirections DealershipDirection[]
 
   @@map("holdings")
 }
@@ -74,6 +75,23 @@ model Dealership {
 
   @@index([holdingId])
   @@map("dealerships")
+}
+
+model DealershipDirection {
+  id        String   @id @default(cuid())
+  holdingId String
+  name      String
+  code      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  holding   Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+
+  @@unique([holdingId, name])
+  @@unique([holdingId, code])
+  @@index([holdingId, isActive])
+  @@map("dealership_directions")
 }
 
 model CityDictionary {

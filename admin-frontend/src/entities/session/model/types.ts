@@ -4,6 +4,7 @@ export type AdminTab =
   | 'dashboard'
   | 'holdings'
   | 'companies'
+  | 'dealershipDirections'
   | 'typesNumbers'
   | 'users'
   | 'autodealers'

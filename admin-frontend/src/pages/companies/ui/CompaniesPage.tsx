@@ -7,6 +7,7 @@ import {
   type DealershipStatus,
 } from '../../../shared/lib/admin-panel/mockData';
 import type { DealershipDirection, DealershipItem, DealershipType } from '../../../shared/api/adminPanel';
+import { fetchDealershipDirections, type DealershipDirectionItem } from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { ratingClass, answerRateClass, answerTimeClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import {
@@ -34,7 +35,7 @@ type SortKey = 'name' | 'workingHours' | 'aiRating' | 'answerRate' | 'avgAnswerT
 type SortDir = 'asc' | 'desc';
 
 const COLUMN_DEFS: { key: SortKey; label: string; align?: 'right' }[] = [
-  { key: 'name', label: 'Автосалон' },
+  { key: 'name', label: 'Точка' },
   { key: 'workingHours', label: 'Время работы' },
   { key: 'aiRating', label: 'AI-рейтинг', align: 'right' },
   { key: 'answerRate', label: 'Дозвон, %', align: 'right' },
@@ -70,10 +71,6 @@ type CompanyRow = DealershipRow & { workingHours: string; type: DealershipType; 
 
 function dealershipTypeLabel(type: DealershipType): string {
   return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
-}
-
-function dealershipDirectionLabel(direction: DealershipDirection): string {
-  return direction === 'used_cars' ? 'Автомобили с пробегом' : 'Новые автомобили';
 }
 
 /* ────────────────────── Component ────────────────────── */
@@ -113,6 +110,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   const [cityFilter, setCityFilter] = useState<string[]>([]);
   const [typeFilter, setTypeFilter] = useState<DealershipType[]>([]);
   const [directionFilter, setDirectionFilter] = useState<DealershipDirection[]>([]);
+  const [directionOptions, setDirectionOptions] = useState<DealershipDirectionItem[]>([]);
   const [statusFilter, setStatusFilter] = useState<DealershipStatus[]>([]);
   const [showFilters, setShowFilters] = useState(false);
   const [startingBatch, setStartingBatch] = useState(false);
@@ -124,6 +122,21 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   const [createDealershipOpen, setCreateDealershipOpen] = useState(false);
 
   const hasActiveManual = !!activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'paused');
+  const directionLabelByValue = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const direction of directionOptions) {
+      map.set(direction.id, direction.name);
+      if (direction.code) map.set(direction.code, direction.name);
+    }
+    return map;
+  }, [directionOptions]);
+  const availableDirectionFilters = useMemo(() => {
+    const used = new Set(rows.flatMap((row) => row.directions));
+    return [...used].map((value) => ({
+      value,
+      label: directionLabelByValue.get(value) || value,
+    })).sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+  }, [directionLabelByValue, rows]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -232,6 +245,14 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    fetchDealershipDirections({ active: true })
+      .then((items) => { if (!cancelled) setDirectionOptions(items); })
+      .catch(() => { if (!cancelled) setDirectionOptions([]); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     if (!activeBatchId) return;
     let stopped = false;
     const poll = async () => {
@@ -254,7 +275,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     try {
       const targets = filtered.length > 0 ? filtered : rows;
       if (targets.length === 0) {
-        throw new Error('Нет автосалонов для запуска проверки');
+        throw new Error('Нет точек для запуска проверки');
       }
       const numbers = await fetchTestNumbers();
       if (numbers.length === 0) {
@@ -303,7 +324,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     setStartingBatch(true);
     try {
       const targets = (filtered.length > 0 ? filtered : rows).slice(0, 12);
-      if (targets.length === 0) throw new Error('Нет автосалонов для тестового прогона');
+      if (targets.length === 0) throw new Error('Нет точек для тестового прогона');
       const jobs = targets.map((d) => ({
         dealershipId: d.id,
         dealershipName: d.name,
@@ -356,8 +377,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
 
   return (
     <>
-      <h1 className="sa-page-title">Автосалоны</h1>
-      <p className="sa-page-subtitle">Управление точками холдинга и их эффективностью</p>
+      <h1 className="sa-page-title">Точки</h1>
+      <p className="sa-page-subtitle">Управление точками компании и их эффективностью</p>
 
       {/* ─── Toolbar ─── */}
       <div className="sa-toolbar">
@@ -385,7 +406,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             Фильтры
           </button>
           <button className="sa-btn-primary" onClick={() => setCreateDealershipOpen(true)}>
-            Создать автосалон
+            Создать точку
           </button>
           <button
             className="sa-btn-danger"
@@ -394,7 +415,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             title={hasActiveManual ? 'Уже есть активная ручная проверка — управляйте ею в трее проверок.' : undefined}
           >
             <span className="sa-btn-danger-dot" />
-            {startingBatch ? 'Запуск...' : 'Проверить все автосалоны'}
+            {startingBatch ? 'Запуск...' : 'Проверить все точки'}
           </button>
           <button
             className="sa-btn-outline"
@@ -458,7 +479,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             </div>
           </div>
           <div className="sa-filter-group">
-            <span className="sa-filter-label">Тип автосалона:</span>
+            <span className="sa-filter-label">Тип точки:</span>
             <div className="sa-filter-options">
               {(['own', 'franchised'] as DealershipType[]).map((type) => (
                 <label key={type} className="sa-filter-check">
@@ -471,10 +492,10 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           <div className="sa-filter-group">
             <span className="sa-filter-label">Направления:</span>
             <div className="sa-filter-options">
-              {(['new_cars', 'used_cars'] as DealershipDirection[]).map((direction) => (
-                <label key={direction} className="sa-filter-check">
-                  <input type="checkbox" checked={directionFilter.includes(direction)} onChange={() => toggleDirectionFilter(direction)} />
-                  {dealershipDirectionLabel(direction)}
+              {availableDirectionFilters.map((direction) => (
+                <label key={direction.value} className="sa-filter-check">
+                  <input type="checkbox" checked={directionFilter.includes(direction.value)} onChange={() => toggleDirectionFilter(direction.value)} />
+                  {direction.label}
                 </label>
               ))}
             </div>
@@ -504,7 +525,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             {loading ? (
               <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Загрузка…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Нет автосалонов по заданным фильтрам</td></tr>
+              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Нет точек по заданным фильтрам</td></tr>
             ) : (
               filtered.map((r) => {
                 const delta = deltaDisplay(r.deltaRating);
@@ -562,7 +583,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
         {loading ? (
           <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка…</div>
         ) : filtered.length === 0 ? (
-          <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Нет автосалонов по заданным фильтрам</div>
+          <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Нет точек по заданным фильтрам</div>
         ) : (
           filtered.map((r) => {
             const delta = deltaDisplay(r.deltaRating);

@@ -177,7 +177,7 @@ export function computeAnalyticsSummary(): AnalyticsSummary {
   if (worstDealership.aiRating < 50) {
     actions.push({
       priority: 'P0',
-      target: `Автосалон «${worstDealership.name}»`,
+      target: `Точка «${worstDealership.name}»`,
       action: 'Провести аудит процессов и назначить индивидуальные тренировки',
       reason: `AI-рейтинг ${worstDealership.aiRating} — критический уровень`,
       expectedEffect: 'Вывести рейтинг выше 60 за 3–4 недели',
@@ -212,10 +212,10 @@ export function computeAnalyticsSummary(): AnalyticsSummary {
 
   actions.push({
     priority: 'P2',
-    target: `Автосалон «${bestDealership.name}»`,
-    action: 'Выделить лучшие практики и распространить на другие салоны',
+    target: `Точка «${bestDealership.name}»`,
+    action: 'Выделить лучшие практики и распространить на другие точки',
     reason: `AI-рейтинг ${bestDealership.aiRating} — лучший в сети`,
-    expectedEffect: 'Повышение среднего по холдингу на 3–5 баллов',
+    expectedEffect: 'Повышение среднего по компании на 3–5 баллов',
     drillType: 'dealership',
     drillFilter: bestDealership.id,
   });
