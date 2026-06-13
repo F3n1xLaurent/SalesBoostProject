@@ -1,4 +1,5 @@
 import { openai } from './lib/openaiClient';
+import { config } from './config';
 import { EvaluationResult, EvaluationResultSchema } from './types';
 import { prisma } from './db';
 
@@ -18,7 +19,7 @@ export async function evaluateAttempt(input: EvaluationInput): Promise<Evaluatio
   
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
+      model: config.openaiChatModel,
       messages: [
         {
           role: 'system',
@@ -57,7 +58,7 @@ export async function evaluateAttempt(input: EvaluationInput): Promise<Evaluatio
       // Try to fix JSON with another LLM call
       console.error('JSON parse error, attempting fix...');
       const fixedResponse = await openai.chat.completions.create({
-        model: 'gpt-4-turbo-preview',
+        model: config.openaiChatModel,
         messages: [
           {
             role: 'system',

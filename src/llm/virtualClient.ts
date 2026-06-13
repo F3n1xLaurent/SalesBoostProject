@@ -1,4 +1,5 @@
 import { openai } from '../lib/openaiClient';
+import { config } from '../config';
 import type { Car } from '../data/carLoader';
 import type { DialogState } from '../state/defaultState';
 import type { ConversationPhase } from '../logic/phaseManager';
@@ -432,7 +433,7 @@ INSTRUCTIONS:
   try {
     const maxTokens = input.maxResponseTokens ?? MAX_RESPONSE_TOKENS;
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: config.openaiChatModel,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },

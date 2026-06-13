@@ -20,6 +20,7 @@ const SUPER_NAV: NavItem[] = [
   { id: 'holdings', label: 'Компании', icon: <CompaniesIcon /> },
   { id: 'companies', label: 'Точки', icon: <CompaniesIcon /> },
   { id: 'dealershipDirections', label: 'Направления точек', icon: <CompaniesIcon /> },
+  { id: 'imports', label: 'Данные', icon: <AuditsIcon /> },
   { id: 'typesNumbers', label: 'Типы номеров', icon: <PhoneIcon /> },
   { id: 'users', label: 'Пользователи', icon: <DealersIcon /> },
   { id: 'audits', label: 'Проверки', icon: <AuditsIcon /> },

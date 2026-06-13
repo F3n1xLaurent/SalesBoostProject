@@ -1,4 +1,5 @@
 import { openai } from './lib/openaiClient';
+import { config } from './config';
 
 export interface TeamSummaryData {
   totalAttempts: number;
@@ -86,7 +87,7 @@ ${i + 1}. ${a.userName} (${a.level}, ${a.score.toFixed(1)}/100)
 
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
+      model: config.openaiChatModel,
       messages: [
         {
           role: 'system',

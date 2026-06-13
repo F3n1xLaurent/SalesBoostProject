@@ -1,4 +1,5 @@
 import { openai } from './lib/openaiClient';
+import { config } from './config';
 
 export const INITIAL_CHECKLIST = {
   greeted_and_introduced: 'unknown' as const,
@@ -146,7 +147,7 @@ ${input.client_turn_count != null ? `Client turn count: ${input.client_turn_coun
 Return ONLY valid JSON (no markdown, no extra text).`;
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4-turbo-preview',
+    model: config.openaiChatModel,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userContent },

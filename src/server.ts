@@ -38,6 +38,19 @@ import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifie
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
 import {
+  handleAnalyzeImportSource,
+  handleCreateImport,
+  handleDeleteImport,
+  handleGenerateImportTagRule,
+  handleGetImport,
+  handleListImportedItems,
+  handleListImports,
+  handlePreviewImportConfig,
+  handleRunImport,
+  handleTestImportTagRules,
+  handleUpdateImport,
+} from './imports/importManagement';
+import {
   handleCreateDealership,
   handleCreateDealershipDirection,
   handleCreateDealershipPhoneNumber,
@@ -866,6 +879,90 @@ app.use('/api/admin', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
     console.error('Admin API auth error:', error);
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+});
+
+app.use('/api/imports', (req, res, next) => {
+  adminApiAuthMiddleware(req, res, next).catch((error) => {
+    console.error('Imports API auth error:', error);
+    res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+});
+
+app.post('/api/imports/analyze-source', (req, res) => {
+  handleAnalyzeImportSource(req, res).catch((error) => {
+    console.error('Analyze import source error:', error);
+    res.status(500).json({ error: 'Не удалось проанализировать источник.' });
+  });
+});
+
+app.post('/api/imports/generate-tag-rule', (req, res) => {
+  handleGenerateImportTagRule(req, res).catch((error) => {
+    console.error('Generate import tag rule error:', error);
+    res.status(500).json({ error: 'Не удалось сформировать правило.' });
+  });
+});
+
+app.post('/api/imports/test-tag-rules', (req, res) => {
+  handleTestImportTagRules(req, res).catch((error) => {
+    console.error('Test import tag rules error:', error);
+    res.status(500).json({ error: 'Не удалось протестировать правила тегов.' });
+  });
+});
+
+app.post('/api/imports/preview', (req, res) => {
+  handlePreviewImportConfig(req, res).catch((error) => {
+    console.error('Preview import config error:', error);
+    res.status(500).json({ error: 'Не удалось построить preview.' });
+  });
+});
+
+app.get('/api/imported-items', (req, res) => {
+  handleListImportedItems(req, res).catch((error) => {
+    console.error('List imported items error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить данные.' });
+  });
+});
+
+app.get('/api/imports', (req, res) => {
+  handleListImports(req, res).catch((error) => {
+    console.error('List imports error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить импорты.' });
+  });
+});
+
+app.post('/api/imports', (req, res) => {
+  handleCreateImport(req, res).catch((error) => {
+    console.error('Create import error:', error);
+    res.status(500).json({ error: 'Не удалось создать импорт.' });
+  });
+});
+
+app.get('/api/imports/:id', (req, res) => {
+  handleGetImport(req, res).catch((error) => {
+    console.error('Get import error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить импорт.' });
+  });
+});
+
+app.patch('/api/imports/:id', (req, res) => {
+  handleUpdateImport(req, res).catch((error) => {
+    console.error('Update import error:', error);
+    res.status(500).json({ error: 'Не удалось обновить импорт.' });
+  });
+});
+
+app.delete('/api/imports/:id', (req, res) => {
+  handleDeleteImport(req, res).catch((error) => {
+    console.error('Delete import error:', error);
+    res.status(500).json({ error: 'Не удалось удалить импорт.' });
+  });
+});
+
+app.post('/api/imports/:id/run', (req, res) => {
+  handleRunImport(req, res).catch((error) => {
+    console.error('Run import error:', error);
+    res.status(500).json({ error: 'Не удалось запустить импорт.' });
   });
 });
 

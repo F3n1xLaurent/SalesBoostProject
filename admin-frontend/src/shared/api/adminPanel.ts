@@ -283,11 +283,241 @@ export interface PhoneNumberItem {
   updatedAt: string;
 }
 
+export type ImportFormat = 'json' | 'xml' | 'csv';
+export type ImportStatus = 'active' | 'paused' | 'error';
+export type ImportSchedule = 'manual' | 'hourly' | 'daily' | 'weekly' | 'custom';
+export type ImportTagOperator =
+  | 'equals'
+  | 'notEquals'
+  | 'contains'
+  | 'notContains'
+  | 'exists'
+  | 'notExists'
+  | 'greaterThan'
+  | 'lessThan'
+  | 'greaterOrEqual'
+  | 'lessOrEqual'
+  | 'in'
+  | 'regex';
+
+export interface ImportAIConfig {
+  entityType: string;
+  externalIdField: string | null;
+  titleFields: string[];
+  descriptionFields: string[];
+  fieldLabels: Record<string, string>;
+  importantFields: string[];
+  ignoredFields: string[];
+}
+
+export interface ImportTagRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  condition: {
+    field: string;
+    operator: ImportTagOperator;
+    value?: unknown;
+  };
+}
+
+export interface ImportPreviewItem {
+  title: string;
+  description: string;
+  tags: string[];
+}
+
+export interface ImportAnalyzeResult {
+  format: ImportFormat;
+  itemsPath: string;
+  sampleItems: unknown[];
+  aiConfig: ImportAIConfig;
+  previewItems: ImportPreviewItem[];
+}
+
+export interface ImportSourceItem {
+  id: string;
+  name: string;
+  url: string;
+  format: ImportFormat;
+  status: ImportStatus;
+  schedule: string | null;
+  itemsPath: string;
+  entityType: string;
+  aiConfig: ImportAIConfig;
+  tagRules: ImportTagRule[];
+  lastRunAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  itemsCount: number;
+}
+
+export interface ImportedItem {
+  id: string;
+  importSourceId: string;
+  externalId: string | null;
+  title: string;
+  description: string;
+  rawData: unknown;
+  normalizedData: Record<string, unknown>;
+  tags: string[];
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ImportedDataItem extends ImportedItem {
+  importSourceName: string;
+  importSourceFormat: ImportFormat;
+}
+
+export interface ImportRunItem {
+  id: string;
+  importSourceId: string;
+  status: 'success' | 'error' | 'running';
+  startedAt: string;
+  finishedAt: string | null;
+  totalItems: number;
+  createdItems: number;
+  updatedItems: number;
+  skippedItems: number;
+  errorMessage: string | null;
+}
+
 export async function fetchSummary(): Promise<PlatformSummary | null> {
   const res = await apiFetch(`${API_BASE}/api/admin/summary`);
   if (!res.ok) return null;
   const data = await res.json();
   return data as PlatformSummary;
+}
+
+export async function analyzeImportSource(url: string): Promise<ImportAnalyzeResult> {
+  const res = await apiFetch(`${API_BASE}/api/imports/analyze-source`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось проанализировать источник.');
+  return data as ImportAnalyzeResult;
+}
+
+export async function generateImportTagRule(payload: {
+  text: string;
+  availableFields: string[];
+}): Promise<Omit<ImportTagRule, 'id'>> {
+  const res = await apiFetch(`${API_BASE}/api/imports/generate-tag-rule`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось сформировать правило.');
+  return data as Omit<ImportTagRule, 'id'>;
+}
+
+export async function testImportTagRules(payload: {
+  sampleItems: unknown[];
+  tagRules: ImportTagRule[];
+}): Promise<Array<{ item: unknown; tags: string[] }>> {
+  const res = await apiFetch(`${API_BASE}/api/imports/test-tag-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось протестировать правила тегов.');
+  return Array.isArray(data.items) ? data.items as Array<{ item: unknown; tags: string[] }> : [];
+}
+
+export async function previewImportConfig(payload: {
+  sampleItems: unknown[];
+  aiConfig: ImportAIConfig;
+  tagRules: ImportTagRule[];
+}): Promise<ImportPreviewItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/imports/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось построить preview.');
+  return Array.isArray(data.previewItems) ? data.previewItems as ImportPreviewItem[] : [];
+}
+
+export async function fetchImports(): Promise<ImportSourceItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/imports`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить импорты.');
+  return Array.isArray(data.items) ? data.items as ImportSourceItem[] : [];
+}
+
+export async function fetchImportedItems(params?: {
+  limit?: number;
+  sourceId?: string | null;
+}): Promise<ImportedDataItem[]> {
+  const query = new URLSearchParams();
+  if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.sourceId) query.set('sourceId', params.sourceId);
+  const res = await apiFetch(`${API_BASE}/api/imported-items${query.toString() ? `?${query.toString()}` : ''}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить данные.');
+  return Array.isArray(data.items) ? data.items as ImportedDataItem[] : [];
+}
+
+export async function fetchImportDetail(id: string): Promise<{
+  item: ImportSourceItem;
+  importedItems: ImportedItem[];
+  runs: ImportRunItem[];
+}> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить импорт.');
+  return data;
+}
+
+export async function createImportSource(payload: {
+  name: string;
+  url: string;
+  format: ImportFormat;
+  schedule: string | null;
+  itemsPath: string;
+  aiConfig: ImportAIConfig;
+  tagRules: ImportTagRule[];
+}): Promise<ImportSourceItem> {
+  const res = await apiFetch(`${API_BASE}/api/imports`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать импорт.');
+  return data.item as ImportSourceItem;
+}
+
+export async function updateImportSource(id: string, payload: Partial<Pick<ImportSourceItem, 'name' | 'url' | 'status' | 'schedule' | 'aiConfig' | 'tagRules'>>): Promise<ImportSourceItem> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить импорт.');
+  return data.item as ImportSourceItem;
+}
+
+export async function deleteImportSource(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить импорт.');
+}
+
+export async function runImportSource(id: string): Promise<ImportRunItem> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}/run`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось запустить импорт.');
+  return data.run as ImportRunItem;
 }
 
 export async function fetchHoldings(filters?: {

@@ -1,4 +1,5 @@
 import { openai } from '../lib/openaiClient';
+import { config } from '../config';
 
 export interface TrainingAssessmentInput {
   dialogHistory: Array< { role: 'client' | 'manager'; content: string }>;
@@ -35,7 +36,7 @@ export async function generateTrainingAssessment(input: TrainingAssessmentInput)
     .join('\n\n');
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: config.openaiChatModel,
     messages: [
       {
         role: 'system',

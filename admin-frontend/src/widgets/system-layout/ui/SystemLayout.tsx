@@ -7,6 +7,7 @@ import { Dashboard } from '../../../pages/dashboard/ui/DashboardPage';
 import { HoldingsPage } from '../../../pages/holdings/ui/HoldingsPage';
 import { Companies } from '../../../pages/companies/ui/CompaniesPage';
 import { DealershipDirectionsPage } from '../../../pages/dealership-directions/ui/DealershipDirectionsPage';
+import { ImportsPage } from '../../../pages/imports/ui/ImportsPage';
 import { DealershipDetail } from '../../../pages/dealership-detail/ui/DealershipDetailPage';
 import { UsersPage } from '../../../pages/users/ui/UsersPage';
 import { TypesNumbersPage } from '../../../pages/types-numbers/ui/TypesNumbersPage';
@@ -327,6 +328,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
               )}
               {activeTab === 'dealershipDirections' && (
                 <DealershipDirectionsPage />
+              )}
+              {activeTab === 'imports' && (
+                <ImportsPage />
               )}
               {activeTab === 'users' && (
                 <UsersPage

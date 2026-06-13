@@ -94,6 +94,68 @@ model DealershipDirection {
   @@map("dealership_directions")
 }
 
+model ImportSource {
+  id          String   @id @default(cuid())
+  name        String
+  url         String
+  format      String
+  status      String   @default("active")
+  schedule    String?
+  itemsPath   String
+  entityType  String
+  aiConfigJson String
+  tagRulesJson String @default("[]")
+  lastRunAt   DateTime?
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items       ImportedItem[]
+  runs        ImportRun[]
+
+  @@index([status])
+  @@map("import_sources")
+}
+
+model ImportedItem {
+  id             String   @id @default(cuid())
+  importSourceId String
+  externalId     String?
+  title          String
+  description    String
+  rawDataJson    String
+  normalizedDataJson String
+  tagsJson       String   @default("[]")
+  contentHash    String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  importSource   ImportSource @relation(fields: [importSourceId], references: [id], onDelete: Cascade)
+
+  @@unique([importSourceId, contentHash])
+  @@index([importSourceId])
+  @@index([externalId])
+  @@map("imported_items")
+}
+
+model ImportRun {
+  id             String   @id @default(cuid())
+  importSourceId String
+  status         String
+  startedAt      DateTime @default(now())
+  finishedAt     DateTime?
+  totalItems     Int      @default(0)
+  createdItems   Int      @default(0)
+  updatedItems   Int      @default(0)
+  skippedItems   Int      @default(0)
+  errorMessage   String?
+
+  importSource   ImportSource @relation(fields: [importSourceId], references: [id], onDelete: Cascade)
+
+  @@index([importSourceId, startedAt])
+  @@map("import_runs")
+}
+
 model CityDictionary {
   id         Int      @id @default(autoincrement())
   name       String   @unique

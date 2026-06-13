@@ -3,9 +3,12 @@ import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { config } from '../config';
 
 function createOpenAIClient(): OpenAI {
-  const baseOptions = { apiKey: config.openaiApiKey };
+  const baseOptions = {
+    apiKey: config.openaiApiKey,
+    baseURL: config.openaiBaseUrl,
+  };
 
-  if (config.httpsProxy) {
+  if (config.httpsProxy && config.aiApiProvider !== 'proxyapi') {
     const proxyAgent = new ProxyAgent(config.httpsProxy);
     const customFetch = (input: any, init?: any) =>
       undiciFetch(input as any, { ...init, dispatcher: proxyAgent } as any);

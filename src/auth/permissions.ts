@@ -420,6 +420,7 @@ export const SUPER_ADMIN_TAB_PERMISSIONS = {
   holdings: [PERMISSIONS.ux.holdings.view, PERMISSIONS.holding.view],
   companies: [PERMISSIONS.ux.dealerships.list, PERMISSIONS.dealer.view],
   dealershipDirections: [PERMISSIONS.dealer.view],
+  imports: [PERMISSIONS.dealer.view],
   typesNumbers: [PERMISSIONS.ux.phoneNumberTypes.view, PERMISSIONS.dealer.view],
   users: [PERMISSIONS.ux.users.view, PERMISSIONS.user.view],
   autodealers: [PERMISSIONS.ux.employees.list, PERMISSIONS.manager.view],

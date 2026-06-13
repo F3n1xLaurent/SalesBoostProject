@@ -1,4 +1,5 @@
 import { openai } from '../lib/openaiClient';
+import { config } from '../config';
 import type { Car } from '../data/carLoader';
 import type { DialogState } from '../state/defaultState';
 import {
@@ -179,7 +180,7 @@ ${behaviorEvidence}
 
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: config.openaiChatModel,
       messages: [
         { role: 'system', content: EVALUATOR_SYSTEM_PROMPT },
         { role: 'user', content: userPrompt },
