@@ -48,6 +48,7 @@ model Holding {
   dealerships Dealership[]
   memberships AccountMembership[]
   dealershipDirections DealershipDirection[]
+  importSources ImportSource[]
 
   @@map("holdings")
 }
@@ -96,6 +97,7 @@ model DealershipDirection {
 
 model ImportSource {
   id          String   @id @default(cuid())
+  holdingId   String?
   name        String
   url         String
   format      String
@@ -112,8 +114,10 @@ model ImportSource {
 
   items       ImportedItem[]
   runs        ImportRun[]
+  holding     Holding? @relation(fields: [holdingId], references: [id], onDelete: SetNull)
 
   @@index([status])
+  @@index([holdingId])
   @@map("import_sources")
 }
 

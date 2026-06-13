@@ -337,6 +337,8 @@ export interface ImportAnalyzeResult {
 
 export interface ImportSourceItem {
   id: string;
+  holdingId: string | null;
+  holdingName: string | null;
   name: string;
   url: string;
   format: ImportFormat;
@@ -370,6 +372,15 @@ export interface ImportedItem {
 export interface ImportedDataItem extends ImportedItem {
   importSourceName: string;
   importSourceFormat: ImportFormat;
+  holdingId: string | null;
+  holdingName: string | null;
+}
+
+export interface ImportedItemsResult {
+  items: ImportedDataItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface ImportRunItem {
@@ -417,6 +428,20 @@ export async function generateImportTagRule(payload: {
   return data as Omit<ImportTagRule, 'id'>;
 }
 
+export async function generateImportTagRules(payload: {
+  sampleItems: unknown[];
+  availableFields: string[];
+}): Promise<ImportTagRule[]> {
+  const res = await apiFetch(`${API_BASE}/api/imports/generate-tag-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось сформировать правила.');
+  return Array.isArray(data.rules) ? data.rules as ImportTagRule[] : [];
+}
+
 export async function testImportTagRules(payload: {
   sampleItems: unknown[];
   tagRules: ImportTagRule[];
@@ -446,8 +471,10 @@ export async function previewImportConfig(payload: {
   return Array.isArray(data.previewItems) ? data.previewItems as ImportPreviewItem[] : [];
 }
 
-export async function fetchImports(): Promise<ImportSourceItem[]> {
-  const res = await apiFetch(`${API_BASE}/api/imports`);
+export async function fetchImports(params?: { holdingId?: string | null }): Promise<ImportSourceItem[]> {
+  const query = new URLSearchParams();
+  if (params?.holdingId) query.set('holdingId', params.holdingId);
+  const res = await apiFetch(`${API_BASE}/api/imports${query.toString() ? `?${query.toString()}` : ''}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить импорты.');
   return Array.isArray(data.items) ? data.items as ImportSourceItem[] : [];
@@ -455,15 +482,37 @@ export async function fetchImports(): Promise<ImportSourceItem[]> {
 
 export async function fetchImportedItems(params?: {
   limit?: number;
+  offset?: number;
   sourceId?: string | null;
-}): Promise<ImportedDataItem[]> {
+  holdingId?: string | null;
+  search?: string;
+  tags?: string[];
+}): Promise<ImportedItemsResult> {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.offset != null) query.set('offset', String(params.offset));
   if (params?.sourceId) query.set('sourceId', params.sourceId);
+  if (params?.holdingId) query.set('holdingId', params.holdingId);
+  if (params?.search?.trim()) query.set('search', params.search.trim());
+  if (params?.tags?.length) query.set('tags', params.tags.join(','));
   const res = await apiFetch(`${API_BASE}/api/imported-items${query.toString() ? `?${query.toString()}` : ''}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить данные.');
-  return Array.isArray(data.items) ? data.items as ImportedDataItem[] : [];
+  return {
+    items: Array.isArray(data.items) ? data.items as ImportedDataItem[] : [],
+    total: typeof data.total === 'number' ? data.total : 0,
+    limit: typeof data.limit === 'number' ? data.limit : params?.limit ?? 25,
+    offset: typeof data.offset === 'number' ? data.offset : params?.offset ?? 0,
+  };
+}
+
+export async function fetchImportedTags(params?: { holdingId?: string | null }): Promise<string[]> {
+  const query = new URLSearchParams();
+  if (params?.holdingId) query.set('holdingId', params.holdingId);
+  const res = await apiFetch(`${API_BASE}/api/imported-items/tags${query.toString() ? `?${query.toString()}` : ''}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить теги.');
+  return Array.isArray(data.tags) ? data.tags as string[] : [];
 }
 
 export async function fetchImportDetail(id: string): Promise<{
@@ -478,6 +527,7 @@ export async function fetchImportDetail(id: string): Promise<{
 }
 
 export async function createImportSource(payload: {
+  holdingId: string;
   name: string;
   url: string;
   format: ImportFormat;
@@ -496,7 +546,7 @@ export async function createImportSource(payload: {
   return data.item as ImportSourceItem;
 }
 
-export async function updateImportSource(id: string, payload: Partial<Pick<ImportSourceItem, 'name' | 'url' | 'status' | 'schedule' | 'aiConfig' | 'tagRules'>>): Promise<ImportSourceItem> {
+export async function updateImportSource(id: string, payload: Partial<Pick<ImportSourceItem, 'holdingId' | 'name' | 'url' | 'status' | 'schedule' | 'aiConfig' | 'tagRules'>>): Promise<ImportSourceItem> {
   const res = await apiFetch(`${API_BASE}/api/imports/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },

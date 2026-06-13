@@ -42,8 +42,10 @@ import {
   handleCreateImport,
   handleDeleteImport,
   handleGenerateImportTagRule,
+  handleGenerateImportTagRules,
   handleGetImport,
   handleListImportedItems,
+  handleListImportedTags,
   handleListImports,
   handlePreviewImportConfig,
   handleRunImport,
@@ -903,6 +905,13 @@ app.post('/api/imports/generate-tag-rule', (req, res) => {
   });
 });
 
+app.post('/api/imports/generate-tag-rules', (req, res) => {
+  handleGenerateImportTagRules(req, res).catch((error) => {
+    console.error('Generate import tag rules error:', error);
+    res.status(500).json({ error: 'Не удалось сформировать правила.' });
+  });
+});
+
 app.post('/api/imports/test-tag-rules', (req, res) => {
   handleTestImportTagRules(req, res).catch((error) => {
     console.error('Test import tag rules error:', error);
@@ -917,7 +926,24 @@ app.post('/api/imports/preview', (req, res) => {
   });
 });
 
-app.get('/api/imported-items', (req, res) => {
+app.get('/api/imported-items/tags', (req, res, next) => {
+  adminApiAuthMiddleware(req, res, next).catch((error) => {
+    console.error('Imported tags API auth error:', error);
+    res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+}, (req, res) => {
+  handleListImportedTags(req, res).catch((error) => {
+    console.error('List imported tags error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить теги.' });
+  });
+});
+
+app.get('/api/imported-items', (req, res, next) => {
+  adminApiAuthMiddleware(req, res, next).catch((error) => {
+    console.error('Imported items API auth error:', error);
+    res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+}, (req, res) => {
   handleListImportedItems(req, res).catch((error) => {
     console.error('List imported items error:', error);
     res.status(500).json({ error: 'Не удалось загрузить данные.' });

@@ -5,11 +5,12 @@ import {
   deleteImportSource,
   fetchImportDetail,
   fetchImportedItems,
+  fetchImportedTags,
   fetchImports,
+  fetchHoldings,
   generateImportTagRule,
-  previewImportConfig,
+  generateImportTagRules,
   runImportSource,
-  testImportTagRules,
   updateImportSource,
   type ImportAIConfig,
   type ImportedDataItem,
@@ -18,14 +19,19 @@ import {
   type ImportSourceItem,
   type ImportTagOperator,
   type ImportTagRule,
+  type HoldingItem,
 } from '../../../shared/api/adminPanel';
 
-type WizardStep = 1 | 2 | 3 | 4;
+type WizardStep = 1 | 2 | 3;
 type DataPageTab = 'data' | 'imports';
 type DescriptionModalItem = {
   title: string;
   sourceName: string;
   description: string;
+};
+type TagsModalItem = {
+  title: string;
+  tags: string[];
 };
 type ImportEditModalItem = ImportSourceItem;
 type ImportInfoModalData = {
@@ -57,6 +63,8 @@ const OPERATORS: { value: ImportTagOperator; label: string }[] = [
   { value: 'in', label: 'Одно из значений' },
   { value: 'regex', label: 'По шаблону' },
 ];
+
+const DATA_PAGE_SIZE = 25;
 
 function overlayCardStyle(width = 920): React.CSSProperties {
   return {
@@ -111,6 +119,10 @@ function parseRuleValue(value: string): unknown {
   return trimmed;
 }
 
+function operatorLabel(value: ImportTagOperator): string {
+  return OPERATORS.find((operator) => operator.value === value)?.label || value;
+}
+
 function flattenFields(value: unknown, prefix = '', out = new Set<string>()): string[] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     if (prefix) out.add(prefix);
@@ -122,6 +134,12 @@ function flattenFields(value: unknown, prefix = '', out = new Set<string>()): st
     else out.add(path);
   }
   return Array.from(out);
+}
+
+function compactList(values: string[], fallback = 'Определим автоматически'): string {
+  const clean = values.map((value) => value.trim()).filter(Boolean);
+  if (clean.length === 0) return fallback;
+  return clean.slice(0, 3).join(', ') + (clean.length > 3 ? ` +${clean.length - 3}` : '');
 }
 
 function EyeIcon() {
@@ -150,6 +168,138 @@ function lineClampStyle(lines: number): React.CSSProperties {
     overflow: 'hidden',
     whiteSpace: 'pre-line',
   };
+}
+
+function CompactTagsCell(props: {
+  tags: string[];
+  onOpen: () => void;
+}) {
+  if (props.tags.length === 0) return <span className="sa-meta">—</span>;
+  const visible = props.tags.slice(0, 2);
+  const hiddenCount = Math.max(0, props.tags.length - visible.length);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5, maxWidth: 220, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+      {visible.map((tag) => (
+        <span
+          key={tag}
+          className="sa-chip"
+          title={tag}
+          style={{ maxWidth: 94, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}
+        >
+          {tag}
+        </span>
+      ))}
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          className="sa-btn-outline sa-btn-sm"
+          onClick={props.onOpen}
+          style={{ padding: '4px 8px', minHeight: 26, flex: '0 0 auto' }}
+          title={props.tags.join(', ')}
+        >
+          +{hiddenCount}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function TagsModal(props: {
+  item: TagsModalItem | null;
+  onClose: () => void;
+}) {
+  if (!props.item) return null;
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
+      onClick={props.onClose}
+    >
+      <div style={overlayCardStyle(640)} onClick={(event) => event.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 20 }}>Теги</h2>
+            <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13, ...lineClampStyle(1) }}>{props.item.title}</div>
+          </div>
+          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {props.item.tags.map((tag) => (
+            <span key={tag} className="sa-chip" title={tag} style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tag}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TagFilterPicker(props: {
+  availableTags: string[];
+  selectedTags: string[];
+  loading: boolean;
+  onChange: (tags: string[]) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredTags = props.availableTags
+    .filter((tag) => !props.selectedTags.includes(tag))
+    .filter((tag) => !normalizedQuery || tag.toLowerCase().includes(normalizedQuery))
+    .slice(0, 30);
+
+  function addTag(tag: string) {
+    props.onChange([...props.selectedTags, tag]);
+    setQuery('');
+    setOpen(false);
+  }
+
+  return (
+    <div style={{ position: 'relative', display: 'grid', gap: 8 }}>
+      <input
+        className="sa-input"
+        value={query}
+        onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        placeholder={props.loading ? 'Загружаем теги...' : 'Найти тег'}
+        disabled={props.loading || props.availableTags.length === 0}
+      />
+      {open && !props.loading && (
+        <div style={{ position: 'absolute', top: 44, left: 0, right: 0, zIndex: 20, maxHeight: 260, overflowY: 'auto', border: '1px solid var(--sa-divider)', borderRadius: 12, background: '#fff', boxShadow: '0 18px 36px rgba(15,23,42,0.14)', padding: 6 }}>
+          {filteredTags.length ? filteredTags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onMouseDown={(event) => { event.preventDefault(); addTag(tag); }}
+              style={{ width: '100%', border: 0, background: 'transparent', padding: '8px 10px', textAlign: 'left', borderRadius: 8, cursor: 'pointer', color: 'var(--sa-text)' }}
+            >
+              {tag}
+            </button>
+          )) : (
+            <div className="sa-meta" style={{ padding: 10 }}>Теги не найдены</div>
+          )}
+        </div>
+      )}
+      {props.selectedTags.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {props.selectedTags.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              className="sa-chip"
+              onClick={() => props.onChange(props.selectedTags.filter((item) => item !== tag))}
+              title="Убрать фильтр"
+              style={{ border: 0, cursor: 'pointer', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              {tag} ×
+            </button>
+          ))}
+          <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => props.onChange([])}>Сбросить</button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function DescriptionModal(props: {
@@ -193,14 +343,14 @@ function TagRulesEditor(props: {
   availableFields: string[];
   tagRules: ImportTagRule[];
   onChange: (rules: ImportTagRule[]) => void;
-  sampleItems?: unknown[];
 }) {
   const [ruleName, setRuleName] = useState('');
   const [ruleField, setRuleField] = useState('');
   const [ruleOperator, setRuleOperator] = useState<ImportTagOperator>('equals');
   const [ruleValue, setRuleValue] = useState('');
   const [aiRuleText, setAiRuleText] = useState('');
-  const [tagTestItems, setTagTestItems] = useState<Array<{ item: unknown; tags: string[] }>>([]);
+  const [manualModalOpen, setManualModalOpen] = useState(false);
+  const [aiModalOpen, setAiModalOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -228,6 +378,8 @@ function TagRulesEditor(props: {
     setRuleName('');
     setRuleField('');
     setRuleValue('');
+    setRuleOperator('equals');
+    setManualModalOpen(false);
   }
 
   async function addAiRule() {
@@ -237,6 +389,7 @@ function TagRulesEditor(props: {
       const generated = await generateImportTagRule({ text: aiRuleText, availableFields: props.availableFields });
       props.onChange([...props.tagRules, { id: `rule-${Date.now()}`, enabled: true, ...generated }]);
       setAiRuleText('');
+      setAiModalOpen(false);
     } catch (ruleError) {
       setError(ruleError instanceof Error ? ruleError.message : 'Не удалось сформировать правило.');
     } finally {
@@ -244,138 +397,117 @@ function TagRulesEditor(props: {
     }
   }
 
-  async function testRules() {
-    if (!props.sampleItems?.length) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setTagTestItems(await testImportTagRules({ sampleItems: props.sampleItems, tagRules: props.tagRules }));
-    } catch (testError) {
-      setError(testError instanceof Error ? testError.message : 'Не удалось протестировать правила.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div style={{ display: 'grid', gap: 16 }}>
+    <div style={{ display: 'grid', gap: 12 }}>
       {error && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>{error}</div>}
 
-      <section style={{ border: '1px solid var(--sa-divider)', borderRadius: 16, padding: 14, display: 'grid', gap: 12, background: '#f9fafb' }}>
-        <div>
-          <h4 style={{ margin: '0 0 4px', fontSize: 15 }}>Добавить правило вручную</h4>
-          <div className="sa-meta">Укажите, какой тег поставить и при каком условии.</div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span className="sa-meta">Название тега</span>
-            <input className="sa-input" placeholder="Например: VIP" value={ruleName} onChange={(event) => setRuleName(event.target.value)} />
-          </label>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span className="sa-meta">Поле данных</span>
-            <select className="sa-select" value={ruleField} onChange={(event) => setRuleField(event.target.value)}>
-              <option value="">Выберите поле</option>
-              {props.availableFields.map((field) => <option key={field} value={field}>{field}</option>)}
-            </select>
-          </label>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span className="sa-meta">Условие</span>
-            <select className="sa-select" value={ruleOperator} onChange={(event) => setRuleOperator(event.target.value as ImportTagOperator)}>
-              {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
-            </select>
-          </label>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span className="sa-meta">Значение</span>
-            <input className="sa-input" placeholder="С чем сравнить" value={ruleValue} onChange={(event) => setRuleValue(event.target.value)} />
-          </label>
-        </div>
-        <div><button className="sa-btn-outline" onClick={addManualRule}>Добавить правило</button></div>
-      </section>
-
-      <section style={{ border: '1px solid var(--sa-divider)', borderRadius: 16, padding: 14, display: 'grid', gap: 10, background: '#fff' }}>
-        <div>
-          <h4 style={{ margin: '0 0 4px', fontSize: 15 }}>AI-правило обычным языком</h4>
-          <div className="sa-meta">Опишите правило словами, система сама подберёт поле и условие.</div>
-        </div>
-        <textarea className="sa-input" rows={3} value={aiRuleText} onChange={(event) => setAiRuleText(event.target.value)} placeholder="Проставь тег Комиссия, если commission равно true" />
-        <div><button className="sa-btn-outline" disabled={busy || !aiRuleText.trim()} onClick={() => void addAiRule()}>Сформировать правило</button></div>
-      </section>
-
       <section style={{ display: 'grid', gap: 10 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <div>
-            <h4 style={{ margin: '0 0 4px', fontSize: 15 }}>Текущие правила</h4>
-            <div className="sa-meta">Эти правила применяются только к этому источнику импорта.</div>
+            <h4 style={{ margin: '0 0 4px', fontSize: 16 }}>Правила автотегов</h4>
+            <div className="sa-meta">Источник будет сам проставлять эти теги при импорте.</div>
           </div>
-          <span className="sa-chip">{props.tagRules.length} правил</span>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="sa-chip">{props.tagRules.length} правил</span>
+            <button className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setManualModalOpen(true); }}>Добавить вручную</button>
+            <button className="sa-btn-primary sa-btn-sm" onClick={() => { setError(null); setAiModalOpen(true); }}>AI-правило</button>
+          </div>
         </div>
         {props.tagRules.length ? props.tagRules.map((rule, index) => (
-          <div key={rule.id} style={{ border: '1px solid var(--sa-divider)', borderRadius: 16, padding: 14, display: 'grid', gap: 12, background: rule.enabled ? '#fff' : '#f9fafb' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <strong>Правило {index + 1}</strong>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--sa-text-secondary)', fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  checked={rule.enabled}
-                  onChange={(event) => updateRule(rule.id, { enabled: event.target.checked })}
-                />
-                {rule.enabled ? 'Включено' : 'Выключено'}
-              </label>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10, alignItems: 'end' }}>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span className="sa-meta">Тег</span>
-                <input className="sa-input" value={rule.name} onChange={(event) => updateRule(rule.id, { name: event.target.value })} />
-              </label>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span className="sa-meta">Поле</span>
-                <select className="sa-select" value={rule.condition.field} onChange={(event) => updateRuleCondition(rule.id, { field: event.target.value })}>
-                  {props.availableFields.includes(rule.condition.field) ? null : <option value={rule.condition.field}>{rule.condition.field}</option>}
-                  {props.availableFields.map((field) => <option key={field} value={field}>{field}</option>)}
-                </select>
-              </label>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span className="sa-meta">Условие</span>
-                <select className="sa-select" value={rule.condition.operator} onChange={(event) => updateRuleCondition(rule.id, { operator: event.target.value as ImportTagOperator })}>
-                  {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
-                </select>
-              </label>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span className="sa-meta">Значение</span>
-                <input className="sa-input" value={stringifyRuleValue(rule.condition.value)} onChange={(event) => updateRuleCondition(rule.id, { value: parseRuleValue(event.target.value) })} />
-              </label>
-              <button className="sa-btn-outline" style={{ justifySelf: 'start' }} onClick={() => props.onChange(props.tagRules.filter((item) => item.id !== rule.id))}>Удалить</button>
-            </div>
+          <div key={rule.id} style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: '8px 10px', display: 'grid', gridTemplateColumns: 'minmax(118px, 1.1fr) minmax(118px, 1fr) minmax(118px, 1fr) minmax(100px, 0.8fr) auto auto', gap: 8, alignItems: 'center', overflowX: 'auto', background: rule.enabled ? '#fff' : '#f9fafb' }}>
+            <input className="sa-input" style={{ minHeight: 34, height: 34 }} aria-label={`Тег правила ${index + 1}`} value={rule.name} onChange={(event) => updateRule(rule.id, { name: event.target.value })} />
+            <select className="sa-select" style={{ minHeight: 34, height: 34 }} aria-label="Поле" value={rule.condition.field} onChange={(event) => updateRuleCondition(rule.id, { field: event.target.value })}>
+              {props.availableFields.includes(rule.condition.field) ? null : <option value={rule.condition.field}>{rule.condition.field}</option>}
+              {props.availableFields.map((field) => <option key={field} value={field}>{field}</option>)}
+            </select>
+            <select className="sa-select" style={{ minHeight: 34, height: 34 }} aria-label="Условие" value={rule.condition.operator} onChange={(event) => updateRuleCondition(rule.id, { operator: event.target.value as ImportTagOperator })}>
+              {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
+            </select>
+            <input className="sa-input" style={{ minHeight: 34, height: 34 }} aria-label="Значение" placeholder={operatorLabel(rule.condition.operator)} value={stringifyRuleValue(rule.condition.value)} onChange={(event) => updateRuleCondition(rule.id, { value: parseRuleValue(event.target.value) })} />
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--sa-text-secondary)', fontSize: 12, whiteSpace: 'nowrap' }}>
+              <input
+                type="checkbox"
+                checked={rule.enabled}
+                onChange={(event) => updateRule(rule.id, { enabled: event.target.checked })}
+              />
+              Вкл.
+            </label>
+            <button className="sa-btn-outline sa-btn-sm" onClick={() => props.onChange(props.tagRules.filter((item) => item.id !== rule.id))}>Удалить</button>
           </div>
         )) : (
-          <div style={{ padding: 16, border: '1px dashed var(--sa-divider)', borderRadius: 16, color: 'var(--sa-text-secondary)', fontSize: 14 }}>
-            Правил пока нет. Добавьте правило вручную или сформируйте его через AI.
+          <div style={{ padding: 14, border: '1px dashed var(--sa-divider)', borderRadius: 12, color: 'var(--sa-text-secondary)', fontSize: 14 }}>
+            Правил пока нет. Добавьте вручную или сформируйте через AI.
           </div>
         )}
       </section>
 
-      {props.sampleItems?.length ? (
-        <section style={{ border: '1px solid var(--sa-divider)', borderRadius: 16, padding: 14, display: 'grid', gap: 10, background: '#fff' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0, fontSize: 16 }}>Тест на sample-элементах</h3>
-            <button className="sa-btn-outline" disabled={busy || props.tagRules.length === 0} onClick={() => void testRules()}>
-              {busy ? 'Тестируем...' : 'Протестировать правила'}
-            </button>
-          </div>
-          {tagTestItems.length ? (
-            <div style={{ display: 'grid', gap: 8 }}>
-              {tagTestItems.map((result, index) => (
-                <div key={index} className="sa-card" style={{ padding: 10 }}>
-                  <div style={{ fontWeight: 700 }}>Sample {index + 1}</div>
-                  <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {result.tags.length ? result.tags.map((tag) => <span key={tag} className="sa-chip">{tag}</span>) : <span className="sa-meta">Теги не применились</span>}
-                  </div>
-                </div>
-              ))}
+      {manualModalOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 140 }} onClick={() => setManualModalOpen(false)}>
+          <div style={overlayCardStyle(620)} onClick={(event) => event.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 20 }}>Добавить правило</h3>
+                <div className="sa-meta" style={{ marginTop: 4 }}>Выберите тег и условие, при котором он ставится.</div>
+              </div>
+              <button type="button" className="sa-btn-outline sa-btn-icon" onClick={() => setManualModalOpen(false)} aria-label="Закрыть">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
             </div>
-          ) : <div className="sa-meta">Запустите тест, чтобы увидеть теги для sample-данных.</div>}
-        </section>
-      ) : null}
+            <div style={{ display: 'grid', gap: 12 }}>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span className="sa-meta">Название тега</span>
+                <input className="sa-input" autoFocus placeholder="Например: VIP" value={ruleName} onChange={(event) => setRuleName(event.target.value)} />
+              </label>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span className="sa-meta">Поле данных</span>
+                <select className="sa-select" value={ruleField} onChange={(event) => setRuleField(event.target.value)}>
+                  <option value="">Выберите поле</option>
+                  {props.availableFields.map((field) => <option key={field} value={field}>{field}</option>)}
+                </select>
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span className="sa-meta">Условие</span>
+                  <select className="sa-select" value={ruleOperator} onChange={(event) => setRuleOperator(event.target.value as ImportTagOperator)}>
+                    {OPERATORS.map((operator) => <option key={operator.value} value={operator.value}>{operator.label}</option>)}
+                  </select>
+                </label>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span className="sa-meta">Значение</span>
+                  <input className="sa-input" placeholder="С чем сравнить" value={ruleValue} onChange={(event) => setRuleValue(event.target.value)} />
+                </label>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button className="sa-btn-outline" onClick={() => setManualModalOpen(false)}>Отмена</button>
+                <button className="sa-btn-primary" disabled={!ruleName.trim() || !ruleField.trim()} onClick={addManualRule}>Добавить</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {aiModalOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 140 }} onClick={() => setAiModalOpen(false)}>
+          <div style={overlayCardStyle(620)} onClick={(event) => event.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 20 }}>AI-правило</h3>
+                <div className="sa-meta" style={{ marginTop: 4 }}>Опишите обычными словами, какой тег и когда ставить.</div>
+              </div>
+              <button type="button" className="sa-btn-outline sa-btn-icon" onClick={() => setAiModalOpen(false)} aria-label="Закрыть">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            </div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <textarea className="sa-input" autoFocus rows={4} value={aiRuleText} onChange={(event) => setAiRuleText(event.target.value)} placeholder="Например: проставь тег Комиссия, если в данных есть комиссия" />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <button className="sa-btn-outline" onClick={() => setAiModalOpen(false)}>Отмена</button>
+                <button className="sa-btn-primary" disabled={busy || !aiRuleText.trim()} onClick={() => void addAiRule()}>{busy ? 'Создаем...' : 'Создать правило'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -649,8 +781,11 @@ function ImportWizard(props: {
   open: boolean;
   onClose: () => void;
   onSaved: () => void;
+  holdings: HoldingItem[];
+  selectedHoldingId: string | null;
 }) {
   const [step, setStep] = useState<WizardStep>(1);
+  const [holdingId, setHoldingId] = useState('');
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [schedule, setSchedule] = useState('manual');
@@ -660,6 +795,9 @@ function ImportWizard(props: {
   const [aiConfig, setAiConfig] = useState<ImportAIConfig>(EMPTY_AI_CONFIG);
   const [previewItems, setPreviewItems] = useState<ImportPreviewItem[]>([]);
   const [tagRules, setTagRules] = useState<ImportTagRule[]>([]);
+  const [autoRulesGenerated, setAutoRulesGenerated] = useState(false);
+  const [autoRulesBusy, setAutoRulesBusy] = useState(false);
+  const [autoRulesError, setAutoRulesError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -668,6 +806,7 @@ function ImportWizard(props: {
   useEffect(() => {
     if (!props.open) return;
     setStep(1);
+    setHoldingId(props.selectedHoldingId || props.holdings[0]?.id || '');
     setName('');
     setUrl('');
     setSchedule('manual');
@@ -677,22 +816,46 @@ function ImportWizard(props: {
     setAiConfig(EMPTY_AI_CONFIG);
     setPreviewItems([]);
     setTagRules([]);
+    setAutoRulesGenerated(false);
+    setAutoRulesBusy(false);
+    setAutoRulesError(null);
     setError(null);
-  }, [props.open]);
+  }, [props.open, props.selectedHoldingId, props.holdings]);
 
   if (!props.open) return null;
+
+  async function generateAutoRules(sample: unknown[], fields: string[]) {
+    if (sample.length === 0 || fields.length === 0) return;
+    setAutoRulesBusy(true);
+    setAutoRulesError(null);
+    try {
+      const generatedRules = await generateImportTagRules({ sampleItems: sample.slice(0, 5), availableFields: fields });
+      setTagRules(generatedRules);
+      setAutoRulesGenerated(true);
+    } catch (rulesError) {
+      setAutoRulesError(rulesError instanceof Error ? rulesError.message : 'Не удалось сформировать автотеги.');
+      setAutoRulesGenerated(true);
+    } finally {
+      setAutoRulesBusy(false);
+    }
+  }
 
   async function analyze() {
     setBusy(true);
     setError(null);
+    setAutoRulesError(null);
     try {
       const result = await analyzeImportSource(url);
+      const resultFields = flattenFields(result.sampleItems[0] || {});
       setFormat(result.format);
       setItemsPath(result.itemsPath);
       setSampleItems(result.sampleItems);
       setAiConfig(result.aiConfig);
       setPreviewItems(result.previewItems);
+      setTagRules([]);
+      setAutoRulesGenerated(false);
       setStep(2);
+      void generateAutoRules(result.sampleItems, resultFields);
     } catch (analyzeError) {
       setError(analyzeError instanceof Error ? analyzeError.message : 'Не удалось проанализировать источник.');
     } finally {
@@ -700,17 +863,9 @@ function ImportWizard(props: {
     }
   }
 
-  async function refreshPreview() {
-    setBusy(true);
-    setError(null);
-    try {
-      setPreviewItems(await previewImportConfig({ sampleItems, aiConfig, tagRules }));
-      setStep(4);
-    } catch (previewError) {
-      setError(previewError instanceof Error ? previewError.message : 'Не удалось построить preview.');
-    } finally {
-      setBusy(false);
-    }
+  async function openTagStep() {
+    setStep(3);
+    if (!autoRulesGenerated && !autoRulesBusy && tagRules.length === 0) void generateAutoRules(sampleItems, availableFields);
   }
 
   async function saveImport() {
@@ -718,6 +873,7 @@ function ImportWizard(props: {
     setError(null);
     try {
       await createImportSource({
+        holdingId,
         name: name.trim(),
         url,
         format,
@@ -744,7 +900,7 @@ function ImportWizard(props: {
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 24 }}>Создать импорт</h2>
-            <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13 }}>Шаг {step} из 4</div>
+            <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13 }}>Шаг {step} из 3</div>
           </div>
           <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
@@ -760,6 +916,13 @@ function ImportWizard(props: {
               <input className="sa-input" value={name} onChange={(event) => setName(event.target.value)} required />
             </label>
             <label style={{ display: 'grid', gap: 6 }}>
+              <span>Компания</span>
+              <select className="sa-select" value={holdingId} onChange={(event) => setHoldingId(event.target.value)} required>
+                <option value="">Выберите компанию</option>
+                {props.holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
+              </select>
+            </label>
+            <label style={{ display: 'grid', gap: 6 }}>
               <span>URL источника</span>
               <input className="sa-input" value={url} onChange={(event) => setUrl(event.target.value)} required placeholder="https://example.com/feed.xml" />
             </label>
@@ -773,7 +936,7 @@ function ImportWizard(props: {
               </select>
             </label>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button type="submit" className="sa-btn-primary" disabled={busy || !name.trim() || !url.trim()}>
+              <button type="submit" className="sa-btn-primary" disabled={busy || !holdingId || !name.trim() || !url.trim()}>
                 {busy ? 'Анализируем...' : 'Проанализировать источник'}
               </button>
             </div>
@@ -781,50 +944,74 @@ function ImportWizard(props: {
         )}
 
         {step === 2 && (
-          <div style={{ display: 'grid', gap: 16 }}>
-            <div className="sa-card" style={{ padding: 12 }}>
-              <div><strong>Формат:</strong> {format}</div>
-              <div><strong>Путь элементов:</strong> {itemsPath}</div>
-              <div><strong>Тип сущности:</strong> {aiConfig.entityType}</div>
-              <div><strong>Title fields:</strong> {aiConfig.titleFields.join(', ') || '—'}</div>
-              <div><strong>Description fields:</strong> {aiConfig.descriptionFields.join(', ') || '—'}</div>
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
+              <h3 style={{ margin: 0, fontSize: 18 }}>Источник распознан</h3>
+              <div className="sa-meta">Проверили структуру данных и подготовили понятный вид для импорта.</div>
             </div>
-            <div style={{ display: 'grid', gap: 10 }}>
-              {previewItems.map((item, index) => (
-                <div key={index} className="sa-card" style={{ padding: 12 }}>
-                  <div style={{ fontWeight: 700 }}>{item.title}</div>
-                  <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13, whiteSpace: 'pre-line' }}>{item.description}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+              <div style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, background: '#fff' }}>
+                <div className="sa-meta">Нашли примеров</div>
+                <strong style={{ display: 'block', marginTop: 4, fontSize: 20 }}>{sampleItems.length}</strong>
+              </div>
+              <div style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, background: '#fff' }}>
+                <div className="sa-meta">Название элемента</div>
+                <strong style={{ display: 'block', marginTop: 4, fontSize: 14, ...lineClampStyle(1) }}>{compactList(aiConfig.titleFields)}</strong>
+              </div>
+              <div style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, background: '#fff' }}>
+                <div className="sa-meta">Описание собираем из</div>
+                <strong style={{ display: 'block', marginTop: 4, fontSize: 14, ...lineClampStyle(1) }}>{compactList(aiConfig.descriptionFields, 'ключевых полей')}</strong>
+              </div>
+              <div style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, background: '#fff' }}>
+                <div className="sa-meta">Автотеги</div>
+                <strong style={{ display: 'block', marginTop: 4, fontSize: 14, ...lineClampStyle(1) }}>
+                  {autoRulesBusy ? 'Готовим...' : tagRules.length ? `Готово: ${tagRules.length}` : autoRulesGenerated ? 'Не сформированы' : 'Запускаем'}
+                </strong>
+              </div>
+            </div>
+            {autoRulesError && (
+              <div style={{ padding: 10, borderRadius: 12, background: '#fff7ed', color: '#9a3412', fontSize: 13, display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>Автотеги не сформировались автоматически. Их можно добавить на следующем шаге.</span>
+                <button
+                  type="button"
+                  className="sa-btn-outline sa-btn-sm"
+                  disabled={autoRulesBusy || sampleItems.length === 0 || availableFields.length === 0}
+                  onClick={() => void generateAutoRules(sampleItems, availableFields)}
+                >
+                  {autoRulesBusy ? 'Пробуем...' : 'Попробовать снова'}
+                </button>
+              </div>
+            )}
+            <div style={{ display: 'grid', gap: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                <strong style={{ fontSize: 15 }}>Примеры данных</strong>
+                <span className="sa-chip">{format.toUpperCase()}</span>
+              </div>
+              {previewItems.slice(0, 3).map((item, index) => (
+                <div key={index} style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: '10px 12px', background: '#fff', display: 'grid', gap: 4 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span className="sa-chip">#{index + 1}</span>
+                    <strong style={{ ...lineClampStyle(1) }}>{item.title}</strong>
+                  </div>
+                  <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13, ...lineClampStyle(2) }}>{item.description}</div>
                 </div>
               ))}
+              {previewItems.length > 3 && <div className="sa-meta">Еще {previewItems.length - 3} примера скрыты, чтобы не перегружать окно.</div>}
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
               <button className="sa-btn-outline" onClick={() => setStep(1)}>Назад</button>
-              <button className="sa-btn-primary" onClick={() => setStep(3)}>Настроить теги</button>
+              <button className="sa-btn-primary" disabled={busy} onClick={() => void openTagStep()}>
+                {autoRulesBusy ? 'Теги готовятся...' : 'Настроить теги'}
+              </button>
             </div>
           </div>
         )}
 
         {step === 3 && (
           <div style={{ display: 'grid', gap: 16 }}>
-            <TagRulesEditor availableFields={availableFields} tagRules={tagRules} onChange={setTagRules} sampleItems={sampleItems} />
+            <TagRulesEditor availableFields={availableFields} tagRules={tagRules} onChange={setTagRules} />
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
               <button className="sa-btn-outline" onClick={() => setStep(2)}>Назад</button>
-              <button className="sa-btn-primary" disabled={busy} onClick={() => void refreshPreview()}>{busy ? 'Строим...' : 'Финальный preview'}</button>
-            </div>
-          </div>
-        )}
-
-        {step === 4 && (
-          <div style={{ display: 'grid', gap: 14 }}>
-            {previewItems.map((item, index) => (
-              <div key={index} className="sa-card" style={{ padding: 12 }}>
-                <div style={{ fontWeight: 700 }}>{item.title}</div>
-                <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13, whiteSpace: 'pre-line' }}>{item.description}</div>
-                {!!item.tags.length && <div style={{ marginTop: 8, display: 'flex', gap: 6 }}>{item.tags.map((tag) => <span key={tag} className="sa-chip">{tag}</span>)}</div>}
-              </div>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-              <button className="sa-btn-outline" onClick={() => setStep(3)}>Назад</button>
               <button className="sa-btn-primary" disabled={busy} onClick={() => void saveImport()}>{busy ? 'Сохраняем...' : 'Сохранить импорт'}</button>
             </div>
           </div>
@@ -836,23 +1023,47 @@ function ImportWizard(props: {
 
 export function ImportsPage() {
   const [activePageTab, setActivePageTab] = useState<DataPageTab>('data');
+  const [holdings, setHoldings] = useState<HoldingItem[]>([]);
+  const [selectedHoldingId, setSelectedHoldingId] = useState<string>('');
   const [items, setItems] = useState<ImportSourceItem[]>([]);
   const [dataItems, setDataItems] = useState<ImportedDataItem[]>([]);
+  const [dataTotal, setDataTotal] = useState(0);
+  const [dataPage, setDataPage] = useState(0);
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(true);
+  const [filtersLoading, setFiltersLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editModalItem, setEditModalItem] = useState<ImportEditModalItem | null>(null);
   const [infoModalData, setInfoModalData] = useState<ImportInfoModalData | null>(null);
   const [descriptionModalItem, setDescriptionModalItem] = useState<DescriptionModalItem | null>(null);
+  const [tagsModalItem, setTagsModalItem] = useState<TagsModalItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
 
+  async function loadHoldings() {
+    try {
+      const next = await fetchHoldings({ status: 'active' });
+      setHoldings(next);
+      setSelectedHoldingId((current) => current || next[0]?.id || '');
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить компании.');
+    }
+  }
+
   async function loadList() {
+    if (!selectedHoldingId) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const next = await fetchImports();
+      const next = await fetchImports({ holdingId: selectedHoldingId });
       setItems(next);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить импорты.');
@@ -862,10 +1073,24 @@ export function ImportsPage() {
   }
 
   async function loadDataItems() {
+    if (!selectedHoldingId) {
+      setDataItems([]);
+      setDataTotal(0);
+      setDataLoading(false);
+      return;
+    }
     setDataLoading(true);
     setDataError(null);
     try {
-      setDataItems(await fetchImportedItems({ limit: 200 }));
+      const result = await fetchImportedItems({
+        limit: DATA_PAGE_SIZE,
+        offset: dataPage * DATA_PAGE_SIZE,
+        holdingId: selectedHoldingId,
+        search,
+        tags: selectedTags,
+      });
+      setDataItems(result.items);
+      setDataTotal(result.total);
     } catch (loadError) {
       setDataError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить данные.');
     } finally {
@@ -873,8 +1098,33 @@ export function ImportsPage() {
     }
   }
 
-  useEffect(() => { void loadList(); }, []);
-  useEffect(() => { void loadDataItems(); }, []);
+  async function loadTags() {
+    if (!selectedHoldingId) {
+      setAvailableTags([]);
+      setSelectedTags([]);
+      setFiltersLoading(false);
+      return;
+    }
+    setFiltersLoading(true);
+    try {
+      const tags = await fetchImportedTags({ holdingId: selectedHoldingId });
+      setAvailableTags(tags);
+      setSelectedTags((current) => current.filter((tag) => tags.includes(tag)));
+    } finally {
+      setFiltersLoading(false);
+    }
+  }
+
+  useEffect(() => { void loadHoldings(); }, []);
+  useEffect(() => {
+    void loadList();
+    void loadTags();
+  }, [selectedHoldingId]);
+  useEffect(() => { void loadDataItems(); }, [selectedHoldingId, search, selectedTags, dataPage]);
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(dataTotal / DATA_PAGE_SIZE) - 1);
+    if (dataPage > maxPage) setDataPage(maxPage);
+  }, [dataTotal, dataPage]);
 
   async function runImport(id: string) {
     setBusyId(id);
@@ -928,6 +1178,10 @@ export function ImportsPage() {
     }
   }
 
+  const dataTotalPages = Math.max(1, Math.ceil(dataTotal / DATA_PAGE_SIZE));
+  const dataPageStart = dataTotal === 0 ? 0 : dataPage * DATA_PAGE_SIZE + 1;
+  const dataPageEnd = Math.min(dataTotal, dataPage * DATA_PAGE_SIZE + dataItems.length);
+
   return (
     <div style={{ display: 'grid', gap: 20 }}>
       <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
@@ -936,7 +1190,23 @@ export function ImportsPage() {
             <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Данные</h1>
             <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>Импортированные элементы и настройки источников данных.</div>
           </div>
-          {activePageTab === 'imports' && <button className="sa-btn-primary" onClick={() => setWizardOpen(true)}>Создать импорт</button>}
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <select
+              className="sa-select"
+              value={selectedHoldingId}
+              onChange={(event) => {
+                setSelectedHoldingId(event.target.value);
+                setSelectedTags([]);
+                setDataPage(0);
+              }}
+              style={{ minWidth: 220 }}
+              disabled={holdings.length === 0}
+            >
+              {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
+              {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
+            </select>
+            {activePageTab === 'imports' && <button className="sa-btn-primary" disabled={holdings.length === 0} onClick={() => setWizardOpen(true)}>Создать импорт</button>}
+          </div>
         </div>
         <div className="sa-dialog-tabs" style={{ marginBottom: 0 }}>
           <button
@@ -959,17 +1229,43 @@ export function ImportsPage() {
       </section>
 
       {activePageTab === 'data' && (
-        <section className="sa-card" style={{ padding: 20 }}>
+        <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <input
+              className="sa-input"
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setDataPage(0);
+              }}
+              placeholder="Поиск по названию, описанию или данным"
+              style={{ flex: '1 1 280px', minWidth: 0 }}
+            />
+            <div style={{ flex: '1 1 300px', minWidth: 260, maxWidth: 420 }}>
+              <TagFilterPicker
+                availableTags={availableTags}
+                selectedTags={selectedTags}
+                loading={filtersLoading}
+                onChange={(tags) => {
+                  setSelectedTags(tags);
+                  setDataPage(0);
+                }}
+              />
+            </div>
+            <div style={{ minHeight: 38, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'nowrap' }}>
+              <span className="sa-chip">Найдено: {dataTotal}</span>
+            </div>
+          </div>
           <div className="sa-table-wrap">
-            <table className="sa-table">
+            <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
               <thead>
                 <tr>
-                  <th>Название</th>
-                  <th>Описание</th>
-                  <th>Источник</th>
-                  <th>Теги</th>
-                  <th>Обновлено</th>
-                  <th>Действия</th>
+                  <th style={{ width: 180 }}>Название</th>
+                  <th style={{ width: 300 }}>Описание</th>
+                  <th style={{ width: 140 }}>Источник</th>
+                  <th style={{ width: 240 }}>Теги</th>
+                  <th style={{ width: 150 }}>Обновлено</th>
+                  <th style={{ width: 72 }}>Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -979,15 +1275,16 @@ export function ImportsPage() {
                   <tr><td colSpan={6} className="sa-meta" style={{ padding: 28 }}>Данных пока нет</td></tr>
                 ) : dataItems.map((item) => (
                   <tr key={item.id}>
-                    <td style={{ fontWeight: 700, minWidth: 180 }}>{item.title}</td>
-                    <td style={{ maxWidth: 560 }}>
-                      <div style={{ ...lineClampStyle(3), color: 'var(--sa-text-secondary)' }}>{item.description}</div>
+                    <td style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.title}>{item.title}</td>
+                    <td style={{ overflow: 'hidden' }}>
+                      <div style={{ ...lineClampStyle(2), color: 'var(--sa-text-secondary)' }}>{item.description}</div>
                     </td>
-                    <td>{item.importSourceName}</td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        {item.tags.length ? item.tags.map((tag) => <span key={tag} className="sa-chip">{tag}</span>) : <span className="sa-meta">—</span>}
-                      </div>
+                    <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.importSourceName}>{item.importSourceName}</td>
+                    <td style={{ overflow: 'hidden' }}>
+                      <CompactTagsCell
+                        tags={item.tags}
+                        onOpen={() => setTagsModalItem({ title: item.title, tags: item.tags })}
+                      />
                     </td>
                     <td>{formatDate(item.updatedAt)}</td>
                     <td>
@@ -1005,6 +1302,30 @@ export function ImportsPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div className="sa-meta">
+              Показано {dataPageStart}-{dataPageEnd} из {dataTotal}
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="sa-btn-outline sa-btn-sm"
+                disabled={dataLoading || dataPage === 0}
+                onClick={() => setDataPage((current) => Math.max(0, current - 1))}
+              >
+                Назад
+              </button>
+              <span className="sa-chip">Страница {dataPage + 1} из {dataTotalPages}</span>
+              <button
+                type="button"
+                className="sa-btn-outline sa-btn-sm"
+                disabled={dataLoading || dataPage + 1 >= dataTotalPages}
+                onClick={() => setDataPage((current) => current + 1)}
+              >
+                Вперед
+              </button>
+            </div>
           </div>
         </section>
       )}
@@ -1070,10 +1391,17 @@ export function ImportsPage() {
         </section>
       )}
 
-      <ImportWizard open={wizardOpen} onClose={() => setWizardOpen(false)} onSaved={() => void loadList()} />
+      <ImportWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onSaved={() => { void loadList(); void loadDataItems(); void loadTags(); }}
+        holdings={holdings}
+        selectedHoldingId={selectedHoldingId || null}
+      />
       <ImportInfoModal data={infoModalData} onClose={() => setInfoModalData(null)} />
       <ImportEditModal item={editModalItem} onClose={() => setEditModalItem(null)} onSaved={handleImportSaved} />
       <DescriptionModal item={descriptionModalItem} onClose={() => setDescriptionModalItem(null)} />
+      <TagsModal item={tagsModalItem} onClose={() => setTagsModalItem(null)} />
     </div>
   );
 }
