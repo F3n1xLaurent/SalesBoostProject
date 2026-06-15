@@ -366,6 +366,43 @@ export interface CallPlanOptions {
   scripts: CallScriptItem[];
 }
 
+export interface CallPlanPromptPreview {
+  prompt: string;
+  profile: CallCustomerProfileItem | null;
+  importedItem: {
+    id: string;
+    title: string;
+    description: string;
+    tags: string[];
+  } | null;
+  script: CallScriptItem;
+}
+
+export interface CallPlanCallItem {
+  id: string;
+  planId: string;
+  callId: string;
+  employeeId: string | null;
+  employeeName: string | null;
+  dealershipId: string | null;
+  dealershipName: string | null;
+  phone: string;
+  phoneNumberTypeId: string;
+  scriptId: string;
+  profileId: string | null;
+  importedItemId: string | null;
+  status: string;
+  outcome: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  transcript: Array<{ role: 'manager' | 'client'; text: string }>;
+  evaluation: unknown | null;
+  totalScore: number | null;
+  failureReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type PhoneNumberOwnership = 'dealership' | 'user';
 
 export interface PhoneNumberTypeItem {
@@ -1128,11 +1165,25 @@ export async function createCallPlan(payload: Omit<CallPlanItem, 'id' | 'created
   return data.item as CallPlanItem;
 }
 
-export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; batchId: string; totalJobs: number }> {
+export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; callId: string; batchId: string; totalJobs: number }> {
   const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/initiate`, { method: 'POST' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось инициировать прозвон.');
-  return data as { item: CallPlanItem; batchId: string; totalJobs: number };
+  return data as { item: CallPlanItem; callId: string; batchId: string; totalJobs: number };
+}
+
+export async function previewCallPlanPrompt(id: string): Promise<CallPlanPromptPreview> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/prompt-preview`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось сгенерировать промпт.');
+  return data as CallPlanPromptPreview;
+}
+
+export async function fetchCallPlanCalls(id: string): Promise<CallPlanCallItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/calls`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить историю прозвона.');
+  return Array.isArray(data.items) ? data.items as CallPlanCallItem[] : [];
 }
 
 export async function fetchVoiceDashboard(): Promise<PlatformVoice | null> {

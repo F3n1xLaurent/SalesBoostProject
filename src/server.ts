@@ -40,9 +40,11 @@ import {
   handleDeleteCallScript,
   handleGetCallPlanOptions,
   handleInitiateCallPlan,
+  handleListCallPlanCalls,
   handleListCallCustomerProfiles,
   handleListCallPlans,
   handleListCallScripts,
+  handlePreviewCallPlanPrompt,
   handleUpdateCallCustomerProfile,
   handleUpdateCallScript,
 } from './voice/callSettingsManagement';
@@ -1052,6 +1054,20 @@ app.post('/api/admin/call-settings/plans/:id/initiate', (req, res) => {
   handleInitiateCallPlan(req, res).catch((error) => {
     console.error('Initiate call plan error:', error);
     res.status(500).json({ error: 'Не удалось инициировать прозвон.' });
+  });
+});
+
+app.get('/api/admin/call-settings/plans/:id/prompt-preview', (req, res) => {
+  handlePreviewCallPlanPrompt(req, res).catch((error) => {
+    console.error('Preview call plan prompt error:', error);
+    res.status(500).json({ error: 'Не удалось сгенерировать промпт.' });
+  });
+});
+
+app.get('/api/admin/call-settings/plans/:id/calls', (req, res) => {
+  handleListCallPlanCalls(req, res).catch((error) => {
+    console.error('List call plan calls error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить историю прозвона.' });
   });
 });
 

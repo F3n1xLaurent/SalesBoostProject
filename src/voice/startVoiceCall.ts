@@ -35,6 +35,8 @@ export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure';
 export interface StartVoiceCallOptions {
   /** 'dialog' = our LLM (voice_dialog), 'realtime' = OpenAI Realtime. Default: 'dialog'. */
   scenario?: VoiceCallScenario;
+  /** Optional prompt passed to Voximplant realtime_pure scenario as customData.instructions. */
+  instructions?: string;
 }
 
 export interface StartVoiceCallResult {
@@ -127,6 +129,7 @@ export async function startVoiceCall(
       openai_api_key: openaiApiKey,
       model: getRealtimeModel(),
       realtime_reasoning_effort: getRealtimeReasoningEffort(),
+      instructions: options.instructions,
     };
     // No dialog_url: full script is in the scenario prompt.
   } else if (scenario === 'realtime') {
@@ -144,6 +147,7 @@ export async function startVoiceCall(
       openai_api_key: openaiApiKey,
       model: getRealtimeModel(),
       realtime_reasoning_effort: getRealtimeReasoningEffort(),
+      instructions: options.instructions,
     };
     // When baseUrl is set, pass dialog_url so Realtime uses our algorithm (virtual client) via function calling.
     if (baseUrl) {

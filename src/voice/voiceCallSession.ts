@@ -4,6 +4,8 @@
  */
 
 import { prisma } from '../db';
+import { openai } from '../lib/openaiClient';
+import { config } from '../config';
 import { getRecordByCallId, type TranscriptTurn } from './callHistory';
 import { loadCar } from '../data/carLoader';
 import { getDefaultState } from '../state/defaultState';
@@ -50,6 +52,73 @@ function dialogHistoryFromTranscript(transcript: TranscriptTurn[]): Array<{ role
     role: t.role as 'client' | 'manager',
     content: t.text,
   }));
+}
+
+function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]): Promise<unknown | null> {
+  const planCall = await prisma.callPlanCall.findUnique({ where: { callId }, select: { criteriaJson: true } });
+  if (!planCall) return null;
+  const criteria = safeJsonParse<Array<{ expectedAnswer?: string; score?: number }>>(planCall.criteriaJson, []);
+  const meaningfulCriteria = criteria.filter((item) => String(item.expectedAnswer || '').trim());
+  if (meaningfulCriteria.length === 0) return null;
+  const prompt = [
+    'Ты оцениваешь разговор сотрудника с виртуальным клиентом по условиям успеха скрипта.',
+    'Для каждого условия сравни ответ сотрудника с эталоном.',
+    'Правила: если ответил также или почти также — полный балл; если близко — половина; если не ответил — 0.',
+    'Верни только JSON: {"items":[{"expectedAnswer":"...","maxScore":100,"score":0,"evidence":"цитата или причина"}],"totalScore":0,"maxScore":0,"percent":0}.',
+    '',
+    `Условия:\n${JSON.stringify(meaningfulCriteria, null, 2)}`,
+    '',
+    `Диалог:\n${transcript.map((turn) => `${turn.role === 'manager' ? 'Сотрудник' : 'Клиент'}: ${turn.text}`).join('\n')}`,
+  ].join('\n');
+  try {
+    const response = await openai.chat.completions.create({
+      model: config.openaiChatModel,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Ты строгий оценщик продаж. Отвечай только валидным JSON.' },
+        { role: 'user', content: prompt },
+      ],
+    });
+    const content = response.choices[0]?.message?.content || '';
+    const jsonText = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.warn('[voice/session] plan criteria evaluation failed:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+async function syncCallPlanCallFromSession(callId: string, patch: {
+  outcome?: string | null;
+  endedAt?: Date | null;
+  transcript?: TranscriptTurn[] | null;
+  evaluation?: unknown | null;
+  totalScore?: number | null;
+  failureReason?: string | null;
+}): Promise<void> {
+  const existing = await prisma.callPlanCall.findUnique({ where: { callId }, select: { id: true } });
+  if (!existing) return;
+  await prisma.callPlanCall.update({
+    where: { callId },
+    data: {
+      status: patch.endedAt ? 'completed' : undefined,
+      outcome: patch.outcome ?? undefined,
+      endedAt: patch.endedAt ?? undefined,
+      transcriptJson: patch.transcript ? JSON.stringify(patch.transcript) : undefined,
+      evaluationJson: patch.evaluation ? JSON.stringify(patch.evaluation) : undefined,
+      totalScore: patch.totalScore ?? undefined,
+      failureReason: patch.failureReason ?? undefined,
+    },
+  });
 }
 
 /**
@@ -135,6 +204,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   } catch (err) {
     console.error('[voice/session] initial upsert error:', err instanceof Error ? err.message : err);
   }
+  await syncCallPlanCallFromSession(callId, { outcome, endedAt, transcript: initialTranscript });
 
   // 2) If transcript missing but we have vox_session_id (realtime_pure), fetch from Voximplant log and update
   let transcript: TranscriptTurn[] = initialTranscript;
@@ -179,6 +249,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         where: { callId },
         data: { failureReason: reason.slice(0, 200) },
       });
+      await syncCallPlanCallFromSession(callId, { outcome, endedAt, transcript, failureReason: reason.slice(0, 200) });
     } catch (err) {
       console.warn('[voice/session] failed to save transcript failureReason:', err instanceof Error ? err.message : err);
     }
@@ -235,7 +306,9 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       ...evaluation,
       call_summary: callSummary,
       reply_improvements: replyImprovements,
+      plan_criteria: await evaluatePlanCriteria(callId, transcript),
     });
+    const evaluationForPlan = JSON.parse(evaluationJson);
     const totalScore = evaluation.overall_score_0_100 ?? null;
 
     await prisma.voiceCallSession.update({
@@ -246,6 +319,14 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         failureReason: null,
       },
     });
+    await syncCallPlanCallFromSession(callId, {
+      outcome,
+      endedAt,
+      transcript,
+      evaluation: evaluationForPlan,
+      totalScore,
+      failureReason: null,
+    });
     console.log('[voice/session] evaluation saved', { callId, totalScore });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -255,6 +336,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         where: { callId },
         data: { failureReason: msg.slice(0, 200) },
       });
+      await syncCallPlanCallFromSession(callId, { outcome, endedAt, transcript, failureReason: msg.slice(0, 200) });
     } catch (_) {}
   }
 }

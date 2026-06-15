@@ -69,7 +69,7 @@ export function tabToPath(tab: AdminTab): string {
     case 'analytics':
       return '/analytics';
     case 'callSettings':
-      return '/call-settings';
+      return '/call-settings/profiles';
     case 'settings':
       return '/settings';
     case 'dealer-companies':

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import {
   createCallCustomerProfile,
   createCallPlan,
@@ -7,19 +8,23 @@ import {
   deleteCallScript,
   fetchCallPlanOptions,
   fetchCallPlans,
+  fetchCallPlanCalls,
   fetchCallCustomerProfiles,
   fetchCallScripts,
   fetchHoldings,
   fetchImportedItems,
   fetchImportedTags,
   initiateCallPlan,
+  previewCallPlanPrompt,
   updateCallCustomerProfile,
   updateCallScript,
   type CallPlanDealershipOption,
   type CallPlanEmployeeOption,
   type CallPlanFrequency,
   type CallPlanItem,
+  type CallPlanCallItem,
   type CallPlanOptions,
+  type CallPlanPromptPreview,
   type CallPlanTargetType,
   type CallCustomerProfileItem,
   type CallScriptItem,
@@ -31,6 +36,10 @@ import {
 } from '../../../shared/api/adminPanel';
 
 type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
+type CallSettingsRoute =
+  | { tab: 'profiles' }
+  | { tab: 'scripts'; scriptId?: string; create?: boolean }
+  | { tab: 'plan'; planId?: string; create?: boolean };
 type CustomerProfile = CallCustomerProfileItem;
 type CustomerProfileForm = Omit<CustomerProfile, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>;
 type SuccessCriterion = CallScriptSuccessCriterion;
@@ -74,6 +83,12 @@ const PLAN_FREQUENCIES: Array<{ value: CallPlanFrequency; label: string }> = [
   { value: 'weekly', label: 'Раз в неделю' },
 ];
 
+const CALL_SETTINGS_PATHS: Record<CallSettingsTab, string> = {
+  profiles: '/call-settings/profiles',
+  scripts: '/call-settings/scripts',
+  plan: '/call-settings/plans',
+};
+
 const EMPTY_FORM: CustomerProfileForm = {
   name: '',
   voiceId: VOICES[0].id,
@@ -101,6 +116,58 @@ function voiceLabel(id: string): string {
 
 function optionLabel<T extends string>(items: Array<{ value: T; label: string }>, value: T): string {
   return items.find((item) => item.value === value)?.label || value;
+}
+
+function parseCallSettingsRoute(pathname: string): CallSettingsRoute {
+  const parts = pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  const [, section, id] = parts;
+  if (section === 'scripts') {
+    if (id === 'new') return { tab: 'scripts', create: true };
+    return id ? { tab: 'scripts', scriptId: id } : { tab: 'scripts' };
+  }
+  if (section === 'plans' || section === 'plan') {
+    if (id === 'new') return { tab: 'plan', create: true };
+    return id ? { tab: 'plan', planId: id } : { tab: 'plan' };
+  }
+  return { tab: 'profiles' };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function getEvaluationSummary(evaluation: unknown) {
+  const data = asRecord(evaluation);
+  const planCriteria = asRecord(data.plan_criteria);
+  return {
+    overallScore: asNumber(data.overall_score_0_100),
+    summary: asText(data.summary) || asText(data.expert_summary) || asText(data.overall_summary),
+    planPercent: asNumber(planCriteria.percent),
+    planTotal: asNumber(planCriteria.totalScore),
+    planMax: asNumber(planCriteria.maxScore),
+    criteriaItems: asArray(planCriteria.items).map(asRecord),
+    strengths: asArray(data.strengths).map(asText).filter(Boolean),
+    issues: asArray(data.issues).map((item) => {
+      const record = asRecord(item);
+      return asText(record.title) || asText(record.issue) || asText(record.description) || asText(item);
+    }).filter(Boolean),
+    recommendations: asArray(data.recommendations).map((item) => {
+      const record = asRecord(item);
+      return asText(record.title) || asText(record.recommendation) || asText(record.description) || asText(item);
+    }).filter(Boolean),
+  };
 }
 
 function overlayCardStyle(width = 720): React.CSSProperties {
@@ -1059,8 +1126,55 @@ function CallPlanEditor(props: {
   );
 }
 
+function PromptPreviewModal(props: {
+  preview: CallPlanPromptPreview | null;
+  onClose: () => void;
+  onCopy: () => void;
+}) {
+  if (!props.preview) return null;
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 160 }} onClick={props.onClose}>
+      <div style={overlayCardStyle(980)} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Тест промпта">
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 24 }}>Тест промпта</h2>
+            <div className="sa-meta" style={{ marginTop: 6 }}>
+              Профиль: {props.preview.profile?.name || 'не выбран'} · Данные: {props.preview.importedItem?.title || 'нет элемента по condition'}
+            </div>
+          </div>
+          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gap: 12 }}>
+          {props.preview.importedItem?.tags?.length ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {props.preview.importedItem.tags.slice(0, 12).map((tag) => <span key={tag} className="sa-chip">{tag}</span>)}
+            </div>
+          ) : null}
+          <textarea
+            className="sa-input"
+            readOnly
+            value={props.preview.prompt}
+            rows={24}
+            style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre' }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button type="button" className="sa-btn-outline" onClick={props.onCopy}>Скопировать</button>
+            <button type="button" className="sa-btn-primary" onClick={props.onClose}>Закрыть</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CallSettingsPage() {
-  const [activeTab, setActiveTab] = useState<CallSettingsTab>('profiles');
+  const location = useLocation();
+  const navigate = useNavigate();
+  const route = useMemo(() => parseCallSettingsRoute(location.pathname), [location.pathname]);
+  const [activeTab, setActiveTab] = useState<CallSettingsTab>(route.tab);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [selectedHoldingId, setSelectedHoldingId] = useState('');
   const [profiles, setProfiles] = useState<CustomerProfile[]>([]);
@@ -1075,6 +1189,22 @@ export function CallSettingsPage() {
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false);
   const [editingScript, setEditingScript] = useState<CallScript | null>(null);
   const [planEditorOpen, setPlanEditorOpen] = useState(false);
+  const [promptPreview, setPromptPreview] = useState<CallPlanPromptPreview | null>(null);
+  const [promptPreviewLoadingId, setPromptPreviewLoadingId] = useState<string | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<CallPlan | null>(null);
+  const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
+  const [planCallsLoading, setPlanCallsLoading] = useState(false);
+  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (location.pathname === '/call-settings') {
+      navigate(CALL_SETTINGS_PATHS.profiles, { replace: true });
+    }
+  }, [location.pathname, navigate]);
+
+  useEffect(() => {
+    setActiveTab(route.tab);
+  }, [route.tab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1123,6 +1253,67 @@ export function CallSettingsPage() {
       });
     return () => { cancelled = true; };
   }, [selectedHoldingId]);
+
+  useEffect(() => {
+    if (route.tab !== 'scripts') {
+      setScriptEditorOpen(false);
+      setEditingScript(null);
+      return;
+    }
+    if (route.create) {
+      setEditingScript(null);
+      setScriptEditorOpen(true);
+      return;
+    }
+    if (route.scriptId) {
+      const script = scripts.find((item) => item.id === route.scriptId);
+      if (script) {
+        setEditingScript(script);
+        setScriptEditorOpen(true);
+      } else if (!loading && scripts.length > 0) {
+        setError('Скрипт не найден в выбранной компании.');
+        navigate(CALL_SETTINGS_PATHS.scripts, { replace: true });
+      }
+      return;
+    }
+    setScriptEditorOpen(false);
+    setEditingScript(null);
+  }, [loading, navigate, route, scripts]);
+
+  useEffect(() => {
+    if (route.tab !== 'plan') {
+      setPlanEditorOpen(false);
+      setSelectedPlan(null);
+      setPlanCalls([]);
+      setExpandedCallId(null);
+      return;
+    }
+    if (route.create) {
+      setSelectedPlan(null);
+      setPlanCalls([]);
+      setExpandedCallId(null);
+      setPlanEditorOpen(true);
+      return;
+    }
+    setPlanEditorOpen(false);
+    if (!route.planId) {
+      setSelectedPlan(null);
+      setPlanCalls([]);
+      setExpandedCallId(null);
+      return;
+    }
+    const plan = plans.find((item) => item.id === route.planId);
+    if (!plan) {
+      if (!loading && plans.length > 0) {
+        setError('План прозвона не найден в выбранной компании.');
+        navigate(CALL_SETTINGS_PATHS.plan, { replace: true });
+      }
+      return;
+    }
+    if (selectedPlan?.id !== plan.id || selectedPlan.updatedAt !== plan.updatedAt) {
+      void openPlanHistory(plan, { skipNavigate: true });
+    }
+  }, [loading, navigate, plans, route, selectedPlan?.id, selectedPlan?.updatedAt]);
 
   const sortedProfiles = useMemo(
     () => [...profiles].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
@@ -1184,17 +1375,16 @@ export function CallSettingsPage() {
         const exists = current.some((item) => item.id === saved.id);
         return exists ? current.map((item) => (item.id === saved.id ? saved : item)) : [...current, saved];
       });
-      setScriptEditorOpen(false);
-      setEditingScript(null);
-      setActiveTab('scripts');
+      setScriptEditorOpen(true);
+      setEditingScript(saved);
+      navigate(`/call-settings/scripts/${encodeURIComponent(saved.id)}`, { replace: !editingScript });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить скрипт.');
     }
   }
 
   function openScriptEditor(script?: CallScript) {
-    setEditingScript(script || null);
-    setScriptEditorOpen(true);
+    navigate(script ? `/call-settings/scripts/${encodeURIComponent(script.id)}` : '/call-settings/scripts/new');
   }
 
   async function removeScript(script: CallScript) {
@@ -1202,6 +1392,7 @@ export function CallSettingsPage() {
     try {
       await deleteCallScript(script.id);
       setScripts((current) => current.filter((item) => item.id !== script.id));
+      if (route.tab === 'scripts' && route.scriptId === script.id) navigate(CALL_SETTINGS_PATHS.scripts, { replace: true });
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить скрипт.');
     }
@@ -1212,7 +1403,7 @@ export function CallSettingsPage() {
       const saved = await createCallPlan(plan);
       setPlans((current) => [saved, ...current]);
       setPlanEditorOpen(false);
-      setActiveTab('plan');
+      navigate(`/call-settings/plans/${encodeURIComponent(saved.id)}`, { replace: true });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Не удалось создать план прозвона.');
     }
@@ -1223,8 +1414,45 @@ export function CallSettingsPage() {
       const result = await initiateCallPlan(plan.id);
       setPlans((current) => current.map((item) => item.id === result.item.id ? result.item : item));
       setNotice(`Прозвон инициирован: ${result.totalJobs} звонков.`);
+      if (selectedPlan?.id === plan.id || route.planId === plan.id) await openPlanHistory(result.item, { skipNavigate: true });
     } catch (initError) {
       setError(initError instanceof Error ? initError.message : 'Не удалось инициировать прозвон.');
+    }
+  }
+
+  async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean }) {
+    if (!options?.skipNavigate) navigate(`/call-settings/plans/${encodeURIComponent(plan.id)}`);
+    setSelectedPlan(plan);
+    setExpandedCallId(null);
+    setPlanCallsLoading(true);
+    try {
+      setPlanCalls(await fetchCallPlanCalls(plan.id));
+    } catch (historyError) {
+      setError(historyError instanceof Error ? historyError.message : 'Не удалось загрузить историю прозвона.');
+    } finally {
+      setPlanCallsLoading(false);
+    }
+  }
+
+  async function openPromptPreview(plan: CallPlan) {
+    try {
+      setPromptPreviewLoadingId(plan.id);
+      const preview = await previewCallPlanPrompt(plan.id);
+      setPromptPreview(preview);
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : 'Не удалось сгенерировать промпт.');
+    } finally {
+      setPromptPreviewLoadingId(null);
+    }
+  }
+
+  async function copyPromptPreview() {
+    if (!promptPreview) return;
+    try {
+      await navigator.clipboard.writeText(promptPreview.prompt);
+      setNotice('Промпт скопирован.');
+    } catch {
+      setNotice('Не удалось скопировать автоматически.');
     }
   }
 
@@ -1234,7 +1462,7 @@ export function CallSettingsPage() {
         holdingId={selectedHoldingId}
         initialScript={editingScript}
         profiles={sortedProfiles}
-        onBack={() => { setScriptEditorOpen(false); setEditingScript(null); setActiveTab('scripts'); }}
+        onBack={() => navigate(CALL_SETTINGS_PATHS.scripts)}
         onSave={saveScript}
       />
     );
@@ -1245,9 +1473,182 @@ export function CallSettingsPage() {
       <CallPlanEditor
         holdingId={selectedHoldingId}
         options={{ ...planOptions, scripts: sortedScripts }}
-        onBack={() => { setPlanEditorOpen(false); setActiveTab('plan'); }}
+        onBack={() => navigate(CALL_SETTINGS_PATHS.plan)}
         onSave={savePlan}
       />
+    );
+  }
+
+  if (selectedPlan) {
+    return (
+      <div style={{ display: 'grid', gap: 18 }}>
+        <section className="sa-card" style={{ padding: 20, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+          <div>
+            <h1 className="sa-page-title" style={{ marginBottom: 6 }}>{selectedPlan.name}</h1>
+            <div className="sa-meta">История прозвонов и аналитика по плану.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>Обновить</button>
+            <button type="button" className="sa-btn-primary" onClick={() => initiatePlan(selectedPlan)}>Заинициировать сейчас</button>
+            <button type="button" className="sa-btn-outline" onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>Назад к планам</button>
+          </div>
+        </section>
+        <section className="sa-card" style={{ padding: 20 }}>
+          {planCallsLoading ? (
+            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Загрузка...</div>
+          ) : planCalls.length === 0 ? (
+            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Звонков по этому плану пока нет.</div>
+          ) : (
+            <div className="sa-table-wrap">
+              <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead>
+                  <tr>
+                    <th>Сотрудник</th>
+                    <th style={{ width: 170 }}>Номер</th>
+                    <th style={{ width: 150 }}>Статус</th>
+                    <th style={{ width: 120 }}>Оценка</th>
+                    <th style={{ width: 190 }}>Дата</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {planCalls.map((call) => {
+                    const analytics = getEvaluationSummary(call.evaluation);
+                    const expanded = expandedCallId === call.id;
+                    const score = call.totalScore ?? analytics.overallScore;
+                    return (
+                      <React.Fragment key={call.id}>
+                        <tr>
+                          <td>
+                            <strong>{call.employeeName || 'Сотрудник'}</strong>
+                            <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
+                            {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
+                          </td>
+                          <td>{call.phone}</td>
+                          <td>{call.outcome || call.status}</td>
+                          <td>
+                            {score != null ? Math.round(score) : '—'}
+                            {analytics.planPercent != null && <div className="sa-meta" style={{ marginTop: 4 }}>Условия: {Math.round(analytics.planPercent)}%</div>}
+                          </td>
+                          <td>
+                            <div>{new Date(call.startedAt).toLocaleString('ru-RU')}</div>
+                            <button
+                              type="button"
+                              className="sa-link-button"
+                              onClick={() => setExpandedCallId(expanded ? null : call.id)}
+                              style={{ padding: 0, border: 0, background: 'transparent', color: 'var(--sa-accent)', fontWeight: 700, cursor: 'pointer', marginTop: 6 }}
+                            >
+                              {expanded ? 'Скрыть аналитику' : 'Показать аналитику'}
+                            </button>
+                          </td>
+                        </tr>
+                        {expanded && (
+                          <tr>
+                            <td colSpan={5} style={{ background: '#f8fafc', padding: 16 }}>
+                              <div style={{ display: 'grid', gap: 14 }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                                  <div className="sa-card" style={{ padding: 12 }}>
+                                    <div className="sa-meta">Общая оценка</div>
+                                    <strong style={{ fontSize: 22 }}>{score != null ? `${Math.round(score)} / 100` : 'Нет оценки'}</strong>
+                                  </div>
+                                  <div className="sa-card" style={{ padding: 12 }}>
+                                    <div className="sa-meta">Условия успеха</div>
+                                    <strong style={{ fontSize: 22 }}>
+                                      {analytics.planPercent != null ? `${Math.round(analytics.planPercent)}%` : 'Нет данных'}
+                                    </strong>
+                                    {analytics.planTotal != null && analytics.planMax != null && (
+                                      <div className="sa-meta" style={{ marginTop: 4 }}>{analytics.planTotal} из {analytics.planMax} баллов</div>
+                                    )}
+                                  </div>
+                                  <div className="sa-card" style={{ padding: 12 }}>
+                                    <div className="sa-meta">Транскрипт</div>
+                                    <strong style={{ fontSize: 22 }}>{call.transcript.length}</strong>
+                                    <div className="sa-meta" style={{ marginTop: 4 }}>реплик</div>
+                                  </div>
+                                </div>
+
+                                {analytics.summary && (
+                                  <div className="sa-card" style={{ padding: 12 }}>
+                                    <div className="sa-meta" style={{ marginBottom: 6 }}>Краткий вывод</div>
+                                    <div style={{ fontSize: 14, lineHeight: 1.5 }}>{analytics.summary}</div>
+                                  </div>
+                                )}
+
+                                {analytics.criteriaItems.length > 0 && (
+                                  <div className="sa-card" style={{ padding: 12, display: 'grid', gap: 10 }}>
+                                    <div style={{ fontWeight: 700 }}>Оценка условий успеха</div>
+                                    {analytics.criteriaItems.map((item, index) => {
+                                      const expected = asText(item.expectedAnswer);
+                                      const evidence = asText(item.evidence);
+                                      const itemScore = asNumber(item.score);
+                                      const maxScore = asNumber(item.maxScore);
+                                      return (
+                                        <div key={`${expected}-${index}`} style={{ borderTop: index === 0 ? 0 : '1px solid var(--sa-divider)', paddingTop: index === 0 ? 0 : 10 }}>
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+                                            <div style={{ fontWeight: 600 }}>{expected || `Критерий ${index + 1}`}</div>
+                                            <span className="sa-chip">{itemScore ?? 0} / {maxScore ?? 0}</span>
+                                          </div>
+                                          {evidence && <div className="sa-meta" style={{ marginTop: 5, lineHeight: 1.45 }}>{evidence}</div>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+
+                                {(analytics.strengths.length > 0 || analytics.issues.length > 0 || analytics.recommendations.length > 0) && (
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
+                                    {analytics.strengths.length > 0 && (
+                                      <div className="sa-card" style={{ padding: 12 }}>
+                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Сильные стороны</div>
+                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
+                                          {analytics.strengths.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {analytics.issues.length > 0 && (
+                                      <div className="sa-card" style={{ padding: 12 }}>
+                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Что просело</div>
+                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
+                                          {analytics.issues.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {analytics.recommendations.length > 0 && (
+                                      <div className="sa-card" style={{ padding: 12 }}>
+                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Рекомендации</div>
+                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
+                                          {analytics.recommendations.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
+                                        </ul>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {call.transcript.length > 0 && (
+                                  <div className="sa-card" style={{ padding: 12, display: 'grid', gap: 8 }}>
+                                    <div style={{ fontWeight: 700 }}>Транскрипт</div>
+                                    <div style={{ display: 'grid', gap: 8, maxHeight: 300, overflow: 'auto' }}>
+                                      {call.transcript.map((turn, index) => (
+                                        <div key={`${turn.role}-${index}`} style={{ display: 'grid', gap: 3 }}>
+                                          <span className="sa-meta">{turn.role === 'client' ? 'Клиент' : 'Сотрудник'}</span>
+                                          <div style={{ fontSize: 13, lineHeight: 1.45 }}>{turn.text}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
     );
   }
 
@@ -1277,15 +1678,15 @@ export function CallSettingsPage() {
               <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => openScriptEditor()}>Создать скрипт</button>
             )}
             {activeTab === 'plan' && (
-              <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => setPlanEditorOpen(true)}>Создать обзвон</button>
+              <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => navigate('/call-settings/plans/new')}>Создать обзвон</button>
             )}
           </div>
         </div>
 
         <div className="sa-dialog-tabs" style={{ marginBottom: 0 }}>
-          <button type="button" className={`sa-dialog-tab ${activeTab === 'profiles' ? 'sa-dialog-tab-active' : ''}`} onClick={() => setActiveTab('profiles')}>Профили клиентов</button>
-          <button type="button" className={`sa-dialog-tab ${activeTab === 'scripts' ? 'sa-dialog-tab-active' : ''}`} onClick={() => setActiveTab('scripts')}>Скрипты</button>
-          <button type="button" className={`sa-dialog-tab ${activeTab === 'plan' ? 'sa-dialog-tab-active' : ''}`} onClick={() => setActiveTab('plan')}>План прозвона</button>
+          <button type="button" className={`sa-dialog-tab ${activeTab === 'profiles' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.profiles)}>Профили клиентов</button>
+          <button type="button" className={`sa-dialog-tab ${activeTab === 'scripts' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.scripts)}>Скрипты</button>
+          <button type="button" className={`sa-dialog-tab ${activeTab === 'plan' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>План прозвона</button>
         </div>
       </section>
 
@@ -1401,7 +1802,7 @@ export function CallSettingsPage() {
                     <th style={{ width: 180 }}>Скрипт</th>
                     <th style={{ width: 150 }}>Частотность</th>
                     <th style={{ width: 140 }}>Время</th>
-                    <th style={{ width: 180 }} />
+                    <th style={{ width: 230 }} />
                   </tr>
                 </thead>
                 <tbody>
@@ -1413,7 +1814,7 @@ export function CallSettingsPage() {
                     return (
                       <tr key={plan.id}>
                         <td>
-                          <strong>{plan.name}</strong>
+                          <button type="button" className="sa-link-button" onClick={() => openPlanHistory(plan)} style={{ padding: 0, border: 0, background: 'transparent', color: 'var(--sa-accent)', fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>{plan.name}</button>
                           {plan.lastInitiatedAt && (
                             <div className="sa-meta" style={{ marginTop: 4 }}>Последний запуск: {new Date(plan.lastInitiatedAt).toLocaleString('ru-RU')}</div>
                           )}
@@ -1423,7 +1824,23 @@ export function CallSettingsPage() {
                         <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
                         <td>{plan.callTimeFrom} - {plan.callTimeTo}</td>
                         <td>
-                          <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => initiatePlan(plan)}>Заинициировать сейчас</button>
+                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="sa-btn-outline sa-btn-icon"
+                              onClick={() => openPromptPreview(plan)}
+                              aria-label="Тест промпта"
+                              title="Тест промпта"
+                              disabled={promptPreviewLoadingId === plan.id}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <path d="M10 2v6L5 19a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3L14 8V2" />
+                                <path d="M8 2h8" />
+                                <path d="M7 16h10" />
+                              </svg>
+                            </button>
+                            <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => initiatePlan(plan)}>Заинициировать сейчас</button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1440,6 +1857,11 @@ export function CallSettingsPage() {
         initialProfile={editingProfile}
         onClose={() => { setModalOpen(false); setEditingProfile(null); }}
         onSave={saveProfile}
+      />
+      <PromptPreviewModal
+        preview={promptPreview}
+        onClose={() => setPromptPreview(null)}
+        onCopy={copyPromptPreview}
       />
     </div>
   );
