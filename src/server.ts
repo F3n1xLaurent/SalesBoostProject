@@ -32,6 +32,20 @@ import { buildDealershipFromCar } from './llm/virtualClient';
 import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
 import { generateSpeechBuffer } from './voice/tts';
+import {
+  handleCreateCallCustomerProfile,
+  handleCreateCallPlan,
+  handleCreateCallScript,
+  handleDeleteCallCustomerProfile,
+  handleDeleteCallScript,
+  handleGetCallPlanOptions,
+  handleInitiateCallPlan,
+  handleListCallCustomerProfiles,
+  handleListCallPlans,
+  handleListCallScripts,
+  handleUpdateCallCustomerProfile,
+  handleUpdateCallScript,
+} from './voice/callSettingsManagement';
 import type { TtsVoice } from './state/userPreferences';
 import { transcribeVoice } from './voice/stt';
 import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifier';
@@ -954,6 +968,90 @@ app.get('/api/imports', (req, res) => {
   handleListImports(req, res).catch((error) => {
     console.error('List imports error:', error);
     res.status(500).json({ error: 'Не удалось загрузить импорты.' });
+  });
+});
+
+app.get('/api/admin/call-settings/customer-profiles', (req, res) => {
+  handleListCallCustomerProfiles(req, res).catch((error) => {
+    console.error('List call customer profiles error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить профили клиентов.' });
+  });
+});
+
+app.post('/api/admin/call-settings/customer-profiles', (req, res) => {
+  handleCreateCallCustomerProfile(req, res).catch((error) => {
+    console.error('Create call customer profile error:', error);
+    res.status(500).json({ error: 'Не удалось создать профиль клиента.' });
+  });
+});
+
+app.patch('/api/admin/call-settings/customer-profiles/:id', (req, res) => {
+  handleUpdateCallCustomerProfile(req, res).catch((error) => {
+    console.error('Update call customer profile error:', error);
+    res.status(500).json({ error: 'Не удалось обновить профиль клиента.' });
+  });
+});
+
+app.delete('/api/admin/call-settings/customer-profiles/:id', (req, res) => {
+  handleDeleteCallCustomerProfile(req, res).catch((error) => {
+    console.error('Delete call customer profile error:', error);
+    res.status(500).json({ error: 'Не удалось удалить профиль клиента.' });
+  });
+});
+
+app.get('/api/admin/call-settings/scripts', (req, res) => {
+  handleListCallScripts(req, res).catch((error) => {
+    console.error('List call scripts error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить скрипты.' });
+  });
+});
+
+app.post('/api/admin/call-settings/scripts', (req, res) => {
+  handleCreateCallScript(req, res).catch((error) => {
+    console.error('Create call script error:', error);
+    res.status(500).json({ error: 'Не удалось создать скрипт.' });
+  });
+});
+
+app.patch('/api/admin/call-settings/scripts/:id', (req, res) => {
+  handleUpdateCallScript(req, res).catch((error) => {
+    console.error('Update call script error:', error);
+    res.status(500).json({ error: 'Не удалось обновить скрипт.' });
+  });
+});
+
+app.delete('/api/admin/call-settings/scripts/:id', (req, res) => {
+  handleDeleteCallScript(req, res).catch((error) => {
+    console.error('Delete call script error:', error);
+    res.status(500).json({ error: 'Не удалось удалить скрипт.' });
+  });
+});
+
+app.get('/api/admin/call-settings/plan-options', (req, res) => {
+  handleGetCallPlanOptions(req, res).catch((error) => {
+    console.error('Get call plan options error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить данные плана прозвона.' });
+  });
+});
+
+app.get('/api/admin/call-settings/plans', (req, res) => {
+  handleListCallPlans(req, res).catch((error) => {
+    console.error('List call plans error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить планы прозвона.' });
+  });
+});
+
+app.post('/api/admin/call-settings/plans', (req, res) => {
+  handleCreateCallPlan(req, res).catch((error) => {
+    console.error('Create call plan error:', error);
+    res.status(500).json({ error: 'Не удалось создать план прозвона.' });
+  });
+});
+
+app.post('/api/admin/call-settings/plans/:id/initiate', (req, res) => {
+  handleInitiateCallPlan(req, res).catch((error) => {
+    console.error('Initiate call plan error:', error);
+    res.status(500).json({ error: 'Не удалось инициировать прозвон.' });
   });
 });
 

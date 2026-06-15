@@ -17,6 +17,7 @@ import { Audits } from '../../../pages/audits/ui/AuditsPage';
 import { AuditDetail } from '../../../pages/audit-detail/ui/AuditDetailPage';
 import { AuditBatchDetail } from '../../../pages/audit-batch-detail/ui/AuditBatchDetailPage';
 import { Analytics } from '../../../pages/analytics/ui/AnalyticsPage';
+import { CallSettingsPage } from '../../../pages/call-settings/ui/CallSettingsPage';
 import { Settings } from '../../../pages/settings/ui/SettingsPage';
 import { DealerContent } from '../../../pages/dealer/ui/DealerContent';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
@@ -412,6 +413,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
                     }
                   }}
                 />
+              )}
+              {activeTab === 'callSettings' && (
+                <CallSettingsPage />
               )}
             </>
           )}

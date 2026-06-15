@@ -20,6 +20,7 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
   'autodealers',
   'audits',
   'analytics',
+  'callSettings',
   'settings',
 ];
 
@@ -67,6 +68,8 @@ export function tabToPath(tab: AdminTab): string {
       return '/audits';
     case 'analytics':
       return '/analytics';
+    case 'callSettings':
+      return '/call-settings';
     case 'settings':
       return '/settings';
     case 'dealer-companies':
@@ -104,6 +107,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'users') return { tab: 'users', employeeId: resource };
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };
   if (section === 'analytics') return { tab: 'analytics' };
+  if (section === 'call-settings') return { tab: 'callSettings' };
   if (section === 'settings') return { tab: 'settings' };
   if (section === 'audits' && resource === 'batches') return { tab: 'audits', batchId: id };
   if (section === 'audits') return { tab: 'audits', auditId: resource };

@@ -40,6 +40,7 @@ model Holding {
   id          String   @id @default(cuid())
   name        String
   code        String?  @unique
+  description String?
   type        String   @default("own") // "own" | "franchised"
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
@@ -49,6 +50,9 @@ model Holding {
   memberships AccountMembership[]
   dealershipDirections DealershipDirection[]
   importSources ImportSource[]
+  callCustomerProfiles CallCustomerProfile[]
+  callScripts CallScript[]
+  callPlans CallPlan[]
 
   @@map("holdings")
 }
@@ -59,6 +63,7 @@ model Dealership {
   holdingId   String?
   name        String
   code        String?  @unique
+  description String?
   type        String   @default("own") // "own" | "franchised"
   directionsJson String @default("[]")
   city        String?
@@ -140,6 +145,67 @@ model ImportedItem {
   @@index([importSourceId])
   @@index([externalId])
   @@map("imported_items")
+}
+
+model CallCustomerProfile {
+  id                 String   @id @default(cuid())
+  holdingId          String
+  name               String
+  voiceId            String
+  age                Int
+  character          String   @default("")
+  temperament        String
+  patience           String
+  replyLength        String
+  communicationStyle String   @default("")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  holding            Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+
+  @@index([holdingId, updatedAt])
+  @@map("call_customer_profiles")
+}
+
+model CallScript {
+  id                  String   @id @default(cuid())
+  holdingId           String
+  name                String
+  profileIdsJson      String   @default("[]")
+  context             String   @default("")
+  dataConditionJson   String   @default("{}")
+  objectionsJson      String   @default("[]")
+  questionsJson       String   @default("[]")
+  successCriteriaJson String   @default("[]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  holding             Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+
+  @@index([holdingId, updatedAt])
+  @@map("call_scripts")
+}
+
+model CallPlan {
+  id                  String   @id @default(cuid())
+  holdingId           String
+  name                String
+  targetType          String   // "employees" | "dealerships"
+  targetIdsJson       String   @default("[]")
+  scriptId            String
+  phoneNumberTypeId   String
+  frequency           String   // "daily" | "weekly"
+  callTimeFrom        String
+  callTimeTo          String
+  lastInitiatedAt     DateTime?
+  lastBatchId         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  holding             Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+
+  @@index([holdingId, updatedAt])
+  @@map("call_plans")
 }
 
 model ImportRun {

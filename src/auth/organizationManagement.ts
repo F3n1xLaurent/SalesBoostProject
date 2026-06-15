@@ -78,6 +78,7 @@ function normalizeHoldingResponse(
     id: holding.id,
     name: holding.name,
     code: holding.code,
+    description: holding.description,
     type: holding.type as HoldingType,
     isActive: holding.isActive,
     createdAt: holding.createdAt,
@@ -113,6 +114,7 @@ function normalizeDealershipResponse(
     id: dealership.id,
     name: dealership.name,
     code: dealership.code,
+    description: dealership.description,
     type: dealership.type as DealershipType,
     directions: parseDealershipDirectionsJson(dealership.directionsJson),
     city: dealership.city,
@@ -611,6 +613,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
   const body = (req.body || {}) as Record<string, unknown>;
   const name = parseString(body.name);
   const code = parseString(body.code);
+  const description = parseString(body.description);
   const type = parseHoldingType(body.type, 'own');
   const isActive = parseBoolean(body.isActive, true);
   const dealershipIds = parseDealershipIds(body.dealershipIds);
@@ -624,7 +627,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
     const created = await prisma.$transaction(async (tx) => {
       const resolvedCode = code ?? await generateUniqueHoldingCode(tx, name);
       const holding = await tx.holding.create({
-        data: { name, code: resolvedCode, type, isActive },
+        data: { name, code: resolvedCode, description, type, isActive },
       });
 
       if (dealershipIds.length > 0) {
@@ -674,6 +677,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
   const body = (req.body || {}) as Record<string, unknown>;
   const name = body.name != null ? parseString(body.name) : undefined;
   const code = body.code != null ? parseString(body.code) : undefined;
+  const description = body.description !== undefined ? parseString(body.description) : undefined;
   const type = body.type != null ? parseHoldingType(body.type, 'own') : undefined;
   const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
   const dealershipIds = body.dealershipIds != null ? parseDealershipIds(body.dealershipIds) : undefined;
@@ -688,6 +692,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
       const holdingData: Prisma.HoldingUpdateInput = {};
       if (name !== undefined && name !== null) holdingData.name = name;
       if (code !== undefined) holdingData.code = code;
+      if (description !== undefined) holdingData.description = description;
       if (type !== undefined) holdingData.type = type;
       if (isActive !== undefined) holdingData.isActive = isActive;
 
@@ -1041,6 +1046,7 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   const body = (req.body || {}) as Record<string, unknown>;
   const name = parseString(body.name);
   const code = parseString(body.code);
+  const description = parseString(body.description);
   const type = parseDealershipType(body.type, 'own');
   const directions = parseDealershipDirections(body.directions);
   const city = parseString(body.city);
@@ -1069,6 +1075,7 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
       data: {
         name,
         code: resolvedCode,
+        description,
         type,
         directionsJson: JSON.stringify(directions),
         city,
@@ -1118,6 +1125,7 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
   const body = (req.body || {}) as Record<string, unknown>;
   const name = body.name != null ? parseString(body.name) : undefined;
   const code = body.code != null ? parseString(body.code) : undefined;
+  const description = body.description !== undefined ? parseString(body.description) : undefined;
   const type = body.type != null ? parseDealershipType(body.type, 'own') : undefined;
   const directions = body.directions != null ? parseDealershipDirections(body.directions) : undefined;
   const city = body.city != null ? parseString(body.city) : undefined;
@@ -1160,6 +1168,7 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
     const dealershipData: Prisma.DealershipUpdateInput = {};
     if (name !== undefined && name !== null) dealershipData.name = name;
     if (code !== undefined) dealershipData.code = code;
+    if (description !== undefined) dealershipData.description = description;
     if (type !== undefined) dealershipData.type = type;
     if (directions !== undefined) dealershipData.directionsJson = JSON.stringify(directions);
     if (city !== undefined) dealershipData.city = city;

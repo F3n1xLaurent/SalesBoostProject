@@ -130,6 +130,7 @@ export interface HoldingItem {
   id: string;
   name: string;
   code: string | null;
+  description: string | null;
   type: HoldingType;
   isActive: boolean;
   createdAt: string;
@@ -152,6 +153,7 @@ export interface DealershipItem {
   id: string;
   name: string;
   code: string | null;
+  description: string | null;
   type: DealershipType;
   directions: DealershipDirection[];
   city: string | null;
@@ -258,6 +260,110 @@ export interface CallBatchJobItem {
   linkedAuditId?: string | null;
   hasTranscript?: boolean;
   linkReason?: string | null;
+}
+
+export type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
+export type CustomerPatience = 'low' | 'medium' | 'high';
+export type ReplyLength = 'short' | 'medium' | 'detailed';
+
+export interface CallCustomerProfileItem {
+  id: string;
+  holdingId: string;
+  name: string;
+  voiceId: string;
+  age: number;
+  character: string;
+  temperament: CustomerTemperament;
+  patience: CustomerPatience;
+  replyLength: ReplyLength;
+  communicationStyle: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CallScriptObjection {
+  id: string;
+  phrase: string;
+  whenAppropriate: string;
+}
+
+export interface CallScriptQuestion {
+  id: string;
+  text: string;
+  required: boolean;
+}
+
+export interface CallScriptSuccessCriterion {
+  id: string;
+  sourceType: 'question' | 'objection';
+  sourceId: string;
+  expectedAnswer: string;
+  score: number;
+}
+
+export interface CallScriptDataCondition {
+  holdingId: string | null;
+  tags: string[];
+}
+
+export interface CallScriptItem {
+  id: string;
+  holdingId: string;
+  name: string;
+  profileIds: string[];
+  context: string;
+  dataCondition: CallScriptDataCondition;
+  objections: CallScriptObjection[];
+  questions: CallScriptQuestion[];
+  successCriteria: CallScriptSuccessCriterion[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CallPlanTargetType = 'employees' | 'dealerships';
+export type CallPlanFrequency = 'daily' | 'weekly';
+
+export interface CallPlanItem {
+  id: string;
+  holdingId: string;
+  name: string;
+  targetType: CallPlanTargetType;
+  targetIds: string[];
+  scriptId: string;
+  phoneNumberTypeId: string;
+  frequency: CallPlanFrequency;
+  callTimeFrom: string;
+  callTimeTo: string;
+  lastInitiatedAt: string | null;
+  lastBatchId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CallPlanEmployeeOption {
+  id: string;
+  accountId: string | null;
+  fullName: string;
+  email: string | null;
+  phone: string | null;
+  dealershipId: string;
+  dealershipName: string;
+  phoneNumbers: Array<{ id: string; typeId: string; typeName: string; phone: string }>;
+}
+
+export interface CallPlanDealershipOption {
+  id: string;
+  name: string;
+  city: string | null;
+  address: string | null;
+  employeesCount: number;
+}
+
+export interface CallPlanOptions {
+  employees: CallPlanEmployeeOption[];
+  dealerships: CallPlanDealershipOption[];
+  phoneNumberTypes: PhoneNumberTypeItem[];
+  scripts: CallScriptItem[];
 }
 
 export type PhoneNumberOwnership = 'dealership' | 'user';
@@ -670,6 +776,7 @@ export async function fetchCities(params?: { search?: string; limit?: number; of
 
 export async function createHolding(payload: {
   name: string;
+  description?: string | null;
   type?: HoldingType;
   code?: string | null;
   isActive?: boolean;
@@ -689,6 +796,7 @@ export async function updateHolding(
   holdingId: string,
   payload: {
     name?: string;
+    description?: string | null;
     type?: HoldingType;
     code?: string | null;
     isActive?: boolean;
@@ -716,6 +824,7 @@ export async function deleteHolding(holdingId: string): Promise<void> {
 export async function createDealership(payload: {
   name: string;
   code?: string | null;
+  description?: string | null;
   type?: DealershipType;
   directions?: DealershipDirection[];
   city?: string | null;
@@ -740,6 +849,7 @@ export async function updateDealership(
   payload: {
     name?: string;
     code?: string | null;
+    description?: string | null;
     type?: DealershipType;
     directions?: DealershipDirection[];
     city?: string | null;
@@ -912,6 +1022,117 @@ export async function syncMockOrganization(): Promise<{
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось синхронизировать моковую структуру.');
   return data.summary ?? { holdingsCreated: 0, dealershipsCreated: 0, dealershipsUpdated: 0 };
+}
+
+export async function fetchCallCustomerProfiles(params: { holdingId: string }): Promise<CallCustomerProfileItem[]> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить профили клиентов.');
+  return Array.isArray(data.items) ? data.items as CallCustomerProfileItem[] : [];
+}
+
+export async function createCallCustomerProfile(payload: Omit<CallCustomerProfileItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallCustomerProfileItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать профиль клиента.');
+  return data.item as CallCustomerProfileItem;
+}
+
+export async function updateCallCustomerProfile(id: string, payload: Omit<CallCustomerProfileItem, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>): Promise<CallCustomerProfileItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить профиль клиента.');
+  return data.item as CallCustomerProfileItem;
+}
+
+export async function deleteCallCustomerProfile(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить профиль клиента.');
+}
+
+export async function fetchCallScripts(params: { holdingId: string }): Promise<CallScriptItem[]> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить скрипты.');
+  return Array.isArray(data.items) ? data.items as CallScriptItem[] : [];
+}
+
+export async function createCallScript(payload: Omit<CallScriptItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallScriptItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать скрипт.');
+  return data.item as CallScriptItem;
+}
+
+export async function updateCallScript(id: string, payload: Omit<CallScriptItem, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>): Promise<CallScriptItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить скрипт.');
+  return data.item as CallScriptItem;
+}
+
+export async function deleteCallScript(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить скрипт.');
+}
+
+export async function fetchCallPlanOptions(params: { holdingId: string }): Promise<CallPlanOptions> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plan-options?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить данные плана прозвона.');
+  return {
+    employees: Array.isArray(data.employees) ? data.employees as CallPlanEmployeeOption[] : [],
+    dealerships: Array.isArray(data.dealerships) ? data.dealerships as CallPlanDealershipOption[] : [],
+    phoneNumberTypes: Array.isArray(data.phoneNumberTypes) ? data.phoneNumberTypes as PhoneNumberTypeItem[] : [],
+    scripts: Array.isArray(data.scripts) ? data.scripts as CallScriptItem[] : [],
+  };
+}
+
+export async function fetchCallPlans(params: { holdingId: string }): Promise<CallPlanItem[]> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить планы прозвона.');
+  return Array.isArray(data.items) ? data.items as CallPlanItem[] : [];
+}
+
+export async function createCallPlan(payload: Omit<CallPlanItem, 'id' | 'createdAt' | 'updatedAt' | 'lastInitiatedAt' | 'lastBatchId'>): Promise<CallPlanItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать план прозвона.');
+  return data.item as CallPlanItem;
+}
+
+export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; batchId: string; totalJobs: number }> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/initiate`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось инициировать прозвон.');
+  return data as { item: CallPlanItem; batchId: string; totalJobs: number };
 }
 
 export async function fetchVoiceDashboard(): Promise<PlatformVoice | null> {

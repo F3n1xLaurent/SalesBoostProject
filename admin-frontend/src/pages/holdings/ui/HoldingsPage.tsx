@@ -13,6 +13,7 @@ import { useToast } from '../../../shared/ui/toast/ToastProvider';
 
 type HoldingFormState = {
   name: string;
+  description: string;
   type: HoldingType;
   isActive: boolean;
   dealershipIds: string[];
@@ -20,6 +21,7 @@ type HoldingFormState = {
 
 const EMPTY_HOLDING_FORM: HoldingFormState = {
   name: '',
+  description: '',
   type: 'own',
   isActive: true,
   dealershipIds: [],
@@ -28,6 +30,7 @@ const EMPTY_HOLDING_FORM: HoldingFormState = {
 function buildHoldingForm(item: HoldingItem): HoldingFormState {
   return {
     name: item.name,
+    description: item.description || '',
     type: item.type,
     isActive: item.isActive,
     dealershipIds: item.dealerships.map((dealership) => dealership.id),
@@ -37,6 +40,7 @@ function buildHoldingForm(item: HoldingItem): HoldingFormState {
 function normalizeHoldingForm(form: HoldingFormState) {
   return {
     name: form.name.trim(),
+    description: form.description.trim(),
     type: form.type,
     isActive: form.isActive,
     dealershipIds: [...form.dealershipIds].sort(),
@@ -193,6 +197,7 @@ export function HoldingsPage() {
     try {
       await createHolding({
         name: holdingForm.name,
+        description: holdingForm.description.trim() || null,
         type: holdingForm.type,
         code: null,
         isActive: true,
@@ -229,6 +234,7 @@ export function HoldingsPage() {
     try {
       await updateHolding(activeHolding.id, {
         name: holdingForm.name,
+        description: holdingForm.description.trim() || null,
         type: holdingForm.type,
         code: activeHolding.code || null,
         isActive: holdingForm.isActive,
@@ -275,6 +281,7 @@ export function HoldingsPage() {
     try {
       await updateHolding(holdingId, {
         name: targetHolding.name,
+        description: targetHolding.description || null,
         type: targetHolding.type,
         code: targetHolding.code || null,
         isActive: targetHolding.isActive,
@@ -305,6 +312,16 @@ export function HoldingsPage() {
         <label style={{ display: 'grid', gap: 6 }}>
           <span>Название</span>
           <input className="sa-input" value={holdingForm.name} onChange={(event) => setHoldingForm((current) => ({ ...current, name: event.target.value }))} required />
+        </label>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Описание</span>
+          <textarea
+            className="sa-input"
+            rows={4}
+            value={holdingForm.description}
+            onChange={(event) => setHoldingForm((current) => ({ ...current, description: event.target.value }))}
+            placeholder="Заполните информацию о компании, расскажите чем занимается, какое направление"
+          />
         </label>
         <fieldset style={{ display: 'grid', gap: 8, border: 'none', padding: 0, margin: 0 }}>
           <legend style={{ fontWeight: 600, marginBottom: 4 }}>Тип компании</legend>

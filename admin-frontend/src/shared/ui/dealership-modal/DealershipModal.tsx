@@ -15,6 +15,7 @@ import { useToast } from '../toast/ToastProvider';
 
 type DealershipFormState = {
   name: string;
+  description: string;
   type: DealershipType;
   directions: DealershipDirection[];
   city: string;
@@ -35,6 +36,7 @@ type Props = {
 
 const EMPTY_FORM: DealershipFormState = {
   name: '',
+  description: '',
   type: 'own',
   directions: [],
   city: '',
@@ -49,6 +51,7 @@ function fillForm(dealership?: DealershipItem | null): DealershipFormState {
   if (!dealership) return EMPTY_FORM;
   return {
     name: dealership.name,
+    description: dealership.description || '',
     type: dealership.type || 'own',
     directions: dealership.directions || [],
     city: dealership.city || '',
@@ -75,6 +78,7 @@ function overlayCardStyle(width = 640): React.CSSProperties {
 function normalizePayload(form: DealershipFormState) {
   return {
     name: form.name.trim(),
+    description: form.description.trim() || null,
     type: form.type,
     directions: form.directions,
     city: form.city.trim() || null,
@@ -329,8 +333,29 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
 
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
           <label style={{ display: 'grid', gap: 6 }}>
+            <span>Компания</span>
+            <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
+              <option value="">Без компании</option>
+              {holdings.map((holding) => (
+                <option key={holding.id} value={holding.id}>{holding.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
             <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+          </label>
+
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span>Описание</span>
+            <textarea
+              className="sa-input"
+              rows={4}
+              value={form.description}
+              onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+              placeholder="Заполните информацию о точке, расскажите чем занимается, какое направление"
+            />
           </label>
 
           <div style={{ display: 'grid', gap: 6 }}>
@@ -422,16 +447,6 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
               />
             </label>
           </div>
-
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span>Компания</span>
-            <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
-              <option value="">Без компании</option>
-              {holdings.map((holding) => (
-                <option key={holding.id} value={holding.id}>{holding.name}</option>
-              ))}
-            </select>
-          </label>
 
           {mode === 'edit' && (
             <button

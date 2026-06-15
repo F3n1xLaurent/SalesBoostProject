@@ -25,6 +25,7 @@ const SUPER_NAV: NavItem[] = [
   { id: 'users', label: 'Пользователи', icon: <DealersIcon /> },
   { id: 'audits', label: 'Проверки', icon: <AuditsIcon /> },
   { id: 'analytics', label: 'Аналитика', icon: <AnalyticsIcon /> },
+  { id: 'callSettings', label: 'Настройки обзвона', icon: <PhoneIcon /> },
 ];
 
 const COMPANY_NAV: NavItem[] = SUPER_NAV.filter((item) => item.id !== 'holdings' && item.id !== 'typesNumbers');
