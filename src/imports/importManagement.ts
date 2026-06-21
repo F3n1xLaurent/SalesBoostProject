@@ -946,6 +946,10 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
   const body = (req.body || {}) as Record<string, unknown>;
   const text = parseString(body.text);
   const availableFields = Array.isArray(body.availableFields) ? body.availableFields.map(String) : [];
+  let aiRawContent: string | null = null;
+  let aiParsedJson: unknown = null;
+  let aiNormalizedRule: TagRule | null = null;
+  let aiValidationReason: string | null = null;
   if (!text) {
     res.status(400).json({ error: 'Опишите правило.' });
     return;
@@ -988,14 +992,28 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
       `OpenAI tag rule request timed out after ${AI_TAG_RULE_TIMEOUT_MS}ms.`,
     );
     console.info(`[${requestId}] OpenAI request completed in ${Date.now() - startedAt}ms: tag rule generation`);
-    const rule = normalizeTagRules([{ id: 'rule-1', ...JSON.parse(response.choices[0]?.message?.content || '{}') }])[0];
-    if (!rule || !availableFields.includes(rule.condition.field)) throw new Error('AI вернул некорректное правило.');
+    aiRawContent = response.choices[0]?.message?.content || '';
+    aiParsedJson = JSON.parse(aiRawContent || '{}');
+    const rule = normalizeTagRules([{ id: 'rule-1', ...(aiParsedJson && typeof aiParsedJson === 'object' ? aiParsedJson : {}) }])[0];
+    aiNormalizedRule = rule ?? null;
+    if (!rule) {
+      aiValidationReason = 'Не удалось привести ответ AI к структуре {name, condition:{field, operator, value}}.';
+      throw new Error('AI вернул некорректное правило.');
+    }
+    if (!availableFields.includes(rule.condition.field)) {
+      aiValidationReason = `AI выбрал поле "${rule.condition.field}", которого нет в availableFields.`;
+      throw new Error('AI вернул некорректное правило.');
+    }
     const normalizedName = normalizeGeneratedTagName(rule.name);
-    if (!isRussianTagName(normalizedName)) throw new Error('AI вернул некорректное название тега.');
+    if (!isRussianTagName(normalizedName)) {
+      aiValidationReason = `AI вернул название "${rule.name}", после нормализации "${normalizedName}". Нужно короткое русское название без слов "тег/tag".`;
+      throw new Error('AI вернул некорректное название тега.');
+    }
     res.json({ name: normalizedName, enabled: rule.enabled, condition: rule.condition });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось сформировать правило.';
-    console.warn('Import tag rule AI failed:', {
+    const isTimeout = message.toLowerCase().includes('timed out') || message.toLowerCase().includes('таймаут');
+    const diagnostics = {
       endpoint: 'POST /api/imports/generate-tag-rule',
       openaiRequest: 'chat.completions.create',
       provider: config.aiApiProvider,
@@ -1004,19 +1022,21 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
       proxyUsed: Boolean(config.httpsProxy && config.aiApiProvider !== 'proxyapi'),
       timeoutMs: AI_TAG_RULE_TIMEOUT_MS,
       error: message,
+      validationReason: aiValidationReason,
+      availableFields,
+      aiRawContent,
+      aiParsedJson,
+      aiNormalizedRule,
+    };
+    console.warn('Import tag rule AI failed:', {
+      ...diagnostics,
+      aiRawContent: aiRawContent ? aiRawContent.slice(0, 2000) : null,
     });
     res.status(400).json({
-      error: `Таймаут OpenAI на генерации правила тега (${AI_TAG_RULE_TIMEOUT_MS} мс). Endpoint: POST /api/imports/generate-tag-rule.`,
-      details: {
-        endpoint: 'POST /api/imports/generate-tag-rule',
-        openaiRequest: 'chat.completions.create',
-        provider: config.aiApiProvider,
-        baseURL: config.openaiBaseUrl || 'https://api.openai.com/v1',
-        model: config.openaiImportModel,
-        proxyUsed: Boolean(config.httpsProxy && config.aiApiProvider !== 'proxyapi'),
-        timeoutMs: AI_TAG_RULE_TIMEOUT_MS,
-        error: message,
-      },
+      error: isTimeout
+        ? `Таймаут OpenAI на генерации правила тега (${AI_TAG_RULE_TIMEOUT_MS} мс). Endpoint: POST /api/imports/generate-tag-rule.`
+        : message,
+      details: diagnostics,
     });
   }
 }

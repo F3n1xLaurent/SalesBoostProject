@@ -481,6 +481,7 @@ export const ADMIN_API_PERMISSION_MAP = {
   '/api/admin/call-settings/scripts/:id': [PERMISSIONS.settings.view, PERMISSIONS.settings.edit],
   '/api/admin/call-settings/plan-options': [PERMISSIONS.settings.view],
   '/api/admin/call-settings/plans': [PERMISSIONS.settings.view, PERMISSIONS.settings.edit],
+  '/api/admin/call-settings/plans/:id': [PERMISSIONS.settings.view, PERMISSIONS.settings.edit],
   '/api/admin/call-settings/plans/:id/initiate': [PERMISSIONS.callBatch.create, PERMISSIONS.settings.edit],
   '/api/admin/call-settings/plans/:id/prompt-preview': [PERMISSIONS.settings.view],
   '/api/admin/call-settings/plans/:id/calls': [PERMISSIONS.settings.view],

@@ -17,6 +17,7 @@ import {
   initiateCallPlan,
   previewCallPlanPrompt,
   updateCallCustomerProfile,
+  updateCallPlan,
   updateCallScript,
   type CallPlanDealershipOption,
   type CallPlanEmployeeOption,
@@ -39,7 +40,7 @@ type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
 type CallSettingsRoute =
   | { tab: 'profiles' }
   | { tab: 'scripts'; scriptId?: string; create?: boolean }
-  | { tab: 'plan'; planId?: string; create?: boolean };
+  | { tab: 'plan'; planId?: string; create?: boolean; edit?: boolean };
 type CustomerProfile = CallCustomerProfileItem;
 type CustomerProfileForm = Omit<CustomerProfile, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>;
 type SuccessCriterion = CallScriptSuccessCriterion;
@@ -127,6 +128,7 @@ function parseCallSettingsRoute(pathname: string): CallSettingsRoute {
   }
   if (section === 'plans' || section === 'plan') {
     if (id === 'new') return { tab: 'plan', create: true };
+    if (id && parts[3] === 'edit') return { tab: 'plan', planId: id, edit: true };
     return id ? { tab: 'plan', planId: id } : { tab: 'plan' };
   }
   return { tab: 'profiles' };
@@ -950,18 +952,31 @@ function PlanTargetPicker<T extends { id: string }>(props: {
 function CallPlanEditor(props: {
   holdingId: string;
   options: CallPlanOptions;
+  initialPlan?: CallPlan | null;
   onBack: () => void;
   onSave: (plan: CallPlanForm) => void;
 }) {
-  const [targetType, setTargetType] = useState<CallPlanTargetType>('employees');
-  const [targetIds, setTargetIds] = useState<string[]>([]);
+  const [name, setName] = useState(props.initialPlan?.name || '');
+  const [targetType, setTargetType] = useState<CallPlanTargetType>(props.initialPlan?.targetType || 'employees');
+  const [targetIds, setTargetIds] = useState<string[]>(props.initialPlan?.targetIds || []);
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [dealershipSearch, setDealershipSearch] = useState('');
-  const [scriptId, setScriptId] = useState('');
-  const [phoneNumberTypeId, setPhoneNumberTypeId] = useState('');
-  const [frequency, setFrequency] = useState<CallPlanFrequency>('daily');
-  const [callTimeFrom, setCallTimeFrom] = useState('09:00');
-  const [callTimeTo, setCallTimeTo] = useState('09:15');
+  const [scriptId, setScriptId] = useState(props.initialPlan?.scriptId || '');
+  const [phoneNumberTypeId, setPhoneNumberTypeId] = useState(props.initialPlan?.phoneNumberTypeId || '');
+  const [frequency, setFrequency] = useState<CallPlanFrequency>(props.initialPlan?.frequency || 'daily');
+  const [callTimeFrom, setCallTimeFrom] = useState(props.initialPlan?.callTimeFrom || '09:00');
+  const [callTimeTo, setCallTimeTo] = useState(props.initialPlan?.callTimeTo || '09:15');
+
+  useEffect(() => {
+    setName(props.initialPlan?.name || '');
+    setTargetType(props.initialPlan?.targetType || 'employees');
+    setTargetIds(props.initialPlan?.targetIds || []);
+    setScriptId(props.initialPlan?.scriptId || '');
+    setPhoneNumberTypeId(props.initialPlan?.phoneNumberTypeId || '');
+    setFrequency(props.initialPlan?.frequency || 'daily');
+    setCallTimeFrom(props.initialPlan?.callTimeFrom || '09:00');
+    setCallTimeTo(props.initialPlan?.callTimeTo || '09:15');
+  }, [props.initialPlan]);
 
   useEffect(() => {
     setScriptId((current) => current || props.options.scripts[0]?.id || '');
@@ -1000,7 +1015,7 @@ function CallPlanEditor(props: {
     if (!scriptId || !phoneNumberTypeId || targetIds.length === 0) return;
     props.onSave({
       holdingId: props.holdingId,
-      name: targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек',
+      name: name.trim() || (targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек'),
       targetType,
       targetIds,
       scriptId,
@@ -1015,14 +1030,25 @@ function CallPlanEditor(props: {
     <div style={{ display: 'grid', gap: 18 }}>
       <section className="sa-card" style={{ padding: 20, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div>
-          <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Создание прозвона</h1>
-          <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>Выберите аудиторию, скрипт, тип номера и окно звонка.</div>
+          <h1 className="sa-page-title" style={{ marginBottom: 6 }}>{props.initialPlan ? 'Редактирование прозвона' : 'Создание прозвона'}</h1>
+          <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>
+            {props.initialPlan ? 'Измените аудиторию, скрипт, тип номера и окно звонка.' : 'Выберите аудиторию, скрипт, тип номера и окно звонка.'}
+          </div>
         </div>
         <button type="button" className="sa-btn-outline" onClick={props.onBack}>Назад к планам</button>
       </section>
 
       <form onSubmit={save} style={{ display: 'grid', gap: 16 }}>
         <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span>Название плана</span>
+            <input
+              className="sa-input"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек'}
+            />
+          </label>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
             {([
               { id: 'employees' as const, title: 'Сотрудники', text: 'Обзвон конкретных сотрудников' },
@@ -1119,7 +1145,9 @@ function CallPlanEditor(props: {
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
           <button type="button" className="sa-btn-outline" onClick={props.onBack}>Отмена</button>
-          <button type="submit" className="sa-btn-primary" disabled={!scriptId || !phoneNumberTypeId || targetIds.length === 0}>Создать обзвон</button>
+          <button type="submit" className="sa-btn-primary" disabled={!scriptId || !phoneNumberTypeId || targetIds.length === 0}>
+            {props.initialPlan ? 'Сохранить изменения' : 'Создать обзвон'}
+          </button>
         </div>
       </form>
     </div>
@@ -1304,12 +1332,20 @@ export function CallSettingsPage() {
     }
     const plan = plans.find((item) => item.id === route.planId);
     if (!plan) {
-      if (!loading && plans.length > 0) {
+      if (!loading) {
         setError('План прозвона не найден в выбранной компании.');
         navigate(CALL_SETTINGS_PATHS.plan, { replace: true });
       }
       return;
     }
+    if (route.edit) {
+      setSelectedPlan(plan);
+      setPlanCalls([]);
+      setExpandedCallId(null);
+      setPlanEditorOpen(true);
+      return;
+    }
+    setPlanEditorOpen(false);
     if (selectedPlan?.id !== plan.id || selectedPlan.updatedAt !== plan.updatedAt) {
       void openPlanHistory(plan, { skipNavigate: true });
     }
@@ -1400,12 +1436,17 @@ export function CallSettingsPage() {
 
   async function savePlan(plan: CallPlanForm) {
     try {
-      const saved = await createCallPlan(plan);
-      setPlans((current) => [saved, ...current]);
+      const saved = route.tab === 'plan' && route.edit && route.planId
+        ? await updateCallPlan(route.planId, plan)
+        : await createCallPlan(plan);
+      setPlans((current) => {
+        const exists = current.some((item) => item.id === saved.id);
+        return exists ? current.map((item) => item.id === saved.id ? saved : item) : [saved, ...current];
+      });
       setPlanEditorOpen(false);
       navigate(`/call-settings/plans/${encodeURIComponent(saved.id)}`, { replace: true });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось создать план прозвона.');
+      setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить план прозвона.');
     }
   }
 
@@ -1469,28 +1510,88 @@ export function CallSettingsPage() {
   }
 
   if (planEditorOpen) {
+    const initialPlan = route.tab === 'plan' && route.planId
+      ? plans.find((plan) => plan.id === route.planId) ?? selectedPlan
+      : null;
     return (
       <CallPlanEditor
         holdingId={selectedHoldingId}
         options={{ ...planOptions, scripts: sortedScripts }}
-        onBack={() => navigate(CALL_SETTINGS_PATHS.plan)}
+        initialPlan={initialPlan}
+        onBack={() => {
+          if (route.tab === 'plan' && route.planId) navigate(`/call-settings/plans/${encodeURIComponent(route.planId)}`);
+          else navigate(CALL_SETTINGS_PATHS.plan);
+        }}
         onSave={savePlan}
       />
     );
   }
 
   if (selectedPlan) {
+    const selectedScript = scripts.find((script) => script.id === selectedPlan.scriptId);
+    const selectedPhoneType = planOptions.phoneNumberTypes.find((type) => type.id === selectedPlan.phoneNumberTypeId);
+    const selectedTargetItems = selectedPlan.targetType === 'employees'
+      ? planOptions.employees.filter((employee) => selectedPlan.targetIds.includes(employee.id)).map((employee) => ({
+        id: employee.id,
+        title: employee.fullName,
+        meta: employee.dealershipName,
+      }))
+      : planOptions.dealerships.filter((dealership) => selectedPlan.targetIds.includes(dealership.id)).map((dealership) => ({
+        id: dealership.id,
+        title: dealership.name,
+        meta: `${dealership.city || 'Город не указан'} · сотрудников: ${dealership.employeesCount}`,
+      }));
     return (
       <div style={{ display: 'grid', gap: 18 }}>
         <section className="sa-card" style={{ padding: 20, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           <div>
             <h1 className="sa-page-title" style={{ marginBottom: 6 }}>{selectedPlan.name}</h1>
-            <div className="sa-meta">История прозвонов и аналитика по плану.</div>
+            <div className="sa-meta">Состав плана, история прозвонов и аналитика.</div>
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>Обновить</button>
+            <button type="button" className="sa-btn-outline" onClick={() => navigate(`/call-settings/plans/${encodeURIComponent(selectedPlan.id)}/edit`)}>Редактировать</button>
             <button type="button" className="sa-btn-primary" onClick={() => initiatePlan(selectedPlan)}>Заинициировать сейчас</button>
             <button type="button" className="sa-btn-outline" onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>Назад к планам</button>
+          </div>
+        </section>
+        <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0, fontSize: 18 }}>Из чего состоит план</h2>
+            <span className="sa-chip">ID: {selectedPlan.id}</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+            <div className="sa-card" style={{ padding: 12 }}>
+              <div className="sa-meta">Аудитория</div>
+              <strong>{selectedPlan.targetType === 'employees' ? 'Сотрудники' : 'Точки'}</strong>
+              <div className="sa-meta" style={{ marginTop: 4 }}>{selectedTargetItems.length} выбрано</div>
+            </div>
+            <div className="sa-card" style={{ padding: 12 }}>
+              <div className="sa-meta">Скрипт</div>
+              <strong>{selectedScript?.name || 'Не найден'}</strong>
+            </div>
+            <div className="sa-card" style={{ padding: 12 }}>
+              <div className="sa-meta">Тип номера</div>
+              <strong>{selectedPhoneType?.name || 'Не найден'}</strong>
+            </div>
+            <div className="sa-card" style={{ padding: 12 }}>
+              <div className="sa-meta">Расписание</div>
+              <strong>{PLAN_FREQUENCIES.find((item) => item.value === selectedPlan.frequency)?.label || selectedPlan.frequency}</strong>
+              <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ fontWeight: 700 }}>Выбранные {selectedPlan.targetType === 'employees' ? 'сотрудники' : 'точки'}</div>
+            {selectedTargetItems.length === 0 ? (
+              <div className="sa-meta">Выбранные элементы не найдены в текущей компании.</div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {selectedTargetItems.slice(0, 24).map((item) => (
+                  <span key={item.id} className="sa-chip" title={item.meta}>{item.title}</span>
+                ))}
+                {selectedTargetItems.length > 24 && <span className="sa-chip">+{selectedTargetItems.length - 24}</span>}
+              </div>
+            )}
           </div>
         </section>
         <section className="sa-card" style={{ padding: 20 }}>
@@ -1504,6 +1605,7 @@ export function CallSettingsPage() {
                 <thead>
                   <tr>
                     <th>Сотрудник</th>
+                    <th style={{ width: 170 }}>ID обзвона</th>
                     <th style={{ width: 170 }}>Номер</th>
                     <th style={{ width: 150 }}>Статус</th>
                     <th style={{ width: 120 }}>Оценка</th>
@@ -1522,6 +1624,9 @@ export function CallSettingsPage() {
                             <strong>{call.employeeName || 'Сотрудник'}</strong>
                             <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
                             {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
+                          </td>
+                          <td>
+                            <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
                           </td>
                           <td>{call.phone}</td>
                           <td>{call.outcome || call.status}</td>
@@ -1543,9 +1648,13 @@ export function CallSettingsPage() {
                         </tr>
                         {expanded && (
                           <tr>
-                            <td colSpan={5} style={{ background: '#f8fafc', padding: 16 }}>
+                            <td colSpan={6} style={{ background: '#f8fafc', padding: 16 }}>
                               <div style={{ display: 'grid', gap: 14 }}>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                                  <div className="sa-card" style={{ padding: 12 }}>
+                                    <div className="sa-meta">ID обзвона</div>
+                                    <code style={{ display: 'block', marginTop: 6, fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
+                                  </div>
                                   <div className="sa-card" style={{ padding: 12 }}>
                                     <div className="sa-meta">Общая оценка</div>
                                     <strong style={{ fontSize: 22 }}>{score != null ? `${Math.round(score)} / 100` : 'Нет оценки'}</strong>
@@ -1579,13 +1688,15 @@ export function CallSettingsPage() {
                                     {analytics.criteriaItems.map((item, index) => {
                                       const expected = asText(item.expectedAnswer);
                                       const evidence = asText(item.evidence);
-                                      const itemScore = asNumber(item.score);
-                                      const maxScore = asNumber(item.maxScore);
+                                      const rawMaxScore = asNumber(item.maxScore) ?? 0;
+                                      const rawItemScore = asNumber(item.score) ?? 0;
+                                      const maxScore = Math.max(0, rawMaxScore);
+                                      const itemScore = Math.max(0, Math.min(maxScore, rawItemScore));
                                       return (
                                         <div key={`${expected}-${index}`} style={{ borderTop: index === 0 ? 0 : '1px solid var(--sa-divider)', paddingTop: index === 0 ? 0 : 10 }}>
                                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
                                             <div style={{ fontWeight: 600 }}>{expected || `Критерий ${index + 1}`}</div>
-                                            <span className="sa-chip">{itemScore ?? 0} / {maxScore ?? 0}</span>
+                                            <span className="sa-chip">{itemScore} / {maxScore}</span>
                                           </div>
                                           {evidence && <div className="sa-meta" style={{ marginTop: 5, lineHeight: 1.45 }}>{evidence}</div>}
                                         </div>
@@ -1825,6 +1936,18 @@ export function CallSettingsPage() {
                         <td>{plan.callTimeFrom} - {plan.callTimeTo}</td>
                         <td>
                           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="sa-btn-outline sa-btn-icon"
+                              onClick={() => openPlanHistory(plan)}
+                              aria-label="Посмотреть план"
+                              title="Посмотреть план"
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
+                                <circle cx="12" cy="12" r="3" />
+                              </svg>
+                            </button>
                             <button
                               type="button"
                               className="sa-btn-outline sa-btn-icon"

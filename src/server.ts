@@ -46,6 +46,7 @@ import {
   handleListCallScripts,
   handlePreviewCallPlanPrompt,
   handleUpdateCallCustomerProfile,
+  handleUpdateCallPlan,
   handleUpdateCallScript,
 } from './voice/callSettingsManagement';
 import type { TtsVoice } from './state/userPreferences';
@@ -1047,6 +1048,13 @@ app.post('/api/admin/call-settings/plans', (req, res) => {
   handleCreateCallPlan(req, res).catch((error) => {
     console.error('Create call plan error:', error);
     res.status(500).json({ error: 'Не удалось создать план прозвона.' });
+  });
+});
+
+app.patch('/api/admin/call-settings/plans/:id', (req, res) => {
+  handleUpdateCallPlan(req, res).catch((error) => {
+    console.error('Update call plan error:', error);
+    res.status(500).json({ error: 'Не удалось обновить план прозвона.' });
   });
 });
 

@@ -1165,6 +1165,17 @@ export async function createCallPlan(payload: Omit<CallPlanItem, 'id' | 'created
   return data.item as CallPlanItem;
 }
 
+export async function updateCallPlan(id: string, payload: Omit<CallPlanItem, 'id' | 'createdAt' | 'updatedAt' | 'lastInitiatedAt' | 'lastBatchId'>): Promise<CallPlanItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить план прозвона.');
+  return data.item as CallPlanItem;
+}
+
 export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; callId: string; batchId: string; totalJobs: number }> {
   const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/initiate`, { method: 'POST' });
   const data = await res.json().catch(() => ({}));

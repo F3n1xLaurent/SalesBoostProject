@@ -136,6 +136,12 @@ function flattenFields(value: unknown, prefix = '', out = new Set<string>()): st
   return Array.from(out);
 }
 
+function flattenFieldsFromItems(items: unknown[]): string[] {
+  const out = new Set<string>();
+  items.forEach((item) => flattenFields(item, '', out));
+  return Array.from(out);
+}
+
 function compactList(values: string[], fallback = 'Определим автоматически'): string {
   const clean = values.map((value) => value.trim()).filter(Boolean);
   if (clean.length === 0) return fallback;
@@ -522,6 +528,15 @@ function fieldsFromImportSource(item: ImportSourceItem): string[] {
   ].map((field) => field.trim()).filter(Boolean)));
 }
 
+function fieldsFromImportedItems(items: ImportedDataItem[]): string[] {
+  const out = new Set<string>();
+  items.forEach((item) => {
+    flattenFields(item.rawData, '', out);
+    flattenFields(item.normalizedData, '', out);
+  });
+  return Array.from(out);
+}
+
 function ImportEditModal(props: {
   item: ImportEditModalItem | null;
   onClose: () => void;
@@ -533,6 +548,8 @@ function ImportEditModal(props: {
   const [status, setStatus] = useState<ImportSourceItem['status']>('active');
   const [tagRules, setTagRules] = useState<ImportTagRule[]>([]);
   const [editTab, setEditTab] = useState<'settings' | 'tags'>('settings');
+  const [sourceFields, setSourceFields] = useState<string[]>([]);
+  const [sourceFieldsLoading, setSourceFieldsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -544,7 +561,29 @@ function ImportEditModal(props: {
     setStatus(props.item.status);
     setTagRules(props.item.tagRules);
     setEditTab('settings');
+    setSourceFields(fieldsFromImportSource(props.item));
     setError(null);
+  }, [props.item]);
+
+  useEffect(() => {
+    if (!props.item) return;
+    let cancelled = false;
+    setSourceFieldsLoading(true);
+    fetchImportedItems({ sourceId: props.item.id, limit: 100 })
+      .then((result) => {
+        if (cancelled || !props.item) return;
+        setSourceFields(Array.from(new Set([
+          ...fieldsFromImportSource(props.item),
+          ...fieldsFromImportedItems(result.items),
+        ])));
+      })
+      .catch(() => {
+        if (!cancelled && props.item) setSourceFields(fieldsFromImportSource(props.item));
+      })
+      .finally(() => {
+        if (!cancelled) setSourceFieldsLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [props.item]);
 
   if (!props.item) return null;
@@ -659,9 +698,12 @@ function ImportEditModal(props: {
             <section className="sa-card" style={{ padding: 16, display: 'grid', gap: 14 }}>
               <div>
                 <h3 style={{ margin: '0 0 4px', fontSize: 17 }}>Правила тегов</h3>
-                <div className="sa-meta">Теги автоматически проставляются новым данным при запуске этого импорта.</div>
+                <div className="sa-meta">
+                  Теги автоматически проставляются новым данным при запуске этого импорта.
+                  {sourceFieldsLoading ? ' Загружаем поля из данных...' : ` Доступно полей: ${sourceFields.length}.`}
+                </div>
               </div>
-              <TagRulesEditor availableFields={fieldsFromImportSource(props.item)} tagRules={tagRules} onChange={setTagRules} />
+              <TagRulesEditor availableFields={sourceFields} tagRules={tagRules} onChange={setTagRules} />
             </section>
           )}
 
@@ -801,7 +843,7 @@ function ImportWizard(props: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const availableFields = useMemo(() => flattenFields(sampleItems[0] || {}), [sampleItems]);
+  const availableFields = useMemo(() => flattenFieldsFromItems(sampleItems), [sampleItems]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -846,7 +888,7 @@ function ImportWizard(props: {
     setAutoRulesError(null);
     try {
       const result = await analyzeImportSource(url);
-      const resultFields = flattenFields(result.sampleItems[0] || {});
+      const resultFields = flattenFieldsFromItems(result.sampleItems);
       setFormat(result.format);
       setItemsPath(result.itemsPath);
       setSampleItems(result.sampleItems);

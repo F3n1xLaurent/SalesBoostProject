@@ -63,6 +63,38 @@ function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
+function clampNumber(value: unknown, min: number, max: number): number {
+  const parsed = typeof value === 'number' && Number.isFinite(value) ? value : Number(value);
+  if (!Number.isFinite(parsed)) return min;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function normalizePlanCriteriaEvaluation(value: unknown): unknown | null {
+  if (!value || typeof value !== 'object') return value ?? null;
+  const source = value as Record<string, unknown>;
+  const sourceItems = Array.isArray(source.items) ? source.items : [];
+  const items = sourceItems.map((raw) => {
+    const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const maxScore = clampNumber(item.maxScore, 0, 100);
+    const score = clampNumber(item.score, 0, maxScore);
+    return {
+      ...item,
+      maxScore,
+      score,
+    };
+  });
+  const maxScore = items.reduce((sum, item) => sum + item.maxScore, 0);
+  const totalScore = items.reduce((sum, item) => sum + item.score, 0);
+  const percent = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
+  return {
+    ...source,
+    items,
+    totalScore,
+    maxScore,
+    percent,
+  };
+}
+
 async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]): Promise<unknown | null> {
   const planCall = await prisma.callPlanCall.findUnique({ where: { callId }, select: { criteriaJson: true } });
   if (!planCall) return null;
@@ -73,6 +105,8 @@ async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]
     'Ты оцениваешь разговор сотрудника с виртуальным клиентом по условиям успеха скрипта.',
     'Для каждого условия сравни ответ сотрудника с эталоном.',
     'Правила: если ответил также или почти также — полный балл; если близко — половина; если не ответил — 0.',
+    'Критично: score по каждому пункту НЕ МОЖЕТ быть больше maxScore этого пункта. Если maxScore=80, максимум score=80.',
+    'totalScore должен быть суммой score, maxScore должен быть суммой maxScore, percent = totalScore / maxScore * 100.',
     'Верни только JSON: {"items":[{"expectedAnswer":"...","maxScore":100,"score":0,"evidence":"цитата или причина"}],"totalScore":0,"maxScore":0,"percent":0}.',
     '',
     `Условия:\n${JSON.stringify(meaningfulCriteria, null, 2)}`,
@@ -90,7 +124,7 @@ async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]
     });
     const content = response.choices[0]?.message?.content || '';
     const jsonText = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
-    return JSON.parse(jsonText);
+    return normalizePlanCriteriaEvaluation(JSON.parse(jsonText));
   } catch (error) {
     console.warn('[voice/session] plan criteria evaluation failed:', error instanceof Error ? error.message : error);
     return null;
