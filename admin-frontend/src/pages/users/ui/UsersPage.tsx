@@ -94,7 +94,7 @@ const USER_QUICK_FILTERS: { id: UserQuickFilter; label: string }[] = [
 
 const USER_COLUMN_DEFS: { key: UserSortKey; label: string; align?: 'right' }[] = [
   { key: 'fullName', label: 'Сотрудник' },
-  { key: 'dealershipName', label: 'Автосалоны' },
+  { key: 'dealershipName', label: 'Точки' },
   { key: 'aiRating', label: 'AI-рейтинг', align: 'right' },
   { key: 'deltaRating', label: 'Динамика', align: 'right' },
   { key: 'auditsCount', label: 'Проверки', align: 'right' },
@@ -130,7 +130,7 @@ const PERMISSION_GROUPS = [
   {
     id: 'organization',
     title: 'Оргструктура',
-    description: 'Холдинги, автосалоны, карточки салонов и типы номеров.',
+    description: 'Компании, точки, карточки точек и типы номеров.',
     match: (key: string) => key.startsWith('holding.') || key.startsWith('dealer.') || key.startsWith('ux.holdings.') || key.startsWith('ux.dealerships.') || key.startsWith('ux.phone_number_types.'),
   },
   {
@@ -160,7 +160,7 @@ const PERMISSION_GROUPS = [
   {
     id: 'workspaces',
     title: 'Рабочие кабинеты',
-    description: 'Разделы автосалона и личный кабинет менеджера.',
+    description: 'Разделы точки и личный кабинет менеджера.',
     match: (key: string) => key.startsWith('ux.dealership_workspace.') || key.startsWith('ux.staff_workspace.') || key.startsWith('profile.') || key.startsWith('training.'),
   },
   {
@@ -174,14 +174,14 @@ const PERMISSION_GROUPS = [
 const PERMISSION_LABELS: Record<string, string> = {
   'dashboard.view': 'Общий дашборд',
   'dashboard.platform.view': 'Дашборд платформы',
-  'dashboard.holding.view': 'Дашборд холдинга',
-  'dashboard.dealership.view': 'Дашборд автосалона',
+  'dashboard.holding.view': 'Дашборд компании',
+  'dashboard.dealership.view': 'Дашборд точки',
   'analytics.view': 'Просмотр аналитики',
   'analytics.export': 'Экспорт аналитики',
-  'holding.view': 'Просмотр холдингов',
-  'holding.edit': 'Редактирование холдингов',
-  'dealer.view': 'Просмотр автосалонов',
-  'dealer.edit': 'Редактирование автосалонов',
+  'holding.view': 'Просмотр компаний',
+  'holding.edit': 'Редактирование компаний',
+  'dealer.view': 'Просмотр точек',
+  'dealer.edit': 'Редактирование точек',
   'manager.view': 'Просмотр сотрудников',
   'manager.edit': 'Редактирование сотрудников',
   'user.view': 'Просмотр web-аккаунтов',
@@ -210,30 +210,30 @@ const PERMISSION_LABELS: Record<string, string> = {
   'settings.view': 'Просмотр настроек',
   'settings.edit': 'Редактирование системных настроек',
   'settings.platform.view': 'Настройки платформы',
-  'settings.holding.view': 'Настройки холдинга',
-  'settings.dealership.view': 'Настройки автосалона',
+  'settings.holding.view': 'Настройки компании',
+  'settings.dealership.view': 'Настройки точки',
   'settings.manager.view': 'Настройки менеджера',
   'expenses.view': 'Просмотр расходов',
   'expenses.export': 'Экспорт расходов',
   'voice.diagnostics': 'Диагностика телефонии',
-  'ux.holdings.view': 'Страница “Холдинги”',
-  'ux.dealerships.list': 'Список автосалонов',
-  'ux.dealerships.detail': 'Карточка автосалона',
+  'ux.holdings.view': 'Страница “Компании”',
+  'ux.dealerships.list': 'Список точек',
+  'ux.dealerships.detail': 'Карточка точки',
   'ux.phone_number_types.view': 'Страница “Типы номеров”',
   'ux.users.view': 'Страница “Пользователи”',
   'ux.employees.list': 'Список сотрудников',
   'ux.employees.detail': 'Карточка сотрудника',
   'ux.audits.employees.view': 'Проверки по сотрудникам',
-  'ux.audits.dealerships.view': 'Проверки по автосалонам',
+  'ux.audits.dealerships.view': 'Проверки по точкам',
   'ux.audits.detail': 'Детальный разбор проверки',
   'ux.audits.batches.view': 'Batch-проверки',
   'ux.analytics.platform.view': 'Аналитика платформы',
-  'ux.analytics.holding.view': 'Аналитика холдинга',
-  'ux.analytics.dealership_team.view': 'Аналитика команды автосалона',
-  'ux.dealership_workspace.overview': 'Кабинет автосалона: обзор',
-  'ux.dealership_workspace.calls': 'Кабинет автосалона: звонки',
-  'ux.dealership_workspace.employees': 'Кабинет автосалона: сотрудники',
-  'ux.dealership_workspace.team': 'Кабинет автосалона: команда',
+  'ux.analytics.holding.view': 'Аналитика компании',
+  'ux.analytics.dealership_team.view': 'Аналитика команды точки',
+  'ux.dealership_workspace.overview': 'Кабинет точки: обзор',
+  'ux.dealership_workspace.calls': 'Кабинет точки: звонки',
+  'ux.dealership_workspace.employees': 'Кабинет точки: сотрудники',
+  'ux.dealership_workspace.team': 'Кабинет точки: команда',
   'ux.staff_workspace.profile': 'Кабинет менеджера: профиль',
   'ux.staff_workspace.trainer': 'Кабинет менеджера: тренажер',
   'ux.permission_templates.view': 'Вкладка “Шаблоны прав”',
@@ -254,25 +254,25 @@ function permissionGroupFor(key: string) {
 
 function roleLabel(role: string): string {
   if (role === 'platform_superadmin') return 'Суперадмин';
-  if (role === 'holding_admin') return 'Руководитель холдинга';
-  if (role === 'dealership_admin') return 'Руководитель автосалона';
+  if (role === 'holding_admin') return 'Руководитель компании';
+  if (role === 'dealership_admin') return 'Руководитель точки';
   if (role === 'manager') return 'Менеджер';
   return role;
 }
 
 function roleDescription(role: string): string {
   if (role === 'platform_superadmin') return 'Полный доступ ко всей платформе';
-  if (role === 'holding_admin') return 'Управляет выбранным холдингом';
-  if (role === 'dealership_admin') return 'Управляет выбранным автосалоном';
+  if (role === 'holding_admin') return 'Управляет выбранной компанией';
+  if (role === 'dealership_admin') return 'Управляет выбранным точкой';
   if (role === 'manager') return 'Работает в кабинете менеджера';
   return '';
 }
 
 function defaultTemplateNameForRole(role: string): string | null {
   if (role === 'platform_superadmin') return 'Суперадмин платформы';
-  if (role === 'holding_admin') return 'Администратор холдинга';
-  if (role === 'dealership_admin') return 'Администратор автосалона';
-  if (role === 'manager') return 'Менеджер автосалона';
+  if (role === 'holding_admin') return 'Администратор компании';
+  if (role === 'dealership_admin') return 'Администратор точки';
+  if (role === 'manager') return 'Менеджер точки';
   return null;
 }
 
@@ -289,7 +289,7 @@ function userFullName(user: UserAccountItem): string {
 
 function userScopeLabel(user: UserAccountItem): string {
   const dealershipMembership = user.memberships.find((membership) => membership.dealershipId);
-  return dealershipMembership?.scopeLabel || user.memberships[0]?.scopeLabel || 'Автосалон не указан';
+  return dealershipMembership?.scopeLabel || user.memberships[0]?.scopeLabel || 'Точка не указана';
 }
 
 function userDealershipNames(user: UserAccountItem): string[] {
@@ -736,7 +736,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     () => (meta?.dealerships || []).map((dealership) => ({
       value: dealership.id,
       label: dealership.name,
-      description: dealership.holdingName || 'Без холдинга',
+      description: dealership.holdingName || 'Без компании',
     })),
     [meta],
   );
@@ -1240,14 +1240,14 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 : (meta?.roles || []).map((item) => ({ value: item, label: roleLabel(item), description: roleDescription(item) }));
               const holdingOptions = [
                 ...(membership.role === 'dealership_admin' || membership.role === 'manager'
-                  ? [{ value: NO_HOLDING_VALUE, label: 'Без холдинга', description: 'Показать автосалоны без привязки к холдингу' }]
+                  ? [{ value: NO_HOLDING_VALUE, label: 'Без компании', description: 'Показать точки без привязки к компании' }]
                   : []),
                 ...(meta?.holdings || []).map((item) => ({ value: item.id, label: item.name })),
               ];
               const dealershipOptions = dealerships.map((item) => ({
                 value: item.id,
                 label: item.name,
-                description: item.holdingName || 'Без холдинга',
+                description: item.holdingName || 'Без компании',
               }));
               return (
                 <div key={`${index}-${membership.role}-${membership.dealershipId}`} className="sa-card" style={{ padding: 12 }}>
@@ -1262,27 +1262,27 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                     />
                     {membership.role === 'holding_admin' && (
                       <SearchableSelect
-                        label="Холдинг"
+                        label="Компания"
                         value={holdingId}
                         options={(meta?.holdings || []).map((item) => ({ value: item.id, label: item.name }))}
-                        placeholder="Выберите холдинг"
+                        placeholder="Выберите компанию"
                         onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
                       />
                     )}
                     {(membership.role === 'dealership_admin' || membership.role === 'manager') && (
                       <>
                         <SearchableSelect
-                          label="Холдинг"
+                          label="Компания"
                           value={holdingId}
                           options={holdingOptions}
-                          placeholder="Выберите холдинг"
+                          placeholder="Выберите компанию"
                           onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
                         />
                         <SearchableSelect
-                          label="Автосалон"
+                          label="Точка"
                           value={membership.dealershipId}
                           options={dealershipOptions}
-                          placeholder={holdingId ? 'Выберите автосалон' : 'Сначала выберите холдинг'}
+                          placeholder={holdingId ? 'Выберите точку' : 'Сначала выберите компанию'}
                           onChange={(value) => {
                             const selectedDealership = dealershipMap.get(value);
                             updateMembership(index, {
@@ -1480,7 +1480,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       <p className="sa-page-subtitle">
         {role === 'super'
           ? 'Суперадмин управляет аккаунтами и шаблонами прав.'
-          : 'Руководитель холдинга управляет менеджерами своих автосалонов.'}
+          : 'Руководитель компании управляет менеджерами своих точек.'}
       </p>
 
       {error && <div className="sa-card" style={{ marginBottom: 16, color: '#991B1B', background: '#FEF2F2' }}>{error}</div>}
@@ -1544,7 +1544,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 </svg>
                 <input
                   className="sa-search-input"
-                  placeholder="Поиск по имени / автосалону / городу..."
+                  placeholder="Поиск по имени / точке / городу..."
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
                 />
@@ -1608,13 +1608,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               </div>
 
               <div className="sa-filter-group">
-                <span className="sa-filter-label">Холдинг:</span>
+                <span className="sa-filter-label">Компания:</span>
                 <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
                   <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
                     <SearchableSelect
                       value={holdingFilter}
                       options={holdingFilterOptions}
-                      placeholder="Все холдинги"
+                      placeholder="Все компании"
                       onChange={setHoldingFilter}
                     />
                   </div>
@@ -1622,13 +1622,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               </div>
 
               <div className="sa-filter-group">
-                <span className="sa-filter-label">Салон:</span>
+                <span className="sa-filter-label">Точка:</span>
                 <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
                   <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
                     <SearchableSelect
                       value={dealershipFilter}
                       options={dealershipFilterOptions}
-                      placeholder="Все автосалоны"
+                      placeholder="Все точки"
                       onChange={setDealershipFilter}
                     />
                   </div>
@@ -1954,7 +1954,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Профили менеджера</div>
               <div style={{ display: 'grid', gap: 8 }}>
                 {activeUser.managerProfiles.length ? activeUser.managerProfiles.map((profile) => (
-                  <div key={profile.id}>{profile.fullName} · {profile.dealershipName} · {profile.holdingName || 'Без холдинга'}</div>
+                  <div key={profile.id}>{profile.fullName} · {profile.dealershipName} · {profile.holdingName || 'Без компании'}</div>
                 )) : <div>Нет профилей менеджера</div>}
               </div>
             </div>

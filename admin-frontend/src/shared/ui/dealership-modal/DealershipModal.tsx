@@ -2,9 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createDealership,
   fetchCities,
+  fetchDealershipDirections,
   fetchHoldings,
   updateDealership,
   type DealershipDirection,
+  type DealershipDirectionItem,
   type DealershipType,
   type DealershipItem,
   type HoldingItem,
@@ -89,11 +91,6 @@ export function formatWorkingHours(dealership?: Pick<DealershipItem, 'workingHou
   const to = dealership?.workingHoursTo || EMPTY_FORM.workingHoursTo;
   return `${from} - ${to}`;
 }
-
-const DIRECTION_OPTIONS: { value: DealershipDirection; label: string }[] = [
-  { value: 'new_cars', label: 'Новые автомобили' },
-  { value: 'used_cars', label: 'Автомобили с пробегом' },
-];
 
 const CITY_PAGE_SIZE = 100;
 
@@ -208,13 +205,14 @@ function CitySelect(props: {
 export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Props) {
   const [form, setForm] = useState<DealershipFormState>(EMPTY_FORM);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
+  const [directions, setDirections] = useState<DealershipDirectionItem[]>([]);
   const [saving, setSaving] = useState(false);
   const wasOpenRef = useRef(false);
   const initialForm = useMemo(() => fillForm(dealership), [dealership]);
   const { showToast } = useToast();
 
-  const title = mode === 'create' ? 'Создать автосалон' : 'Редактировать автосалон';
-  const submitLabel = mode === 'create' ? 'Создать автосалон' : 'Сохранить изменения';
+  const title = mode === 'create' ? 'Создать точку' : 'Редактировать точку';
+  const submitLabel = mode === 'create' ? 'Создать точку' : 'Сохранить изменения';
   const isDirty = useMemo(
     () => JSON.stringify(normalizePayload(form)) !== JSON.stringify(normalizePayload(initialForm)),
     [form, initialForm],
@@ -233,16 +231,39 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
     wasOpenRef.current = open;
   }, [open, initialForm]);
 
+  useEffect(() => {
+    if (!open || !form.holdingId) {
+      setDirections([]);
+      if (open) setForm((current) => current.directions.length ? { ...current, directions: [] } : current);
+      return;
+    }
+    let cancelled = false;
+    fetchDealershipDirections({ holdingId: form.holdingId, active: true })
+      .then((items) => {
+        if (cancelled) return;
+        setDirections(items);
+        const allowed = new Set(items.flatMap((item) => [item.id, item.code].filter(Boolean) as string[]));
+        setForm((current) => ({
+          ...current,
+          directions: current.directions.filter((direction) => allowed.has(direction)),
+        }));
+      })
+      .catch(() => {
+        if (!cancelled) setDirections([]);
+      });
+    return () => { cancelled = true; };
+  }, [form.holdingId, open]);
+
   if (!open) return null;
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!form.name.trim()) {
-      showToast({ type: 'error', title: 'Не удалось сохранить автосалон', description: 'Название автосалона обязательно.' });
+      showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Название точки обязательно.' });
       return;
     }
     if (form.workingHoursTo < form.workingHoursFrom) {
-      showToast({ type: 'error', title: 'Не удалось сохранить автосалон', description: 'Время окончания работы не может быть меньше времени начала.' });
+      showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Время окончания работы не может быть меньше времени начала.' });
       return;
     }
     setSaving(true);
@@ -255,13 +276,13 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
       onClose();
       showToast({
         type: 'success',
-        title: mode === 'create' ? 'Автосалон создан' : 'Автосалон сохранён',
+        title: mode === 'create' ? 'Точка создана' : 'Точка сохранена',
         description: saved.name,
       });
     } catch (saveError) {
       showToast({
         type: 'error',
-        title: 'Не удалось сохранить автосалон',
+        title: 'Не удалось сохранить точку',
         description: saveError instanceof Error ? saveError.message : 'Попробуйте повторить действие.',
       });
     } finally {
@@ -296,7 +317,7 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
           <div>
             <h2 style={{ margin: 0, fontSize: 24 }}>{title}</h2>
             <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Основные параметры автосалона и график работы.
+              Основные параметры точки и график работы.
             </div>
           </div>
           <button type="button" className="sa-btn-outline sa-btn-icon" onClick={onClose} aria-label="Закрыть">
@@ -313,7 +334,7 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
           </label>
 
           <div style={{ display: 'grid', gap: 6 }}>
-            <span>Тип автосалона</span>
+            <span>Тип точки</span>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
               {[
                 { value: 'own' as DealershipType, label: 'Собственный' },
@@ -339,16 +360,28 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
           <div style={{ display: 'grid', gap: 8 }}>
             <span>Направления</span>
             <div style={{ display: 'grid', gap: 8 }}>
-              {DIRECTION_OPTIONS.map((option) => (
-                <label key={option.value} className="sa-filter-check">
+              {!form.holdingId && (
+                <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>
+                  Сначала выберите компанию.
+                </div>
+              )}
+              {form.holdingId && directions.length === 0 && (
+                <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>
+                  У выбранной компании пока нет активных направлений.
+                </div>
+              )}
+              {directions.map((option) => {
+                const value = option.code || option.id;
+                return (
+                <label key={option.id} className="sa-filter-check">
                   <input
                     type="checkbox"
-                    checked={form.directions.includes(option.value)}
-                    onChange={() => toggleDirection(option.value)}
+                    checked={form.directions.includes(value)}
+                    onChange={() => toggleDirection(value)}
                   />
-                  <span>{option.label}</span>
+                  <span>{option.name}</span>
                 </label>
-              ))}
+              );})}
             </div>
           </div>
 
@@ -391,9 +424,9 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
           </div>
 
           <label style={{ display: 'grid', gap: 6 }}>
-            <span>Холдинг</span>
+            <span>Компания</span>
             <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
-              <option value="">Без холдинга</option>
+              <option value="">Без компании</option>
               {holdings.map((holding) => (
                 <option key={holding.id} value={holding.id}>{holding.name}</option>
               ))}
@@ -407,7 +440,7 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
               aria-pressed={form.isActive}
               onClick={() => setForm((current) => ({ ...current, isActive: !current.isActive }))}
             >
-              <span className="sa-toggle-field__text">Автосалон включен</span>
+              <span className="sa-toggle-field__text">Точка включена</span>
               <span className="sa-toggle-field__control" aria-hidden="true">
                 <span className="sa-toggle-field__thumb" />
               </span>

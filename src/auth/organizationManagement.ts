@@ -8,7 +8,7 @@ import { APP_ROLES } from './permissions';
 type ScopedAccount = NonNullable<Express.Request['authAccount']>;
 type HoldingType = 'own' | 'franchised';
 type DealershipType = 'own' | 'franchised';
-type DealershipDirection = 'new_cars' | 'used_cars';
+type DealershipDirection = string;
 type PhoneNumberOwnership = 'dealership' | 'user';
 
 const DEFAULT_WORKING_HOURS_FROM = '09:00';
@@ -58,6 +58,11 @@ function canManageDealershipForAccount(
   if (getDealershipIds(account).includes(params.dealershipId)) return true;
   if (params.holdingId && getHoldingIds(account).includes(params.holdingId)) return true;
   return false;
+}
+
+function canManageHoldingForAccount(account: ScopedAccount, holdingId: string): boolean {
+  if (isPlatformSuperadmin(account)) return true;
+  return getHoldingIds(account).includes(holdingId);
 }
 
 function normalizeHoldingResponse(
@@ -123,6 +128,23 @@ function normalizeDealershipResponse(
   };
 }
 
+function normalizeDealershipDirectionResponse(
+  direction: Prisma.DealershipDirectionGetPayload<{
+    include: { holding: { select: { id: true; name: true } } };
+  }>,
+) {
+  return {
+    id: direction.id,
+    holdingId: direction.holdingId,
+    holdingName: direction.holding.name,
+    name: direction.name,
+    code: direction.code,
+    isActive: direction.isActive,
+    createdAt: direction.createdAt,
+    updatedAt: direction.updatedAt,
+  };
+}
+
 function parseString(value: unknown): string | null {
   const parsed = String(value ?? '').trim();
   return parsed ? parsed : null;
@@ -171,8 +193,7 @@ function parseDealershipType(value: unknown, fallback: DealershipType = 'own'): 
 
 function parseDealershipDirections(value: unknown): DealershipDirection[] {
   if (!Array.isArray(value)) return [];
-  const allowed = new Set<DealershipDirection>(['new_cars', 'used_cars']);
-  return [...new Set(value.map((item) => String(item || '').trim()).filter((item): item is DealershipDirection => allowed.has(item as DealershipDirection)))];
+  return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))];
 }
 
 function parseDealershipDirectionsJson(value: string | null | undefined): DealershipDirection[] {
@@ -282,6 +303,55 @@ async function generateUniqueDealershipCode(name: string): Promise<string> {
     if (!existing) return candidate;
     candidate = `${base}-${counter}`;
     counter += 1;
+  }
+}
+
+function slugifyDirectionCode(input: string): string {
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^\w\s-]+/g, '')
+    .replace(/[\s_]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return normalized || 'direction';
+}
+
+async function generateUniqueDirectionCode(tx: Prisma.TransactionClient, holdingId: string, name: string): Promise<string> {
+  const base = slugifyDirectionCode(name);
+  let candidate = base;
+  let counter = 2;
+  while (true) {
+    const existing = await tx.dealershipDirection.findFirst({
+      where: { holdingId, code: candidate },
+      select: { id: true },
+    });
+    if (!existing) return candidate;
+    candidate = `${base}-${counter}`;
+    counter += 1;
+  }
+}
+
+async function ensureDefaultDealershipDirections(tx: Prisma.TransactionClient = prisma): Promise<void> {
+  const holdings = await tx.holding.findMany({ select: { id: true } });
+  for (const holding of holdings) {
+    const defaults = [
+      { name: 'Новые автомобили', code: 'new_cars' },
+      { name: 'Автомобили с пробегом', code: 'used_cars' },
+    ];
+    for (const item of defaults) {
+      await tx.dealershipDirection.upsert({
+        where: { holdingId_code: { holdingId: holding.id, code: item.code } },
+        update: {},
+        create: {
+          holdingId: holding.id,
+          name: item.name,
+          code: item.code,
+          isActive: true,
+        },
+      });
+    }
   }
 }
 
@@ -546,7 +616,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
   const dealershipIds = parseDealershipIds(body.dealershipIds);
 
   if (!name) {
-    res.status(400).json({ error: 'Название холдинга обязательно.' });
+    res.status(400).json({ error: 'Название компании обязательно.' });
     return;
   }
 
@@ -577,7 +647,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
     res.status(201).json({ item: normalizeHoldingResponse(created) });
   } catch (error) {
     console.error('Create holding error:', error);
-    res.status(500).json({ error: 'Не удалось создать холдинг.' });
+    res.status(500).json({ error: 'Не удалось создать компанию.' });
   }
 }
 
@@ -609,7 +679,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
   const dealershipIds = body.dealershipIds != null ? parseDealershipIds(body.dealershipIds) : undefined;
 
   if (body.name != null && !name) {
-    res.status(400).json({ error: 'Название холдинга не может быть пустым.' });
+    res.status(400).json({ error: 'Название компании не может быть пустым.' });
     return;
   }
 
@@ -653,7 +723,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
     res.json({ item: normalizeHoldingResponse(updated) });
   } catch (error) {
     console.error('Update holding error:', error);
-    res.status(500).json({ error: 'Не удалось обновить холдинг.' });
+    res.status(500).json({ error: 'Не удалось обновить компанию.' });
   }
 }
 
@@ -694,7 +764,7 @@ export async function handleDeleteHolding(req: Request, res: Response): Promise<
     res.json({ success: true });
   } catch (error) {
     console.error('Delete holding error:', error);
-    res.status(500).json({ error: 'Не удалось удалить холдинг.' });
+    res.status(500).json({ error: 'Не удалось удалить компанию.' });
   }
 }
 
@@ -753,6 +823,207 @@ export async function handleListCities(req: Request, res: Response): Promise<voi
   }
 }
 
+export async function handleListDealershipDirections(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const holdingId = parseString(req.query.holdingId);
+  const activeRaw = parseString(req.query.active);
+  const activeOnly = activeRaw === 'true' ? true : null;
+
+  try {
+    await ensureDefaultDealershipDirections();
+
+    const where: Prisma.DealershipDirectionWhereInput = {};
+    if (activeOnly != null) where.isActive = activeOnly;
+
+    if (holdingId) {
+      if (!canManageHoldingForAccount(account, holdingId) && !isDealershipAdmin(account)) {
+        res.status(403).json({ error: 'Нет доступа к этой компании.' });
+        return;
+      }
+      if (isDealershipAdmin(account)) {
+        const allowedHoldingIds = await prisma.dealership.findMany({
+          where: { id: { in: getDealershipIds(account) }, holdingId },
+          select: { holdingId: true },
+        });
+        if (allowedHoldingIds.length === 0 && !canManageHoldingForAccount(account, holdingId)) {
+          res.status(403).json({ error: 'Нет доступа к этой компании.' });
+          return;
+        }
+      }
+      where.holdingId = holdingId;
+    } else if (isHoldingAdmin(account)) {
+      where.holdingId = { in: getHoldingIds(account) };
+    } else if (isDealershipAdmin(account)) {
+      const dealerships = await prisma.dealership.findMany({
+        where: { id: { in: getDealershipIds(account) }, holdingId: { not: null } },
+        select: { holdingId: true },
+      });
+      where.holdingId = { in: [...new Set(dealerships.map((item) => item.holdingId).filter(Boolean))] as string[] };
+    } else {
+      assertSuperadmin(account);
+    }
+
+    const items = await prisma.dealershipDirection.findMany({
+      where,
+      include: { holding: { select: { id: true, name: true } } },
+      orderBy: [{ holding: { name: 'asc' } }, { name: 'asc' }],
+    });
+    res.json({ items: items.map(normalizeDealershipDirectionResponse) });
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
+  }
+}
+
+export async function handleCreateDealershipDirection(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const holdingId = parseString(body.holdingId);
+  const name = parseString(body.name);
+  const code = parseString(body.code);
+  const isActive = parseBoolean(body.isActive, true);
+
+  if (!holdingId) {
+    res.status(400).json({ error: 'Компания обязательна.' });
+    return;
+  }
+  if (!name) {
+    res.status(400).json({ error: 'Название направления обязательно.' });
+    return;
+  }
+  if (!canManageHoldingForAccount(account, holdingId)) {
+    res.status(403).json({ error: 'Нет доступа к этой компании.' });
+    return;
+  }
+
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const resolvedCode = code ?? await generateUniqueDirectionCode(tx, holdingId, name);
+      return tx.dealershipDirection.create({
+        data: { holdingId, name, code: resolvedCode, isActive },
+        include: { holding: { select: { id: true, name: true } } },
+      });
+    });
+    res.status(201).json({ item: normalizeDealershipDirectionResponse(created) });
+  } catch (error) {
+    console.error('Create dealership direction error:', error);
+    res.status(500).json({ error: 'Не удалось создать направление точки.' });
+  }
+}
+
+export async function handleUpdateDealershipDirection(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const directionId = String(req.params.directionId || '').trim();
+  if (!directionId) {
+    res.status(400).json({ error: 'Некорректный directionId.' });
+    return;
+  }
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const name = body.name != null ? parseString(body.name) : undefined;
+  const code = body.code != null ? parseString(body.code) : undefined;
+  const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
+
+  if (body.name != null && !name) {
+    res.status(400).json({ error: 'Название направления не может быть пустым.' });
+    return;
+  }
+
+  try {
+    const existing = await prisma.dealershipDirection.findUnique({
+      where: { id: directionId },
+      select: { id: true, holdingId: true },
+    });
+    if (!existing) {
+      res.status(404).json({ error: 'Направление не найдено.' });
+      return;
+    }
+    if (!canManageHoldingForAccount(account, existing.holdingId)) {
+      res.status(403).json({ error: 'Нет доступа к этой компании.' });
+      return;
+    }
+
+    const data: Prisma.DealershipDirectionUpdateInput = {};
+    if (name !== undefined && name !== null) data.name = name;
+    if (code !== undefined) data.code = code;
+    if (isActive !== undefined) data.isActive = isActive;
+
+    const updated = await prisma.dealershipDirection.update({
+      where: { id: directionId },
+      data,
+      include: { holding: { select: { id: true, name: true } } },
+    });
+    res.json({ item: normalizeDealershipDirectionResponse(updated) });
+  } catch (error) {
+    console.error('Update dealership direction error:', error);
+    res.status(500).json({ error: 'Не удалось обновить направление точки.' });
+  }
+}
+
+export async function handleDeleteDealershipDirection(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  const directionId = String(req.params.directionId || '').trim();
+  if (!directionId) {
+    res.status(400).json({ error: 'Некорректный directionId.' });
+    return;
+  }
+
+  try {
+    const existing = await prisma.dealershipDirection.findUnique({
+      where: { id: directionId },
+      select: { id: true, holdingId: true, code: true },
+    });
+    if (!existing) {
+      res.status(404).json({ error: 'Направление не найдено.' });
+      return;
+    }
+    if (!canManageHoldingForAccount(account, existing.holdingId)) {
+      res.status(403).json({ error: 'Нет доступа к этой компании.' });
+      return;
+    }
+
+    await prisma.$transaction(async (tx) => {
+      const dealerships = await tx.dealership.findMany({
+        where: { holdingId: existing.holdingId },
+        select: { id: true, directionsJson: true },
+      });
+      for (const dealership of dealerships) {
+        const directions = parseDealershipDirectionsJson(dealership.directionsJson)
+          .filter((item) => item !== existing.id && item !== existing.code);
+        await tx.dealership.update({
+          where: { id: dealership.id },
+          data: { directionsJson: JSON.stringify(directions) },
+        });
+      }
+      await tx.dealershipDirection.delete({ where: { id: existing.id } });
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete dealership direction error:', error);
+    res.status(500).json({ error: 'Не удалось удалить направление точки.' });
+  }
+}
+
 export async function handleCreateDealership(req: Request, res: Response): Promise<void> {
   const account = req.authAccount;
   if (!account) {
@@ -780,11 +1051,11 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   const isActive = parseBoolean(body.isActive, true);
 
   if (!name) {
-    res.status(400).json({ error: 'Название автосалона обязательно.' });
+    res.status(400).json({ error: 'Название точки обязательно.' });
     return;
   }
   if ((body.workingHoursFrom != null && !parseTime(body.workingHoursFrom)) || (body.workingHoursTo != null && !parseTime(body.workingHoursTo))) {
-    res.status(400).json({ error: 'Укажите время работы автосалона в формате 00:00.' });
+    res.status(400).json({ error: 'Укажите время работы точки в формате 00:00.' });
     return;
   }
   if (!isValidTimeRange(workingHoursFrom, workingHoursTo)) {
@@ -818,7 +1089,7 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
     res.status(201).json({ item: normalizeDealershipResponse(created) });
   } catch (error) {
     console.error('Create dealership error:', error);
-    res.status(500).json({ error: 'Не удалось создать автосалон.' });
+    res.status(500).json({ error: 'Не удалось создать точку.' });
   }
 }
 
@@ -857,11 +1128,11 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
   const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
 
   if (body.name != null && !name) {
-    res.status(400).json({ error: 'Название автосалона не может быть пустым.' });
+    res.status(400).json({ error: 'Название точки не может быть пустым.' });
     return;
   }
   if ((body.workingHoursFrom != null && !workingHoursFrom) || (body.workingHoursTo != null && !workingHoursTo)) {
-    res.status(400).json({ error: 'Укажите время работы автосалона в формате 00:00.' });
+    res.status(400).json({ error: 'Укажите время работы точки в формате 00:00.' });
     return;
   }
 
@@ -871,11 +1142,11 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
       select: { id: true, holdingId: true, workingHoursFrom: true, workingHoursTo: true },
     });
     if (!existing) {
-      res.status(404).json({ error: 'Автосалон не найден.' });
+      res.status(404).json({ error: 'Точка не найдена.' });
       return;
     }
     if (!canManageDealershipForAccount(account, { dealershipId: existing.id, holdingId: existing.holdingId })) {
-      res.status(403).json({ error: 'Нет доступа к этому автосалону.' });
+      res.status(403).json({ error: 'Нет доступа к этой точке.' });
       return;
     }
 
@@ -916,7 +1187,7 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
     res.json({ item: normalizeDealershipResponse(updated) });
   } catch (error) {
     console.error('Update dealership error:', error);
-    res.status(500).json({ error: 'Не удалось обновить автосалон.' });
+    res.status(500).json({ error: 'Не удалось обновить точку.' });
   }
 }
 
@@ -951,7 +1222,7 @@ export async function handleDeleteDealership(req: Request, res: Response): Promi
     res.json({ success: true });
   } catch (error) {
     console.error('Delete dealership error:', error);
-    res.status(500).json({ error: 'Не удалось удалить автосалон.' });
+    res.status(500).json({ error: 'Не удалось удалить точку.' });
   }
 }
 
@@ -1080,11 +1351,11 @@ export async function handleListDealershipPhoneNumbers(req: Request, res: Respon
       select: { id: true, holdingId: true },
     });
     if (!dealership) {
-      res.status(404).json({ error: 'Автосалон не найден.' });
+      res.status(404).json({ error: 'Точка не найдена.' });
       return;
     }
     if (!canManageDealershipForAccount(account, { dealershipId: dealership.id, holdingId: dealership.holdingId })) {
-      res.status(403).json({ error: 'Нет доступа к этому автосалону.' });
+      res.status(403).json({ error: 'Нет доступа к этой точке.' });
       return;
     }
 
@@ -1132,11 +1403,11 @@ export async function handleCreateDealershipPhoneNumber(req: Request, res: Respo
       select: { id: true, holdingId: true },
     });
     if (!dealership) {
-      res.status(404).json({ error: 'Автосалон не найден.' });
+      res.status(404).json({ error: 'Точка не найдена.' });
       return;
     }
     if (!canManageDealershipForAccount(account, { dealershipId: dealership.id, holdingId: dealership.holdingId })) {
-      res.status(403).json({ error: 'Нет доступа к этому автосалону.' });
+      res.status(403).json({ error: 'Нет доступа к этой точке.' });
       return;
     }
 
@@ -1145,7 +1416,7 @@ export async function handleCreateDealershipPhoneNumber(req: Request, res: Respo
       select: { id: true, ownership: true, isActive: true },
     });
     if (!type || type.ownership !== 'dealership' || !type.isActive) {
-      res.status(400).json({ error: 'Выберите активный тип номера для автосалона.' });
+      res.status(400).json({ error: 'Выберите активный тип номера для точки.' });
       return;
     }
 
@@ -1192,7 +1463,7 @@ export async function handleUpdateDealershipPhoneNumber(req: Request, res: Respo
       return;
     }
     if (!canManageDealershipForAccount(account, { dealershipId: existing.dealership.id, holdingId: existing.dealership.holdingId })) {
-      res.status(403).json({ error: 'Нет доступа к этому автосалону.' });
+      res.status(403).json({ error: 'Нет доступа к этой точке.' });
       return;
     }
 
@@ -1202,7 +1473,7 @@ export async function handleUpdateDealershipPhoneNumber(req: Request, res: Respo
         select: { id: true, ownership: true, isActive: true },
       });
       if (!type || type.ownership !== 'dealership' || !type.isActive) {
-        res.status(400).json({ error: 'Выберите активный тип номера для автосалона.' });
+        res.status(400).json({ error: 'Выберите активный тип номера для точки.' });
         return;
       }
     }
@@ -1246,7 +1517,7 @@ export async function handleDeleteDealershipPhoneNumber(req: Request, res: Respo
       return;
     }
     if (!canManageDealershipForAccount(account, { dealershipId: existing.dealership.id, holdingId: existing.dealership.holdingId })) {
-      res.status(403).json({ error: 'Нет доступа к этому автосалону.' });
+      res.status(403).json({ error: 'Нет доступа к этой точке.' });
       return;
     }
 

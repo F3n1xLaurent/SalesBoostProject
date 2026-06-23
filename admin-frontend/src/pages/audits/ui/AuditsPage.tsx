@@ -80,7 +80,7 @@ const COLUMNS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'dateTime', label: 'Дата' },
   { key: 'type', label: 'Тип' },
   { key: 'employeeName', label: 'Сотрудник' },
-  { key: 'dealershipName', label: 'Автосалон' },
+  { key: 'dealershipName', label: 'Точка' },
   { key: 'totalScore', label: 'Балл', align: 'right' },
   { key: 'status', label: 'Статус' },
 ];
@@ -188,7 +188,7 @@ export function Audits({
   function batchTitle(item: CallBatchListItem): string {
     if (item.title?.trim()) return item.title;
     if (item.mode === 'auto_daily') return 'Авто-проверка сети';
-    if (item.mode === 'single_dealership') return 'Ручная проверка салона';
+    if (item.mode === 'single_dealership') return 'Ручная проверка точки';
     if (item.mode === 'all_dealerships') return 'Ручная проверка сети';
     return 'Ручная проверка';
   }
@@ -202,7 +202,7 @@ export function Audits({
 
   function batchModeLabel(item: CallBatchListItem): string {
     if (item.mode === 'auto_daily') return 'Авто-ежедневный';
-    if (item.mode === 'single_dealership') return 'Один салон';
+    if (item.mode === 'single_dealership') return 'Одна точка';
     if (item.mode === 'all_dealerships') return 'Сеть';
     return 'Ручной';
   }
@@ -216,7 +216,7 @@ export function Audits({
     <>
       <h1 className="sa-page-title">Проверки</h1>
       <p className="sa-page-subtitle">
-        Разделено по сущностям: сотрудники и автосалоны
+        Разделено по сущностям: сотрудники и точки
         {!hasBackendAudits ? ' · используется mock-слой для списка сотрудников' : ''}
       </p>
 
@@ -231,7 +231,7 @@ export function Audits({
           className={`sa-audits-scope-tab ${scope === 'dealerships' ? 'sa-audits-scope-tab-active' : ''}`}
           onClick={() => handleScopeChange('dealerships')}
         >
-          Автосалоны
+          Точки
         </button>
       </div>
 
@@ -243,7 +243,7 @@ export function Audits({
             <span className="sa-search-icon">🔍</span>
             <input
               className="sa-search-input"
-              placeholder="Поиск по сотруднику / автосалону…"
+              placeholder="Поиск по сотруднику / точке…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -300,7 +300,7 @@ export function Audits({
             </div>
           </div>
           <div className="sa-filter-group">
-            <span className="sa-filter-label">Автосалон</span>
+            <span className="sa-filter-label">Точка</span>
             <div className="sa-filter-options">
               {allDealerships.map((d) => (
                 <label key={d} className="sa-filter-check">
@@ -413,7 +413,7 @@ export function Audits({
                 { id: 'all', label: 'Все' },
                 { id: 'manual', label: 'Ручные batch' },
                 { id: 'auto_daily', label: 'Авто-ежедневные' },
-                { id: 'single', label: 'Один салон' },
+                { id: 'single', label: 'Одна точка' },
                 { id: 'network', label: 'Сеть' },
               ].map((f) => (
                 <button
@@ -431,7 +431,7 @@ export function Audits({
             <div className="sa-meta" style={{ padding: 20 }}>Загрузка batch-проверок...</div>
           ) : filteredBatches.length === 0 ? (
             <div className="sa-empty-state">
-              Нет проверок автосалонов по выбранному фильтру
+              Нет проверок точек по выбранному фильтру
             </div>
           ) : (
             <div className="sa-companies-table-wrap">

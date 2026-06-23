@@ -20,7 +20,7 @@ const EMPTY_FORM: TypeFormState = {
 };
 
 const OWNERSHIP_LABELS: Record<PhoneNumberOwnership, string> = {
-  dealership: 'Для автосалонов',
+  dealership: 'Для точек',
   user: 'Для пользователей',
 };
 
@@ -106,7 +106,7 @@ function TypeModal(props: {
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Принадлежность</span>
             <select className="sa-select" value={form.ownership} onChange={(event) => setForm((current) => ({ ...current, ownership: event.target.value as PhoneNumberOwnership }))}>
-              <option value="dealership">Для автосалонов</option>
+              <option value="dealership">Для точек</option>
               <option value="user">Для пользователей</option>
             </select>
           </label>
@@ -211,7 +211,7 @@ export function TypesNumbersPage() {
           <div>
             <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Типы номеров</h1>
             <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>
-              Справочник типов телефонных номеров для автосалонов и пользователей.
+              Справочник типов телефонных номеров для точек и пользователей.
             </div>
           </div>
           <button type="button" className="sa-btn-primary" onClick={() => { setError(null); setCreateOpen(true); }}>

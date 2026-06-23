@@ -256,7 +256,7 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
           <div>
             <h2 style={{ margin: 0, fontSize: 24 }}>Номера телефонов</h2>
             <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Номера, привязанные к этому автосалону.
+              Номера, привязанные к этой точке.
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -273,7 +273,7 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
 
         {types.length === 0 && !loading && (
           <div style={{ padding: 12, borderRadius: 14, background: '#fffbeb', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-            Сначала создайте активный тип номера с принадлежностью “Для автосалонов”.
+            Сначала создайте активный тип номера с принадлежностью “Для точек”.
           </div>
         )}
         {error && !addOpen && !editItem && (

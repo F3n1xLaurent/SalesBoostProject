@@ -4,7 +4,13 @@ import { env } from './config/env';
 
 export const config = {
   botToken: env.botToken,
+  aiApiProvider: env.aiApiProvider,
   openaiApiKey: env.openaiApiKey,
+  openaiBaseUrl: env.openaiBaseUrl,
+  openaiChatModel: env.openaiChatModel,
+  openaiImportModel: env.openaiImportModel,
+  openaiSttModel: env.openaiSttModel,
+  openaiTtsModel: env.openaiTtsModel,
   // Support both IDs and usernames (with or without @)
   adminIdentifiers: env.adminIdentifiers,
   databaseUrl: env.databaseUrl,

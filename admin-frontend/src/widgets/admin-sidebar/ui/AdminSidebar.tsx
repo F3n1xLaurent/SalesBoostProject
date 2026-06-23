@@ -8,8 +8,8 @@ const SIDEBAR_WIDTH = 260;
 
 const ROLE_LABELS: Record<AdminRole, string> = {
   super: 'Суперадмин',
-  company: 'Руководитель холдинга',
-  dealer: 'Руководитель автосалона',
+  company: 'Руководитель компании',
+  dealer: 'Руководитель точки',
   staff: 'Менеджер',
 };
 
@@ -17,8 +17,10 @@ type NavItem = { id: AdminTab; label: string; icon: React.ReactNode };
 
 const SUPER_NAV: NavItem[] = [
   { id: 'dashboard', label: 'Дашборд', icon: <DashboardIcon /> },
-  { id: 'holdings', label: 'Холдинги', icon: <CompaniesIcon /> },
-  { id: 'companies', label: 'Автосалоны', icon: <CompaniesIcon /> },
+  { id: 'holdings', label: 'Компании', icon: <CompaniesIcon /> },
+  { id: 'companies', label: 'Точки', icon: <CompaniesIcon /> },
+  { id: 'dealershipDirections', label: 'Направления точек', icon: <CompaniesIcon /> },
+  { id: 'imports', label: 'Данные', icon: <AuditsIcon /> },
   { id: 'typesNumbers', label: 'Типы номеров', icon: <PhoneIcon /> },
   { id: 'users', label: 'Пользователи', icon: <DealersIcon /> },
   { id: 'audits', label: 'Проверки', icon: <AuditsIcon /> },
@@ -28,7 +30,7 @@ const SUPER_NAV: NavItem[] = [
 const COMPANY_NAV: NavItem[] = SUPER_NAV.filter((item) => item.id !== 'holdings' && item.id !== 'typesNumbers');
 
 const DEALER_NAV: NavItem[] = [
-  { id: 'dealer-companies', label: 'Автосалон', icon: <CompaniesIcon /> },
+  { id: 'dealer-companies', label: 'Точка', icon: <CompaniesIcon /> },
   { id: 'dealer-calls', label: 'Звонки', icon: <PhoneIcon /> },
   { id: 'dealer-employees', label: 'Сотрудники', icon: <DealersIcon /> },
   { id: 'dealer-team', label: 'Команда', icon: <AnalyticsIcon /> },

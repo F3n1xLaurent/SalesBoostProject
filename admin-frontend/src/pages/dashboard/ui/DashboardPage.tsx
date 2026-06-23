@@ -27,9 +27,9 @@ function rateColorClass(rate: number): 'sa-rate-green' | 'sa-rate-orange' | 'sa-
   return 'sa-rate-red';
 }
 
-/** Strip common prefix "Автосалон " from salon names for compact display */
+/** Strip common prefix "Точка " from salon names for compact display */
 function shortName(name: string): string {
-  return name.replace(/^Автосалон\s+/i, '');
+  return name.replace(/^Точка\s+/i, '');
 }
 
 function KPICard({
@@ -163,7 +163,7 @@ function PerformanceTrendChart({ points }: { points: TimeSeriesPoint[] }) {
   );
 }
 
-/* ─── Salon Table — short names (no "Автосалон" prefix) ─── */
+/* ─── Salon Table — short names (no "Точка" prefix) ─── */
 function SalonTable({
   rows,
   emptyLabel,
@@ -180,7 +180,7 @@ function SalonTable({
         <thead>
           <tr>
             <th>#</th>
-            <th>Автосалон</th>
+            <th>Точка</th>
             <th>Балл</th>
             <th>Дозвон</th>
             <th>Проверки</th>
@@ -352,7 +352,7 @@ function AnswerRateByHour({ hourly }: { hourly: number[] }) {
                 <div className="sa-heatmap-tooltip">
                   <div>Час: {hour}:00</div>
                   {isClosed ? (
-                    <div>Салон закрыт</div>
+                    <div>Точка закрыта</div>
                   ) : (
                     <>
                       <div>Дозвон: {pct.toFixed(0)}%</div>
@@ -424,11 +424,11 @@ function AnsweredMissedDonut({ rate, totalCalls }: { rate: number; totalCalls: n
   );
 }
 
-/* ─── Mock data — short names (just the salon name, no "Автосалон" prefix for bar labels) ─── */
+/* ─── Mock data — short names (just the salon name, no "Точка" prefix for bar labels) ─── */
 const MOCK_SALON_NAMES = [
-  'Автосалон Центральный', 'Автосалон Север', 'Автосалон Юг', 'Автосалон Запад',
-  'Автосалон Восток', 'Автосалон Премиум', 'Автосалон Сити', 'Автосалон Плюс',
-  'Автосалон Драйв', 'Автосалон Мега',
+  'Точка Центральный', 'Точка Север', 'Точка Юг', 'Точка Запад',
+  'Точка Восток', 'Точка Премиум', 'Точка Сити', 'Точка Плюс',
+  'Точка Драйв', 'Точка Мега',
 ];
 
 const FALLBACK_ANSWER_TIME = MOCK_SALON_NAMES.slice(0, 8).map((name, i) => ({
@@ -571,7 +571,7 @@ export function Dashboard({
   const badgeSecondaryValue = 'Вечерняя смена';
 
   const aiBody =
-    'Анализ показывает системные слабости в выявлении потребностей у 42% автосалонов. Среднее время ответа выросло на 12% за месяц. Рекомендуется провести переобучение менеджеров.';
+    'Анализ показывает системные слабости в выявлении потребностей у 42% точек. Среднее время ответа выросло на 12% за месяц. Рекомендуется провести переобучение менеджеров.';
 
   if (!loading && !hasAuditData && totalSalons === 0) {
     return (
@@ -593,7 +593,7 @@ export function Dashboard({
       <section className="sa-section" style={{ marginBottom: SECTION_GAP }}>
         <h2 className="sa-section-title">Ключевые метрики</h2>
         <div className="sa-kpi-grid">
-          <KPICard label="Автосалоны" value={totalSalons} loading={loading} noData={!loading && totalSalons === 0} description="Салоны холдинга" />
+          <KPICard label="Точки" value={totalSalons} loading={loading} noData={!loading && totalSalons === 0} description="Точки компании" />
           <KPICard label="Сотрудники" value={totalEmployees} loading={loading} noData={!loading && totalEmployees === 0} description="Менеджеры на точках" />
           <KPICard label="Проверки" value={totalAudits} description="Тесты, тренировки и звонки" loading={loading} />
           <KPICard
@@ -635,11 +635,11 @@ export function Dashboard({
           </div>
 
           <div className="sa-card sa-grid-card">
-            <h3 className="sa-card-heading">Лучшие автосалоны</h3>
+            <h3 className="sa-card-heading">Лучшие точки</h3>
             <SalonTable rows={topSalons} emptyLabel="Нет данных" />
           </div>
           <div className="sa-card sa-grid-card">
-            <h3 className="sa-card-heading">Автосалоны с низким результатом</h3>
+            <h3 className="sa-card-heading">Точки с низким результатом</h3>
             <SalonTable rows={worstSalons} emptyLabel="Нет данных" />
           </div>
 

@@ -98,13 +98,13 @@ function evaluateChecklist(turns: TranscriptTurn[]): ChecklistItem[] {
   })();
 
   const SALON = (() => {
-    const ok = anyIncludes(mgr, ['автосалон', 'дилер', 'отдел продаж', 'салон']);
+    const ok = anyIncludes(mgr, ['точку', 'точка', 'дилер', 'отдел продаж']);
     return {
       code: 'SALON_NAME',
-      title: 'Контекст автосалона/отдела продаж',
+      title: 'Контекст точки/отдела продаж',
       weight: 1,
       status: ok ? 'PARTIAL' : 'NO',
-      evidence: pickEvidence(turns, 'manager', ['автосалон', 'дилер', 'отдел продаж', 'салон']),
+      evidence: pickEvidence(turns, 'manager', ['точку', 'точка', 'дилер', 'отдел продаж']),
     } satisfies ChecklistItem;
   })();
 
@@ -256,8 +256,8 @@ function buildStrengthsWeaknesses(items: ChecklistItem[]) {
 
   const salon = get('SALON_NAME');
   if (salon?.status === 'NO') {
-    add(weaknesses, 'Не обозначен контекст: автосалон/отдел продаж/бренд.');
-    add(recs, 'В начале: “Автосалон <название>, отдел продаж, меня зовут …”.');
+    add(weaknesses, 'Не обозначен контекст: точка/отдел продаж/бренд.');
+    add(recs, 'В начале: “Точка <название>, отдел продаж, меня зовут …”.');
   }
 
   if (!recs.length) add(recs, 'Закрепить стандарт скрипта: приветствие → диагностика → предложение → следующий шаг.');
@@ -362,7 +362,7 @@ function buildActionPlanByScore(score: number): ActionPlanRow[] {
     return [
       {
         priority: 'Высокий',
-        action: 'Открывать звонок: салон, имя, одна фраза «чем помогу по авто сегодня»',
+        action: 'Открывать звонок: точка, имя, одна фраза «чем помогу по авто сегодня»',
         target: 'Контакт',
         timeline: 'Следующий звонок',
       },
@@ -396,7 +396,7 @@ function buildActionPlanByScore(score: number): ActionPlanRow[] {
       },
       {
         priority: 'Средний',
-        action: 'Добавить в приветствие бренд/автосалон и короткую экспертизу («по кроссоверам до 2 млн подскажу лучшее»)',
+        action: 'Добавить в приветствие бренд/точку и короткую экспертизу («по кроссоверам до 2 млн подскажу лучшее»)',
         target: 'Контакт',
         timeline: '1–2 дня',
       },
@@ -502,4 +502,3 @@ export function computeMockFromTranscript(turns: TranscriptTurn[]): MockComputed
     replyImprovements,
   };
 }
-

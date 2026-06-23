@@ -1,7 +1,7 @@
 /**
  * Shared UI utility functions for the Super Admin panel.
  * Centralises color-class logic, delta formatting, badge class generation
- * so that all pages (Dashboard, Автосалоны, Сотрудники, detail pages) use
+ * so that all pages (Dashboard, Точки, Сотрудники, detail pages) use
  * the same rules without duplication.
  */
 

@@ -9,7 +9,7 @@ type Props = {
 
 function batchModeLabel(item: CallBatchListItem): string {
   if (item.mode === 'auto_daily') return 'Авто-ежедневный';
-  if (item.mode === 'single_dealership') return 'Один салон';
+  if (item.mode === 'single_dealership') return 'Одна точка';
   if (item.mode === 'all_dealerships') return 'Сеть';
   return 'Ручной';
 }
@@ -107,10 +107,10 @@ export function CallBatchTray({ onOpenBatchDetail, items }: Props) {
   const hasActive = !!batchId && !!batch;
 
   const title = useMemo(() => {
-    if (!batch) return 'Проверка автосалонов';
+    if (!batch) return 'Проверка точек';
     if (batch.title?.trim()) return batch.title;
     if (batch.mode === 'all_dealerships') return 'Проверка сети';
-    if (batch.mode === 'single_dealership') return 'Проверка автосалона';
+    if (batch.mode === 'single_dealership') return 'Проверка точки';
     if (batch.mode === 'auto_daily') return 'Авто-проверка сети';
     return 'Ручная проверка';
   }, [batch]);

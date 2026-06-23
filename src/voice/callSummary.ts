@@ -1,4 +1,5 @@
 import { openai } from '../lib/openaiClient';
+import { config } from '../config';
 
 export type CallSummaryFinding = { title: string; description: string; examples?: string[] };
 export type CallSummaryAction = { priority: 'Высокий' | 'Средний' | 'Низкий'; action: string; target: string; timeline: string };
@@ -106,7 +107,7 @@ ${transcriptStr}
 }`;
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: config.openaiChatModel,
     messages: [
       {
         role: 'system',
@@ -164,7 +165,7 @@ ${pairsStr}
 }`;
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: config.openaiChatModel,
     messages: [
       {
         role: 'system',
@@ -194,4 +195,3 @@ ${pairsStr}
     }))
     .filter((x) => x.order > 0 && x.customerMessage.trim() && x.managerAnswer.trim());
 }
-

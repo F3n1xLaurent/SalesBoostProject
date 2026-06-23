@@ -766,7 +766,7 @@ function TeamTab(props: { loading: boolean; error: string | null; summary: TeamS
               <div className="text-3xl font-bold">{totalAttempts}</div>
             </div>
             <div className="text-right">
-              <div className="text-xs text-default-500 mb-1">⭐ AI‑рейтинг салона</div>
+              <div className="text-xs text-default-500 mb-1">⭐ AI‑рейтинг точки</div>
               <div className="text-3xl font-semibold">{avgScore.toFixed(1)}/100</div>
             </div>
           </div>
@@ -931,14 +931,14 @@ function DealerCompaniesTab() {
       try {
         const res = await apiFetch(`${API_BASE}/api/admin/dealerships`);
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить автосалоны.');
+        if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить точки.');
         if (!cancelled) {
           setItems(Array.isArray(data.items) ? data.items as ScopedDealership[] : []);
         }
       } catch (loadError) {
         if (!cancelled) {
           setItems([]);
-          setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить автосалоны.');
+          setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить точки.');
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -954,9 +954,9 @@ function DealerCompaniesTab() {
     <div className="space-y-3">
       <Card shadow="sm" className="admin-card-light">
         <CardBody>
-          <div className="text-sm font-semibold mb-1">Автосалон</div>
+          <div className="text-sm font-semibold mb-1">Точка</div>
           <p className="text-xs text-default-500 mb-3">
-            Реальные данные по доступным автосалонам из org-структуры.
+            Реальные данные по доступным точкам из org-структуры.
           </p>
           {loading && <div className="text-xs text-default-500">Загрузка...</div>}
           {error && <div className="text-xs text-danger">{error}</div>}
@@ -969,7 +969,7 @@ function DealerCompaniesTab() {
                 <div className="min-w-0">
                   <div className="font-semibold truncate">{d.name}</div>
                   <div className="text-[11px] text-default-500">
-                    Город: {d.city || '—'} · Холдинг: {d.holdingName || 'Без холдинга'} · Менеджеров: {d.managersCount}
+                    Город: {d.city || '—'} · Компания: {d.holdingName || 'Без компании'} · Менеджеров: {d.managersCount}
                   </div>
                   <div className="text-[11px] text-default-500">
                     {d.address || 'Адрес не указан'}
@@ -982,7 +982,7 @@ function DealerCompaniesTab() {
               </div>
             ))}
             {!loading && !error && items.length === 0 && (
-              <div className="text-xs text-default-500">Нет доступных автосалонов.</div>
+              <div className="text-xs text-default-500">Нет доступных точек.</div>
             )}
           </div>
         </CardBody>

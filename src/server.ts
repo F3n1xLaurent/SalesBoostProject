@@ -38,20 +38,37 @@ import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifie
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
 import {
+  handleAnalyzeImportSource,
+  handleCreateImport,
+  handleDeleteImport,
+  handleGenerateImportTagRule,
+  handleGetImport,
+  handleListImportedItems,
+  handleListImports,
+  handlePreviewImportConfig,
+  handleRunImport,
+  handleTestImportTagRules,
+  handleUpdateImport,
+} from './imports/importManagement';
+import {
   handleCreateDealership,
+  handleCreateDealershipDirection,
   handleCreateDealershipPhoneNumber,
   handleCreateHolding,
   handleCreatePhoneNumberType,
   handleDeleteDealership,
+  handleDeleteDealershipDirection,
   handleDeleteDealershipPhoneNumber,
   handleDeleteHolding,
   handleListDealerships,
   handleListCities,
+  handleListDealershipDirections,
   handleListDealershipPhoneNumbers,
   handleListHoldings,
   handleListPhoneNumberTypes,
   handleSyncMockOrganization,
   handleUpdateDealership,
+  handleUpdateDealershipDirection,
   handleUpdateDealershipPhoneNumber,
   handleUpdateHolding,
   handleUpdatePhoneNumberType,
@@ -865,6 +882,90 @@ app.use('/api/admin', (req, res, next) => {
   });
 });
 
+app.use('/api/imports', (req, res, next) => {
+  adminApiAuthMiddleware(req, res, next).catch((error) => {
+    console.error('Imports API auth error:', error);
+    res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+});
+
+app.post('/api/imports/analyze-source', (req, res) => {
+  handleAnalyzeImportSource(req, res).catch((error) => {
+    console.error('Analyze import source error:', error);
+    res.status(500).json({ error: 'Не удалось проанализировать источник.' });
+  });
+});
+
+app.post('/api/imports/generate-tag-rule', (req, res) => {
+  handleGenerateImportTagRule(req, res).catch((error) => {
+    console.error('Generate import tag rule error:', error);
+    res.status(500).json({ error: 'Не удалось сформировать правило.' });
+  });
+});
+
+app.post('/api/imports/test-tag-rules', (req, res) => {
+  handleTestImportTagRules(req, res).catch((error) => {
+    console.error('Test import tag rules error:', error);
+    res.status(500).json({ error: 'Не удалось протестировать правила тегов.' });
+  });
+});
+
+app.post('/api/imports/preview', (req, res) => {
+  handlePreviewImportConfig(req, res).catch((error) => {
+    console.error('Preview import config error:', error);
+    res.status(500).json({ error: 'Не удалось построить preview.' });
+  });
+});
+
+app.get('/api/imported-items', (req, res) => {
+  handleListImportedItems(req, res).catch((error) => {
+    console.error('List imported items error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить данные.' });
+  });
+});
+
+app.get('/api/imports', (req, res) => {
+  handleListImports(req, res).catch((error) => {
+    console.error('List imports error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить импорты.' });
+  });
+});
+
+app.post('/api/imports', (req, res) => {
+  handleCreateImport(req, res).catch((error) => {
+    console.error('Create import error:', error);
+    res.status(500).json({ error: 'Не удалось создать импорт.' });
+  });
+});
+
+app.get('/api/imports/:id', (req, res) => {
+  handleGetImport(req, res).catch((error) => {
+    console.error('Get import error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить импорт.' });
+  });
+});
+
+app.patch('/api/imports/:id', (req, res) => {
+  handleUpdateImport(req, res).catch((error) => {
+    console.error('Update import error:', error);
+    res.status(500).json({ error: 'Не удалось обновить импорт.' });
+  });
+});
+
+app.delete('/api/imports/:id', (req, res) => {
+  handleDeleteImport(req, res).catch((error) => {
+    console.error('Delete import error:', error);
+    res.status(500).json({ error: 'Не удалось удалить импорт.' });
+  });
+});
+
+app.post('/api/imports/:id/run', (req, res) => {
+  handleRunImport(req, res).catch((error) => {
+    console.error('Run import error:', error);
+    res.status(500).json({ error: 'Не удалось запустить импорт.' });
+  });
+});
+
 app.get('/api/admin/rbac/meta', (req, res) => {
   handleRbacMeta(req, res).catch((error) => {
     console.error('RBAC meta error:', error);
@@ -875,7 +976,7 @@ app.get('/api/admin/rbac/meta', (req, res) => {
 app.get('/api/admin/holdings', (req, res) => {
   handleListHoldings(req, res).catch((error) => {
     console.error('List holdings error:', error);
-    res.status(500).json({ error: 'Не удалось загрузить холдинги.' });
+    res.status(500).json({ error: 'Не удалось загрузить компании.' });
   });
 });
 
@@ -889,49 +990,77 @@ app.get('/api/admin/cities', (req, res) => {
 app.post('/api/admin/holdings', (req, res) => {
   handleCreateHolding(req, res).catch((error) => {
     console.error('Create holding route error:', error);
-    res.status(500).json({ error: 'Не удалось создать холдинг.' });
+    res.status(500).json({ error: 'Не удалось создать компанию.' });
   });
 });
 
 app.patch('/api/admin/holdings/:holdingId', (req, res) => {
   handleUpdateHolding(req, res).catch((error) => {
     console.error('Update holding route error:', error);
-    res.status(500).json({ error: 'Не удалось обновить холдинг.' });
+    res.status(500).json({ error: 'Не удалось обновить компанию.' });
   });
 });
 
 app.delete('/api/admin/holdings/:holdingId', (req, res) => {
   handleDeleteHolding(req, res).catch((error) => {
     console.error('Delete holding route error:', error);
-    res.status(500).json({ error: 'Не удалось удалить холдинг.' });
+    res.status(500).json({ error: 'Не удалось удалить компанию.' });
   });
 });
 
 app.get('/api/admin/dealerships', (req, res) => {
   handleListDealerships(req, res).catch((error) => {
     console.error('List dealerships error:', error);
-    res.status(500).json({ error: 'Не удалось загрузить автосалоны.' });
+    res.status(500).json({ error: 'Не удалось загрузить точки.' });
   });
 });
 
 app.post('/api/admin/dealerships', (req, res) => {
   handleCreateDealership(req, res).catch((error) => {
     console.error('Create dealership route error:', error);
-    res.status(500).json({ error: 'Не удалось создать автосалон.' });
+    res.status(500).json({ error: 'Не удалось создать точку.' });
   });
 });
 
 app.patch('/api/admin/dealerships/:dealershipId', (req, res) => {
   handleUpdateDealership(req, res).catch((error) => {
     console.error('Update dealership route error:', error);
-    res.status(500).json({ error: 'Не удалось обновить автосалон.' });
+    res.status(500).json({ error: 'Не удалось обновить точку.' });
   });
 });
 
 app.delete('/api/admin/dealerships/:dealershipId', (req, res) => {
   handleDeleteDealership(req, res).catch((error) => {
     console.error('Delete dealership route error:', error);
-    res.status(500).json({ error: 'Не удалось удалить автосалон.' });
+    res.status(500).json({ error: 'Не удалось удалить точку.' });
+  });
+});
+
+app.get('/api/admin/dealership-directions', (req, res) => {
+  handleListDealershipDirections(req, res).catch((error) => {
+    console.error('List dealership directions route error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить направления точек.' });
+  });
+});
+
+app.post('/api/admin/dealership-directions', (req, res) => {
+  handleCreateDealershipDirection(req, res).catch((error) => {
+    console.error('Create dealership direction route error:', error);
+    res.status(500).json({ error: 'Не удалось создать направление точки.' });
+  });
+});
+
+app.patch('/api/admin/dealership-directions/:directionId', (req, res) => {
+  handleUpdateDealershipDirection(req, res).catch((error) => {
+    console.error('Update dealership direction route error:', error);
+    res.status(500).json({ error: 'Не удалось обновить направление точки.' });
+  });
+});
+
+app.delete('/api/admin/dealership-directions/:directionId', (req, res) => {
+  handleDeleteDealershipDirection(req, res).catch((error) => {
+    console.error('Delete dealership direction route error:', error);
+    res.status(500).json({ error: 'Не удалось удалить направление точки.' });
   });
 });
 
@@ -2809,7 +2938,7 @@ app.get('/api/admin/super-admin/mock-entities', async (req, res) => {
     const useMock = !!(isLocalhost || config.allowDevAdmin || process.env.NODE_ENV !== 'production' || req.query.mock === '1');
     const companies = useMock
       ? [
-          { id: 'corp-1', name: 'АвтоХолдинг Север', autodealers: 4, avgAiScore: 82.4, answerRate: 78, lastAudit: new Date(Date.now() - 86400000).toISOString().slice(0, 10), trend: 1 },
+          { id: 'corp-1', name: 'Компания Север', autodealers: 4, avgAiScore: 82.4, answerRate: 78, lastAudit: new Date(Date.now() - 86400000).toISOString().slice(0, 10), trend: 1 },
           { id: 'corp-2', name: 'Drive Group', autodealers: 3, avgAiScore: 75.1, answerRate: 71, lastAudit: new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10), trend: -1 },
           { id: 'corp-3', name: 'МоторСервис', autodealers: 5, avgAiScore: 88.2, answerRate: 85, lastAudit: new Date().toISOString().slice(0, 10), trend: 1 },
           { id: 'corp-4', name: 'Авто Плюс', autodealers: 2, avgAiScore: 69.3, answerRate: 62, lastAudit: new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10), trend: 0 },

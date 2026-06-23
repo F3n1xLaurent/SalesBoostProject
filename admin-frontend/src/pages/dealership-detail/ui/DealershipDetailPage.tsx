@@ -155,7 +155,7 @@ function Heatmap({ hourly }: { hourly: number[] }) {
               {hover === h && (
                 <div className="sa-heatmap-tooltip">
                   <div>Час: {h}:00</div>
-                  {closed ? <div>Салон закрыт</div> : <><div>Дозвон: {pct.toFixed(0)}%</div></>}
+                  {closed ? <div>Точка закрыта</div> : <><div>Дозвон: {pct.toFixed(0)}%</div></>}
                 </div>
               )}
             </div>
@@ -347,8 +347,8 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   if (!detail) {
     return (
       <div>
-        <button className="sa-btn-text" onClick={onBack}>← Автосалоны</button>
-        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Автосалон не найден</div>
+        <button className="sa-btn-text" onClick={onBack}>← Точки</button>
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Точка не найдена</div>
       </div>
     );
   }
@@ -374,7 +374,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mode: 'single_dealership',
-          title: `Проверка салона ${detail.name}`,
+          title: `Проверка точки ${detail.name}`,
           maxConcurrency: 1,
           startIntervalMs: 250,
           maxAttempts: 3,
@@ -407,7 +407,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
     <div className="sa-detail-root">
       {/* Breadcrumb */}
       <div className="sa-breadcrumb">
-        <button className="sa-btn-text" onClick={onBack}>Автосалоны</button>
+        <button className="sa-btn-text" onClick={onBack}>Точки</button>
         <span className="sa-breadcrumb-sep">→</span>
         <span>{detail.name}</span>
       </div>
@@ -431,15 +431,15 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
             title={hasActiveManual ? 'Уже есть активная ручная проверка — управляйте ею в трее проверок.' : undefined}
           >
             <span className="sa-btn-danger-dot" />
-            {checkLoading ? 'Запуск...' : 'Проверить автосалон'}
+            {checkLoading ? 'Запуск...' : 'Проверить точку'}
           </button>
-          <button className="sa-btn-outline" onClick={() => exportPageToPdf(`Автосалон_${detail.name}`)}>Экспорт PDF</button>
+          <button className="sa-btn-outline" onClick={() => exportPageToPdf(`Точка_${detail.name}`)}>Экспорт PDF</button>
         </div>
       </div>
       {checkStatus && <div className="sa-batch-live-note" style={{ marginTop: -8, marginBottom: 8 }}>{checkStatus}</div>}
       {activeBatch && batchSummary && !checkStatus && (
         <div className="sa-meta" style={{ marginTop: -8, marginBottom: 12 }}>
-          Сейчас идёт проверка этого автосалона ({batchSummary.completed}/{batchSummary.total}). Детали и управление — в трее проверок справа внизу.
+          Сейчас идёт проверка этой точки ({batchSummary.completed}/{batchSummary.total}). Детали и управление — в трее проверок справа внизу.
         </div>
       )}
 
@@ -449,7 +449,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         <KPI label="Динамика" value={deltaText} cls={deltaCls} />
         <KPI label="Проверки" value={detail.auditsCount} />
         <KPI label="Сотрудники" value={detail.employeesCount} />
-        <KPI label="Тип автосалона" value={dealershipTypeLabel(dealership?.type)} />
+        <KPI label="Тип точки" value={dealershipTypeLabel(dealership?.type)} />
         <KPI label="Время работы" value={formatWorkingHours(dealership)} />
         <KPI
           label="Дозвон"

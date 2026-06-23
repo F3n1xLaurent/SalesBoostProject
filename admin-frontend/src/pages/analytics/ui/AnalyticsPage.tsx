@@ -234,7 +234,7 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
                     <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.('employees', act.drillFilter)}>Открыть сотрудников →</button>
                   )}
                   {act.drillType === 'dealership' && (
-                    <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.('dealership', act.drillFilter)}>Открыть автосалон →</button>
+                    <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.('dealership', act.drillFilter)}>Открыть точку →</button>
                   )}
                   {act.drillType === 'audits' && (
                     <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.('audits', act.drillFilter)}>Открыть проверки →</button>
@@ -252,7 +252,7 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
       {/* ── Dealership comparison ── */}
       <section className="sa-section" style={{ marginTop: 28, marginBottom: 28 }}>
         <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Динамика по автосалонам</h2>
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Динамика по точкам</h2>
           <InsightMini insight={data.trendInsight} />
         </div>
         <div className="sa-card">

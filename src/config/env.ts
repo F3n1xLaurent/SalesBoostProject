@@ -6,7 +6,14 @@ dotenv.config();
 const EnvSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   BOT_TOKEN: z.string().optional(),
-  OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
+  AI_API_PROVIDER: z.string().optional(), // "openai" | "proxyapi"
+  OPENAI_API_KEY: z.string().optional(),
+  PROXYAPI_API_KEY: z.string().optional(),
+  OPENAI_BASE_URL: z.string().optional(),
+  OPENAI_CHAT_MODEL: z.string().optional(),
+  OPENAI_IMPORT_MODEL: z.string().optional(),
+  OPENAI_STT_MODEL: z.string().optional(),
+  OPENAI_TTS_MODEL: z.string().optional(),
   DATABASE_URL: z.string().min(1).default('file:./dev.db'),
   ADMIN_TELEGRAM_IDS: z.string().optional(),
   PORT: z.string().optional(),
@@ -26,9 +33,27 @@ if (!botToken) {
   throw new Error('TELEGRAM_BOT_TOKEN or BOT_TOKEN is required');
 }
 
+const aiApiProvider = raw.AI_API_PROVIDER?.toLowerCase() === 'proxyapi' ? 'proxyapi' : 'openai';
+const openaiApiKey = aiApiProvider === 'proxyapi'
+  ? (raw.PROXYAPI_API_KEY || raw.OPENAI_API_KEY)
+  : raw.OPENAI_API_KEY;
+
+if (!openaiApiKey) {
+  throw new Error(aiApiProvider === 'proxyapi' ? 'PROXYAPI_API_KEY or OPENAI_API_KEY is required' : 'OPENAI_API_KEY is required');
+}
+
+const openaiBaseUrl = raw.OPENAI_BASE_URL?.trim()
+  || (aiApiProvider === 'proxyapi' ? 'https://openai.api.proxyapi.ru/v1' : undefined);
+
 export const env = {
   botToken,
-  openaiApiKey: raw.OPENAI_API_KEY,
+  aiApiProvider,
+  openaiApiKey,
+  openaiBaseUrl,
+  openaiChatModel: raw.OPENAI_CHAT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini' : 'gpt-4o-mini'),
+  openaiImportModel: raw.OPENAI_IMPORT_MODEL?.trim() || raw.OPENAI_CHAT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini' : 'gpt-4o-mini'),
+  openaiSttModel: raw.OPENAI_STT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini-transcribe' : 'gpt-4o-mini-transcribe'),
+  openaiTtsModel: raw.OPENAI_TTS_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/tts-1' : 'tts-1'),
   adminIdentifiers: raw.ADMIN_TELEGRAM_IDS
     ? raw.ADMIN_TELEGRAM_IDS.split(',').map((id) => id.trim().toLowerCase()).filter(Boolean)
     : [],
