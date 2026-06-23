@@ -668,6 +668,16 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
         callId: result.callId,
         to: toNormalized,
         scenario: result.scenario ?? 'realtime_pure',
+        source: 'scheduled',
+        dealershipId: target.dealershipId,
+        managerId: target.employee.id,
+        planId: plan.id,
+        caseContextJson: JSON.stringify({
+          planId: plan.id,
+          scriptId: script.id,
+          profileId: profile?.id ?? null,
+          importedItemId: importedItem?.id ?? null,
+        }),
         startedAt: new Date(result.startedAt),
       },
     }).catch(() => undefined);

@@ -272,6 +272,46 @@
   font-weight: 400;
 }
 
+.sa-ai-summary-error {
+  color: #B91C1C;
+}
+
+.sa-ai-summary-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--sa-text-secondary);
+  font-size: 14px;
+}
+
+.sa-ai-summary-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid rgba(99, 102, 241, .22);
+  border-top-color: #6366F1;
+  animation: sa-spin .75s linear infinite;
+}
+
+.sa-ai-summary-recommendations {
+  margin: 14px 0 0;
+  padding: 10px 0 10px 18px;
+  border-left: 3px solid #3B82F6;
+  color: var(--sa-text);
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.sa-ai-summary-recommendations li {
+  padding-left: 4px;
+}
+
+@keyframes sa-spin {
+  to { transform: rotate(360deg); }
+}
+
 .sa-ai-summary-badges {
   display: flex;
   flex-wrap: wrap;

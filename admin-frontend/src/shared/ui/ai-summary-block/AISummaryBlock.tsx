@@ -1,8 +1,12 @@
 import React from 'react';
+import type { AnalyticsAISummary } from '../../api/adminPanel';
 
 type Props = {
   title?: string;
-  body: string;
+  body?: string;
+  summary?: AnalyticsAISummary | null;
+  loading?: boolean;
+  error?: string | null;
   badgePrimaryLabel?: string;
   badgePrimaryValue?: string;
   badgeSecondaryLabel?: string;
@@ -15,6 +19,9 @@ type Props = {
 export function AISummaryBlock({
   title = 'AI Резюме',
   body,
+  summary,
+  loading = false,
+  error = null,
   badgePrimaryLabel,
   badgePrimaryValue,
   badgeSecondaryLabel,
@@ -23,6 +30,8 @@ export function AISummaryBlock({
   badgeSecondary,
 }: Props) {
   const hasBadges = badgePrimaryLabel || badgePrimary || badgeSecondaryLabel || badgeSecondary;
+  const text = summary?.summary || body || '';
+  const recommendations = summary?.recommendations ?? [];
 
   return (
     <div className="sa-card sa-ai-summary-card">
@@ -34,7 +43,25 @@ export function AISummaryBlock({
         </div>
         <div className="sa-ai-summary-content">
           <h3 className="sa-ai-summary-title">{title}</h3>
-          <p className="sa-ai-summary-text">{body}</p>
+          {loading ? (
+            <div className="sa-ai-summary-loading">
+              <span className="sa-ai-summary-spinner" />
+              <span>Формируем сводку...</span>
+            </div>
+          ) : error ? (
+            <p className="sa-ai-summary-text sa-ai-summary-error">{error}</p>
+          ) : (
+            <>
+              <p className="sa-ai-summary-text">{text || 'Нет данных для AI-сводки.'}</p>
+              {recommendations.length > 0 && (
+                <ol className="sa-ai-summary-recommendations">
+                  {recommendations.map((item, index) => (
+                    <li key={`${index}-${item}`}>{item}</li>
+                  ))}
+                </ol>
+              )}
+            </>
+          )}
           {hasBadges && (
             <div className="sa-ai-summary-badges">
               {(badgePrimaryLabel && badgePrimaryValue) ? (

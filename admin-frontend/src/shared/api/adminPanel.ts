@@ -59,23 +59,308 @@ export interface PlatformVoice {
   };
 }
 
+export interface DashboardDealershipRow {
+  id: string;
+  name: string;
+  managersCount: number;
+  avgAiScore: number;
+  answerRate: number;
+  totalAudits: number;
+  avgDurationSec: number;
+  lastAudit: string | null;
+  trend: number;
+}
+
+export interface DashboardOverview {
+  aiSummary?: AnalyticsAISummary;
+  avgScore: number;
+  totalAudits: number;
+  totalDealerships: number;
+  totalEmployees: number;
+  answerRate: number;
+  totalCalls: number;
+  timeSeries: TimeSeriesPoint[];
+  hourlyAnswerRate: number[];
+  answerTimeByCompany: { id: string; name: string; avgSec: number; totalCalls: number }[];
+  topDealerships: DashboardDealershipRow[];
+  lowDealerships: DashboardDealershipRow[];
+  topWeakness: { weakness: string; count: number } | null;
+  riskLabel: string | null;
+}
+
 export interface AuditItem {
   id: string;
-  type: 'attempt' | 'training' | 'call';
+  type: 'attempt' | 'training' | 'trainer' | 'call';
   company: string;
   dealer: string;
+  dealershipId?: string | null;
+  dealershipName?: string | null;
+  city?: string | null;
+  employeeId?: string | null;
   date: string;
   aiScore: number;
   status: 'Good' | 'Medium' | 'Bad';
+  auditStatus?: 'completed' | 'failed' | 'interrupted';
+  durationSec?: number | null;
+  verdict?: string | null;
+  communicationFlag?: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
   userName: string | null;
   detailId: number;
-  detailType: 'attempt' | 'training' | 'call';
+  detailType: 'attempt' | 'training' | 'trainer' | 'call';
+}
+
+export interface AuditDetailItem {
+  id: string;
+  type: 'trainer' | 'call';
+  dateTime: string;
+  employeeId: string;
+  employeeName: string;
+  dealershipId: string;
+  dealershipName: string;
+  city: string;
+  totalScore: number;
+  verdict: string;
+  status: 'completed' | 'failed' | 'interrupted';
+  duration: number;
+  communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  blocksBreakdown: { block: string; score: number; hint: string }[];
+  checklist: { label: string; result: 'pass' | 'warn' | 'fail'; quote: string }[];
+  transcript: { speaker: 'client' | 'manager'; time: string; text: string; critical?: boolean }[];
+  events: { time: string; label: string; type: 'info' | 'warning' | 'error' }[];
+  errors: { issue: string; percent: number }[];
+  topQuestions: string[];
+  recommendedTrainings: { title: string; description: string }[];
+  answerTimeSec: number | null;
+  attempts: number | null;
+  callback: boolean | null;
+  scenarioName: string | null;
+  assignedBy: string | null;
+  failReason: string | null;
 }
 
 export interface TimeSeriesPoint {
   date: string;
   avgScore: number;
   count: number;
+}
+
+export type AnalyticsImpact = 'high' | 'medium' | 'low';
+export type AnalyticsPriority = 'P0' | 'P1' | 'P2';
+
+export interface AnalyticsAISummary {
+  summary: string;
+  recommendations: string[];
+  source?: 'generated' | 'fallback' | 'llm';
+}
+
+export interface AnalyticsSectionInsight {
+  fact: string;
+  interpretation: string;
+  action: string;
+  stable?: boolean;
+}
+
+export interface AnalyticsOverview {
+  aiSummary?: AnalyticsAISummary;
+  keyInsights: Array<{
+    fact: string;
+    interpretation: string;
+    impact: AnalyticsImpact;
+    delta?: string;
+  }>;
+  actions: Array<{
+    priority: AnalyticsPriority;
+    target: string;
+    action: string;
+    reason: string;
+    expectedEffect: string;
+    drillType?: 'employees' | 'dealership' | 'audits';
+    drillFilter?: string;
+  }>;
+  errorsInsight: AnalyticsSectionInsight;
+  commInsight: AnalyticsSectionInsight;
+  scriptInsight: AnalyticsSectionInsight;
+  trendInsight: AnalyticsSectionInsight;
+  avgScore: number;
+  totalAudits: number;
+  failRate: number;
+  commBreakdown: { label: string; percent: number; color: string }[];
+  topErrors: { error: string; count: number; percent: number }[];
+  weeklyTypeTrend?: { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[];
+  dealershipComparison: { id?: string; name: string; score: number; delta: number }[];
+  dealershipRows?: Array<{
+    id: string;
+    name: string;
+    dealer: string;
+    type: DealershipType;
+    city: string | null;
+    score: number;
+    delta: number;
+    calls: number;
+    noAnswers: number;
+  }>;
+  holdingRows?: Array<{
+    id: string;
+    name: string;
+    type: HoldingType;
+    dealershipsCount: number;
+    score: number;
+    calls: number;
+    noAnswers: number;
+    lowDealerships: number;
+  }>;
+  scriptCompliance: { block: string; rate: number }[];
+  meta?: {
+    linkedCalls: number;
+    scoredCalls: number;
+    ignoredUnlinkedCalls: number;
+  };
+}
+
+export type AnalyticsDealershipStatus = 'norm' | 'risk' | 'critical' | 'no-data';
+
+export interface AnalyticsDealershipRow {
+  id: string;
+  name: string;
+  city: string;
+  type: DealershipType;
+  dealer: string;
+  aiRating: number;
+  answerRate: number | null;
+  avgAnswerTimeSec: number | null;
+  auditsCount: number;
+  employeesCount: number;
+  deltaRating: number | null;
+  status: AnalyticsDealershipStatus;
+}
+
+export interface AnalyticsHoldingRow {
+  id: string;
+  name: string;
+  type: HoldingType;
+  dealershipsCount: number;
+  avgScore: number;
+  calls: number;
+  noAnswers: number;
+  lowDealerships: number;
+  topProblem: string | null;
+}
+
+export interface AnalyticsHoldingDealershipRow {
+  id: string;
+  name: string;
+  dealer: string;
+  type: DealershipType;
+  city: string;
+  score: number;
+  delta: number;
+  calls: number;
+  noAnswers: number;
+  employeesCount: number;
+  status: AnalyticsDealershipStatus;
+}
+
+export interface AnalyticsHoldingDetail extends AnalyticsHoldingRow {
+  aiSummary?: AnalyticsAISummary;
+  dealershipRows: AnalyticsHoldingDealershipRow[];
+  topIssues: { issue: string; percent: number }[];
+  scriptCompliance: { block: string; rate: number }[];
+  meta?: {
+    linkedCalls: number;
+    scoredCalls: number;
+  };
+}
+
+export interface AnalyticsDealershipDetail extends AnalyticsDealershipRow {
+  aiSummary?: AnalyticsAISummary;
+  noAnswers?: number;
+  outcomeBreakdown?: {
+    completed: number;
+    no_answer: number;
+    busy: number;
+    failed: number;
+    disconnected: number;
+  };
+  communicationBreakdown?: { label: string; percent: number; color: string }[];
+  scriptCompliance?: { block: string; rate: number; hint?: string }[];
+  employees: Array<{
+    id: string;
+    name: string;
+    aiRating: number;
+    auditsCount: number;
+    typicalError: string;
+    status: string;
+  }>;
+  audits: Array<{
+    id: string;
+    date: string;
+    type: 'training' | 'call';
+    employeeName: string;
+    score: number;
+  }>;
+  timeSeries: { date: string; avgScore: number; count: number }[];
+  hourlyAnswerRate: number[];
+  topIssues: { issue: string; percent: number }[];
+  topQuestions: string[];
+  recommendedTrainings: { title: string; description: string }[];
+}
+
+export interface AnalyticsManagerDetail {
+  id: string;
+  fullName: string;
+  dealershipId: string;
+  dealershipName: string;
+  city: string;
+  aiRating: number;
+  deltaRating: number | null;
+  auditsCount: number;
+  failsCount: number;
+  noAnswers?: number;
+  noAnswerRate?: number;
+  directCalls?: number;
+  dealershipCalls?: number;
+  dealershipRank?: { rank: number; total: number } | null;
+  outcomeBreakdown?: {
+    completed: number;
+    no_answer: number;
+    busy: number;
+    failed: number;
+    disconnected: number;
+  };
+  communicationBreakdown?: { label: string; percent: number; color: string }[];
+  communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  topMistakeLabel: string;
+  status: AnalyticsDealershipStatus;
+  aiSummary?: AnalyticsAISummary;
+  strengths: string[];
+  growthAreas: string[];
+  trainingFocus: string;
+  timeSeries: { date: string; avgScore: number; count: number }[];
+  comparisonTimeSeries?: { date: string; managerScore: number; dealershipScore: number; networkScore: number }[];
+  blockBreakdown: { block: string; score: number; hint: string }[];
+  topIssues: { issue: string; percent: number }[];
+  topQuestions: string[];
+  recommendedTrainings: { title: string; description: string }[];
+  audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string }>;
+  noAnswerHistory?: Array<{ id: string; date: string; planName: string | null; verdict: string }>;
+}
+
+export interface AnalyticsManagerRow {
+  id: string;
+  fullName: string;
+  dealershipId: string;
+  dealershipName: string;
+  city: string;
+  aiRating: number;
+  deltaRating: number | null;
+  auditsCount: number;
+  failsCount: number;
+  communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  topMistakeLabel: string;
+  status: AnalyticsDealershipStatus;
+  dataState: 'full' | 'partial' | 'none';
+  directCalls: number;
+  dealershipCalls: number;
 }
 
 export interface MockCompany {
@@ -340,6 +625,18 @@ export interface CallPlanItem {
   updatedAt: string;
 }
 
+export interface AnalyticsPlanParticipation {
+  id: string;
+  name: string;
+  targetType: CallPlanTargetType;
+  targetMatch: 'dealership' | 'employees';
+  targetsCount: number;
+  frequency: CallPlanFrequency;
+  callTimeFrom: string;
+  callTimeTo: string;
+  lastInitiatedAt: string | null;
+}
+
 export interface CallPlanEmployeeOption {
   id: string;
   accountId: string | null;
@@ -407,6 +704,7 @@ export type PhoneNumberOwnership = 'dealership' | 'user';
 
 export interface PhoneNumberTypeItem {
   id: string;
+  holdingId: string | null;
   name: string;
   ownership: PhoneNumberOwnership;
   isActive: boolean;
@@ -544,6 +842,16 @@ export async function fetchSummary(): Promise<PlatformSummary | null> {
   if (!res.ok) return null;
   const data = await res.json();
   return data as PlatformSummary;
+}
+
+export async function fetchDashboardOverview(filters?: { holdingId?: string | null }): Promise<DashboardOverview | null> {
+  const params = new URLSearchParams();
+  if (filters?.holdingId) params.set('holdingId', filters.holdingId);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/dashboard/overview${suffix}`);
+  if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
+  if (!res.ok) return null;
+  return await res.json() as DashboardOverview;
 }
 
 export async function analyzeImportSource(url: string): Promise<ImportAnalyzeResult> {
@@ -916,10 +1224,12 @@ export async function deleteDealership(dealershipId: string): Promise<void> {
 }
 
 export async function fetchPhoneNumberTypes(filters?: {
+  holdingId?: string | null;
   ownership?: PhoneNumberOwnership;
   active?: boolean;
 }): Promise<PhoneNumberTypeItem[]> {
   const params = new URLSearchParams();
+  if (filters?.holdingId) params.set('holdingId', filters.holdingId);
   if (filters?.ownership) params.set('ownership', filters.ownership);
   if (filters?.active) params.set('active', 'true');
   const suffix = params.toString() ? `?${params.toString()}` : '';
@@ -930,6 +1240,7 @@ export async function fetchPhoneNumberTypes(filters?: {
 }
 
 export async function createPhoneNumberType(payload: {
+  holdingId: string;
   name: string;
   ownership: PhoneNumberOwnership;
   isActive?: boolean;
@@ -947,6 +1258,7 @@ export async function createPhoneNumberType(payload: {
 export async function updatePhoneNumberType(
   typeId: string,
   payload: {
+    holdingId?: string;
     name?: string;
     ownership?: PhoneNumberOwnership;
     isActive?: boolean;
@@ -1211,12 +1523,125 @@ export async function fetchAudits(limit = 100): Promise<AuditItem[]> {
   return data.audits ?? [];
 }
 
+export async function fetchAuditDetail(id: string): Promise<AuditDetailItem | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/audits/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error('Не удалось загрузить проверку.');
+  const data = await res.json().catch(() => ({}));
+  return data.item ?? null;
+}
+
 export async function fetchTimeSeries(): Promise<TimeSeriesPoint[]> {
   const res = await apiFetch(`${API_BASE}/api/admin/super-admin/time-series`);
   if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
   if (!res.ok) return [];
   const data = await res.json();
   return data.series ?? [];
+}
+
+export async function fetchAnalyticsOverview(filters?: { holdingId?: string | null }): Promise<AnalyticsOverview | null> {
+  const params = new URLSearchParams();
+  if (filters?.holdingId) params.set('holdingId', filters.holdingId);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/overview${suffix}`);
+  if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
+  if (!res.ok) return null;
+  return await res.json() as AnalyticsOverview;
+}
+
+export async function fetchAnalyticsComparisonSummary(input: {
+  level: string;
+  items: Array<Record<string, unknown>>;
+}): Promise<AnalyticsAISummary> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/comparison-summary`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось сформировать AI-анализ сравнения.');
+  return data.item as AnalyticsAISummary;
+}
+
+export async function fetchAnalyticsDealerships(): Promise<AnalyticsDealershipRow[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || 'Не удалось загрузить аналитику точек.');
+  }
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsDealershipRow[] : [];
+}
+
+export async function fetchAnalyticsHoldings(): Promise<AnalyticsHoldingRow[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/holdings`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || 'Не удалось загрузить аналитику компаний.');
+  }
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsHoldingRow[] : [];
+}
+
+export async function fetchAnalyticsHoldingDetail(id: string): Promise<AnalyticsHoldingDetail | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/holdings/${encodeURIComponent(id)}`);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  return (data.item ?? null) as AnalyticsHoldingDetail | null;
+}
+
+export async function fetchAnalyticsDealershipDetail(id: string): Promise<AnalyticsDealershipDetail | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships/${encodeURIComponent(id)}`);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  return (data.item ?? null) as AnalyticsDealershipDetail | null;
+}
+
+export async function fetchAnalyticsDealershipPlans(id: string): Promise<AnalyticsPlanParticipation[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships/${encodeURIComponent(id)}/plans`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsPlanParticipation[] : [];
+}
+
+export async function excludeDealershipFromAnalyticsPlan(dealershipId: string, planId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships/${encodeURIComponent(dealershipId)}/plans/${encodeURIComponent(planId)}/exclude`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось исключить точку из расписания.');
+}
+
+export async function fetchAnalyticsManagerDetail(id: string): Promise<AnalyticsManagerDetail | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers/${encodeURIComponent(id)}`);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  return (data.item ?? null) as AnalyticsManagerDetail | null;
+}
+
+export async function fetchAnalyticsManagerPlans(id: string): Promise<AnalyticsPlanParticipation[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers/${encodeURIComponent(id)}/plans`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsPlanParticipation[] : [];
+}
+
+export async function excludeManagerFromAnalyticsPlan(managerId: string, planId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers/${encodeURIComponent(managerId)}/plans/${encodeURIComponent(planId)}/exclude`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось исключить менеджера из расписания.');
+}
+
+export async function fetchAnalyticsManagers(): Promise<AnalyticsManagerRow[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || 'Не удалось загрузить аналитику сотрудников.');
+  }
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsManagerRow[] : [];
 }
 
 export async function fetchMockEntities(): Promise<{ companies: MockCompany[]; dealers: MockDealer[] }> {

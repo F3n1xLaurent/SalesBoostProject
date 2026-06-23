@@ -35,6 +35,7 @@ import {
   type HoldingItem,
   type ReplyLength,
 } from '../../../shared/api/adminPanel';
+import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 
 type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
 type CallSettingsRoute =
@@ -1204,7 +1205,8 @@ export function CallSettingsPage() {
   const route = useMemo(() => parseCallSettingsRoute(location.pathname), [location.pathname]);
   const [activeTab, setActiveTab] = useState<CallSettingsTab>(route.tab);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
-  const [selectedHoldingId, setSelectedHoldingId] = useState('');
+  const [holdingsLoading, setHoldingsLoading] = useState(true);
+  const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
   const [profiles, setProfiles] = useState<CustomerProfile[]>([]);
   const [scripts, setScripts] = useState<CallScript[]>([]);
   const [plans, setPlans] = useState<CallPlan[]>([]);
@@ -1236,14 +1238,17 @@ export function CallSettingsPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setHoldingsLoading(true);
     fetchHoldings({ status: 'active' })
       .then((items) => {
         if (cancelled) return;
         setHoldings(items);
-        setSelectedHoldingId((current) => current || items[0]?.id || '');
       })
       .catch((loadError) => {
         if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить компании.');
+      })
+      .finally(() => {
+        if (!cancelled) setHoldingsLoading(false);
       });
     return () => { cancelled = true; };
   }, []);
@@ -1776,7 +1781,7 @@ export function CallSettingsPage() {
               className="sa-select"
               value={selectedHoldingId}
               onChange={(event) => setSelectedHoldingId(event.target.value)}
-              disabled={holdings.length === 0}
+              disabled={holdingsLoading || holdings.length === 0}
               style={{ minWidth: 220 }}
             >
               {holdings.length === 0 ? <option value="">Нет компаний</option> : null}

@@ -11,6 +11,8 @@ export const config = {
   openaiImportModel: env.openaiImportModel,
   openaiSttModel: env.openaiSttModel,
   openaiTtsModel: env.openaiTtsModel,
+  anthropicApiKey: env.anthropicApiKey,
+  analyticsAiModel: env.analyticsAiModel,
   // Support both IDs and usernames (with or without @)
   adminIdentifiers: env.adminIdentifiers,
   databaseUrl: env.databaseUrl,

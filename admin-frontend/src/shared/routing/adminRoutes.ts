@@ -3,6 +3,7 @@ import type { AdminRole, AdminTab } from '../../entities/session/model/types';
 export type AdminRouteMatch = {
   role?: AdminRole;
   tab: AdminTab;
+  holdingId?: string;
   dealershipId?: string;
   employeeId?: string;
   auditId?: string;
@@ -99,7 +100,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
 
   if (!section) return { tab: 'dashboard' };
   if (section === 'dashboard') return { tab: 'dashboard' };
-  if (section === 'holdings') return { tab: 'holdings' };
+  if (section === 'holdings') return { tab: 'holdings', holdingId: resource };
   if (section === 'companies') return { tab: 'companies', dealershipId: resource };
   if (section === 'dealership-directions') return { tab: 'dealershipDirections' };
   if (section === 'data' || section === 'imports') return { tab: 'imports' };
@@ -129,6 +130,10 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
 
 export function buildDealershipPath(id: string): string {
   return `/companies/${encodeURIComponent(id)}`;
+}
+
+export function buildHoldingPath(id: string): string {
+  return `/holdings/${encodeURIComponent(id)}`;
 }
 
 export function buildEmployeePath(id: string): string {

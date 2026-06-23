@@ -21,6 +21,7 @@ import {
   type ImportTagRule,
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
+import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 
 type WizardStep = 1 | 2 | 3;
 type DataPageTab = 'data' | 'imports';
@@ -1066,7 +1067,8 @@ function ImportWizard(props: {
 export function ImportsPage() {
   const [activePageTab, setActivePageTab] = useState<DataPageTab>('data');
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
-  const [selectedHoldingId, setSelectedHoldingId] = useState<string>('');
+  const [holdingsLoading, setHoldingsLoading] = useState(true);
+  const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
   const [items, setItems] = useState<ImportSourceItem[]>([]);
   const [dataItems, setDataItems] = useState<ImportedDataItem[]>([]);
   const [dataTotal, setDataTotal] = useState(0);
@@ -1087,12 +1089,14 @@ export function ImportsPage() {
   const [dataError, setDataError] = useState<string | null>(null);
 
   async function loadHoldings() {
+    setHoldingsLoading(true);
     try {
       const next = await fetchHoldings({ status: 'active' });
       setHoldings(next);
-      setSelectedHoldingId((current) => current || next[0]?.id || '');
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить компании.');
+    } finally {
+      setHoldingsLoading(false);
     }
   }
 
@@ -1242,7 +1246,7 @@ export function ImportsPage() {
                 setDataPage(0);
               }}
               style={{ minWidth: 220 }}
-              disabled={holdings.length === 0}
+              disabled={holdingsLoading || holdings.length === 0}
             >
               {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
               {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}

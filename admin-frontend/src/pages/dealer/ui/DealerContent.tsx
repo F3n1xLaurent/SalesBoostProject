@@ -29,6 +29,18 @@ type CallSummary = {
   outcome: string | null;
   totalScore: number | null;
   hasEvaluation: boolean;
+  source?: string | null;
+  dealershipId?: string | null;
+  dealershipName?: string | null;
+  planId?: string | null;
+  planName?: string | null;
+};
+
+type CallFilters = {
+  source: 'all' | 'scheduled' | 'manual';
+  status: 'all' | 'good' | 'medium' | 'bad' | 'no_answer' | 'broken';
+  dealershipId: string;
+  planId: string;
 };
 
 type CallDetail = CallInsightDetail;
@@ -514,6 +526,9 @@ function CallsTab(props: {
   onSelectCall: (id: number) => void;
   callViewMode: 'list' | 'call';
   onCallCardPageBack: () => void;
+  filters: CallFilters;
+  onFiltersChange: (filters: CallFilters) => void;
+  onRefreshCalls: () => void;
 }) {
   const {
     loading,
@@ -531,6 +546,9 @@ function CallsTab(props: {
     onSelectCall,
     callViewMode,
     onCallCardPageBack,
+    filters,
+    onFiltersChange,
+    onRefreshCalls,
   } = props;
 
   const [savedNumbers, setSavedNumbers] = useState<string[]>([]);
@@ -563,6 +581,23 @@ function CallsTab(props: {
 
   const handleSelectCall = (id: number) => {
     onSelectCall(id);
+  };
+  const dealershipOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const call of calls) {
+      if (call.dealershipId) map.set(call.dealershipId, call.dealershipName || call.dealershipId);
+    }
+    return [...map.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [calls]);
+  const planOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const call of calls) {
+      if (call.planId) map.set(call.planId, call.planName || call.planId);
+    }
+    return [...map.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [calls]);
+  const setFilter = <K extends keyof CallFilters>(key: K, value: CallFilters[K]) => {
+    onFiltersChange({ ...filters, [key]: value });
   };
 
   if (callViewMode === 'call' && selectedCallId != null) {
@@ -660,6 +695,49 @@ function CallsTab(props: {
         <p className="text-[11px] text-default-500 mb-2">
           По одному номеру может быть несколько карточек (история звонков).
         </p>
+        <Card shadow="sm" className="admin-card-light mb-3">
+          <CardBody>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+              <label className="space-y-1">
+                <span className="text-default-500">Источник</span>
+                <select className="sa-select w-full" value={filters.source} onChange={(event) => setFilter('source', event.target.value as CallFilters['source'])}>
+                  <option value="all">Все</option>
+                  <option value="scheduled">По расписанию</option>
+                  <option value="manual">Ручные</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-default-500">Статус</span>
+                <select className="sa-select w-full" value={filters.status} onChange={(event) => setFilter('status', event.target.value as CallFilters['status'])}>
+                  <option value="all">Все</option>
+                  <option value="good">Хорошо</option>
+                  <option value="medium">Средне</option>
+                  <option value="bad">Плохо</option>
+                  <option value="no_answer">Нет ответа</option>
+                  <option value="broken">Обрыв / сбой</option>
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-default-500">Точка</span>
+                <select className="sa-select w-full" value={filters.dealershipId} onChange={(event) => setFilter('dealershipId', event.target.value)}>
+                  <option value="">Все</option>
+                  {dealershipOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className="text-default-500">План</span>
+                <select className="sa-select w-full" value={filters.planId} onChange={(event) => setFilter('planId', event.target.value)}>
+                  <option value="">Все</option>
+                  {planOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" variant="flat" onPress={onRefreshCalls}>Применить</Button>
+              <Button size="sm" variant="light" onPress={() => onFiltersChange({ source: 'all', status: 'all', dealershipId: '', planId: '' })}>Сбросить</Button>
+            </div>
+          </CardBody>
+        </Card>
         {loading ? (
           <Card shadow="sm">
             <CardBody className="text-sm text-default-500">Загрузка звонков…</CardBody>
@@ -714,6 +792,13 @@ function CallsTab(props: {
                     <div className="text-[11px] text-default-500">
                       Исход: {c.outcome ?? (inProgress ? 'Идёт звонок…' : '—')} · Длительность: {duration}
                     </div>
+                    {(c.dealershipName || c.planName || c.source) && (
+                      <div className="text-[11px] text-default-500 mt-1">
+                        {c.source === 'scheduled' ? 'По расписанию' : c.source === 'manual' ? 'Ручной' : c.source || 'Источник —'}
+                        {c.dealershipName ? ` · ${c.dealershipName}` : ''}
+                        {c.planName ? ` · ${c.planName}` : ''}
+                      </div>
+                    )}
                   </CardBody>
                 </Card>
               );
@@ -1013,6 +1098,7 @@ export function DealerContent(props: { summary: any; voice: any; loadingSummary:
   const [calls, setCalls] = useState<CallSummary[]>([]);
   const [callsLoading, setCallsLoading] = useState(false);
   const [callsError, setCallsError] = useState<string | null>(null);
+  const [callFilters, setCallFilters] = useState<CallFilters>({ source: 'all', status: 'all', dealershipId: '', planId: '' });
   const [selectedCallId, setSelectedCallId] = useState<number | null>(null);
   const [callDetail, setCallDetail] = useState<CallDetail | null>(null);
   const [callDetailLoading, setCallDetailLoading] = useState(false);
@@ -1066,7 +1152,12 @@ export function DealerContent(props: { summary: any; voice: any; loadingSummary:
     setCallsLoading(true);
     setCallsError(null);
     try {
-      const data = await safeFetchJson(`${API_BASE}/api/admin/call-history?limit=50`);
+      const query = new URLSearchParams({ limit: '50' });
+      if (callFilters.source !== 'all') query.set('source', callFilters.source);
+      if (callFilters.status !== 'all') query.set('status', callFilters.status);
+      if (callFilters.dealershipId) query.set('dealershipId', callFilters.dealershipId);
+      if (callFilters.planId) query.set('planId', callFilters.planId);
+      const data = await safeFetchJson(`${API_BASE}/api/admin/call-history?${query.toString()}`);
       setCalls(data?.calls ?? []);
     } catch {
       setCalls([]);
@@ -1195,6 +1286,9 @@ export function DealerContent(props: { summary: any; voice: any; loadingSummary:
           onSelectCall={(id) => { loadCallDetail(id); setDealerCardView('call'); }}
           callViewMode={dealerCardView as 'list' | 'call'}
           onCallCardPageBack={() => setDealerCardView('list')}
+          filters={callFilters}
+          onFiltersChange={setCallFilters}
+          onRefreshCalls={loadCalls}
         />
       )}
       {activeTab === 'dealer-employees' && (

@@ -1,17 +1,43 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { AuditItem, CallBatchListItem } from '../../../shared/api/adminPanel';
-import {
-  MOCK_AUDITS,
-  AUDIT_TYPE_LABELS,
-  AUDIT_STATUS_LABELS,
-  AUDIT_STATUS_CLASS,
-  getAllCities,
-  getAllDealershipNamesForEmployees,
-  type AuditListRow,
-  type AuditType,
-  type AuditStatus,
-} from '../../../shared/lib/admin-panel/mockData';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+
+type AuditType = 'trainer' | 'call';
+type AuditStatus = 'completed' | 'failed' | 'interrupted';
+type CommunicationFlag = 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+
+type AuditListRow = {
+  id: string;
+  type: AuditType;
+  dateTime: string;
+  employeeId: string;
+  employeeName: string;
+  dealershipId: string;
+  dealershipName: string;
+  city: string;
+  totalScore: number;
+  verdict: string;
+  status: AuditStatus;
+  duration: number;
+  communicationFlag: CommunicationFlag;
+};
+
+const AUDIT_TYPE_LABELS: Record<AuditType, string> = {
+  trainer: 'Тренажёр',
+  call: 'Звонок',
+};
+
+const AUDIT_STATUS_LABELS: Record<AuditStatus, string> = {
+  completed: 'Завершено',
+  failed: 'Провал',
+  interrupted: 'Прервано',
+};
+
+const AUDIT_STATUS_CLASS: Record<AuditStatus, string> = {
+  completed: 'sa-audit-status-completed',
+  failed: 'sa-audit-status-failed',
+  interrupted: 'sa-audit-status-interrupted',
+};
 
 /* ────────────────────── Props ────────────────────── */
 
@@ -85,6 +111,30 @@ const COLUMNS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'status', label: 'Статус' },
 ];
 
+const AUDITS_PAGE_SIZE = 10;
+
+function auditItemToRow(item: AuditItem): AuditListRow {
+  const score = Number.isFinite(item.aiScore) ? item.aiScore : 0;
+  const type: AuditType = item.type === 'trainer' || item.type === 'training' ? 'trainer' : 'call';
+  const status: AuditStatus = item.auditStatus
+    ?? (item.status === 'Bad' ? 'failed' : 'completed');
+  return {
+    id: item.id,
+    type,
+    dateTime: item.date,
+    employeeId: item.employeeId ?? '',
+    employeeName: item.userName || 'Не назначен',
+    dealershipId: item.dealershipId ?? '',
+    dealershipName: item.dealershipName || item.dealer || 'Без точки',
+    city: item.city || '—',
+    totalScore: Math.round(score * 10) / 10,
+    verdict: item.verdict || (status === 'failed' ? 'Нуждается в разборе' : status === 'interrupted' ? 'Звонок не завершён' : 'Оценено'),
+    status,
+    duration: item.durationSec ?? 0,
+    communicationFlag: item.communicationFlag ?? 'ok',
+  };
+}
+
 /* ════════════════════ Component ════════════════════ */
 
 export function Audits({
@@ -98,10 +148,9 @@ export function Audits({
   initialScope = 'employees',
   focusedBatchId = null,
 }: Props) {
-  const rows = MOCK_AUDITS;
-  const hasBackendAudits = audits.length > 0;
-  const allCities = useMemo(() => getAllCities(), []);
-  const allDealerships = useMemo(() => getAllDealershipNamesForEmployees(), []);
+  const rows = useMemo(() => audits.map(auditItemToRow), [audits]);
+  const allCities = useMemo(() => [...new Set(rows.map((row) => row.city).filter((city) => city && city !== '—'))].sort((a, b) => a.localeCompare(b, 'ru')), [rows]);
+  const allDealerships = useMemo(() => [...new Set(rows.map((row) => row.dealershipName).filter((name) => name && name !== 'Без точки'))].sort((a, b) => a.localeCompare(b, 'ru')), [rows]);
 
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('dateTime');
@@ -114,10 +163,15 @@ export function Audits({
   const [filterDealership, setFilterDealership] = useState<Set<string>>(new Set());
   const [scope, setScope] = useState<'employees' | 'dealerships'>(initialScope);
   const [batchFilter, setBatchFilter] = useState<'all' | 'manual' | 'auto_daily' | 'single' | 'network'>('all');
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     setScope(initialScope);
   }, [initialScope]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, quickFilter, sortKey, sortDir]);
 
   const handleScopeChange = (nextScope: 'employees' | 'dealerships') => {
     setScope(nextScope);
@@ -158,6 +212,17 @@ export function Audits({
     list.sort(comparator(sortKey, sortDir));
     return list;
   }, [rows, search, filterType, filterStatus, filterCity, filterDealership, quickFilter, sortKey, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / AUDITS_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageStartIndex = (currentPage - 1) * AUDITS_PAGE_SIZE;
+  const visibleRows = filtered.slice(pageStartIndex, pageStartIndex + AUDITS_PAGE_SIZE);
+  const pageStart = filtered.length === 0 ? 0 : pageStartIndex + 1;
+  const pageEnd = Math.min(filtered.length, pageStartIndex + visibleRows.length);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
 
   function formatDateTime(iso: string) {
     const d = new Date(iso);
@@ -216,8 +281,7 @@ export function Audits({
     <>
       <h1 className="sa-page-title">Проверки</h1>
       <p className="sa-page-subtitle">
-        Разделено по сущностям: сотрудники и точки
-        {!hasBackendAudits ? ' · используется mock-слой для списка сотрудников' : ''}
+        Реальные проверки по звонкам: плановые звонки и будущие звонки тренажёра
       </p>
 
       <div className="sa-audits-scope-tabs">
@@ -343,7 +407,7 @@ export function Audits({
                 </td>
               </tr>
             ) : (
-              filtered.map((r) => (
+              visibleRows.map((r) => (
                 <tr
                   key={r.id}
                   className="sa-row-clickable"
@@ -385,7 +449,7 @@ export function Audits({
       </div>
 
       <div className="sa-mobile-only">
-        {filtered.map((r) => (
+        {visibleRows.map((r) => (
           <div key={r.id} className="sa-mobile-row" onClick={() => onOpenDetail?.(r.id)}>
             <div className="sa-mobile-row-header">
               <div>
@@ -402,6 +466,23 @@ export function Audits({
           </div>
         ))}
       </div>
+
+      {!loading && filtered.length > AUDITS_PAGE_SIZE && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 16 }}>
+          <div className="sa-meta">
+            Показаны {pageStart}-{pageEnd} из {filtered.length}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={currentPage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+              Назад
+            </button>
+            <span className="sa-metric-chip">Стр. {currentPage} из {totalPages}</span>
+            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={currentPage === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
+              Вперёд
+            </button>
+          </div>
+        </div>
+      )}
       </>
       )}
 

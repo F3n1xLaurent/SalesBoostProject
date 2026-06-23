@@ -63,6 +63,18 @@ function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
+function extractAnalyticsEvaluationFields(evaluation: unknown): {
+  dimensionsJson?: string;
+  checklistResultsJson?: string;
+} {
+  if (!evaluation || typeof evaluation !== 'object') return {};
+  const source = evaluation as Record<string, unknown>;
+  return {
+    dimensionsJson: source.dimension_scores ? JSON.stringify(source.dimension_scores) : undefined,
+    checklistResultsJson: Array.isArray(source.checklist) ? JSON.stringify(source.checklist) : undefined,
+  };
+}
+
 function clampNumber(value: unknown, min: number, max: number): number {
   const parsed = typeof value === 'number' && Number.isFinite(value) ? value : Number(value);
   if (!Number.isFinite(parsed)) return min;
@@ -139,8 +151,21 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
   totalScore?: number | null;
   failureReason?: string | null;
 }): Promise<void> {
-  const existing = await prisma.callPlanCall.findUnique({ where: { callId }, select: { id: true } });
+  const existing = await prisma.callPlanCall.findUnique({
+    where: { callId },
+    select: {
+      id: true,
+      planId: true,
+      employeeId: true,
+      dealershipId: true,
+      profileId: true,
+      importedItemId: true,
+      scriptId: true,
+      promptText: true,
+    },
+  });
   if (!existing) return;
+  const analyticsFields = extractAnalyticsEvaluationFields(patch.evaluation);
   await prisma.callPlanCall.update({
     where: { callId },
     data: {
@@ -152,6 +177,25 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       totalScore: patch.totalScore ?? undefined,
       failureReason: patch.failureReason ?? undefined,
     },
+  });
+  await prisma.voiceCallSession.update({
+    where: { callId },
+    data: {
+      source: 'scheduled',
+      planId: existing.planId,
+      managerId: existing.employeeId,
+      dealershipId: existing.dealershipId,
+      dimensionsJson: analyticsFields.dimensionsJson,
+      checklistResultsJson: analyticsFields.checklistResultsJson,
+      caseContextJson: JSON.stringify({
+        planId: existing.planId,
+        scriptId: existing.scriptId,
+        profileId: existing.profileId,
+        importedItemId: existing.importedItemId,
+      }),
+    },
+  }).catch((err) => {
+    console.warn('[voice/session] failed to sync analytics links:', err instanceof Error ? err.message : err);
   });
 }
 
@@ -343,12 +387,15 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       plan_criteria: await evaluatePlanCriteria(callId, transcript),
     });
     const evaluationForPlan = JSON.parse(evaluationJson);
+    const analyticsFields = extractAnalyticsEvaluationFields(evaluationForPlan);
     const totalScore = evaluation.overall_score_0_100 ?? null;
 
     await prisma.voiceCallSession.update({
       where: { callId },
       data: {
         evaluationJson,
+        dimensionsJson: analyticsFields.dimensionsJson,
+        checklistResultsJson: analyticsFields.checklistResultsJson,
         totalScore,
         failureReason: null,
       },

@@ -14,6 +14,8 @@ const EnvSchema = z.object({
   OPENAI_IMPORT_MODEL: z.string().optional(),
   OPENAI_STT_MODEL: z.string().optional(),
   OPENAI_TTS_MODEL: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANALYTICS_AI_MODEL: z.string().optional(),
   DATABASE_URL: z.string().min(1).default('file:./dev.db'),
   ADMIN_TELEGRAM_IDS: z.string().optional(),
   PORT: z.string().optional(),
@@ -54,6 +56,8 @@ export const env = {
   openaiImportModel: raw.OPENAI_IMPORT_MODEL?.trim() || raw.OPENAI_CHAT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini' : 'gpt-4o-mini'),
   openaiSttModel: raw.OPENAI_STT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini-transcribe' : 'gpt-4o-mini-transcribe'),
   openaiTtsModel: raw.OPENAI_TTS_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/tts-1' : 'tts-1'),
+  anthropicApiKey: raw.ANTHROPIC_API_KEY?.trim() || undefined,
+  analyticsAiModel: raw.ANALYTICS_AI_MODEL?.trim() || 'claude-sonnet-4-20250514',
   adminIdentifiers: raw.ADMIN_TELEGRAM_IDS
     ? raw.ADMIN_TELEGRAM_IDS.split(',').map((id) => id.trim().toLowerCase()).filter(Boolean)
     : [],

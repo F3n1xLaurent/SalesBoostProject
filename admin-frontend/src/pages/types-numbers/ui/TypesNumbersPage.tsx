@@ -2,10 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createPhoneNumberType,
   fetchPhoneNumberTypes,
+  fetchHoldings,
   updatePhoneNumberType,
+  type HoldingItem,
   type PhoneNumberOwnership,
   type PhoneNumberTypeItem,
 } from '../../../shared/api/adminPanel';
+import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 
 type TypeFormState = {
   name: string;
@@ -39,6 +42,7 @@ function overlayCardStyle(width = 520): React.CSSProperties {
 function TypeModal(props: {
   open: boolean;
   initial: TypeFormState;
+  holdingName?: string | null;
   title: string;
   submitLabel: string;
   saving: boolean;
@@ -98,6 +102,12 @@ function TypeModal(props: {
           }}
           style={{ display: 'grid', gap: 14 }}
         >
+          {props.holdingName && (
+            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: '#F8FAFC' }}>
+              Компания: {props.holdingName}
+            </div>
+          )}
+
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
             <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
@@ -143,6 +153,9 @@ function normalizeTypeForm(form: TypeFormState): TypeFormState {
 }
 
 export function TypesNumbersPage() {
+  const [holdings, setHoldings] = useState<HoldingItem[]>([]);
+  const [holdingsLoading, setHoldingsLoading] = useState(true);
+  const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
   const [items, setItems] = useState<PhoneNumberTypeItem[]>([]);
   const [activeOwnership, setActiveOwnership] = useState<PhoneNumberOwnership>('dealership');
   const [loading, setLoading] = useState(true);
@@ -151,17 +164,39 @@ export function TypesNumbersPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editType, setEditType] = useState<PhoneNumberTypeItem | null>(null);
+  const selectedHolding = useMemo(
+    () => holdings.find((holding) => holding.id === selectedHoldingId) ?? null,
+    [holdings, selectedHoldingId],
+  );
 
   const filtered = useMemo(
     () => items.filter((item) => item.ownership === activeOwnership),
     [items, activeOwnership],
   );
 
-  async function loadData() {
+  async function loadHoldings() {
+    setHoldingsLoading(true);
+    setError(null);
+    try {
+      setHoldings(await fetchHoldings());
+    } catch (loadError) {
+      setHoldings([]);
+      setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить компании.');
+    } finally {
+      setHoldingsLoading(false);
+    }
+  }
+
+  async function loadData(holdingId: string) {
+    if (!holdingId) {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      setItems(await fetchPhoneNumberTypes());
+      setItems(await fetchPhoneNumberTypes({ holdingId }));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить типы номеров.');
     } finally {
@@ -170,17 +205,25 @@ export function TypesNumbersPage() {
   }
 
   useEffect(() => {
-    loadData();
+    void loadHoldings();
   }, []);
 
+  useEffect(() => {
+    void loadData(selectedHoldingId);
+  }, [selectedHoldingId]);
+
   async function handleCreate(form: TypeFormState) {
+    if (!selectedHoldingId) {
+      setError('Перед тем, как создавать типы номеров, пожалуйста, добавьте компанию.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await createPhoneNumberType({ name: form.name.trim(), ownership: form.ownership, isActive: form.isActive });
+      await createPhoneNumberType({ holdingId: selectedHoldingId, name: form.name.trim(), ownership: form.ownership, isActive: form.isActive });
       setCreateOpen(false);
       setNotice('Тип номера создан.');
-      await loadData();
+      await loadData(selectedHoldingId);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Не удалось создать тип номера.');
     } finally {
@@ -196,7 +239,7 @@ export function TypesNumbersPage() {
       await updatePhoneNumberType(editType.id, { name: form.name.trim(), ownership: form.ownership, isActive: form.isActive });
       setEditType(null);
       setNotice('Тип номера обновлён.');
-      await loadData();
+      await loadData(selectedHoldingId);
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : 'Не удалось обновить тип номера.');
     } finally {
@@ -214,9 +257,24 @@ export function TypesNumbersPage() {
               Справочник типов телефонных номеров для точек и пользователей.
             </div>
           </div>
-          <button type="button" className="sa-btn-primary" onClick={() => { setError(null); setCreateOpen(true); }}>
-            Создать тип
-          </button>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <select
+              className="sa-select"
+              value={selectedHoldingId}
+              onChange={(event) => {
+                setSelectedHoldingId(event.target.value);
+                setNotice(null);
+              }}
+              style={{ minWidth: 220 }}
+              disabled={holdingsLoading || holdings.length === 0}
+            >
+              {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
+              {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
+            </select>
+            <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => { setError(null); setCreateOpen(true); }}>
+              Создать тип
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -248,8 +306,10 @@ export function TypesNumbersPage() {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
+              {loading || holdingsLoading ? (
                 <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
+              ) : holdings.length === 0 ? (
+                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Перед тем, как создавать типы номеров, пожалуйста, добавьте компанию.</td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Типов пока нет</td></tr>
               ) : filtered.map((item) => (
@@ -272,6 +332,7 @@ export function TypesNumbersPage() {
       <TypeModal
         open={createOpen}
         initial={{ ...EMPTY_FORM, ownership: activeOwnership }}
+        holdingName={selectedHolding?.name || null}
         title="Создать тип номера"
         submitLabel="Создать"
         saving={saving}
@@ -283,6 +344,7 @@ export function TypesNumbersPage() {
       <TypeModal
         open={!!editType}
         initial={editType ? { name: editType.name, ownership: editType.ownership, isActive: editType.isActive } : EMPTY_FORM}
+        holdingName={selectedHolding?.name || null}
         title="Редактировать тип номера"
         submitLabel="Сохранить изменения"
         saving={saving}

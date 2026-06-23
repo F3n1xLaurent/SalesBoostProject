@@ -49,6 +49,7 @@ model Holding {
   dealerships Dealership[]
   memberships AccountMembership[]
   dealershipDirections DealershipDirection[]
+  phoneNumberTypes PhoneNumberType[]
   importSources ImportSource[]
   callCustomerProfiles CallCustomerProfile[]
   callScripts CallScript[]
@@ -78,6 +79,7 @@ model Dealership {
   memberships     AccountMembership[]
   managerProfiles ManagerProfile[]
   phoneNumbers    PhoneNumber[]
+  voiceCallSessions VoiceCallSession[]
 
   @@index([holdingId])
   @@map("dealerships")
@@ -204,6 +206,7 @@ model CallPlan {
 
   holding             Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
   calls               CallPlanCall[]
+  voiceCallSessions   VoiceCallSession[]
 
   @@index([holdingId, updatedAt])
   @@map("call_plans")
@@ -272,14 +275,17 @@ model CityDictionary {
 
 model PhoneNumberType {
   id        String   @id @default(cuid())
+  holdingId String?
   name      String
   ownership String   // "dealership" | "user"
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  holding      Holding?      @relation(fields: [holdingId], references: [id], onDelete: SetNull)
   phoneNumbers PhoneNumber[]
 
+  @@index([holdingId])
   @@index([ownership, isActive])
   @@map("phone_number_types")
 }
@@ -321,6 +327,7 @@ model ManagerProfile {
   dealership      Dealership @relation(fields: [dealershipId], references: [id], onDelete: Cascade)
   account         Account?   @relation(fields: [accountId], references: [id], onDelete: SetNull)
   telegramUser    User?      @relation("TelegramUserManagerProfile", fields: [telegramUserId], references: [id], onDelete: SetNull)
+  voiceCallSessions VoiceCallSession[]
 
   @@index([dealershipId])
   @@index([accountId])
@@ -556,15 +563,30 @@ model VoiceCallSession {
   callId           String    @unique  // UUID from start-voice-call
   to               String    // normalized phone +7...
   scenario         String?   // "dialog" | "realtime" | "realtime_pure"
+  source           String    @default("manual") // "manual" | "scheduled" | "batch" | "demo"
+  dealershipId     String?
+  managerId        String?
+  planId           String?
   startedAt        DateTime  @default(now())
   endedAt          DateTime?
   outcome          String?   // "completed" | "no_answer" | "busy" | "failed" | "disconnected"
   durationSec      Int?      // talk time in seconds (null if no answer)
   transcriptJson   String?   // JSON: [{ role: "manager"|"client", text: string }]
   evaluationJson   String?   // same shape as TrainingSession.evaluationJson (V2)
+  dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson
+  checklistResultsJson String? // JSON: checklist results extracted from evaluationJson
+  caseContextJson  String?   // JSON: scenario/profile/item context used for the call
   totalScore       Float?    // 0-100
   failureReason    String?   // if early fail
 
+  dealership       Dealership?     @relation(fields: [dealershipId], references: [id], onDelete: SetNull)
+  manager          ManagerProfile? @relation(fields: [managerId], references: [id], onDelete: SetNull)
+  plan             CallPlan?       @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  @@index([dealershipId, startedAt])
+  @@index([managerId, startedAt])
+  @@index([planId, startedAt])
+  @@index([source, startedAt])
   @@map("voice_call_sessions")
 }
 

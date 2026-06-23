@@ -30,6 +30,8 @@ type Props = {
   mode: 'create' | 'edit';
   open: boolean;
   dealership?: DealershipItem | null;
+  fixedHoldingId?: string | null;
+  fixedHoldingName?: string | null;
   onClose: () => void;
   onSaved: (dealership: DealershipItem) => void;
 };
@@ -206,7 +208,7 @@ function CitySelect(props: {
   );
 }
 
-export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Props) {
+export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedHoldingName, onClose, onSaved }: Props) {
   const [form, setForm] = useState<DealershipFormState>(EMPTY_FORM);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [directions, setDirections] = useState<DealershipDirectionItem[]>([]);
@@ -217,23 +219,31 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
 
   const title = mode === 'create' ? 'Создать точку' : 'Редактировать точку';
   const submitLabel = mode === 'create' ? 'Создать точку' : 'Сохранить изменения';
+  const lockedHoldingId = mode === 'create' ? fixedHoldingId || '' : '';
   const isDirty = useMemo(
     () => JSON.stringify(normalizePayload(form)) !== JSON.stringify(normalizePayload(initialForm)),
     [form, initialForm],
   );
   const canSubmit = useMemo(() => {
-    return form.name.trim().length > 0 && form.workingHoursFrom <= form.workingHoursTo && (mode === 'create' || isDirty);
-  }, [form.name, form.workingHoursFrom, form.workingHoursTo, isDirty, mode]);
+    return form.name.trim().length > 0 && form.workingHoursFrom <= form.workingHoursTo && (mode !== 'create' || !!form.holdingId) && (mode === 'create' || isDirty);
+  }, [form.holdingId, form.name, form.workingHoursFrom, form.workingHoursTo, isDirty, mode]);
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
-      setForm(initialForm);
-      fetchHoldings()
-        .then(setHoldings)
-        .catch(() => setHoldings([]));
+      setForm(lockedHoldingId ? { ...initialForm, holdingId: lockedHoldingId } : initialForm);
+      if (!lockedHoldingId) {
+        fetchHoldings()
+          .then(setHoldings)
+          .catch(() => setHoldings([]));
+      }
     }
     wasOpenRef.current = open;
-  }, [open, initialForm]);
+  }, [lockedHoldingId, open, initialForm]);
+
+  useEffect(() => {
+    if (!open || !lockedHoldingId) return;
+    setForm((current) => current.holdingId === lockedHoldingId ? current : { ...current, holdingId: lockedHoldingId });
+  }, [lockedHoldingId, open]);
 
   useEffect(() => {
     if (!open || !form.holdingId) {
@@ -268,6 +278,10 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
     }
     if (form.workingHoursTo < form.workingHoursFrom) {
       showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Время окончания работы не может быть меньше времени начала.' });
+      return;
+    }
+    if (mode === 'create' && !form.holdingId) {
+      showToast({ type: 'error', title: 'Не удалось создать точку', description: 'Перед созданием точки выберите компанию.' });
       return;
     }
     setSaving(true);
@@ -332,15 +346,21 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span>Компания</span>
-            <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
-              <option value="">Без компании</option>
-              {holdings.map((holding) => (
-                <option key={holding.id} value={holding.id}>{holding.name}</option>
-              ))}
-            </select>
-          </label>
+          {lockedHoldingId ? (
+            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: '#F8FAFC' }}>
+              Компания: {fixedHoldingName || 'выбранная компания'}
+            </div>
+          ) : (
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span>Компания</span>
+              <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
+                <option value="">Без компании</option>
+                {holdings.map((holding) => (
+                  <option key={holding.id} value={holding.id}>{holding.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
