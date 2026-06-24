@@ -9,9 +9,9 @@ async function main() {
 
   const seededCities = await seedCityDictionaryIfNeeded(prisma);
   if (seededCities > 0) {
-    console.log(`Seeded city dictionary with ${seededCities} cities.`);
+    console.log(`Seeded city dictionary with ${seededCities} new cities.`);
   } else {
-    console.log('City dictionary already has data, skipping seed.');
+    console.log('City dictionary is already complete, skipping seed.');
   }
 
   await Promise.all(

@@ -74,20 +74,19 @@ async function repairCitySearchNames(prisma: PrismaClient): Promise<void> {
 export async function seedCityDictionaryIfNeeded(prisma: PrismaClient): Promise<number> {
   await ensureCityDictionaryTable(prisma);
 
-  let existingCount = await getCityDictionaryCount(prisma);
+  const existingCount = await getCityDictionaryCount(prisma);
   if (existingCount > 0) {
     const rows = await prisma.$queryRawUnsafe<Array<{ count: number | bigint }>>('SELECT COUNT(*) as count FROM "city_dictionary" WHERE "searchName" = ""');
     const missingSearchNameCount = typeof rows[0]?.count === 'bigint' ? Number(rows[0].count) : rows[0]?.count ?? 0;
-    if (missingSearchNameCount === 0) {
-      await repairCitySearchNames(prisma);
-      return 0;
-    }
-
-    await prisma.$executeRawUnsafe('DELETE FROM "city_dictionary"');
-    existingCount = 0;
+    if (missingSearchNameCount > 0) await repairCitySearchNames(prisma);
   }
 
   const cityNames = readCityNames();
+
+  if (existingCount >= cityNames.length) {
+    await repairCitySearchNames(prisma);
+    return 0;
+  }
 
   for (let offset = 0; offset < cityNames.length; offset += INSERT_BATCH_SIZE) {
     const batch = cityNames.slice(offset, offset + INSERT_BATCH_SIZE);
@@ -99,5 +98,6 @@ export async function seedCityDictionaryIfNeeded(prisma: PrismaClient): Promise<
     );
   }
 
-  return getCityDictionaryCount(prisma);
+  const finalCount = await getCityDictionaryCount(prisma);
+  return Math.max(0, finalCount - existingCount);
 }
