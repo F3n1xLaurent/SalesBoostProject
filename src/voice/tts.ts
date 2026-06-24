@@ -103,8 +103,26 @@ export async function generateSpeechOpenAI(text: string, voice: TtsVoice = 'male
   return Buffer.from(arrayBuffer);
 }
 
-// Backward‑compatible alias for non‑Telegram callers (e.g. web тренажёр)
-export const generateSpeechBuffer = generateSpeechOpenAI;
+// Backward-compatible helper for non-Telegram callers (e.g. web trainer).
+export async function generateSpeechBuffer(text: string, voice: TtsVoice = 'male'): Promise<Buffer> {
+  const trimmed = text.trim();
+  if (!trimmed) return Buffer.alloc(0);
+
+  if (useOpenAITts()) {
+    return generateSpeechOpenAI(trimmed, voice);
+  }
+
+  try {
+    return await generateSpeechElevenLabs(trimmed);
+  } catch (elErr) {
+    const msg = elErr instanceof Error ? elErr.message : String(elErr);
+    if (msg.includes('401') || msg.includes('402') || msg.includes('403') || msg.includes('Payment Required') || msg.includes('Unauthorized')) {
+      console.warn('[tts] ElevenLabs failed, falling back to OpenAI TTS');
+      return generateSpeechOpenAI(trimmed, voice);
+    }
+    throw elErr;
+  }
+}
 
 export interface SendVoiceOptions {
   voice?: TtsVoice;

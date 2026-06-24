@@ -7,6 +7,7 @@ import type { Telegraf } from 'telegraf';
 import { WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { config } from './config';
+import { openai } from './lib/openaiClient';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { handleVoiceDialog } from './voice/voiceDialog';
@@ -31,26 +32,39 @@ import { getDefaultState } from './state/defaultState';
 import { buildDealershipFromCar } from './llm/virtualClient';
 import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
+import { evaluateSessionV2 } from './llm/evaluatorV2';
 import { generateSpeechBuffer } from './voice/tts';
+import { buildCustomerScenarioPromptCore } from './voice/customerScenarioPrompt';
+import {
+  closeElevenLabsAgentConversation,
+  hasElevenLabsAgentConversation,
+  isElevenLabsAgentEnabled,
+  runElevenLabsAgentAudioTurn,
+  runElevenLabsAgentTurn,
+} from './voice/elevenLabsAgent';
 import {
   handleCreateCallCustomerProfile,
+  handleCreateCallCustomerVoice,
   handleCreateCallPlan,
   handleCreateCallScript,
   handleDeleteCallCustomerProfile,
+  handleDeleteCallCustomerVoice,
   handleDeleteCallScript,
   handleGetCallPlanOptions,
   handleInitiateCallPlan,
   handleListCallPlanCalls,
   handleListCallCustomerProfiles,
+  handleListCallCustomerVoices,
   handleListCallPlans,
   handleListCallScripts,
   handlePreviewCallPlanPrompt,
   handleUpdateCallCustomerProfile,
+  handleUpdateCallCustomerVoice,
   handleUpdateCallPlan,
   handleUpdateCallScript,
 } from './voice/callSettingsManagement';
 import type { TtsVoice } from './state/userPreferences';
-import { transcribeVoice } from './voice/stt';
+import { transcribeVoice, transcribeVoiceFast } from './voice/stt';
 import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifier';
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
@@ -229,10 +243,166 @@ function extractPlanCriteriaEvaluation(evaluation: Record<string, unknown> | nul
   };
 }
 
+async function evaluateScriptCriteria(criteriaInput: unknown, transcript: TrainerTranscriptTurn[]): Promise<unknown | null> {
+  const criteria = Array.isArray(criteriaInput) ? criteriaInput as Array<{ expectedAnswer?: string; score?: number }> : [];
+  const meaningfulCriteria = criteria.filter((item) => String(item.expectedAnswer || '').trim());
+  if (meaningfulCriteria.length === 0) return null;
+  const prompt = [
+    'Ты оцениваешь разговор сотрудника с виртуальным клиентом по условиям успеха скрипта.',
+    'Для каждого условия сравни ответ сотрудника с эталоном.',
+    'Правила: если ответил также или почти также — полный балл; если близко — половина; если не ответил — 0.',
+    'Критично: score по каждому пункту НЕ МОЖЕТ быть больше maxScore этого пункта. Если maxScore=80, максимум score=80.',
+    'totalScore должен быть суммой score, maxScore должен быть суммой maxScore, percent = totalScore / maxScore * 100.',
+    'Верни только JSON: {"items":[{"expectedAnswer":"...","maxScore":100,"score":0,"evidence":"цитата или причина"}],"totalScore":0,"maxScore":0,"percent":0}.',
+    '',
+    `Условия:\n${JSON.stringify(meaningfulCriteria, null, 2)}`,
+    '',
+    `Диалог:\n${transcript.map((turn) => `${turn.role === 'manager' ? 'Сотрудник' : 'Клиент'}: ${turn.text}`).join('\n')}`,
+  ].join('\n');
+  try {
+    const response = await openai.chat.completions.create({
+      model: config.openaiChatModel,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'Ты строгий оценщик продаж. Отвечай только валидным JSON.' },
+        { role: 'user', content: prompt },
+      ],
+    });
+    const content = response.choices[0]?.message?.content || '';
+    const jsonText = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+    const raw = JSON.parse(jsonText) as Record<string, unknown>;
+    const sourceItems = Array.isArray(raw.items) ? raw.items : [];
+    const items = sourceItems.map((itemRaw) => {
+      const item = itemRaw && typeof itemRaw === 'object' ? itemRaw as Record<string, unknown> : {};
+      const maxScore = Math.max(0, Math.min(100, numberOrNull(item.maxScore) ?? 0));
+      const score = Math.max(0, Math.min(maxScore, numberOrNull(item.score) ?? 0));
+      return { ...item, maxScore, score };
+    });
+    const maxScore = items.reduce((sum, item) => sum + item.maxScore, 0);
+    const totalScore = items.reduce((sum, item) => sum + item.score, 0);
+    const percentValue = numberOrNull(raw.percent) ?? (maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0);
+    return {
+      ...raw,
+      items,
+      totalScore,
+      maxScore,
+      percent: Math.max(0, Math.min(100, round1(percentValue))),
+    };
+  } catch (error) {
+    console.warn('[trainer] script criteria evaluation failed:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
 function scoreFromEvaluation(evaluation: Record<string, unknown> | null | undefined, directScore: number | null | undefined): number {
   const planCriteria = extractPlanCriteriaEvaluation(evaluation);
   const genericScore = numberOrNull(evaluation?.overall_score_0_100);
   return round1(planCriteria?.percent ?? directScore ?? genericScore ?? 0);
+}
+
+function jsonStringify(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function safeArray<T = unknown>(value: string | null | undefined): T[] {
+  const parsed = safeJsonParseLocal<unknown>(value, []);
+  return Array.isArray(parsed) ? parsed as T[] : [];
+}
+
+function trainerPlanDate(date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function trainerPlanItemId(): string {
+  return `plan_item_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function pickTrainerClientAge(ageFrom: number | null | undefined, ageTo: number | null | undefined, fallback = 35): number {
+  const from = Number.isFinite(Number(ageFrom)) ? Math.round(Number(ageFrom)) : fallback;
+  const to = Number.isFinite(Number(ageTo)) ? Math.round(Number(ageTo)) : from;
+  const min = Math.max(18, Math.min(65, Math.min(from, to)));
+  const max = Math.max(18, Math.min(65, Math.max(from, to)));
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function buildTrainerCaseContext(params: {
+  sessionType: 'plan' | 'free';
+  scenario: { id: string; name: string; context: string; objectionsJson: string; questionsJson: string; successCriteriaJson: string } | null;
+  manager: { id: string; fullName: string; dealership?: { id: string; name: string; city: string | null; holdingId: string | null } | null };
+  difficulty: string;
+  clientType: string;
+  seed?: string | null;
+  customerProfile?: {
+    id: string;
+    name: string;
+    voiceId: string;
+    elevenLabsVoiceId?: string | null;
+    age: number;
+    ageFrom: number;
+    ageTo: number;
+    character: string;
+    temperament: string;
+    patience: string;
+    replyLength: string;
+    communicationStyle: string;
+  } | null;
+}) {
+  const objections = safeArray(params.scenario?.objectionsJson);
+  const questions = safeArray(params.scenario?.questionsJson);
+  const successCriteria = safeArray(params.scenario?.successCriteriaJson);
+  const city = params.manager.dealership?.city || 'город клиента';
+  const clientAge = params.customerProfile
+    ? pickTrainerClientAge(params.customerProfile.ageFrom, params.customerProfile.ageTo, params.customerProfile.age)
+    : null;
+  return {
+    seed: params.seed || trainerPlanItemId(),
+    mode: params.sessionType,
+    difficulty: params.difficulty,
+    clientType: params.clientType,
+    clientProfile: {
+      id: params.customerProfile?.id ?? null,
+      name: params.customerProfile?.name || 'AI-клиент',
+      city,
+      type: params.customerProfile?.name ? 'script_profile' : params.clientType === 'random' ? 'random' : params.clientType,
+      voiceId: params.customerProfile?.voiceId ?? null,
+      elevenLabsVoiceId: params.customerProfile?.elevenLabsVoiceId ?? null,
+      age: clientAge,
+      ageFrom: params.customerProfile?.ageFrom ?? params.customerProfile?.age ?? null,
+      ageTo: params.customerProfile?.ageTo ?? params.customerProfile?.age ?? null,
+      character: params.customerProfile?.character ?? '',
+      temperament: params.customerProfile?.temperament ?? '',
+      patience: params.customerProfile?.patience ?? '',
+      replyLength: params.customerProfile?.replyLength ?? '',
+      communicationStyle: params.customerProfile?.communicationStyle ?? '',
+    },
+    company: {
+      id: params.manager.dealership?.holdingId ?? null,
+      branchId: params.manager.dealership?.id ?? null,
+      branchName: params.manager.dealership?.name ?? null,
+      city,
+    },
+    scenario: params.scenario ? {
+      id: params.scenario.id,
+      name: params.scenario.name,
+      context: params.scenario.context,
+      objections,
+      questions,
+      successCriteria,
+    } : null,
+  };
+}
+
+function trainerElevenLabsVoiceId(caseContext: Record<string, unknown>): string | null {
+  const clientProfile = caseContext.clientProfile && typeof caseContext.clientProfile === 'object'
+    ? caseContext.clientProfile as Record<string, unknown>
+    : null;
+  const voiceId = String(clientProfile?.elevenLabsVoiceId || '').trim();
+  return voiceId || null;
 }
 
 function dimensionLabel(key: string): string {
@@ -910,6 +1080,750 @@ function buildWebTrainingResult(
   };
 }
 
+type TrainerTranscriptTurn = {
+  role: 'client' | 'manager';
+  text: string;
+  durationSec?: number | null;
+  createdAt?: string;
+  audioBase64?: string | null;
+  audioMimeType?: string | null;
+};
+
+function wavBase64FromPcm16Base64(audioBase64: string, sampleRate = 16000): string {
+  const pcm = Buffer.from(audioBase64, 'base64');
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]).toString('base64');
+}
+
+function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript: TrainerTranscriptTurn[] = []): string {
+  const scenario = caseContext.scenario && typeof caseContext.scenario === 'object'
+    ? caseContext.scenario as Record<string, unknown>
+    : {};
+  const company = caseContext.company && typeof caseContext.company === 'object'
+    ? caseContext.company as Record<string, unknown>
+    : {};
+  const clientProfile = caseContext.clientProfile && typeof caseContext.clientProfile === 'object'
+    ? caseContext.clientProfile as Record<string, unknown>
+    : {};
+  const age = Number(clientProfile.age);
+  const ageLabel = Number.isFinite(age) ? String(Math.round(age)) : '';
+  const scenarioQuestions = Array.isArray(scenario.questions)
+    ? scenario.questions as Array<{ text?: string; question?: string; required?: boolean }>
+    : [];
+  const scenarioObjections = Array.isArray(scenario.objections)
+    ? scenario.objections as Array<{ phrase?: string; whenAppropriate?: string }>
+    : [];
+  const scenarioCriteria = Array.isArray(scenario.successCriteria)
+    ? scenario.successCriteria as Array<{ expectedAnswer?: string; score?: number }>
+    : [];
+  const scenarioCore = buildCustomerScenarioPromptCore({
+    age: ageLabel,
+    temperament: String(clientProfile.temperament || ''),
+    patience: String(clientProfile.patience || ''),
+    replyLength: String(clientProfile.replyLength || ''),
+    communicationStyle: String(clientProfile.communicationStyle || ''),
+    context: String(scenario.context || ''),
+    itemTitle: String(scenario.name || ''),
+    itemDescription: String(company.branchName || company.name || ''),
+    questions: scenarioQuestions,
+    objections: scenarioObjections,
+    criteria: scenarioCriteria,
+    includeFirstMessage: false,
+  });
+  const previous = transcript.length
+    ? transcript.map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`).join('\n')
+    : 'Диалог только начинается.';
+
+  return [
+    'Ты играешь роль клиента в тренажере продаж автосалона. Говори только от лица клиента.',
+    'Твоя задача: реалистично отвечать менеджеру, задавать вопросы, возражать и проверять, насколько менеджер ведет разговор по сценарию.',
+    'Не оценивай менеджера вслух и не раскрывай правила тренажера. Отвечай естественно на русском языке и соблюдай длину реплик из профиля клиента.',
+    `Сценарий: ${String(scenario.name || 'Свободная тренировка')}`,
+    `Компания/точка: ${String(company.branchName || 'автосалон')}, город: ${String(company.city || clientProfile.city || 'не указан')}`,
+    `Сложность: ${String(caseContext.difficulty || 'medium')}`,
+    scenarioCore,
+    `История диалога:\n${previous}`,
+  ].filter(Boolean).join('\n\n');
+}
+
+function trainerInitialClientMessage(caseContext: Record<string, unknown>): string {
+  const scenario = caseContext.scenario && typeof caseContext.scenario === 'object'
+    ? caseContext.scenario as Record<string, unknown>
+    : {};
+  const company = caseContext.company && typeof caseContext.company === 'object'
+    ? caseContext.company as Record<string, unknown>
+    : {};
+  const clientProfile = caseContext.clientProfile && typeof caseContext.clientProfile === 'object'
+    ? caseContext.clientProfile as Record<string, unknown>
+    : {};
+  const questions = Array.isArray(scenario.questions) ? scenario.questions : [];
+  const firstQuestion = questions
+    .map((item) => typeof item === 'string' ? item : String((item as Record<string, unknown>)?.question || (item as Record<string, unknown>)?.text || ''))
+    .find((item) => item.trim());
+  const scenarioName = String(scenario.name || '').trim();
+  const city = String(company.city || clientProfile.city || '').trim();
+  if (firstQuestion) return firstQuestion.trim();
+  if (scenarioName) {
+    return `Здравствуйте. Я смотрю ${scenarioName.toLowerCase()}${city ? ` в городе ${city}` : ''}. Можете подсказать по условиям?`;
+  }
+  return `Здравствуйте. Я выбираю автомобиль${city ? ` в городе ${city}` : ''} и хочу уточнить несколько моментов.`;
+}
+
+type TrainerRuntimeContext = {
+  strictness: Strictness;
+  profile: WebTrainingProfile;
+  state: any;
+  car: ReturnType<typeof loadCar>;
+  behaviorSignals: BehaviorSignal[];
+  elevenLabsConversationId?: string | null;
+};
+
+function getTrainerRuntime(caseContext: Record<string, unknown>): TrainerRuntimeContext {
+  const runtime = caseContext.runtime && typeof caseContext.runtime === 'object'
+    ? caseContext.runtime as Partial<TrainerRuntimeContext>
+    : {};
+  const profile = runtime.profile === 'thorough' || runtime.profile === 'pressure' || runtime.profile === 'normal'
+    ? runtime.profile
+    : 'normal';
+  const strictness = runtime.strictness === 'low' || runtime.strictness === 'high' || runtime.strictness === 'medium'
+    ? runtime.strictness
+    : 'medium';
+  return {
+    strictness,
+    profile,
+    state: runtime.state && typeof runtime.state === 'object' ? runtime.state : getDefaultState(profile),
+    car: runtime.car && typeof runtime.car === 'object' ? runtime.car as ReturnType<typeof loadCar> : loadCar(),
+    behaviorSignals: Array.isArray(runtime.behaviorSignals) ? runtime.behaviorSignals as BehaviorSignal[] : [],
+    elevenLabsConversationId: typeof runtime.elevenLabsConversationId === 'string' ? runtime.elevenLabsConversationId : null,
+  };
+}
+
+function withTrainerRuntime(caseContext: Record<string, unknown>, runtime: TrainerRuntimeContext): Record<string, unknown> {
+  return {
+    ...caseContext,
+    runtime,
+  };
+}
+
+async function ttsBase64(text: string, replyMode: 'text' | 'text+voice', ttsVoice: TtsVoice): Promise<string | null> {
+  if (replyMode !== 'text+voice' || !text.trim()) return null;
+  try {
+    const buf = await generateSpeechBuffer(text, ttsVoice);
+    return buf.length ? buf.toString('base64') : null;
+  } catch (error) {
+    console.error('[trainer] TTS error:', error);
+    return null;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function buildTrainerAuditEvaluation(params: {
+  caseContext: Record<string, unknown>;
+  runtime: TrainerRuntimeContext;
+  transcript: TrainerTranscriptTurn[];
+  forcedFail: boolean;
+  failureReason: string | null;
+}) {
+  const evaluated = await evaluateSessionV2({
+    dialogHistory: params.transcript
+      .filter((turn) => turn.text?.trim())
+      .map((turn) => ({ role: turn.role, content: turn.text })),
+    car: params.runtime.car,
+    state: params.runtime.state,
+    earlyFail: params.forcedFail,
+    failureReason: params.failureReason ?? undefined,
+    behaviorSignals: params.runtime.behaviorSignals,
+  });
+  const evaluation = evaluated.evaluation;
+  const scenario = params.caseContext.scenario && typeof params.caseContext.scenario === 'object'
+    ? params.caseContext.scenario as Record<string, unknown>
+    : {};
+  const planCriteria = await evaluateScriptCriteria(scenario.successCriteria, params.transcript);
+  const planCriteriaScore = extractPlanCriteriaEvaluation(planCriteria && typeof planCriteria === 'object' ? { plan_criteria: planCriteria } : null)?.percent ?? null;
+  const finalEvaluation = {
+    ...evaluation,
+    plan_criteria: planCriteria,
+  };
+  const checklist = evaluation.checklist.map((item) => ({
+    code: item.code,
+    status: item.status,
+    comment: item.comment,
+    evidence: item.evidence,
+  }));
+  const issues = evaluation.issues.map((issue) => ({
+    issue_type: issue.issue_type,
+    severity: issue.severity,
+    evidence: issue.evidence,
+    recommendation: issue.recommendation,
+  }));
+  return {
+    evaluation: finalEvaluation,
+    checklist,
+    issues,
+    recommendations: evaluation.recommendations.map((text) => ({
+      title: text,
+      description: 'Отработать в следующей тренировке',
+    })),
+    score: planCriteriaScore ?? evaluation.overall_score_0_100,
+    dimensions: evaluation.dimension_scores,
+  };
+}
+
+async function initializeTrainerDialog(params: {
+  sessionId: string;
+  replyMode: 'text' | 'text+voice';
+  ttsVoice: TtsVoice;
+}) {
+  const session = await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
+  if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
+
+  const existingTranscript = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+  if (existingTranscript.length > 0) {
+    const lastClient = [...existingTranscript].reverse().find((turn) => turn.role === 'client');
+    return {
+      clientMessage: lastClient?.text ?? '',
+      audioBase64: null,
+      transcript: existingTranscript,
+    };
+  }
+
+  const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+  const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
+  if (isElevenLabsAgentEnabled()) {
+    try {
+      const firstMessage = trainerInitialClientMessage(caseContext);
+      const agentOut = await runElevenLabsAgentTurn({
+        sessionId: session.id,
+        prompt: trainerScenarioPrompt(caseContext, existingTranscript),
+        firstMessage,
+        elevenLabsVoiceId,
+      });
+      const clientMessage = agentOut.clientMessage || firstMessage;
+      const transcript: TrainerTranscriptTurn[] = [{
+        role: 'client',
+        text: clientMessage,
+        createdAt: new Date().toISOString(),
+        audioBase64: agentOut.audioBase64,
+        audioMimeType: agentOut.audioMimeType,
+      }];
+      const runtime = getTrainerRuntime(caseContext);
+      const nextRuntime = {
+        ...runtime,
+        elevenLabsConversationId: agentOut.conversationId,
+      };
+      await prisma.trainerSession.update({
+        where: { id: session.id },
+        data: {
+          transcriptJson: jsonStringify(transcript),
+          caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
+          elevenLabsConversationId: agentOut.conversationId,
+        },
+      });
+      return {
+        clientMessage,
+        audioBase64: agentOut.audioBase64,
+        audioMimeType: agentOut.audioMimeType,
+        transcript,
+      };
+    } catch (error) {
+      console.error('[trainer] ElevenLabs agent init error:', error);
+    }
+  }
+  const runtime = getTrainerRuntime(caseContext);
+  const maxClientTurns = runtime.strictness === 'low' ? 8 : runtime.strictness === 'high' ? 14 : 12;
+  const state = {
+    ...runtime.state,
+    strictnessState: { strictness: runtime.strictness, max_client_turns: maxClientTurns },
+  };
+  const out = await getVirtualClientReply({
+    car: runtime.car,
+    dealership: buildDealershipFromCar(runtime.car),
+    state,
+    manager_last_message: '',
+    dialog_history: [],
+    strictness: runtime.strictness,
+    max_client_turns: maxClientTurns,
+  });
+  const nextState = {
+    ...state,
+    stage: out.update_state.stage,
+    checklist: { ...state.checklist, ...out.update_state.checklist },
+    notes: out.update_state.notes,
+    client_turns: out.update_state.client_turns,
+  };
+  const transcript: TrainerTranscriptTurn[] = [{
+    role: 'client',
+    text: out.client_message,
+    createdAt: new Date().toISOString(),
+    audioBase64: await ttsBase64(out.client_message, params.replyMode, params.ttsVoice),
+    audioMimeType: null,
+  }];
+  const nextRuntime = { ...runtime, state: nextState };
+  await prisma.trainerSession.update({
+    where: { id: session.id },
+    data: {
+      transcriptJson: jsonStringify(transcript),
+      caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
+    },
+  });
+  return {
+    clientMessage: out.client_message,
+    audioBase64: transcript[0]?.audioBase64 ?? null,
+    audioMimeType: null,
+    transcript,
+  };
+}
+
+async function runTrainerSessionTurn(params: {
+  sessionId: string;
+  managerText: string;
+  durationSec: number | null;
+  replyMode: 'text' | 'text+voice';
+  ttsVoice: TtsVoice;
+  managerAudioBase64?: string | null;
+  managerAudioMimeType?: string | null;
+}) {
+  const session = await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
+  if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
+  if (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') {
+    throw new Error('TRAINER_SESSION_CLOSED');
+  }
+
+  const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+  const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
+  const runtime = getTrainerRuntime(caseContext);
+  const transcriptBefore = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+  const historyBefore = transcriptBefore.map((turn) => ({ role: turn.role, content: turn.text }));
+  const history = [...historyBefore, { role: 'manager' as const, content: params.managerText }];
+  const state = { ...runtime.state };
+  const maxClientTurns = (state.strictnessState?.max_client_turns as number) ?? 12;
+  const behavior = classifyBehavior(params.managerText, {
+    lastClientQuestion: [...historyBefore].reverse().find((turn) => turn.role === 'client')?.content,
+    isClientWaitingAnswer: true,
+  });
+  const hardRude = isHardRude(params.managerText);
+  const behaviorSignals = [...runtime.behaviorSignals, behavior];
+
+  let clientMessage = '';
+  let clientAudioBase64: string | null = null;
+  let clientAudioMimeType: string | null = null;
+  let nextState = state;
+  let nextHistory: { role: 'client' | 'manager'; content: string }[] = [];
+  let endConversation = false;
+  let result: WebTrainingResult | null = null;
+  let nextElevenLabsConversationId = runtime.elevenLabsConversationId ?? null;
+
+  if (behavior.toxic || hardRude || behavior.disengaging) {
+    clientMessage = behavior.disengaging
+      ? 'Понимаю. Не буду больше отвлекать. Спасибо за время, всего доброго.'
+      : behavior.severity === 'HIGH' || hardRude
+      ? 'Извините, но я не готов продолжать разговор в таком тоне. Всего доброго.'
+      : 'Мне бы хотелось более уважительного общения. На этом, пожалуй, закончим.';
+    nextHistory = [...history, { role: 'client', content: clientMessage }];
+    result = buildWebTrainingResult(state, nextHistory, behaviorSignals, true, behavior.disengaging ? 'DISENGAGEMENT' : 'BAD_TONE');
+    endConversation = true;
+  } else {
+    if (behavior.low_effort) state.low_effort_streak = (state.low_effort_streak ?? 0) + 1;
+    else state.low_effort_streak = 0;
+    const lowQualityStreak = behaviorSignals.reduce((acc, signal) => (signal.low_quality ? acc + 1 : 0), 0);
+    if ((state.low_effort_streak ?? 0) >= 3 || lowQualityStreak >= 2) {
+      clientMessage = 'Я задаю конкретные вопросы и хотел бы получать развёрнутые ответы. Видимо, сейчас не лучшее время. До свидания.';
+      nextHistory = [...history, { role: 'client', content: clientMessage }];
+      result = buildWebTrainingResult(state, nextHistory, behaviorSignals, true, lowQualityStreak >= 2 ? 'REPEATED_LOW_QUALITY' : 'REPEATED_LOW_EFFORT');
+      endConversation = true;
+    } else if (isElevenLabsAgentEnabled()) {
+      try {
+        console.log(`[trainer] ElevenLabs agent turn start session=${session.id}`);
+        const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
+        const agentOut = await runElevenLabsAgentTurn({
+          sessionId: session.id,
+          prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore) : null,
+          managerText: params.managerText,
+          elevenLabsVoiceId,
+        });
+        console.log(`[trainer] ElevenLabs agent turn done session=${session.id} hasAudio=${Boolean(agentOut.audioBase64)} conversation=${agentOut.conversationId || 'n/a'}`);
+        clientMessage = agentOut.clientMessage || 'Понял вас. Расскажите, пожалуйста, подробнее.';
+        clientAudioBase64 = agentOut.audioBase64;
+        clientAudioMimeType = agentOut.audioMimeType;
+        nextHistory = [...history, { role: 'client', content: clientMessage }];
+        endConversation = agentOut.endedByAgent || shouldForceConversationEnd(clientMessage) || history.filter((turn) => turn.role === 'manager').length >= maxClientTurns;
+        result = endConversation ? buildWebTrainingResult(state, nextHistory, behaviorSignals, false, null) : null;
+        nextState = {
+          ...state,
+          client_turns: Math.max(Number(state.client_turns || 0), nextHistory.filter((turn) => turn.role === 'client').length),
+        };
+        nextElevenLabsConversationId = agentOut.conversationId ?? nextElevenLabsConversationId;
+      } catch (error) {
+        console.error('[trainer] ElevenLabs agent turn error:', error);
+        const out = await getVirtualClientReply({
+          car: runtime.car,
+          dealership: buildDealershipFromCar(runtime.car),
+          state,
+          manager_last_message: params.managerText,
+          dialog_history: history,
+          strictness: runtime.strictness,
+          max_client_turns: maxClientTurns,
+          behaviorSignal: behavior,
+          maxResponseTokens: 220,
+        });
+        clientMessage = out.client_message;
+        nextHistory = [...history, { role: 'client', content: clientMessage }];
+        endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
+        result = endConversation ? buildWebTrainingResult(state, nextHistory, behaviorSignals, false, null) : null;
+      }
+    } else {
+      const out = await getVirtualClientReply({
+        car: runtime.car,
+        dealership: buildDealershipFromCar(runtime.car),
+        state,
+        manager_last_message: params.managerText,
+        dialog_history: history,
+        strictness: runtime.strictness,
+        max_client_turns: maxClientTurns,
+        behaviorSignal: behavior,
+        maxResponseTokens: 220,
+      });
+
+      state.phase = out.diagnostics.current_phase;
+      let topicMap = { ...state.topics };
+      for (const code of out.diagnostics.topics_addressed as TopicCode[]) {
+        if (!topicMap[code]) continue;
+        const currentStatus = topicMap[code].status;
+        const next = currentStatus === 'none' ? 'asked' : currentStatus === 'asked' ? 'answered' : currentStatus;
+        const advance = advanceTopic(topicMap, code, next as any);
+        if (advance.valid) topicMap = advance.map;
+      }
+      for (const code of out.diagnostics.topics_evaded as TopicCode[]) {
+        if (!topicMap[code]) continue;
+        topicMap = recordEvasion(topicMap, code);
+      }
+      state.topics = topicMap;
+      nextState = {
+        ...state,
+        stage: out.update_state.stage,
+        checklist: { ...state.checklist, ...out.update_state.checklist },
+        notes: out.update_state.notes,
+        client_turns: out.update_state.client_turns,
+      };
+      const evasionCheck = checkCriticalEvasions(topicMap);
+      if (evasionCheck.shouldFail) {
+        clientMessage = 'Я дважды задал важный вопрос и не получил ответа. Пожалуй, обращусь в другой салон.';
+        nextHistory = [...history, { role: 'client', content: clientMessage }];
+        result = buildWebTrainingResult(nextState, nextHistory, behaviorSignals, true, `CRITICAL_EVASION:${evasionCheck.failedTopic}`);
+        endConversation = true;
+      } else {
+        clientMessage = out.client_message;
+        nextHistory = [...history, { role: 'client', content: clientMessage }];
+        endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
+        result = endConversation ? buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null) : null;
+      }
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  if (!clientAudioBase64) {
+    clientAudioBase64 = await ttsBase64(clientMessage, params.replyMode, params.ttsVoice);
+    clientAudioMimeType = null;
+  }
+  const transcript: TrainerTranscriptTurn[] = [
+    ...transcriptBefore,
+    {
+      role: 'manager',
+      text: params.managerText,
+      durationSec: params.durationSec,
+      createdAt: nowIso,
+      audioBase64: params.managerAudioBase64,
+      audioMimeType: params.managerAudioMimeType,
+    },
+    {
+      role: 'client',
+      text: clientMessage,
+      createdAt: nowIso,
+      audioBase64: clientAudioBase64,
+      audioMimeType: clientAudioMimeType,
+    },
+  ];
+  const nextRuntime = { ...runtime, state: nextState, behaviorSignals, elevenLabsConversationId: nextElevenLabsConversationId };
+  const updateData: Parameters<typeof prisma.trainerSession.update>[0]['data'] = {
+    transcriptJson: jsonStringify(transcript),
+    caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
+    elevenLabsConversationId: nextElevenLabsConversationId,
+    durationSec: transcript.reduce((sum, turn) => sum + (turn.durationSec ?? 0), 0),
+  };
+  if (endConversation && result) {
+    const forcedFail = result.verdict === 'fail' && Boolean(result.reasonCode);
+    const audit = await buildTrainerAuditEvaluation({
+      caseContext,
+      runtime: nextRuntime,
+      transcript,
+      forcedFail,
+      failureReason: result.reasonCode,
+    });
+    const finalPoints = forcedFail ? 0 : Math.round(audit.score * session.multiplier);
+    updateData.status = result.verdict === 'fail' && result.reasonCode ? 'failed' : 'completed';
+    updateData.completedAt = new Date();
+    updateData.score = audit.score;
+    updateData.baseScore = audit.score;
+    updateData.finalPoints = finalPoints;
+    updateData.failureReason = result.reasonCode;
+    updateData.evaluationJson = jsonStringify(audit.evaluation);
+    updateData.dimensionsJson = jsonStringify(audit.dimensions);
+    updateData.checklistResultsJson = jsonStringify(audit.checklist);
+    updateData.objectionsAnalysisJson = jsonStringify(audit.issues);
+    updateData.topRecommendationsJson = jsonStringify(audit.recommendations);
+  }
+  const updated = await prisma.trainerSession.update({
+    where: { id: session.id },
+    data: updateData,
+    include: { scenario: { select: { id: true, name: true } } },
+  });
+  if (endConversation && result) {
+    await finalizeTrainerSessionSideEffects(updated.id).catch((error) => {
+      console.error('trainer finalize side effects error:', error);
+    });
+    closeElevenLabsAgentConversation(updated.id);
+  }
+
+  return {
+    clientMessage,
+    endConversation,
+    audioBase64: clientAudioBase64,
+    audioMimeType: clientAudioMimeType,
+    managerTranscript: params.managerText,
+    result,
+    session: trainerSessionSummary(updated),
+    transcript,
+  };
+}
+
+async function runTrainerSessionAudioTurn(params: {
+  sessionId: string;
+  audioBase64: string;
+  durationSec: number | null;
+}) {
+  const session = await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
+  if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
+  if (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') {
+    throw new Error('TRAINER_SESSION_CLOSED');
+  }
+  if (!isElevenLabsAgentEnabled()) {
+    throw new Error('ELEVENLABS_AGENT_NOT_CONFIGURED');
+  }
+
+  const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+  const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
+  const runtime = getTrainerRuntime(caseContext);
+  const transcriptBefore = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+  console.log(`[trainer] ElevenLabs agent audio turn start session=${session.id}`);
+  const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
+  const agentOut = await runElevenLabsAgentAudioTurn({
+    sessionId: session.id,
+    prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore) : null,
+    audioBase64: params.audioBase64,
+    elevenLabsVoiceId,
+  });
+  console.log(`[trainer] ElevenLabs agent audio turn done session=${session.id} hasAudio=${Boolean(agentOut.audioBase64)} conversation=${agentOut.conversationId || 'n/a'}`);
+
+  const managerText = agentOut.userTranscript || 'Голосовое сообщение менеджера';
+  const clientMessage = agentOut.clientMessage || 'Понял вас. Расскажите, пожалуйста, подробнее.';
+  const historyBefore = transcriptBefore.map((turn) => ({ role: turn.role, content: turn.text }));
+  const history = [
+    ...historyBefore,
+    { role: 'manager' as const, content: managerText },
+    { role: 'client' as const, content: clientMessage },
+  ];
+  const behavior = agentOut.userTranscript
+    ? classifyBehavior(managerText, {
+      lastClientQuestion: [...historyBefore].reverse().find((turn) => turn.role === 'client')?.content,
+      isClientWaitingAnswer: true,
+    })
+    : null;
+  const behaviorSignals = behavior ? [...runtime.behaviorSignals, behavior] : runtime.behaviorSignals;
+  const nowIso = new Date().toISOString();
+  const transcript: TrainerTranscriptTurn[] = [
+    ...transcriptBefore,
+    {
+      role: 'manager',
+      text: managerText,
+      durationSec: params.durationSec,
+      createdAt: nowIso,
+      audioBase64: wavBase64FromPcm16Base64(params.audioBase64),
+      audioMimeType: 'audio/wav',
+    },
+    {
+      role: 'client',
+      text: clientMessage,
+      createdAt: nowIso,
+      audioBase64: agentOut.audioBase64,
+      audioMimeType: agentOut.audioMimeType,
+    },
+  ];
+  const state = { ...runtime.state };
+  const maxClientTurns = (state.strictnessState?.max_client_turns as number) ?? 12;
+  const endConversation = agentOut.endedByAgent || shouldForceConversationEnd(clientMessage) || history.filter((turn) => turn.role === 'manager').length >= maxClientTurns;
+  const result = endConversation ? buildWebTrainingResult(state, history, behaviorSignals, false, null) : null;
+  const nextRuntime = {
+    ...runtime,
+    state: {
+      ...state,
+      client_turns: Math.max(Number(state.client_turns || 0), history.filter((turn) => turn.role === 'client').length),
+    },
+    behaviorSignals,
+    elevenLabsConversationId: agentOut.conversationId ?? runtime.elevenLabsConversationId ?? null,
+  };
+  const updateData: Parameters<typeof prisma.trainerSession.update>[0]['data'] = {
+    transcriptJson: jsonStringify(transcript),
+    caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
+    elevenLabsConversationId: nextRuntime.elevenLabsConversationId,
+    durationSec: transcript.reduce((sum, turn) => sum + (turn.durationSec ?? 0), 0),
+  };
+  if (endConversation && result) {
+    const audit = await buildTrainerAuditEvaluation({
+      caseContext,
+      runtime: nextRuntime,
+      transcript,
+      forcedFail: false,
+      failureReason: null,
+    });
+    const finalPoints = Math.round(audit.score * session.multiplier);
+    updateData.status = 'completed';
+    updateData.completedAt = new Date();
+    updateData.score = audit.score;
+    updateData.baseScore = audit.score;
+    updateData.finalPoints = finalPoints;
+    updateData.evaluationJson = jsonStringify(audit.evaluation);
+    updateData.dimensionsJson = jsonStringify(audit.dimensions);
+    updateData.checklistResultsJson = jsonStringify(audit.checklist);
+    updateData.objectionsAnalysisJson = jsonStringify(audit.issues);
+    updateData.topRecommendationsJson = jsonStringify(audit.recommendations);
+  }
+
+  const updated = await prisma.trainerSession.update({
+    where: { id: session.id },
+    data: updateData,
+    include: { scenario: { select: { id: true, name: true } } },
+  });
+  if (endConversation && result) {
+    await finalizeTrainerSessionSideEffects(updated.id).catch((error) => {
+      console.error('trainer finalize side effects error:', error);
+    });
+    closeElevenLabsAgentConversation(updated.id);
+  }
+
+  return {
+    clientMessage,
+    endConversation,
+    audioBase64: agentOut.audioBase64,
+    audioMimeType: agentOut.audioMimeType,
+    managerTranscript: managerText,
+    result,
+    session: trainerSessionSummary(updated),
+    transcript,
+  };
+}
+
+async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<void> {
+  const session = await prisma.trainerSession.findUnique({
+    where: { id: sessionId },
+  });
+  if (!session || !['completed', 'failed'].includes(session.status)) return;
+
+  const baseScore = session.baseScore ?? session.score ?? 0;
+  const finalPoints = session.status === 'failed' ? 0 : session.finalPoints ?? Math.round(baseScore * session.multiplier);
+
+  if (session.status === 'completed') {
+    await prisma.trainerScore.upsert({
+      where: { trainerSessionId: session.id },
+      create: {
+        employeeId: session.employeeId,
+        trainerSessionId: session.id,
+        baseScore,
+        multiplier: session.multiplier,
+        finalScore: finalPoints,
+      },
+      update: {
+        baseScore,
+        multiplier: session.multiplier,
+        finalScore: finalPoints,
+      },
+    });
+  }
+
+  if (session.sessionType === 'plan') {
+    const planDate = trainerPlanDate(session.startedAt);
+    const plan = await prisma.trainerDailyPlan.findUnique({
+      where: { employeeId_planDate: { employeeId: session.employeeId, planDate } },
+    });
+    if (plan) {
+      const items = safeArray<Record<string, unknown>>(plan.sessionsJson);
+      const nextItems = items.map((item) => item.trainerSessionId === session.id
+        ? {
+          ...item,
+          status: session.status,
+          score: session.score,
+          finalPoints,
+          completedAt: session.completedAt?.toISOString() ?? new Date().toISOString(),
+        }
+        : item);
+      await prisma.trainerDailyPlan.update({
+        where: { id: plan.id },
+        data: { sessionsJson: jsonStringify(nextItems) },
+      });
+    }
+
+    if (session.status === 'completed') {
+      const today = planDate;
+      const yesterday = trainerPlanDate(new Date(session.startedAt.getTime() - 24 * 60 * 60 * 1000));
+      const current = await prisma.trainerStreak.findUnique({ where: { employeeId: session.employeeId } });
+      const nextCurrent = current?.lastActiveDate === today
+        ? current.currentStreak
+        : current?.lastActiveDate === yesterday
+        ? current.currentStreak + 1
+        : 1;
+      await prisma.trainerStreak.upsert({
+        where: { employeeId: session.employeeId },
+        create: {
+          employeeId: session.employeeId,
+          currentStreak: nextCurrent,
+          longestStreak: nextCurrent,
+          lastActiveDate: today,
+        },
+        update: {
+          currentStreak: nextCurrent,
+          longestStreak: Math.max(current?.longestStreak ?? 0, nextCurrent),
+          lastActiveDate: today,
+        },
+      });
+    }
+  }
+}
+
 // Resolve absolute path to public/index.html (works for tsx and compiled)
 function getIndexPath(): string | null {
   const candidates = [
@@ -1367,6 +2281,438 @@ app.use('/api/imports', (req, res, next) => {
   });
 });
 
+app.use('/api/trainer', (req, res, next) => {
+  adminApiAuthMiddleware(req, res, next).catch((error) => {
+    console.error('Trainer API auth error:', error);
+    res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+});
+
+async function resolveTrainerManager(req: express.Request) {
+  const accountId = req.authAccount?.id;
+  if (!accountId) return null;
+  return prisma.managerProfile.findFirst({
+    where: { accountId, status: 'active' },
+    include: {
+      dealership: {
+        include: { holding: true },
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+}
+
+function trainerSessionSummary(session: {
+  id: string;
+  sessionType: string;
+  status: string;
+  scenarioId: string | null;
+  score: number | null;
+  finalPoints: number | null;
+  failureReason: string | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  scenario?: { id: string; name: string } | null;
+}) {
+  return {
+    id: session.id,
+    type: session.sessionType,
+    status: session.status,
+    scenarioId: session.scenarioId,
+    scenarioName: session.scenario?.name ?? 'Сценарий',
+    score: session.score,
+    finalPoints: session.finalPoints,
+    failureReason: session.failureReason,
+    startedAt: session.startedAt.toISOString(),
+    completedAt: session.completedAt?.toISOString() ?? null,
+  };
+}
+
+async function getOrCreateTrainerDailyPlan(manager: Awaited<ReturnType<typeof resolveTrainerManager>>) {
+  if (!manager) return null;
+  const planDate = trainerPlanDate();
+  const existing = await prisma.trainerDailyPlan.findUnique({
+    where: { employeeId_planDate: { employeeId: manager.id, planDate } },
+  });
+  if (existing) return existing;
+
+  const scripts = await prisma.callScript.findMany({
+    where: { holdingId: manager.dealership.holdingId ?? '' },
+    orderBy: { updatedAt: 'desc' },
+    take: 12,
+  });
+  const items = Array.from({ length: 3 }).map((_, index) => {
+    const script = scripts[index % Math.max(1, scripts.length)] ?? null;
+    return {
+      id: trainerPlanItemId(),
+      scenarioId: script?.id ?? null,
+      scenarioName: script?.name ?? 'Свободная тренировка',
+      status: 'not_started',
+      trainerSessionId: null,
+      caseContextSeed: trainerPlanItemId(),
+    };
+  });
+
+  return prisma.trainerDailyPlan.create({
+    data: {
+      employeeId: manager.id,
+      companyId: manager.dealership.holdingId,
+      branchId: manager.dealershipId,
+      planDate,
+      sessionsJson: jsonStringify(items),
+    },
+  });
+}
+
+app.get('/api/trainer/profile', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+
+    const [streak, scoreAgg, sessionsTotal, sessions30d] = await Promise.all([
+      prisma.trainerStreak.findUnique({ where: { employeeId: manager.id } }),
+      prisma.trainerScore.aggregate({
+        where: { employeeId: manager.id },
+        _sum: { finalScore: true },
+      }),
+      prisma.trainerSession.count({ where: { employeeId: manager.id, status: { in: ['completed', 'failed'] } } }),
+      prisma.trainerSession.count({
+        where: {
+          employeeId: manager.id,
+          status: { in: ['completed', 'failed'] },
+          startedAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+        },
+      }),
+    ]);
+
+    res.json({
+      profile: {
+        employeeId: manager.id,
+        fullName: manager.fullName,
+        companyId: manager.dealership.holdingId,
+        companyName: manager.dealership.holding?.name ?? 'Без компании',
+        branchId: manager.dealershipId,
+        branchName: manager.dealership.name,
+        city: manager.dealership.city,
+        totalPoints: scoreAgg._sum.finalScore ?? 0,
+        currentStreak: streak?.currentStreak ?? 0,
+        longestStreak: streak?.longestStreak ?? 0,
+        lastActiveDate: streak?.lastActiveDate ?? null,
+        sessionsTotal,
+        sessions30d,
+      },
+    });
+  } catch (error) {
+    console.error('trainer/profile error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить профиль тренажёра.' });
+  }
+});
+
+app.get('/api/trainer/scenarios', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    if (!manager.dealership.holdingId) return res.json({ items: [] });
+
+    const scripts = await prisma.callScript.findMany({
+      where: { holdingId: manager.dealership.holdingId },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    res.json({
+      items: scripts.map((script) => ({
+        id: script.id,
+        name: script.name,
+        context: script.context,
+        objectionsCount: safeArray(script.objectionsJson).length,
+        questionsCount: safeArray(script.questionsJson).length,
+        criteriaCount: safeArray(script.successCriteriaJson).length,
+      })),
+    });
+  } catch (error) {
+    console.error('trainer/scenarios error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить сценарии.' });
+  }
+});
+
+app.get('/api/trainer/plan/today', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const plan = await getOrCreateTrainerDailyPlan(manager);
+    const sessions = safeArray<Record<string, unknown>>(plan?.sessionsJson);
+    res.json({
+      plan: {
+        id: plan?.id ?? null,
+        date: plan?.planDate ?? trainerPlanDate(),
+        sessions,
+      },
+    });
+  } catch (error) {
+    console.error('trainer/plan/today error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить план дня.' });
+  }
+});
+
+app.get('/api/trainer/history', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const limit = Math.min(Number.parseInt(String(req.query.limit || '50'), 10) || 50, 100);
+    const sessions = await prisma.trainerSession.findMany({
+      where: { employeeId: manager.id },
+      include: { scenario: { select: { id: true, name: true } } },
+      orderBy: { startedAt: 'desc' },
+      take: limit,
+    });
+    res.json({ items: sessions.map(trainerSessionSummary) });
+  } catch (error) {
+    console.error('trainer/history error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить историю тренировок.' });
+  }
+});
+
+app.post('/api/trainer/session/start', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+
+    const body = req.body || {};
+    const sessionType = body.sessionType === 'plan' ? 'plan' as const : 'free' as const;
+    const difficulty = ['easy', 'medium', 'hard'].includes(String(body.difficulty)) ? String(body.difficulty) : 'medium';
+    const clientType = String(body.clientType || 'random');
+    const replyMode = (body.replyMode ?? 'text+voice') as 'text' | 'text+voice';
+    const ttsVoice = (body.voice ?? 'male') as TtsVoice;
+    const planItemId = typeof body.planItemId === 'string' ? body.planItemId : null;
+    let scenarioId = typeof body.scenarioId === 'string' ? body.scenarioId : null;
+    let plan = null as Awaited<ReturnType<typeof getOrCreateTrainerDailyPlan>> | null;
+    let planItems: Array<Record<string, unknown>> = [];
+    let planItem: Record<string, unknown> | null = null;
+
+    if (sessionType === 'plan') {
+      plan = await getOrCreateTrainerDailyPlan(manager);
+      planItems = safeArray<Record<string, unknown>>(plan?.sessionsJson);
+      planItem = planItems.find((item) => item.id === planItemId) ?? planItems.find((item) => item.status === 'not_started') ?? null;
+      if (!planItem) return res.status(400).json({ error: 'В плане дня нет доступной сессии.' });
+      scenarioId = typeof planItem.scenarioId === 'string' ? planItem.scenarioId : scenarioId;
+    }
+
+    const scenario = scenarioId
+      ? await prisma.callScript.findFirst({
+        where: {
+          id: scenarioId,
+          holdingId: manager.dealership.holdingId ?? '',
+        },
+      })
+      : await prisma.callScript.findFirst({
+        where: { holdingId: manager.dealership.holdingId ?? '' },
+        orderBy: { updatedAt: 'desc' },
+      });
+
+    if (!scenario) {
+      return res.status(400).json({ error: 'Для компании не найден доступный сценарий.' });
+    }
+
+    const scriptProfileIds = safeJsonParseLocal<string[]>(scenario.profileIdsJson, []);
+    const scriptProfiles = scriptProfileIds.length
+      ? await prisma.callCustomerProfile.findMany({
+        where: {
+          id: { in: scriptProfileIds },
+          holdingId: manager.dealership.holdingId ?? '',
+        },
+        orderBy: { updatedAt: 'desc' },
+      })
+      : [];
+    const customerProfile = scriptProfiles.length
+      ? scriptProfiles[Math.floor(Math.random() * scriptProfiles.length)]
+      : null;
+    const customerVoice = customerProfile?.voiceId
+      ? await prisma.callCustomerVoice.findFirst({
+        where: { id: customerProfile.voiceId, isDeleted: false, isEnabled: true },
+        select: { elevenLabsCode: true },
+      })
+      : null;
+    const trainerCustomerProfile = customerProfile
+      ? {
+        ...customerProfile,
+        elevenLabsVoiceId: customerVoice?.elevenLabsCode?.trim() || null,
+      }
+      : null;
+
+    const caseContext = buildTrainerCaseContext({
+      sessionType,
+      scenario,
+      manager,
+      difficulty,
+      clientType,
+      seed: typeof planItem?.caseContextSeed === 'string' ? planItem.caseContextSeed : null,
+      customerProfile: trainerCustomerProfile,
+    });
+    const multiplier = sessionType === 'plan' ? 1.5 : 1;
+    const session = await prisma.trainerSession.create({
+      data: {
+        employeeId: manager.id,
+        branchId: manager.dealershipId,
+        companyId: manager.dealership.holdingId,
+        sessionType,
+        scenarioId: scenario.id,
+        difficulty,
+        clientType,
+        caseContextJson: jsonStringify(caseContext),
+        multiplier,
+      },
+      include: { scenario: { select: { id: true, name: true } } },
+    });
+
+    if (sessionType === 'plan' && plan && planItem) {
+      const nextItems = planItems.map((item) => item.id === planItem?.id
+        ? { ...item, status: 'in_progress', trainerSessionId: session.id, scenarioId: scenario.id, scenarioName: scenario.name }
+        : item);
+      await prisma.trainerDailyPlan.update({
+        where: { id: plan.id },
+        data: { sessionsJson: jsonStringify(nextItems) },
+      });
+    }
+
+    const initialMessage = await initializeTrainerDialog({
+      sessionId: session.id,
+      replyMode,
+      ttsVoice,
+    }).catch((error) => {
+      console.error('trainer/session/start initial dialog error:', error);
+      return null;
+    });
+
+    res.json({
+      session: trainerSessionSummary(session),
+      caseContext,
+      initialMessage,
+    });
+  } catch (error) {
+    console.error('trainer/session/start error:', error);
+    res.status(500).json({ error: 'Не удалось запустить тренировку.' });
+  }
+});
+
+app.get('/api/trainer/session/:id/dialog', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const session = await prisma.trainerSession.findFirst({
+      where: { id: String(req.params.id), employeeId: manager.id },
+      include: { scenario: { select: { id: true, name: true } } },
+    });
+    if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+    res.json({
+      session: trainerSessionSummary(session),
+      caseContext: safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {}),
+      transcript: safeArray(session.transcriptJson),
+    });
+  } catch (error) {
+    console.error('trainer/session/dialog error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить диалог тренировки.' });
+  }
+});
+
+app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
+  try {
+    const requestStartedAt = Date.now();
+    console.log(`[trainer] voice-message received session=${String(req.params.id)}`);
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const session = await prisma.trainerSession.findFirst({
+      where: { id: String(req.params.id), employeeId: manager.id },
+      select: { id: true },
+    });
+    if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+
+    const body = req.body || {};
+    const { audioBase64, mimeType } = body as { audioBase64?: string; mimeType?: string };
+    const replyMode = (body.replyMode ?? 'text+voice') as 'text' | 'text+voice';
+    const ttsVoice = (body.voice ?? 'male') as TtsVoice;
+    const durationSec = Number.isFinite(Number(body.durationSec)) ? Math.max(1, Math.round(Number(body.durationSec))) : null;
+    if (!audioBase64 || typeof audioBase64 !== 'string') {
+      return res.status(400).json({ error: 'audioBase64 обязателен' });
+    }
+    if (String(mimeType || '').toLowerCase().includes('audio/pcm')) {
+      if (!isElevenLabsAgentEnabled()) {
+        return res.status(400).json({ error: 'ElevenLabs Agent не настроен для прямого аудио.' });
+      }
+      const out = await runTrainerSessionAudioTurn({
+        sessionId: session.id,
+        audioBase64,
+        durationSec,
+      });
+      console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
+      return res.json(out);
+    }
+
+    const ext = mimeType?.includes('ogg') ? 'ogg' : mimeType?.includes('mp4') ? 'm4a' : 'webm';
+    const tmpPath = path.join(os.tmpdir(), `trainer-voice-${Date.now()}.${ext}`);
+    const buf = Buffer.from(audioBase64, 'base64');
+    await fs.promises.writeFile(tmpPath, buf);
+    console.log(`[trainer] voice-message audio saved session=${session.id} bytes=${buf.length} mime=${mimeType || 'unknown'}`);
+
+    let managerText = '';
+    try {
+      console.log(`[trainer] STT start session=${session.id}`);
+      managerText = await withTimeout(transcribeVoiceFast(tmpPath), 30000, 'Trainer STT');
+      console.log(`[trainer] STT done session=${session.id} chars=${managerText.length}`);
+    } finally {
+      fs.promises.unlink(tmpPath).catch(() => {});
+    }
+    if (!managerText.trim()) {
+      return res.status(400).json({ error: 'Не удалось распознать голосовое сообщение' });
+    }
+
+    const out = await runTrainerSessionTurn({
+      sessionId: session.id,
+      managerText,
+      durationSec,
+      replyMode,
+      ttsVoice,
+      managerAudioBase64: audioBase64,
+      managerAudioMimeType: mimeType || 'audio/webm',
+    });
+    console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
+    res.json(out);
+  } catch (error) {
+    console.error('trainer/session/voice-message error:', error);
+    res.status(500).json({ error: 'Не удалось обработать голосовое сообщение.' });
+  }
+});
+
+app.get('/api/trainer/session/:id/report', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const session = await prisma.trainerSession.findFirst({
+      where: { id: String(req.params.id), employeeId: manager.id },
+      include: { scenario: { select: { id: true, name: true } } },
+    });
+    if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+
+    res.json({
+      item: {
+        ...trainerSessionSummary(session),
+        caseContext: safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {}),
+        transcript: safeArray(session.transcriptJson),
+        dimensions: safeJsonParseLocal<Record<string, unknown> | null>(session.dimensionsJson, null),
+        checklist: safeArray(session.checklistResultsJson),
+        objectionsAnalysis: safeArray(session.objectionsAnalysisJson),
+        topRecommendations: safeArray(session.topRecommendationsJson),
+        evaluation: safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null),
+        multiplier: session.multiplier,
+        baseScore: session.baseScore,
+        durationSec: session.durationSec,
+      },
+    });
+  } catch (error) {
+    console.error('trainer/session/report error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить отчёт тренировки.' });
+  }
+});
+
 app.post('/api/imports/analyze-source', (req, res) => {
   handleAnalyzeImportSource(req, res).catch((error) => {
     console.error('Analyze import source error:', error);
@@ -1437,6 +2783,34 @@ app.get('/api/admin/call-settings/customer-profiles', (req, res) => {
   handleListCallCustomerProfiles(req, res).catch((error) => {
     console.error('List call customer profiles error:', error);
     res.status(500).json({ error: 'Не удалось загрузить профили клиентов.' });
+  });
+});
+
+app.get('/api/admin/call-settings/customer-voices', (req, res) => {
+  handleListCallCustomerVoices(req, res).catch((error) => {
+    console.error('List call customer voices error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить голоса клиентов.' });
+  });
+});
+
+app.post('/api/admin/call-settings/customer-voices', (req, res) => {
+  handleCreateCallCustomerVoice(req, res).catch((error) => {
+    console.error('Create call customer voice error:', error);
+    res.status(500).json({ error: 'Не удалось создать голос клиента.' });
+  });
+});
+
+app.patch('/api/admin/call-settings/customer-voices/:id', (req, res) => {
+  handleUpdateCallCustomerVoice(req, res).catch((error) => {
+    console.error('Update call customer voice error:', error);
+    res.status(500).json({ error: 'Не удалось обновить голос клиента.' });
+  });
+});
+
+app.delete('/api/admin/call-settings/customer-voices/:id', (req, res) => {
+  handleDeleteCallCustomerVoice(req, res).catch((error) => {
+    console.error('Delete call customer voice error:', error);
+    res.status(500).json({ error: 'Не удалось удалить голос клиента.' });
   });
 });
 
@@ -4367,7 +5741,7 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
     const id = String(req.params.id || '').trim();
     const manager = await prisma.managerProfile.findUnique({ where: { id }, include: { dealership: true } });
     if (!manager) return res.status(404).json({ error: 'Manager not found' });
-    const [sessions, dealershipSessions, networkSessions, dealershipManagers] = await Promise.all([
+    const [sessions, dealershipSessions, networkSessions, dealershipManagers, trainerSessions, trainerScoreAgg, trainerStreak] = await Promise.all([
       prisma.voiceCallSession.findMany({
         where: { managerId: id },
         include: { plan: { select: { name: true } } },
@@ -4385,6 +5759,16 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
         where: { dealershipId: manager.dealershipId, status: 'active' },
         select: { id: true },
       }),
+      prisma.trainerSession.findMany({
+        where: { employeeId: id },
+        include: { scenario: { select: { name: true } } },
+        orderBy: { startedAt: 'desc' },
+      }),
+      prisma.trainerScore.aggregate({
+        where: { employeeId: id },
+        _sum: { finalScore: true },
+      }),
+      prisma.trainerStreak.findUnique({ where: { employeeId: id } }),
     ]);
     const score = scoreFromSessions(sessions);
     const delta = deltaFromSessions(sessions);
@@ -4430,6 +5814,40 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
       else communicationWeak += 1;
     }
     const communicationTotal = communicationStrong + communicationMedium + communicationWeak;
+    const trainerCompleted = trainerSessions.filter((session) => session.status === 'completed' || session.status === 'failed');
+    const trainerScored = trainerCompleted.filter((session) => typeof session.score === 'number');
+    const trainerAvgScore = trainerScored.length
+      ? round1(trainerScored.reduce((sum, session) => sum + (session.score ?? 0), 0) / trainerScored.length)
+      : 0;
+    const trainer30dStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const trainerIssueCounts = new Map<string, { weak: number; total: number }>();
+    for (const session of trainerCompleted) {
+      const checklist = safeArray<{ status?: string; comment?: string; code?: string }>(session.checklistResultsJson);
+      for (const item of checklist) {
+        const issue = item.comment || item.code || 'Пункт чек-листа';
+        const current = trainerIssueCounts.get(issue) ?? { weak: 0, total: 0 };
+        current.total += 1;
+        const status = String(item.status || '').toUpperCase();
+        if (status === 'NO' || status === 'PARTIAL') current.weak += 1;
+        trainerIssueCounts.set(issue, current);
+      }
+    }
+    const trainerWeakPatterns = [...trainerIssueCounts.entries()]
+      .map(([issue, value]) => ({ issue, percent: percent(value.weak, value.total) }))
+      .filter((item) => item.percent > 33)
+      .sort((a, b) => b.percent - a.percent)
+      .slice(0, 5);
+    const trainerWeeklyScore = timeSeriesFromSessions(trainerCompleted.map((session) => ({
+      id: 0,
+      startedAt: session.startedAt,
+      outcome: session.status,
+      totalScore: session.score,
+      evaluationJson: session.evaluationJson,
+      dimensionsJson: session.dimensionsJson,
+      checklistResultsJson: session.checklistResultsJson,
+      dealershipId: session.branchId,
+      managerId: session.employeeId,
+    })), 12);
     const status = sessions.length === 0
       ? 'no-data'
       : score < 50 || failsCount >= 2 ? 'critical'
@@ -4505,6 +5923,25 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
           planName: session.plan?.name ?? null,
           verdict: 'Недозвон',
         })),
+      trainer: {
+        totalPoints: trainerScoreAgg._sum.finalScore ?? 0,
+        currentStreak: trainerStreak?.currentStreak ?? 0,
+        longestStreak: trainerStreak?.longestStreak ?? 0,
+        sessionsTotal: trainerCompleted.length,
+        sessions30d: trainerCompleted.filter((session) => session.startedAt >= trainer30dStart).length,
+        avgScore: trainerAvgScore,
+        weeklyScore: trainerWeeklyScore,
+        weakPatterns: trainerWeakPatterns,
+        history: trainerSessions.slice(0, 12).map((session) => ({
+          id: session.id,
+          date: session.startedAt.toISOString(),
+          type: session.sessionType,
+          scenarioName: session.scenario?.name ?? 'Сценарий',
+          score: session.score,
+          finalPoints: session.finalPoints,
+          status: session.status,
+        })),
+      },
     };
     res.json({ item });
   } catch (err) {

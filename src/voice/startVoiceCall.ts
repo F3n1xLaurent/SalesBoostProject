@@ -37,6 +37,10 @@ export interface StartVoiceCallOptions {
   scenario?: VoiceCallScenario;
   /** Optional prompt passed to Voximplant realtime_pure scenario as customData.instructions. */
   instructions?: string;
+  /** ElevenLabs voice id passed to external voice scenarios as customData.elevenlabs_voice_id. */
+  elevenLabsVoiceId?: string | null;
+  /** Internal customer voice row id, useful for diagnostics. */
+  customerVoiceId?: string | null;
 }
 
 export interface StartVoiceCallResult {
@@ -126,6 +130,8 @@ export async function startVoiceCall(
       to: toNormalized,
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+      elevenlabs_voice_id: options.elevenLabsVoiceId?.trim() || undefined,
+      customer_voice_id: options.customerVoiceId?.trim() || undefined,
       openai_api_key: openaiApiKey,
       model: getRealtimeModel(),
       realtime_reasoning_effort: getRealtimeReasoningEffort(),
@@ -144,6 +150,8 @@ export async function startVoiceCall(
       to: toNormalized,
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+      elevenlabs_voice_id: options.elevenLabsVoiceId?.trim() || undefined,
+      customer_voice_id: options.customerVoiceId?.trim() || undefined,
       openai_api_key: openaiApiKey,
       model: getRealtimeModel(),
       realtime_reasoning_effort: getRealtimeReasoningEffort(),
@@ -169,6 +177,8 @@ export async function startVoiceCall(
       to: toNormalized,
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+      elevenlabs_voice_id: options.elevenLabsVoiceId?.trim() || undefined,
+      customer_voice_id: options.customerVoiceId?.trim() || undefined,
       tag: null,
       dialog_url: dialogUrl,
     };

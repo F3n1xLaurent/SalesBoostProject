@@ -343,6 +343,17 @@ export interface AnalyticsManagerDetail {
   recommendedTrainings: { title: string; description: string }[];
   audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string }>;
   noAnswerHistory?: Array<{ id: string; date: string; planName: string | null; verdict: string }>;
+  trainer?: {
+    totalPoints: number;
+    currentStreak: number;
+    longestStreak: number;
+    sessionsTotal: number;
+    sessions30d: number;
+    avgScore: number;
+    weeklyScore: { date: string; avgScore: number; count: number }[];
+    weakPatterns: { issue: string; percent: number }[];
+    history: Array<{ id: string; date: string; type: 'plan' | 'free' | string; scenarioName: string; score: number | null; finalPoints: number | null; status: string }>;
+  };
 }
 
 export interface AnalyticsManagerRow {
@@ -557,11 +568,24 @@ export interface CallCustomerProfileItem {
   name: string;
   voiceId: string;
   age: number;
+  ageFrom: number;
+  ageTo: number;
   character: string;
   temperament: CustomerTemperament;
   patience: CustomerPatience;
   replyLength: ReplyLength;
   communicationStyle: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CallCustomerVoiceItem {
+  id: string;
+  name: string;
+  elevenLabsCode: string | null;
+  openaiCode: string | null;
+  isEnabled: boolean;
+  isDeleted: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -1379,6 +1403,41 @@ export async function fetchCallCustomerProfiles(params: { holdingId: string }): 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить профили клиентов.');
   return Array.isArray(data.items) ? data.items as CallCustomerProfileItem[] : [];
+}
+
+export async function fetchCallCustomerVoices(): Promise<CallCustomerVoiceItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить голоса клиентов.');
+  return Array.isArray(data.items) ? data.items as CallCustomerVoiceItem[] : [];
+}
+
+export async function createCallCustomerVoice(payload: Omit<CallCustomerVoiceItem, 'createdAt' | 'updatedAt'>): Promise<CallCustomerVoiceItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать голос клиента.');
+  return data.item as CallCustomerVoiceItem;
+}
+
+export async function updateCallCustomerVoice(id: string, payload: Omit<CallCustomerVoiceItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallCustomerVoiceItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить голос клиента.');
+  return data.item as CallCustomerVoiceItem;
+}
+
+export async function deleteCallCustomerVoice(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить голос клиента.');
 }
 
 export async function createCallCustomerProfile(payload: Omit<CallCustomerProfileItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallCustomerProfileItem> {

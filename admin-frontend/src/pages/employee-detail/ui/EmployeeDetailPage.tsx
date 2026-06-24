@@ -49,6 +49,17 @@ type ManagerAnalyticsDetail = EmployeeDetailData & {
   communicationBreakdown?: { label: string; percent: number; color: string }[];
   comparisonTimeSeries?: { date: string; managerScore: number; dealershipScore: number; networkScore: number }[];
   noAnswerHistory?: { id: string; date: string; planName: string | null; verdict: string }[];
+  trainer?: {
+    totalPoints: number;
+    currentStreak: number;
+    longestStreak: number;
+    sessionsTotal: number;
+    sessions30d: number;
+    avgScore: number;
+    weeklyScore: { date: string; avgScore: number; count: number }[];
+    weakPatterns: { issue: string; percent: number }[];
+    history: Array<{ id: string; date: string; type: string; scenarioName: string; score: number | null; finalPoints: number | null; status: string }>;
+  };
 };
 
 /* ────────────────────── KPI Card ────────────────────── */
@@ -452,6 +463,73 @@ function TrainerInsights({ detail }: { detail: ManagerAnalyticsDetail }) {
   );
 }
 
+function TrainerStats({ detail }: { detail: ManagerAnalyticsDetail }) {
+  const trainer = detail.trainer;
+  if (!trainer) {
+    return <div className="sa-card"><div className="sa-meta" style={{ padding: 18 }}>Данных тренажёра пока нет.</div></div>;
+  }
+  return (
+    <div className="sa-card" style={{ padding: 18 }}>
+      <div className="sa-kpi-grid" style={{ marginBottom: 18 }}>
+        <KPI label="Очки" value={trainer.totalPoints} />
+        <KPI label="Стрик" value={`${trainer.currentStreak} дн.`} />
+        <KPI label="Сессии 30 дней" value={trainer.sessions30d} />
+        <KPI label="Средний балл" value={trainer.avgScore} cls={ratingClass(trainer.avgScore)} />
+      </div>
+      <div className="sa-dashboard-grid" style={{ marginBottom: 18 }}>
+        <div className="sa-card sa-grid-card sa-chart-equal" style={{ boxShadow: 'none', border: '1px solid var(--sa-divider)' }}>
+          <TrendChart points={trainer.weeklyScore} />
+        </div>
+        <div className="sa-card sa-grid-card sa-chart-equal" style={{ boxShadow: 'none', border: '1px solid var(--sa-divider)' }}>
+          <h3 className="sa-card-heading">Слабые места тренажёра</h3>
+          {trainer.weakPatterns.length === 0 ? (
+            <div className="sa-chart-empty">Повторяющихся паттернов нет</div>
+          ) : (
+            <ul className="sa-issue-list">
+              {trainer.weakPatterns.map((item, index) => (
+                <li key={index} className="sa-issue-item">
+                  <span className="sa-issue-name">{item.issue}</span>
+                  <span className="sa-issue-pct">{item.percent}%</span>
+                  <div className="sa-issue-bar"><div className="sa-issue-bar-fill" style={{ width: `${item.percent}%` }} /></div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+      <h3 className="sa-card-heading">История тренировок</h3>
+      {trainer.history.length === 0 ? (
+        <div className="sa-meta" style={{ padding: 18 }}>Менеджер ещё не проходил тренировки.</div>
+      ) : (
+        <div className="sa-table-wrap">
+          <table className="sa-table">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Сценарий</th>
+                <th>Режим</th>
+                <th className="sa-text-right">Балл</th>
+                <th className="sa-text-right">Очки</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trainer.history.map((item) => (
+                <tr key={item.id}>
+                  <td>{new Date(item.date).toLocaleDateString('ru-RU')}</td>
+                  <td>{item.scenarioName}</td>
+                  <td>{item.type === 'plan' ? 'План' : 'Свободная'}</td>
+                  <td className="sa-text-right"><span className={ratingClass(item.score ?? 0)}>{item.score ?? '—'}</span></td>
+                  <td className="sa-text-right">{item.finalPoints ?? 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ────────────────────── Audit history ────────────────────── */
 
 function getCallIdFromAuditId(auditId: string): number | null {
@@ -734,6 +812,11 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           <DataCoverage detail={detail} />
         </div>
       </div>
+
+      <section className="sa-section" style={{ marginBottom: 28 }}>
+        <h2 className="sa-section-title">Тренажёр</h2>
+        <TrainerStats detail={detail} />
+      </section>
 
       {/* Trainer insights */}
       <section className="sa-section" style={{ marginBottom: 28 }}>

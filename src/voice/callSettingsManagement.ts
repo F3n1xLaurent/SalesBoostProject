@@ -3,6 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { addCall, setVoxSessionId } from './callHistory';
 import { startVoiceCall } from './startVoiceCall';
+import { buildCustomerScenarioPromptCore } from './customerScenarioPrompt';
 
 type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
 type CustomerPatience = 'low' | 'medium' | 'high';
@@ -13,7 +14,6 @@ type CallPlanFrequency = 'daily' | 'weekly';
 const TEMPERAMENTS = new Set<CustomerTemperament>(['calm', 'doubtful', 'irritated', 'hurried']);
 const PATIENCE = new Set<CustomerPatience>(['low', 'medium', 'high']);
 const REPLY_LENGTHS = new Set<ReplyLength>(['short', 'medium', 'detailed']);
-const VOICES = new Set(['marin', 'cedar', 'sage', 'ash', 'verse', 'coral', 'nova', 'echo']);
 const CALL_PLAN_TARGET_TYPES = new Set<CallPlanTargetType>(['employees', 'dealerships']);
 const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['daily', 'weekly']);
 const TIME_RE = /^([01]\d|2[0-2]):([0-5]\d)$/;
@@ -70,6 +70,11 @@ async function assertCanAccessHolding(req: Request, holdingId: string): Promise<
   }
 }
 
+function assertPlatformSuperadmin(req: Request): void {
+  const account = req.authAccount;
+  if (!account || !isPlatformSuperadmin(account)) throw new Error('Нет доступа к управлению голосами.');
+}
+
 async function getRequestedHoldingId(req: Request): Promise<string> {
   const holdingId = parseString(req.query.holdingId ?? (req.body as Record<string, unknown> | undefined)?.holdingId);
   if (!holdingId) throw new Error('Компания обязательна.');
@@ -105,6 +110,8 @@ function normalizeProfile(profile: Prisma.CallCustomerProfileGetPayload<{}>) {
     name: profile.name,
     voiceId: profile.voiceId,
     age: profile.age,
+    ageFrom: profile.ageFrom,
+    ageTo: profile.ageTo,
     character: profile.character,
     temperament: profile.temperament,
     patience: profile.patience,
@@ -112,6 +119,34 @@ function normalizeProfile(profile: Prisma.CallCustomerProfileGetPayload<{}>) {
     communicationStyle: profile.communicationStyle,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
+  };
+}
+
+function normalizeVoice(voice: Prisma.CallCustomerVoiceGetPayload<{}>) {
+  return {
+    id: voice.id,
+    name: voice.name,
+    elevenLabsCode: voice.elevenLabsCode,
+    openaiCode: voice.openaiCode,
+    isEnabled: voice.isEnabled,
+    isDeleted: voice.isDeleted,
+    createdAt: voice.createdAt,
+    updatedAt: voice.updatedAt,
+  };
+}
+
+function parseVoicePayload(body: Record<string, unknown>, options?: { requireId?: boolean }) {
+  const id = parseString(body.id);
+  const name = parseString(body.name);
+  if (options?.requireId && !id) throw new Error('ID голоса обязателен.');
+  if (id && !/^[a-zA-Z0-9_-]{2,64}$/.test(id)) throw new Error('ID голоса может содержать только латиницу, цифры, дефис и подчёркивание.');
+  if (!name) throw new Error('Название голоса обязательно.');
+  return {
+    id,
+    name,
+    elevenLabsCode: parseString(body.elevenLabsCode),
+    openaiCode: parseString(body.openaiCode),
+    isEnabled: body.isEnabled === undefined ? true : Boolean(body.isEnabled),
   };
 }
 
@@ -204,15 +239,29 @@ function pickRandom<T>(items: T[]): T | null {
   return items[Math.floor(Math.random() * items.length)] ?? null;
 }
 
+function pickRandomAge(ageFrom: number | null | undefined, ageTo: number | null | undefined, fallback = 35): number {
+  const from = Number.isFinite(Number(ageFrom)) ? Math.round(Number(ageFrom)) : fallback;
+  const to = Number.isFinite(Number(ageTo)) ? Math.round(Number(ageTo)) : from;
+  const min = Math.max(18, Math.min(65, Math.min(from, to)));
+  const max = Math.max(18, Math.min(65, Math.max(from, to)));
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
 function parseProfilePayload(body: Record<string, unknown>) {
   const name = parseString(body.name);
   const voiceId = parseString(body.voiceId) || 'marin';
-  const age = Math.max(18, Math.min(65, Number(body.age || 35)));
+  const fallbackAge = Math.max(18, Math.min(65, Math.round(Number(body.age || 35))));
+  const ageFromRaw = body.ageFrom === undefined ? fallbackAge : Number(body.ageFrom);
+  const ageToRaw = body.ageTo === undefined ? fallbackAge : Number(body.ageTo);
+  const ageFrom = Math.max(18, Math.min(65, Number.isFinite(ageFromRaw) ? Math.round(ageFromRaw) : fallbackAge));
+  const ageTo = Math.max(18, Math.min(65, Number.isFinite(ageToRaw) ? Math.round(ageToRaw) : ageFrom));
+  const normalizedAgeFrom = Math.min(ageFrom, ageTo);
+  const normalizedAgeTo = Math.max(ageFrom, ageTo);
+  const age = Math.round((normalizedAgeFrom + normalizedAgeTo) / 2);
   const temperament = parseString(body.temperament) as CustomerTemperament | null;
   const patience = parseString(body.patience) as CustomerPatience | null;
   const replyLength = parseString(body.replyLength) as ReplyLength | null;
   if (!name) throw new Error('Название профиля обязательно.');
-  if (!VOICES.has(voiceId)) throw new Error('Некорректный голос.');
   if (!temperament || !TEMPERAMENTS.has(temperament)) throw new Error('Некорректный темперамент.');
   if (!patience || !PATIENCE.has(patience)) throw new Error('Некорректное терпение клиента.');
   if (!replyLength || !REPLY_LENGTHS.has(replyLength)) throw new Error('Некорректная длина реплик.');
@@ -220,12 +269,19 @@ function parseProfilePayload(body: Record<string, unknown>) {
     name,
     voiceId,
     age,
+    ageFrom: normalizedAgeFrom,
+    ageTo: normalizedAgeTo,
     character: parseString(body.character) || '',
     temperament,
     patience,
     replyLength,
     communicationStyle: parseString(body.communicationStyle) || '',
   };
+}
+
+async function assertVoiceEnabled(voiceId: string): Promise<void> {
+  const voice = await prisma.callCustomerVoice.findUnique({ where: { id: voiceId }, select: { isEnabled: true, isDeleted: true } });
+  if (!voice || voice.isDeleted || !voice.isEnabled) throw new Error('Некорректный голос.');
 }
 
 function parseScriptPayload(body: Record<string, unknown>, holdingId: string) {
@@ -308,10 +364,79 @@ export async function handleListCallCustomerProfiles(req: Request, res: Response
   }
 }
 
+export async function handleListCallCustomerVoices(_req: Request, res: Response): Promise<void> {
+  try {
+    const items = await prisma.callCustomerVoice.findMany({
+      where: { isDeleted: false },
+      orderBy: [{ isEnabled: 'desc' }, { name: 'asc' }],
+    });
+    res.json({ items: items.map(normalizeVoice) });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Не удалось загрузить голоса клиентов.' });
+  }
+}
+
+export async function handleCreateCallCustomerVoice(req: Request, res: Response): Promise<void> {
+  try {
+    assertPlatformSuperadmin(req);
+    const payload = parseVoicePayload((req.body || {}) as Record<string, unknown>, { requireId: true });
+    const created = await prisma.callCustomerVoice.create({
+      data: {
+        id: payload.id!,
+        name: payload.name,
+        elevenLabsCode: payload.elevenLabsCode,
+        openaiCode: payload.openaiCode,
+        isEnabled: payload.isEnabled,
+      },
+    });
+    res.status(201).json({ item: normalizeVoice(created) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось создать голос.';
+    res.status(message.includes('доступ') ? 403 : 400).json({ error: message });
+  }
+}
+
+export async function handleUpdateCallCustomerVoice(req: Request, res: Response): Promise<void> {
+  try {
+    assertPlatformSuperadmin(req);
+    const id = String(req.params.id || '').trim();
+    const payload = parseVoicePayload((req.body || {}) as Record<string, unknown>);
+    const updated = await prisma.callCustomerVoice.update({
+      where: { id },
+      data: {
+        name: payload.name,
+        elevenLabsCode: payload.elevenLabsCode,
+        openaiCode: payload.openaiCode,
+        isEnabled: payload.isEnabled,
+      },
+    });
+    res.json({ item: normalizeVoice(updated) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось обновить голос.';
+    res.status(message.includes('доступ') ? 403 : message.includes('Record to update not found') ? 404 : 400).json({ error: message });
+  }
+}
+
+export async function handleDeleteCallCustomerVoice(req: Request, res: Response): Promise<void> {
+  try {
+    assertPlatformSuperadmin(req);
+    const id = String(req.params.id || '').trim();
+    await prisma.callCustomerVoice.update({
+      where: { id },
+      data: { isDeleted: true, isEnabled: false },
+    });
+    res.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось удалить голос.';
+    res.status(message.includes('доступ') ? 403 : message.includes('Record to update not found') ? 404 : 400).json({ error: message });
+  }
+}
+
 export async function handleCreateCallCustomerProfile(req: Request, res: Response): Promise<void> {
   try {
     const holdingId = await getRequestedHoldingId(req);
     const data = parseProfilePayload((req.body || {}) as Record<string, unknown>);
+    await assertVoiceEnabled(data.voiceId);
     const created = await prisma.callCustomerProfile.create({ data: { holdingId, ...data } });
     res.status(201).json({ item: normalizeProfile(created) });
   } catch (error) {
@@ -324,6 +449,7 @@ export async function handleUpdateCallCustomerProfile(req: Request, res: Respons
     const id = String(req.params.id || '').trim();
     await assertCanAccessProfile(req, id);
     const data = parseProfilePayload((req.body || {}) as Record<string, unknown>);
+    await assertVoiceEnabled(data.voiceId);
     const updated = await prisma.callCustomerProfile.update({ where: { id }, data });
     res.json({ item: normalizeProfile(updated) });
   } catch (error) {
@@ -526,17 +652,32 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
 async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{}>) {
   const dataCondition = safeJsonParse<{ holdingId?: string | null; tags?: string[] }>(script.dataConditionJson, { holdingId: script.holdingId, tags: [] });
   const tags = Array.isArray(dataCondition.tags) ? dataCondition.tags.map(String).filter(Boolean) : [];
-  if (tags.length === 0) return null;
-  const candidates = await prisma.importedItem.findMany({
-    where: { importSource: { holdingId: script.holdingId } },
-    orderBy: { updatedAt: 'desc' },
-    take: 100,
-  });
-  const matched = candidates.filter((item) => {
-    const itemTags = safeJsonParse<string[]>(item.tagsJson, []);
-    return tags.every((tag) => itemTags.includes(tag));
-  });
-  return pickRandom(matched);
+  const where: Prisma.ImportedItemWhereInput = { importSource: { holdingId: script.holdingId } };
+  const pageSize = 500;
+  let offset = 0;
+  let fallback: Prisma.ImportedItemGetPayload<{}> | null = null;
+
+  while (offset < 10000) {
+    const candidates = await prisma.importedItem.findMany({
+      where,
+      orderBy: { updatedAt: 'desc' },
+      take: pageSize,
+      skip: offset,
+    });
+    if (candidates.length === 0) break;
+    if (!fallback) fallback = candidates[0] ?? null;
+    if (tags.length === 0) return pickRandom(candidates);
+
+    const matched = candidates.filter((item) => {
+      const itemTags = safeJsonParse<string[]>(item.tagsJson, []);
+      return tags.every((tag) => itemTags.includes(tag));
+    });
+    if (matched.length > 0) return pickRandom(matched);
+    if (candidates.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return tags.length === 0 ? fallback : null;
 }
 
 function buildCallPlanRealtimePrompt(input: {
@@ -546,8 +687,7 @@ function buildCallPlanRealtimePrompt(input: {
 }) {
   const profile = input.profile;
   const importedItem = input.importedItem;
-  const profileName = profile?.name || 'Покупатель';
-  const age = profile?.age ? `${profile.age}` : '35';
+  const age = profile ? String(pickRandomAge(profile.ageFrom, profile.ageTo, profile.age)) : '35';
   const temperament = labelForTemperament(profile?.temperament || '');
   const patience = labelForPatience(profile?.patience || '');
   const replyLength = labelForReplyLength(profile?.replyLength || '');
@@ -558,76 +698,26 @@ function buildCallPlanRealtimePrompt(input: {
   const objections = safeJsonParse<Array<{ phrase?: string; whenAppropriate?: string }>>(input.script.objectionsJson, []);
   const questions = safeJsonParse<Array<{ text?: string; required?: boolean }>>(input.script.questionsJson, []);
   const criteria = safeJsonParse<Array<{ sourceType?: string; sourceId?: string; expectedAnswer?: string; score?: number }>>(input.script.successCriteriaJson, []);
-
-  const objectionLines = objections.length
-    ? objections.map((item, index) => `${index + 1}) "${item.phrase || 'Возражение'}"${item.whenAppropriate ? ` — уместно: ${item.whenAppropriate}` : ''}`).join('\n')
-    : 'Нет специальных возражений. При необходимости используй одно естественное сомнение по цене, условиям или следующему шагу.';
-  const questionLines = questions.length
-    ? questions.map((item, index) => `${index + 1}) ${item.required ? '[обязательный]' : '[необязательный]'} ${item.text || ''}`).join('\n')
-    : 'Нет заданных вопросов. Задавай только естественные вопросы по контексту.';
-  const firstMessageInstruction = [
-    `Смысл первой реплики: поздороваться, сказать что звонишь по поводу «${itemTitle}», и уточнить, актуально ли предложение.`,
-    `Сформулируй эту реплику НЕ шаблонно, а в стиле профиля клиента: ${communicationStyle}`,
-    'Не копируй дословно пример из prompt. Сохрани смысл, но подстрой лексику, длину и тон под профиль клиента.',
-  ].join(' ');
-  const criteriaLines = criteria.length
-    ? criteria.map((item, index) => `${index + 1}) Эталон: "${item.expectedAnswer || ''}" — максимум ${item.score ?? 0} баллов. Если ответил также или почти также — максимум; если близко — половина; если не ответил — 0.`).join('\n')
-    : 'Условия успеха не заданы.';
+  const scenarioCore = buildCustomerScenarioPromptCore({
+    age,
+    temperament,
+    patience,
+    replyLength,
+    communicationStyle,
+    context,
+    itemTitle,
+    itemDescription,
+    questions,
+    objections,
+    criteria,
+  });
 
   return [
     '=== РОЛЬ (КРИТИЧНО) ===',
     'Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ сотруднику компании по конкретному предложению/данным из выборки. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы, отрабатывает возражения и доводит до следующего шага.',
     'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы по предложению, условиям, деталям и следующему шагу.',
     '',
-    '=== ПРОФИЛЬ КЛИЕНТА ===',
-    `Профиль: ${profileName}. Возраст: ${age}. Темперамент: ${temperament}. Терпение: ${patience}. Длина реплик: ${replyLength}.`,
-    `Стиль коммуникации: ${communicationStyle}`,
-    '',
-    '=== КОНТЕКСТ И ПОТРЕБНОСТЬ ===',
-    context,
-    '',
-    '=== ДАННЫЕ ИЗ ВЫБОРКИ ===',
-    `Основной объект разговора: ${itemTitle}.`,
-    itemDescription ? `Описание: ${itemDescription}` : 'Описание отсутствует. Используй только те детали, которые есть в разговоре или данных ниже.',
-    '',
-    '=== ПЕРВОЕ СООБЩЕНИЕ ===',
-    firstMessageInstruction,
-    'Если сотрудник первым сказал «Алло» или «Слушаю» — после короткого приветствия произнеси эту первую реплику в своём стиле. Не повторяй «Алло».',
-    '',
-    '=== ЕСЛИ ТЕБЯ ПЕРЕБИЛИ (КРИТИЧНО) ===',
-    'Когда сотрудник тебя перебил, НЕ повторяй длинную фразу с начала. Если перебили на приветствии — ответь коротко: «Да, здравствуйте» / «Добрый день» и перейди к сути. Если перебили в середине другой фразы — продолжай мысль коротко или ответь на реплику сотрудника. Никогда не копируй одну и ту же длинную реплику дважды.',
-    '',
-    '=== ФАЗЫ ДИАЛОГА ===',
-    '1) first_contact — ты позвонил по конкретному предложению. Дождись, что сотрудник поздоровается, представится и уточнит предмет разговора. Если не представился — не упрекай вслух.',
-    '2) needs_discovery — расскажи потребность из контекста, если сотрудник спросит. Не задавай сам вопросы менеджера клиенту.',
-    '3) product_presentation — слушай презентацию. Задавай вопросы по данным выборки и своей потребности. Если информация выглядит неверной или неполной — вырази сомнение.',
-    '4) objections_and_questions — задай обязательные вопросы из списка по очереди и подними одно уместное возражение. Не возвращайся к закрытой теме.',
-    '5) closing_attempt — если сотрудник предлагает следующий шаг, согласись и попробуй зафиксировать дату/время или формат связи. Если не предлагает — подожди 1–2 реплики, потом скажи, что подумаешь.',
-    '',
-    '=== ВОПРОСЫ, КОТОРЫЕ НУЖНО ПРОВЕРИТЬ ===',
-    questionLines,
-    '',
-    '=== КАК ЗАДАВАТЬ ВОПРОСЫ (КРИТИЧНО) ===',
-    'Задавай только ОДИН вопрос за одну свою реплику. Запрещено задавать 2–3 вопроса подряд в одной реплике, даже если они перечислены рядом в списке.',
-    'После каждого вопроса дождись ответа сотрудника. Только после ответа переходи к следующему вопросу из списка или к уточнению.',
-    'Не превращай список вопросов в анкету. Диалог должен идти естественно: вопрос → ответ сотрудника → короткая реакция → следующий вопрос.',
-    'Если сотрудник сам уже ответил на один из вопросов, не задавай его повторно; отметь его как закрытый и переходи дальше.',
-    '',
-    '=== ВОЗРАЖЕНИЯ ===',
-    objectionLines,
-    '',
-    '=== УСЛОВИЯ УСПЕХА ДЛЯ ОЦЕНКИ ===',
-    criteriaLines,
-    '',
-    '=== РЕАКЦИИ НА ПОВЕДЕНИЕ СОТРУДНИКА ===',
-    '- Грубость или токсичный тон: не благодари, не хвали. Коротко: «Простите, но мне не нравится такой тон» / «Это неуместно». При сильной грубости — один раз ответь и завершай разговор.',
-    '- Низкие усилия («ок», «хз», одно слово): «Можете ответить конкретнее?» / «Мне нужен развёрнутый ответ». Если второй раз подряд — жёстче.',
-    '- Уход от вопроса: «Вы не ответили на мой вопрос» / «Я спрашивал о другом». Не повторяй один и тот же вопрос больше одного раза.',
-    '- Отписка («посмотрите на сайте»): «Я звоню именно чтобы узнать от вас, а не с сайта.»',
-    '- Нормальное поведение: отвечай естественно и двигай разговор вперёд.',
-    '',
-    '=== ТАЙМИНГ И ТЕРПЕНИЕ ===',
-    'Ведёшь себя как живой человек: не спеши, дай сотруднику договорить. Если только что задал вопрос — подожди ответа. Не говори «вы не ответили», если сотрудник только поздоровался или сказал короткую вступительную фразу.',
+    scenarioCore,
     '',
     '=== ЗАВЕРШЕНИЕ ДИАЛОГА ===',
     'Завершай разговор, когда договорились о следующем шаге, разговор естественно исчерпан, или сотрудник ведёт себя грубо/неадекватно. В конце чётко скажи прощание: «До свидания», «Хорошо, тогда на этом закончим», «Спасибо, до свидания».',
@@ -638,6 +728,14 @@ function buildCallPlanRealtimePrompt(input: {
     '=== ЯЗЫК И СТИЛЬ ===',
     'Язык: только русский. Тон: реалистичный клиент, не поддакивающий. Длина: 1–3 предложения на реплику. Без эмодзи, без мета-комментариев. Не выходи из роли.',
   ].join('\n');
+}
+
+async function resolveCustomerVoiceForProfile(profile: Prisma.CallCustomerProfileGetPayload<{}> | null) {
+  if (!profile?.voiceId) return null;
+  return prisma.callCustomerVoice.findFirst({
+    where: { id: profile.voiceId, isDeleted: false, isEnabled: true },
+    select: { id: true, elevenLabsCode: true },
+  });
 }
 
 export async function handleInitiateCallPlan(req: Request, res: Response): Promise<void> {
@@ -657,8 +755,15 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
       : [];
     const profile = pickRandom(profiles);
     const importedItem = await pickImportedSampleForScript(script);
+    const customerVoice = await resolveCustomerVoiceForProfile(profile);
+    const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
     const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem });
-    const result = await startVoiceCall(target.phoneNumber.phone, { scenario: 'realtime_pure', instructions: prompt });
+    const result = await startVoiceCall(target.phoneNumber.phone, {
+      scenario: 'realtime_pure',
+      instructions: prompt,
+      elevenLabsVoiceId,
+      customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
+    });
     if ('error' in result) throw new Error(result.error);
     addCall(result.callId, target.phoneNumber.phone);
     if (result.callSessionHistoryId) setVoxSessionId(result.callId, result.callSessionHistoryId);
@@ -676,6 +781,8 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
           planId: plan.id,
           scriptId: script.id,
           profileId: profile?.id ?? null,
+          customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
+          elevenLabsVoiceId,
           importedItemId: importedItem?.id ?? null,
         }),
         startedAt: new Date(result.startedAt),

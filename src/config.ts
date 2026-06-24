@@ -32,6 +32,7 @@ export const config = {
     })(),
   elevenLabsApiKey: env.elevenLabsApiKey,
   elevenLabsVoiceId: env.elevenLabsVoiceId,
+  elevenLabsAgentId: env.elevenLabsAgentId,
   ttsProvider: env.ttsProvider,
   httpsProxy: env.httpsProxy,
   authTokenSecret: env.authTokenSecret,

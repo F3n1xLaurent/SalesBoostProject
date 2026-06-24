@@ -1,15 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useUnit } from 'effector-react';
 import { useLocation, useNavigate } from 'react-router';
 import {
   createCallCustomerProfile,
+  createCallCustomerVoice,
   createCallPlan,
   createCallScript,
   deleteCallCustomerProfile,
+  deleteCallCustomerVoice,
   deleteCallScript,
   fetchCallPlanOptions,
   fetchCallPlans,
   fetchCallPlanCalls,
   fetchCallCustomerProfiles,
+  fetchCallCustomerVoices,
   fetchCallScripts,
   fetchHoldings,
   fetchImportedItems,
@@ -17,6 +21,7 @@ import {
   initiateCallPlan,
   previewCallPlanPrompt,
   updateCallCustomerProfile,
+  updateCallCustomerVoice,
   updateCallPlan,
   updateCallScript,
   type CallPlanDealershipOption,
@@ -28,6 +33,7 @@ import {
   type CallPlanPromptPreview,
   type CallPlanTargetType,
   type CallCustomerProfileItem,
+  type CallCustomerVoiceItem,
   type CallScriptItem,
   type CallScriptSuccessCriterion,
   type CustomerPatience,
@@ -36,6 +42,7 @@ import {
   type ReplyLength,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { $auth } from '../../../entities/session';
 
 type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
 type CallSettingsRoute =
@@ -43,23 +50,16 @@ type CallSettingsRoute =
   | { tab: 'scripts'; scriptId?: string; create?: boolean }
   | { tab: 'plan'; planId?: string; create?: boolean; edit?: boolean };
 type CustomerProfile = CallCustomerProfileItem;
+type CustomerVoice = CallCustomerVoiceItem;
 type CustomerProfileForm = Omit<CustomerProfile, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>;
+type CustomerVoiceForm = Omit<CustomerVoice, 'createdAt' | 'updatedAt' | 'isDeleted'>;
 type SuccessCriterion = CallScriptSuccessCriterion;
 type CallScript = CallScriptItem;
 type CallScriptForm = Omit<CallScript, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>;
 type CallPlan = CallPlanItem;
 type CallPlanForm = Omit<CallPlan, 'id' | 'createdAt' | 'updatedAt' | 'lastInitiatedAt' | 'lastBatchId'>;
 
-const VOICES = [
-  { id: 'marin', label: 'Естественный' },
-  { id: 'cedar', label: 'Тёплый' },
-  { id: 'sage', label: 'Спокойный' },
-  { id: 'ash', label: 'Мягкий' },
-  { id: 'verse', label: 'Разговорный' },
-  { id: 'coral', label: 'Живой' },
-  { id: 'nova', label: 'Энергичный' },
-  { id: 'echo', label: 'Уверенный' },
-];
+const FALLBACK_VOICE_ID = 'marin';
 
 const TEMPERAMENTS: Array<{ value: CustomerTemperament; label: string }> = [
   { value: 'calm', label: 'Спокойный' },
@@ -93,8 +93,10 @@ const CALL_SETTINGS_PATHS: Record<CallSettingsTab, string> = {
 
 const EMPTY_FORM: CustomerProfileForm = {
   name: '',
-  voiceId: VOICES[0].id,
+  voiceId: FALLBACK_VOICE_ID,
   age: 35,
+  ageFrom: 30,
+  ageTo: 40,
   character: '',
   temperament: 'calm',
   patience: 'medium',
@@ -112,8 +114,25 @@ const EMPTY_SCRIPT_FORM: CallScriptForm = {
   successCriteria: [],
 };
 
-function voiceLabel(id: string): string {
-  return VOICES.find((voice) => voice.id === id)?.label || 'Универсальный';
+function voiceLabel(id: string, voices: CustomerVoice[]): string {
+  return voices.find((voice) => voice.id === id)?.name || 'Универсальный';
+}
+
+function normalizeAgeRange(ageFrom: number, ageTo: number): { ageFrom: number; ageTo: number; age: number } {
+  const from = Math.max(18, Math.min(65, Math.round(Number.isFinite(ageFrom) ? ageFrom : 35)));
+  const to = Math.max(18, Math.min(65, Math.round(Number.isFinite(ageTo) ? ageTo : from)));
+  const normalizedFrom = Math.min(from, to);
+  const normalizedTo = Math.max(from, to);
+  return {
+    ageFrom: normalizedFrom,
+    ageTo: normalizedTo,
+    age: Math.round((normalizedFrom + normalizedTo) / 2),
+  };
+}
+
+function ageRangeLabel(profile: Pick<CustomerProfile, 'age' | 'ageFrom' | 'ageTo'>): string {
+  const { ageFrom, ageTo } = normalizeAgeRange(profile.ageFrom ?? profile.age, profile.ageTo ?? profile.age);
+  return ageFrom === ageTo ? `${ageFrom} лет` : `${ageFrom}-${ageTo} лет`;
 }
 
 function optionLabel<T extends string>(items: Array<{ value: T; label: string }>, value: T): string {
@@ -328,11 +347,20 @@ function QuestionModal(props: {
 function ProfileModal(props: {
   open: boolean;
   initialProfile: CustomerProfile | null;
+  voices: CustomerVoice[];
   onClose: () => void;
   onSave: (profile: CustomerProfileForm) => void;
 }) {
   const [form, setForm] = useState<CustomerProfileForm>(EMPTY_FORM);
   const isEdit = Boolean(props.initialProfile);
+  const activeVoices = useMemo(() => props.voices.filter((voice) => voice.isEnabled), [props.voices]);
+  const selectedVoice = props.voices.find((voice) => voice.id === form.voiceId);
+  const visibleVoices = useMemo(
+    () => selectedVoice && !activeVoices.some((voice) => voice.id === selectedVoice.id)
+      ? [selectedVoice, ...activeVoices]
+      : activeVoices,
+    [activeVoices, selectedVoice],
+  );
 
   useEffect(() => {
     if (!props.open) return;
@@ -341,6 +369,8 @@ function ProfileModal(props: {
         name: props.initialProfile.name,
         voiceId: props.initialProfile.voiceId,
         age: props.initialProfile.age,
+        ageFrom: props.initialProfile.ageFrom ?? props.initialProfile.age,
+        ageTo: props.initialProfile.ageTo ?? props.initialProfile.age,
         character: '',
         temperament: props.initialProfile.temperament,
         patience: props.initialProfile.patience,
@@ -348,9 +378,9 @@ function ProfileModal(props: {
         communicationStyle: props.initialProfile.communicationStyle,
       });
     } else {
-      setForm(EMPTY_FORM);
+      setForm({ ...EMPTY_FORM, voiceId: activeVoices[0]?.id ?? FALLBACK_VOICE_ID });
     }
-  }, [props.open, props.initialProfile]);
+  }, [props.open, props.initialProfile, activeVoices]);
 
   if (!props.open) return null;
 
@@ -361,6 +391,7 @@ function ProfileModal(props: {
     props.onSave({
       ...form,
       name,
+      ...normalizeAgeRange(form.ageFrom, form.ageTo),
       character: '',
       communicationStyle: form.communicationStyle.trim(),
     });
@@ -389,20 +420,57 @@ function ProfileModal(props: {
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Голос</span>
-            <select className="sa-select" value={form.voiceId} onChange={(event) => setForm((current) => ({ ...current, voiceId: event.target.value }))}>
-              {VOICES.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}
+            <select className="sa-select" value={form.voiceId} onChange={(event) => setForm((current) => ({ ...current, voiceId: event.target.value }))} disabled={activeVoices.length === 0}>
+              {visibleVoices.length === 0 && <option value={form.voiceId}>Нет включенных голосов</option>}
+              {visibleVoices.map((voice) => (
+                <option key={voice.id} value={voice.id} disabled={!voice.isEnabled}>
+                  {voice.name}{voice.isEnabled ? '' : ' (выключен)'}
+                </option>
+              ))}
             </select>
           </label>
 
           <label style={{ display: 'grid', gap: 8 }}>
-            <span>Возраст: {form.age}</span>
-            <input
-              type="range"
-              min={18}
-              max={65}
-              value={form.age}
-              onChange={(event) => setForm((current) => ({ ...current, age: Number(event.target.value) }))}
-            />
+            <span>Возраст: {form.ageFrom === form.ageTo ? form.ageFrom : `${form.ageFrom}-${form.ageTo}`}</span>
+            <div style={{ position: 'relative', height: 28, display: 'grid', alignItems: 'center' }}>
+              <div style={{ position: 'absolute', left: 0, right: 0, height: 4, borderRadius: 999, background: '#e5e7eb' }} />
+              <div
+                style={{
+                  position: 'absolute',
+                  left: `${((Math.min(form.ageFrom, form.ageTo) - 18) / 47) * 100}%`,
+                  right: `${100 - ((Math.max(form.ageFrom, form.ageTo) - 18) / 47) * 100}%`,
+                  height: 4,
+                  borderRadius: 999,
+                  background: '#6366f1',
+                }}
+              />
+              <input
+                type="range"
+                min={18}
+                max={65}
+                value={form.ageFrom}
+                onChange={(event) => setForm((current) => {
+                  const nextFrom = Number(event.target.value);
+                  const ageFrom = Math.min(nextFrom, current.ageTo);
+                  return { ...current, ageFrom, age: Math.round((ageFrom + current.ageTo) / 2) };
+                })}
+                className="sa-range-thumb"
+                style={{ position: 'absolute', inset: 0, width: '100%', margin: 0, background: 'transparent' }}
+              />
+              <input
+                type="range"
+                min={18}
+                max={65}
+                value={form.ageTo}
+                onChange={(event) => setForm((current) => {
+                  const nextTo = Number(event.target.value);
+                  const ageTo = Math.max(nextTo, current.ageFrom);
+                  return { ...current, ageTo, age: Math.round((current.ageFrom + ageTo) / 2) };
+                })}
+                className="sa-range-thumb"
+                style={{ position: 'absolute', inset: 0, width: '100%', margin: 0, background: 'transparent' }}
+              />
+            </div>
           </label>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
@@ -433,7 +501,159 @@ function ProfileModal(props: {
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
             <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={!form.name.trim()}>{isEdit ? 'Сохранить профиль' : 'Создать профиль'}</button>
+            <button type="submit" className="sa-btn-primary" disabled={!form.name.trim() || activeVoices.length === 0}>{isEdit ? 'Сохранить профиль' : 'Создать профиль'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function VoicesModal(props: {
+  open: boolean;
+  voices: CustomerVoice[];
+  savingId: string | null;
+  onClose: () => void;
+  onCreate: (voice: CustomerVoiceForm) => Promise<void>;
+  onUpdate: (id: string, voice: Omit<CustomerVoiceForm, 'id'>) => Promise<void>;
+  onDelete: (voice: CustomerVoice) => Promise<void>;
+}) {
+  const [drafts, setDrafts] = useState<Record<string, CustomerVoiceForm>>({});
+  const [newVoice, setNewVoice] = useState<CustomerVoiceForm>({
+    id: '',
+    name: '',
+    elevenLabsCode: '',
+    openaiCode: '',
+    isEnabled: true,
+  });
+
+  useEffect(() => {
+    if (!props.open) return;
+    setDrafts(Object.fromEntries(props.voices.map((voice) => [voice.id, {
+      id: voice.id,
+      name: voice.name,
+      elevenLabsCode: voice.elevenLabsCode || '',
+      openaiCode: voice.openaiCode || '',
+      isEnabled: voice.isEnabled,
+    }])));
+    setNewVoice({ id: '', name: '', elevenLabsCode: '', openaiCode: '', isEnabled: true });
+  }, [props.open, props.voices]);
+
+  if (!props.open) return null;
+
+  function updateDraft(id: string, patch: Partial<CustomerVoiceForm>) {
+    setDrafts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
+  }
+
+  async function saveDraft(id: string) {
+    const draft = drafts[id];
+    if (!draft?.name.trim()) return;
+    await props.onUpdate(id, {
+      name: draft.name.trim(),
+      elevenLabsCode: draft.elevenLabsCode?.trim() || null,
+      openaiCode: draft.openaiCode?.trim() || null,
+      isEnabled: draft.isEnabled,
+    });
+  }
+
+  async function createVoice(event: React.FormEvent) {
+    event.preventDefault();
+    const id = newVoice.id.trim();
+    const name = newVoice.name.trim();
+    if (!id || !name) return;
+    await props.onCreate({
+      id,
+      name,
+      elevenLabsCode: newVoice.elevenLabsCode?.trim() || null,
+      openaiCode: newVoice.openaiCode?.trim() || null,
+      isEnabled: newVoice.isEnabled,
+    });
+    setNewVoice({ id: '', name: '', elevenLabsCode: '', openaiCode: '', isEnabled: true });
+  }
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 132 }}
+      onClick={props.onClose}
+    >
+      <div style={{ ...overlayCardStyle(), width: 'min(980px, 96vw)' }} onClick={(event) => event.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 24 }}>Голоса клиентов</h2>
+            <div className="sa-meta" style={{ marginTop: 4 }}>Доступно только суперадминам. Выключенные голоса нельзя выбрать в профиле клиента.</div>
+          </div>
+          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+
+        <div className="sa-table-wrap" style={{ maxHeight: '44vh', overflow: 'auto' }}>
+          <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ width: 140 }}>ID</th>
+                <th>Название</th>
+                <th>ElevenLabs</th>
+                <th>OpenAI</th>
+                <th style={{ width: 130 }}>Статус</th>
+                <th style={{ width: 210 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {props.voices.map((voice) => {
+                const draft = drafts[voice.id] ?? {
+                  id: voice.id,
+                  name: voice.name,
+                  elevenLabsCode: voice.elevenLabsCode || '',
+                  openaiCode: voice.openaiCode || '',
+                  isEnabled: voice.isEnabled,
+                };
+                return (
+                  <tr key={voice.id}>
+                    <td><code>{voice.id}</code></td>
+                    <td><input className="sa-input" value={draft.name} onChange={(event) => updateDraft(voice.id, { name: event.target.value })} /></td>
+                    <td><input className="sa-input" placeholder="может быть пусто" value={draft.elevenLabsCode || ''} onChange={(event) => updateDraft(voice.id, { elevenLabsCode: event.target.value })} /></td>
+                    <td><input className="sa-input" placeholder="может быть пусто" value={draft.openaiCode || ''} onChange={(event) => updateDraft(voice.id, { openaiCode: event.target.value })} /></td>
+                    <td>
+                      <label className="sa-filter-check" style={{ width: 'fit-content' }}>
+                        <input type="checkbox" checked={draft.isEnabled} onChange={(event) => updateDraft(voice.id, { isEnabled: event.target.checked })} />
+                        Включен
+                      </label>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                        <button type="button" className="sa-btn-outline sa-btn-sm" disabled={props.savingId === voice.id || !draft.name.trim()} onClick={() => saveDraft(voice.id)}>
+                          Сохранить
+                        </button>
+                        <button type="button" className="sa-btn-danger sa-btn-sm" disabled={props.savingId === voice.id} onClick={() => props.onDelete(voice)}>
+                          Удалить
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {props.voices.length === 0 && (
+                <tr><td colSpan={6} className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Голоса пока не добавлены.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <form onSubmit={createVoice} style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--sa-divider)', display: 'grid', gap: 12 }}>
+          <h3 className="sa-section-title" style={{ margin: 0 }}>Добавить голос</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 0.8fr) minmax(180px, 1fr) minmax(160px, 1fr) minmax(160px, 1fr) auto', gap: 10, alignItems: 'center' }}>
+            <input className="sa-input" placeholder="id" value={newVoice.id} onChange={(event) => setNewVoice((current) => ({ ...current, id: event.target.value }))} />
+            <input className="sa-input" placeholder="Название голоса" value={newVoice.name} onChange={(event) => setNewVoice((current) => ({ ...current, name: event.target.value }))} />
+            <input className="sa-input" placeholder="код ElevenLabs" value={newVoice.elevenLabsCode || ''} onChange={(event) => setNewVoice((current) => ({ ...current, elevenLabsCode: event.target.value }))} />
+            <input className="sa-input" placeholder="код OpenAI" value={newVoice.openaiCode || ''} onChange={(event) => setNewVoice((current) => ({ ...current, openaiCode: event.target.value }))} />
+            <label className="sa-filter-check">
+              <input type="checkbox" checked={newVoice.isEnabled} onChange={(event) => setNewVoice((current) => ({ ...current, isEnabled: event.target.checked }))} />
+              Включен
+            </label>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <button type="submit" className="sa-btn-primary" disabled={props.savingId === 'new' || !newVoice.id.trim() || !newVoice.name.trim()}>Добавить голос</button>
           </div>
         </form>
       </div>
@@ -1200,6 +1420,7 @@ function PromptPreviewModal(props: {
 }
 
 export function CallSettingsPage() {
+  const auth = useUnit($auth);
   const location = useLocation();
   const navigate = useNavigate();
   const route = useMemo(() => parseCallSettingsRoute(location.pathname), [location.pathname]);
@@ -1208,6 +1429,7 @@ export function CallSettingsPage() {
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
   const [profiles, setProfiles] = useState<CustomerProfile[]>([]);
+  const [voices, setVoices] = useState<CustomerVoice[]>([]);
   const [scripts, setScripts] = useState<CallScript[]>([]);
   const [plans, setPlans] = useState<CallPlan[]>([]);
   const [planOptions, setPlanOptions] = useState<CallPlanOptions>({ employees: [], dealerships: [], phoneNumberTypes: [], scripts: [] });
@@ -1215,6 +1437,8 @@ export function CallSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [voicesModalOpen, setVoicesModalOpen] = useState(false);
+  const [voiceSavingId, setVoiceSavingId] = useState<string | null>(null);
   const [editingProfile, setEditingProfile] = useState<CustomerProfile | null>(null);
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false);
   const [editingScript, setEditingScript] = useState<CallScript | null>(null);
@@ -1225,6 +1449,7 @@ export function CallSettingsPage() {
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
   const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+  const canManageVoices = auth.status === 'authenticated' && auth.user.allowedRoles.includes('super');
 
   useEffect(() => {
     if (location.pathname === '/call-settings') {
@@ -1266,13 +1491,15 @@ export function CallSettingsPage() {
     setLoading(true);
     setError(null);
     Promise.all([
+      fetchCallCustomerVoices(),
       fetchCallCustomerProfiles({ holdingId: selectedHoldingId }),
       fetchCallScripts({ holdingId: selectedHoldingId }),
       fetchCallPlans({ holdingId: selectedHoldingId }),
       fetchCallPlanOptions({ holdingId: selectedHoldingId }),
     ])
-      .then(([nextProfiles, nextScripts, nextPlans, nextPlanOptions]) => {
+      .then(([nextVoices, nextProfiles, nextScripts, nextPlans, nextPlanOptions]) => {
         if (cancelled) return;
+        setVoices(nextVoices);
         setProfiles(nextProfiles);
         setScripts(nextScripts);
         setPlans(nextPlans);
@@ -1393,6 +1620,51 @@ export function CallSettingsPage() {
       setEditingProfile(null);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить профиль клиента.');
+    }
+  }
+
+  async function saveNewVoice(voice: CustomerVoiceForm) {
+    setVoiceSavingId('new');
+    setError(null);
+    try {
+      const created = await createCallCustomerVoice(voice);
+      setVoices((current) => [...current.filter((item) => item.id !== created.id), created].sort((a, b) => a.name.localeCompare(b.name, 'ru')));
+      setNotice('Голос добавлен.');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Не удалось добавить голос.');
+      throw saveError;
+    } finally {
+      setVoiceSavingId(null);
+    }
+  }
+
+  async function saveExistingVoice(id: string, voice: Omit<CustomerVoiceForm, 'id'>) {
+    setVoiceSavingId(id);
+    setError(null);
+    try {
+      const updated = await updateCallCustomerVoice(id, voice);
+      setVoices((current) => current.map((item) => item.id === id ? updated : item).sort((a, b) => a.name.localeCompare(b.name, 'ru')));
+      setNotice('Голос обновлён.');
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Не удалось обновить голос.');
+      throw saveError;
+    } finally {
+      setVoiceSavingId(null);
+    }
+  }
+
+  async function removeVoice(voice: CustomerVoice) {
+    if (!window.confirm(`Удалить голос "${voice.name}"? Он будет скрыт из интерфейса, но профили клиентов не сломаются.`)) return;
+    setVoiceSavingId(voice.id);
+    setError(null);
+    try {
+      await deleteCallCustomerVoice(voice.id);
+      setVoices((current) => current.filter((item) => item.id !== voice.id));
+      setNotice('Голос удалён из интерфейса.');
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить голос.');
+    } finally {
+      setVoiceSavingId(null);
     }
   }
 
@@ -1790,6 +2062,9 @@ export function CallSettingsPage() {
             {activeTab === 'profiles' && (
               <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={openCreate}>Создать профиль клиента</button>
             )}
+            {activeTab === 'profiles' && canManageVoices && (
+              <button type="button" className="sa-btn-outline" onClick={() => setVoicesModalOpen(true)}>Голоса</button>
+            )}
             {activeTab === 'scripts' && (
               <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => openScriptEditor()}>Создать скрипт</button>
             )}
@@ -1822,7 +2097,7 @@ export function CallSettingsPage() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
                     <div style={{ minWidth: 0 }}>
                       <h3 style={{ margin: 0, fontSize: 17, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{profile.name}</h3>
-                      <div className="sa-meta" style={{ marginTop: 4 }}>{profile.age} лет · {voiceLabel(profile.voiceId)}</div>
+                      <div className="sa-meta" style={{ marginTop: 4 }}>{ageRangeLabel(profile)} · {voiceLabel(profile.voiceId, voices)}</div>
                     </div>
                     <span className="sa-chip">{optionLabel(TEMPERAMENTS, profile.temperament)}</span>
                   </div>
@@ -1983,8 +2258,18 @@ export function CallSettingsPage() {
       <ProfileModal
         open={modalOpen}
         initialProfile={editingProfile}
+        voices={voices}
         onClose={() => { setModalOpen(false); setEditingProfile(null); }}
         onSave={saveProfile}
+      />
+      <VoicesModal
+        open={voicesModalOpen}
+        voices={voices}
+        savingId={voiceSavingId}
+        onClose={() => setVoicesModalOpen(false)}
+        onCreate={saveNewVoice}
+        onUpdate={saveExistingVoice}
+        onDelete={removeVoice}
       />
       <PromptPreviewModal
         preview={promptPreview}
