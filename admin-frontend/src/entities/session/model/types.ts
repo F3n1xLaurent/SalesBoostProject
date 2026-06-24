@@ -11,6 +11,7 @@ export type AdminTab =
   | 'autodealers'
   | 'audits'
   | 'analytics'
+  | 'callSettings'
   | 'settings'
   | 'dealer-companies'
   | 'dealer-calls'

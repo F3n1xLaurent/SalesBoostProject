@@ -14,6 +14,8 @@ const EnvSchema = z.object({
   OPENAI_IMPORT_MODEL: z.string().optional(),
   OPENAI_STT_MODEL: z.string().optional(),
   OPENAI_TTS_MODEL: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANALYTICS_AI_MODEL: z.string().optional(),
   DATABASE_URL: z.string().min(1).default('file:./dev.db'),
   ADMIN_TELEGRAM_IDS: z.string().optional(),
   PORT: z.string().optional(),
@@ -21,6 +23,7 @@ const EnvSchema = z.object({
   MINI_APP_URL: z.string().optional(),
   ELEVENLABS_API_KEY: z.string().optional(),
   ELEVENLABS_VOICE_ID: z.string().optional(),
+  ELEVENLABS_AGENT_ID: z.string().optional(),
   TTS_PROVIDER: z.string().optional(), // "openai" | "elevenlabs" — default: elevenlabs if keys set, else openai
   HTTPS_PROXY: z.string().optional(), // Прокси для OpenAI (если API недоступен в регионе)
   AUTH_TOKEN_SECRET: z.string().optional(),
@@ -54,6 +57,8 @@ export const env = {
   openaiImportModel: raw.OPENAI_IMPORT_MODEL?.trim() || raw.OPENAI_CHAT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini' : 'gpt-4o-mini'),
   openaiSttModel: raw.OPENAI_STT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini-transcribe' : 'gpt-4o-mini-transcribe'),
   openaiTtsModel: raw.OPENAI_TTS_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/tts-1' : 'tts-1'),
+  anthropicApiKey: raw.ANTHROPIC_API_KEY?.trim() || undefined,
+  analyticsAiModel: raw.ANALYTICS_AI_MODEL?.trim() || 'claude-sonnet-4-20250514',
   adminIdentifiers: raw.ADMIN_TELEGRAM_IDS
     ? raw.ADMIN_TELEGRAM_IDS.split(',').map((id) => id.trim().toLowerCase()).filter(Boolean)
     : [],
@@ -63,6 +68,7 @@ export const env = {
   miniAppUrl: raw.MINI_APP_URL,
   elevenLabsApiKey: raw.ELEVENLABS_API_KEY,
   elevenLabsVoiceId: raw.ELEVENLABS_VOICE_ID,
+  elevenLabsAgentId: raw.ELEVENLABS_AGENT_ID?.trim() || undefined,
   ttsProvider: raw.TTS_PROVIDER?.toLowerCase() === 'openai' ? 'openai' : 'elevenlabs',
   httpsProxy: raw.HTTPS_PROXY?.trim() || undefined,
   authTokenSecret: raw.AUTH_TOKEN_SECRET?.trim() || undefined,

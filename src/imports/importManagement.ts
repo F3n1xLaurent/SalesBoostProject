@@ -43,6 +43,14 @@ type TagRule = {
   };
 };
 
+type ImportSourceWithCount = Prisma.ImportSourceGetPayload<{
+  include: { _count: { select: { items: true } }; holding: { select: { name: true } } };
+}>;
+
+type ImportedItemWithSource = Prisma.ImportedItemGetPayload<{
+  include: { importSource: { select: { name: true; format: true; holdingId: true; holding: { select: { name: true } } } } };
+}>;
+
 const TAG_OPERATORS = new Set<TagOperator>([
   'equals',
   'notEquals',
@@ -63,6 +71,10 @@ const MAX_RUN_ITEMS = 500;
 const SOURCE_FETCH_TIMEOUT_MS = 30_000;
 const AI_CONFIG_TIMEOUT_MS = 15_000;
 const AI_TAG_RULE_TIMEOUT_MS = 8_000;
+const AI_TAG_RULES_TIMEOUT_MS = 15_000;
+const AI_AUTOTAG_TIMEOUT_MS = 15_000;
+const MAX_AI_AUTOTAG_ITEMS = 5;
+const MAX_GENERATED_TAG_RULES = 15;
 
 function parseString(value: unknown): string | null {
   const parsed = String(value ?? '').trim();
@@ -96,6 +108,73 @@ function createRequestId(prefix: string): string {
 
 function formatBytes(bytes: number): string {
   return `${Math.round(bytes / 1_000_000)} МБ`;
+}
+
+function isPlatformSuperadmin(account: NonNullable<Express.Request['authAccount']>): boolean {
+  return account.memberships.some((membership) => membership.role === 'platform_superadmin');
+}
+
+async function getAccessibleHoldingIds(account: NonNullable<Express.Request['authAccount']>): Promise<string[] | null> {
+  if (isPlatformSuperadmin(account)) return null;
+  const directHoldingIds = account.memberships
+    .map((membership) => membership.holdingId)
+    .filter(Boolean) as string[];
+  const dealershipIds = account.memberships
+    .map((membership) => membership.dealershipId)
+    .filter(Boolean) as string[];
+  const dealerships = dealershipIds.length
+    ? await prisma.dealership.findMany({
+      where: { id: { in: dealershipIds }, holdingId: { not: null } },
+      select: { holdingId: true },
+    })
+    : [];
+  return Array.from(new Set([
+    ...directHoldingIds,
+    ...dealerships.map((dealership) => dealership.holdingId).filter(Boolean) as string[],
+  ]));
+}
+
+async function assertCanAccessHolding(req: Request, holdingId: string): Promise<void> {
+  const account = req.authAccount;
+  if (!account) throw new Error('Требуется авторизация.');
+  const accessibleHoldingIds = await getAccessibleHoldingIds(account);
+  if (accessibleHoldingIds !== null && !accessibleHoldingIds.includes(holdingId)) {
+    throw new Error('Нет доступа к выбранной компании.');
+  }
+}
+
+async function getRequestedHoldingFilter(req: Request): Promise<string | null> {
+  const holdingId = parseString(req.query.holdingId);
+  if (!holdingId) return null;
+  await assertCanAccessHolding(req, holdingId);
+  return holdingId;
+}
+
+async function buildImportSourceWhereForRequest(req: Request): Promise<Prisma.ImportSourceWhereInput> {
+  const account = req.authAccount;
+  if (!account) throw new Error('Требуется авторизация.');
+  const holdingId = await getRequestedHoldingFilter(req);
+  if (holdingId) return { holdingId };
+  const accessibleHoldingIds = await getAccessibleHoldingIds(account);
+  return accessibleHoldingIds === null ? {} : { holdingId: { in: accessibleHoldingIds } };
+}
+
+async function assertCanAccessImportSource(req: Request, importSourceId: string): Promise<void> {
+  const source = await prisma.importSource.findUnique({
+    where: { id: importSourceId },
+    select: { holdingId: true },
+  });
+  if (!source) throw new Error('Импорт не найден.');
+  if (!source.holdingId) throw new Error('Импорт не привязан к компании.');
+  await assertCanAccessHolding(req, source.holdingId);
+}
+
+function parseTagFilters(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(parseTagFilters);
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function assertSafeSourceUrl(rawUrl: unknown): string {
@@ -467,6 +546,44 @@ function normalizeTagRules(input: unknown): TagRule[] {
   }).filter(Boolean) as TagRule[];
 }
 
+function normalizeGeneratedTagName(value: string): string {
+  const cleaned = value
+    .trim()
+    .replace(/^["'«»\s]+|["'«»\s]+$/g, '')
+    .replace(/^(?:тег|tag)\s*(?:для|for|:|-)?\s*/i, '')
+    .replace(/\s+(?:tag|тег)$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const normalized = normalizeText(cleaned);
+  const knownTranslations: Array<[RegExp, string]> = [
+    [/^(?:new\s+cars?|new\s+vehicles?|cars?\s+new)$/i, 'Новые машины'],
+    [/^(?:used\s+cars?|used\s+vehicles?|pre-?owned\s+cars?|cars?\s+with\s+mileage)$/i, 'С пробегом'],
+    [/^(?:premium|luxury)(?:\s+cars?|\s+vehicles?)?$/i, 'Премиум'],
+    [/^(?:available|in\s+stock)(?:\s+cars?|\s+vehicles?)?$/i, 'В наличии'],
+    [/^(?:credit|loan|financing)$/i, 'Кредит'],
+  ];
+  const translated = knownTranslations.find(([pattern]) => pattern.test(cleaned))?.[1];
+  if (translated) return translated;
+  return normalized.includes('нов') && normalized.includes('маш') ? 'Новые машины' : cleaned;
+}
+
+function isRussianTagName(value: string): boolean {
+  return /[А-Яа-яЁё]/.test(value) && !/^(?:тег|tag)\b/i.test(value.trim());
+}
+
+function normalizeGeneratedTagRules(input: unknown, availableFields: string[]): TagRule[] {
+  const rawRules = Array.isArray(input)
+    ? input
+    : input && typeof input === 'object' && Array.isArray((input as { rules?: unknown }).rules)
+      ? (input as { rules: unknown[] }).rules
+      : [];
+  return normalizeTagRules(rawRules.map((rule, index) => ({ id: `ai-rule-${index + 1}`, enabled: true, ...rule })))
+    .map((rule) => ({ ...rule, name: normalizeGeneratedTagName(rule.name) }))
+    .filter((rule) => rule.name && isRussianTagName(rule.name))
+    .filter((rule) => availableFields.includes(rule.condition.field))
+    .slice(0, MAX_GENERATED_TAG_RULES);
+}
+
 function parseHeuristicRuleValue(raw: string): unknown {
   const value = raw.trim().replace(/^["'«]+|["'».,]+$/g, '').trim();
   if (!value) return undefined;
@@ -557,6 +674,129 @@ function applyTagRules(normalizedItem: Record<string, unknown>, rawItem: unknown
     .map((rule) => rule.name);
 }
 
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+}
+
+function limitRecordForPrompt(input: Record<string, unknown>, maxFields = 40): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input).slice(0, maxFields)) {
+    result[key] = typeof value === 'string' ? truncateText(value, 500) : value;
+  }
+  return result;
+}
+
+function normalizeAiAutotagResult(
+  input: unknown,
+  allowedTags: Set<string>,
+  allowedItemIds: Set<string>,
+): Array<{ itemId: string; tags: string[] }> {
+  const rawItems = Array.isArray(input)
+    ? input
+    : input && typeof input === 'object' && Array.isArray((input as { items?: unknown }).items)
+      ? (input as { items: unknown[] }).items
+      : [];
+
+  return rawItems.map((entry) => {
+    const raw = entry && typeof entry === 'object' ? entry as { itemId?: unknown; id?: unknown; tags?: unknown } : {};
+    const itemId = parseString(raw.itemId) || parseString(raw.id);
+    if (!itemId || !allowedItemIds.has(itemId)) return null;
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.map((tag) => String(tag || '').trim()).filter((tag) => allowedTags.has(tag))
+      : [];
+    return { itemId, tags: uniqStrings(tags) };
+  }).filter(Boolean) as Array<{ itemId: string; tags: string[] }>;
+}
+
+async function applyAiAutotagsToImportedItems(importSourceId: string, itemIds: string[], rules: TagRule[]): Promise<number> {
+  const enabledRules = rules.filter((rule) => rule.enabled);
+  const targetIds = uniqStrings(itemIds).slice(0, MAX_AI_AUTOTAG_ITEMS);
+  if (targetIds.length === 0 || enabledRules.length === 0) return 0;
+
+  const items = await prisma.importedItem.findMany({
+    where: { importSourceId, id: { in: targetIds } },
+    orderBy: { updatedAt: 'desc' },
+    take: MAX_AI_AUTOTAG_ITEMS,
+  });
+  if (items.length === 0) return 0;
+
+  const allowedTags = new Set(enabledRules.map((rule) => rule.name));
+  const allowedItemIds = new Set(items.map((item) => item.id));
+  const requestId = createRequestId('import-autotag-ai');
+  const startedAt = Date.now();
+
+  try {
+    console.info(`[${requestId}] OpenAI request started: import autotagging`, {
+      provider: config.aiApiProvider,
+      baseURL: config.openaiBaseUrl || 'https://api.openai.com/v1',
+      model: config.openaiImportModel,
+      items: items.length,
+      rules: enabledRules.length,
+      proxyUsed: Boolean(config.httpsProxy && config.aiApiProvider !== 'proxyapi'),
+    });
+
+    const response = await withTimeout(
+      openai.chat.completions.create({
+        model: config.openaiImportModel,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'Ты размечаешь импортированные элементы тегами по правилам.',
+              'Верни только JSON вида {"items":[{"itemId":"...","tags":["..."]}]}',
+              'Используй только имена тегов из rules[].name. Если правило не подходит, не добавляй тег.',
+              'Не придумывай новые теги и не меняй itemId.',
+            ].join(' '),
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              task: `Autotag up to ${MAX_AI_AUTOTAG_ITEMS} already imported items by the provided rules.`,
+              rules: enabledRules.map((rule) => ({
+                tag: rule.name,
+                condition: rule.condition,
+              })),
+              items: items.map((item) => ({
+                itemId: item.id,
+                title: item.title,
+                description: truncateText(item.description, 2500),
+                normalizedData: limitRecordForPrompt(safeJsonParse<Record<string, unknown>>(item.normalizedDataJson, {})),
+              })),
+            }).slice(0, 18000),
+          },
+        ],
+        temperature: 0,
+        max_tokens: 800,
+      }),
+      AI_AUTOTAG_TIMEOUT_MS,
+      `OpenAI import autotag request timed out after ${AI_AUTOTAG_TIMEOUT_MS}ms.`,
+    );
+
+    const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
+    const results = normalizeAiAutotagResult(parsed, allowedTags, allowedItemIds);
+    await Promise.all(results.map((result) => prisma.importedItem.update({
+      where: { id: result.itemId },
+      data: { tagsJson: JSON.stringify(result.tags) },
+    })));
+    console.info(`[${requestId}] OpenAI request completed in ${Date.now() - startedAt}ms: import autotagging`, {
+      updatedItems: results.length,
+    });
+    return results.length;
+  } catch (error) {
+    console.warn(`[${requestId}] OpenAI request failed after ${Date.now() - startedAt}ms: import autotagging`, {
+      endpoint: 'import run autotagging',
+      openaiRequest: 'chat.completions.create',
+      provider: config.aiApiProvider,
+      baseURL: config.openaiBaseUrl || 'https://api.openai.com/v1',
+      model: config.openaiImportModel,
+      timeoutMs: AI_AUTOTAG_TIMEOUT_MS,
+      error: error instanceof Error ? error.message : 'Unknown autotagging error',
+    });
+    return 0;
+  }
+}
+
 function previewItems(items: unknown[], config: ImportAIConfig, rules: TagRule[]) {
   return items.slice(0, 5).map((item) => ({
     title: buildTitle(item, config),
@@ -630,9 +870,11 @@ async function analyzeSourceUrl(url: string) {
   };
 }
 
-function normalizeImportSource(source: Prisma.ImportSourceGetPayload<{ include?: never }> & { _count?: { items: number } }) {
+function normalizeImportSource(source: ImportSourceWithCount | (Prisma.ImportSourceGetPayload<{ include?: never }> & { _count?: { items: number }; holding?: { name: string } | null })) {
   return {
     id: source.id,
+    holdingId: source.holdingId ?? null,
+    holdingName: source.holding?.name ?? null,
     name: source.name,
     url: source.url,
     format: source.format as ImportFormat,
@@ -666,11 +908,13 @@ function normalizeImportedItem(item: Prisma.ImportedItemGetPayload<{}>) {
   };
 }
 
-function normalizeImportedItemWithSource(item: Prisma.ImportedItemGetPayload<{ include: { importSource: { select: { name: true; format: true } } } }>) {
+function normalizeImportedItemWithSource(item: ImportedItemWithSource) {
   return {
     ...normalizeImportedItem(item),
     importSourceName: item.importSource.name,
     importSourceFormat: item.importSource.format as ImportFormat,
+    holdingId: item.importSource.holdingId,
+    holdingName: item.importSource.holding?.name ?? null,
   };
 }
 
@@ -702,6 +946,10 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
   const body = (req.body || {}) as Record<string, unknown>;
   const text = parseString(body.text);
   const availableFields = Array.isArray(body.availableFields) ? body.availableFields.map(String) : [];
+  let aiRawContent: string | null = null;
+  let aiParsedJson: unknown = null;
+  let aiNormalizedRule: TagRule | null = null;
+  let aiValidationReason: string | null = null;
   if (!text) {
     res.status(400).json({ error: 'Опишите правило.' });
     return;
@@ -725,7 +973,16 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
         model: config.openaiImportModel,
         response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: 'Return JSON tag rule only: {name, condition:{field, operator, value}}. No code.' },
+          {
+            role: 'system',
+            content: [
+              'Return JSON tag rule only: {name, condition:{field, operator, value}}. No code.',
+              'The name must be a short, clear Russian tag name.',
+              'Do not use the words "тег" or "tag" in the name.',
+              'Do not return English tag names.',
+              'Examples: "Новые машины", "С пробегом", "Кредит", "Премиум".',
+            ].join(' '),
+          },
           { role: 'user', content: JSON.stringify({ text, availableFields, operators: Array.from(TAG_OPERATORS) }) },
         ],
         temperature: 0,
@@ -735,12 +992,28 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
       `OpenAI tag rule request timed out after ${AI_TAG_RULE_TIMEOUT_MS}ms.`,
     );
     console.info(`[${requestId}] OpenAI request completed in ${Date.now() - startedAt}ms: tag rule generation`);
-    const rule = normalizeTagRules([{ id: 'rule-1', ...JSON.parse(response.choices[0]?.message?.content || '{}') }])[0];
-    if (!rule || !availableFields.includes(rule.condition.field)) throw new Error('AI вернул некорректное правило.');
-    res.json({ name: rule.name, enabled: rule.enabled, condition: rule.condition });
+    aiRawContent = response.choices[0]?.message?.content || '';
+    aiParsedJson = JSON.parse(aiRawContent || '{}');
+    const rule = normalizeTagRules([{ id: 'rule-1', ...(aiParsedJson && typeof aiParsedJson === 'object' ? aiParsedJson : {}) }])[0];
+    aiNormalizedRule = rule ?? null;
+    if (!rule) {
+      aiValidationReason = 'Не удалось привести ответ AI к структуре {name, condition:{field, operator, value}}.';
+      throw new Error('AI вернул некорректное правило.');
+    }
+    if (!availableFields.includes(rule.condition.field)) {
+      aiValidationReason = `AI выбрал поле "${rule.condition.field}", которого нет в availableFields.`;
+      throw new Error('AI вернул некорректное правило.');
+    }
+    const normalizedName = normalizeGeneratedTagName(rule.name);
+    if (!isRussianTagName(normalizedName)) {
+      aiValidationReason = `AI вернул название "${rule.name}", после нормализации "${normalizedName}". Нужно короткое русское название без слов "тег/tag".`;
+      throw new Error('AI вернул некорректное название тега.');
+    }
+    res.json({ name: normalizedName, enabled: rule.enabled, condition: rule.condition });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось сформировать правило.';
-    console.warn('Import tag rule AI failed:', {
+    const isTimeout = message.toLowerCase().includes('timed out') || message.toLowerCase().includes('таймаут');
+    const diagnostics = {
       endpoint: 'POST /api/imports/generate-tag-rule',
       openaiRequest: 'chat.completions.create',
       provider: config.aiApiProvider,
@@ -749,20 +1022,102 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
       proxyUsed: Boolean(config.httpsProxy && config.aiApiProvider !== 'proxyapi'),
       timeoutMs: AI_TAG_RULE_TIMEOUT_MS,
       error: message,
+      validationReason: aiValidationReason,
+      availableFields,
+      aiRawContent,
+      aiParsedJson,
+      aiNormalizedRule,
+    };
+    console.warn('Import tag rule AI failed:', {
+      ...diagnostics,
+      aiRawContent: aiRawContent ? aiRawContent.slice(0, 2000) : null,
     });
     res.status(400).json({
-      error: `Таймаут OpenAI на генерации правила тега (${AI_TAG_RULE_TIMEOUT_MS} мс). Endpoint: POST /api/imports/generate-tag-rule.`,
-      details: {
-        endpoint: 'POST /api/imports/generate-tag-rule',
-        openaiRequest: 'chat.completions.create',
-        provider: config.aiApiProvider,
-        baseURL: config.openaiBaseUrl || 'https://api.openai.com/v1',
-        model: config.openaiImportModel,
-        proxyUsed: Boolean(config.httpsProxy && config.aiApiProvider !== 'proxyapi'),
-        timeoutMs: AI_TAG_RULE_TIMEOUT_MS,
-        error: message,
-      },
+      error: isTimeout
+        ? `Таймаут OpenAI на генерации правила тега (${AI_TAG_RULE_TIMEOUT_MS} мс). Endpoint: POST /api/imports/generate-tag-rule.`
+        : message,
+      details: diagnostics,
     });
+  }
+}
+
+export async function handleGenerateImportTagRules(req: Request, res: Response): Promise<void> {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const sampleItems = Array.isArray(body.sampleItems) ? body.sampleItems.slice(0, MAX_AI_AUTOTAG_ITEMS) : [];
+  const availableFields = Array.isArray(body.availableFields) ? body.availableFields.map(String) : [];
+  if (sampleItems.length === 0 || availableFields.length === 0) {
+    res.status(400).json({ error: 'Нужны sample-элементы и список полей.' });
+    return;
+  }
+
+  const compactItems = sampleItems.map((item, index) => ({
+    itemIndex: index + 1,
+    fields: limitRecordForPrompt(flattenObject(item), 50),
+  }));
+  const requestId = createRequestId('tag-rules-ai');
+  const startedAt = Date.now();
+
+  try {
+    console.info(`[${requestId}] OpenAI request started: tag rules generation`, {
+      provider: config.aiApiProvider,
+      baseURL: config.openaiBaseUrl || 'https://api.openai.com/v1',
+      model: config.openaiImportModel,
+      items: compactItems.length,
+      fields: availableFields.length,
+      proxyUsed: Boolean(config.httpsProxy && config.aiApiProvider !== 'proxyapi'),
+    });
+    const response = await withTimeout(
+      openai.chat.completions.create({
+        model: config.openaiImportModel,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'Return only JSON: {"rules":[{"name":"...","condition":{"field":"...","operator":"...","value":...}}]}',
+              `Create up to ${MAX_GENERATED_TAG_RULES} useful autotagging rules for imported business data when possible.`,
+              'Use only fields from availableFields and only supported operators.',
+              'Rule names must be short, clear Russian tag names.',
+              'Do not use the words "тег" or "tag" in rule names.',
+              'Do not return English rule names.',
+              'Prefer broad, stable tags. Do not invent fields.',
+              'Good names: "Новые машины", "С пробегом", "Кредит", "Премиум", "В наличии".',
+            ].join(' '),
+          },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              task: `Generate up to ${MAX_GENERATED_TAG_RULES} autotagging rules from up to ${MAX_AI_AUTOTAG_ITEMS} imported sample items.`,
+              availableFields,
+              operators: Array.from(TAG_OPERATORS),
+              sampleItems: compactItems,
+            }).slice(0, 18000),
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 1600,
+      }),
+      AI_TAG_RULES_TIMEOUT_MS,
+      `OpenAI tag rules request timed out after ${AI_TAG_RULES_TIMEOUT_MS}ms.`,
+    );
+    const rules = normalizeGeneratedTagRules(JSON.parse(response.choices[0]?.message?.content || '{}'), availableFields);
+    if (rules.length === 0) throw new Error('AI не вернул применимые правила.');
+    console.info(`[${requestId}] OpenAI request completed in ${Date.now() - startedAt}ms: tag rules generation`, {
+      rules: rules.length,
+    });
+    res.json({ rules });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось сформировать правила.';
+    console.warn(`[${requestId}] OpenAI request failed after ${Date.now() - startedAt}ms: tag rules generation`, {
+      endpoint: 'POST /api/imports/generate-tag-rules',
+      openaiRequest: 'chat.completions.create',
+      provider: config.aiApiProvider,
+      baseURL: config.openaiBaseUrl || 'https://api.openai.com/v1',
+      model: config.openaiImportModel,
+      timeoutMs: AI_TAG_RULES_TIMEOUT_MS,
+      error: message,
+    });
+    res.status(400).json({ error: message });
   }
 }
 
@@ -786,31 +1141,93 @@ export async function handlePreviewImportConfig(req: Request, res: Response): Pr
   res.json({ previewItems: previewItems(sampleItems, config, rules) });
 }
 
-export async function handleListImports(_req: Request, res: Response): Promise<void> {
+export async function handleListImports(req: Request, res: Response): Promise<void> {
+  const where = await buildImportSourceWhereForRequest(req);
   const items = await prisma.importSource.findMany({
-    include: { _count: { select: { items: true } } },
+    where,
+    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
     orderBy: { updatedAt: 'desc' },
   });
   res.json({ items: items.map(normalizeImportSource) });
 }
 
 export async function handleListImportedItems(req: Request, res: Response): Promise<void> {
-  const limit = Math.min(Math.max(Number(req.query.limit || 100), 1), 500);
+  const limit = Math.min(Math.max(Number(req.query.limit || 25), 1), 100);
+  const offset = Math.max(Number(req.query.offset || 0), 0);
   const sourceId = parseString(req.query.sourceId);
+  const sourceWhere = await buildImportSourceWhereForRequest(req);
+  const search = parseString(req.query.search);
+  const tagFilters = parseTagFilters(req.query.tags);
+  const where: Prisma.ImportedItemWhereInput = {};
+  if (sourceId) where.importSourceId = sourceId;
+  where.importSource = sourceWhere;
+  if (search) {
+    where.OR = [
+      { title: { contains: search } },
+      { description: { contains: search } },
+      { rawDataJson: { contains: search } },
+      { normalizedDataJson: { contains: search } },
+    ];
+  }
+  if (tagFilters.length > 0) {
+    const tagCandidateItems = await prisma.importedItem.findMany({
+      where,
+      include: { importSource: { select: { name: true, format: true, holdingId: true, holding: { select: { name: true } } } } },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const filteredItems = tagCandidateItems.filter((item) => {
+      const tags = safeJsonParse<string[]>(item.tagsJson, []);
+      return tagFilters.every((tag) => tags.includes(tag));
+    });
+    res.json({
+      items: filteredItems.slice(offset, offset + limit).map(normalizeImportedItemWithSource),
+      total: filteredItems.length,
+      limit,
+      offset,
+    });
+    return;
+  }
+
+  const [items, total] = await Promise.all([
+    prisma.importedItem.findMany({
+      where,
+      include: { importSource: { select: { name: true, format: true, holdingId: true, holding: { select: { name: true } } } } },
+      orderBy: { updatedAt: 'desc' },
+      skip: offset,
+      take: limit,
+    }),
+    prisma.importedItem.count({ where }),
+  ]);
+  res.json({ items: items.map(normalizeImportedItemWithSource), total, limit, offset });
+}
+
+export async function handleListImportedTags(req: Request, res: Response): Promise<void> {
+  const holdingId = await getRequestedHoldingFilter(req);
+  if (!holdingId) {
+    res.json({ tags: [] });
+    return;
+  }
   const items = await prisma.importedItem.findMany({
-    where: sourceId ? { importSourceId: sourceId } : undefined,
-    include: { importSource: { select: { name: true, format: true } } },
-    orderBy: { updatedAt: 'desc' },
-    take: limit,
+    where: { importSource: { holdingId } },
+    select: { tagsJson: true },
+    take: 5000,
   });
-  res.json({ items: items.map(normalizeImportedItemWithSource) });
+  const tags = Array.from(new Set(items.flatMap((item) => safeJsonParse<string[]>(item.tagsJson, []))))
+    .sort((a, b) => a.localeCompare(b, 'ru'));
+  res.json({ tags });
 }
 
 export async function handleGetImport(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id || '').trim();
+  try {
+    await assertCanAccessImportSource(req, id);
+  } catch (error) {
+    res.status(error instanceof Error && error.message === 'Импорт не найден.' ? 404 : 403).json({ error: error instanceof Error ? error.message : 'Нет доступа к импорту.' });
+    return;
+  }
   const source = await prisma.importSource.findUnique({
     where: { id },
-    include: { _count: { select: { items: true } } },
+    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
   });
   if (!source) {
     res.status(404).json({ error: 'Импорт не найден.' });
@@ -833,10 +1250,17 @@ export async function handleCreateImport(req: Request, res: Response): Promise<v
   const url = assertSafeSourceUrl(body.url);
   const format = parseString(body.format) as ImportFormat | null;
   const itemsPath = parseString(body.itemsPath);
+  const holdingId = parseString(body.holdingId);
   const aiConfig = normalizeConfig(body.aiConfig, []);
   const tagRules = normalizeTagRules(body.tagRules);
-  if (!name || !format || !itemsPath) {
-    res.status(400).json({ error: 'Название, формат и путь элементов обязательны.' });
+  if (!name || !format || !itemsPath || !holdingId) {
+    res.status(400).json({ error: 'Название, компания, формат и путь элементов обязательны.' });
+    return;
+  }
+  try {
+    await assertCanAccessHolding(req, holdingId);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа к выбранной компании.' });
     return;
   }
   if (!['json', 'xml', 'csv'].includes(format)) {
@@ -845,6 +1269,7 @@ export async function handleCreateImport(req: Request, res: Response): Promise<v
   }
   const created = await prisma.importSource.create({
     data: {
+      holdingId,
       name,
       url,
       format,
@@ -855,13 +1280,24 @@ export async function handleCreateImport(req: Request, res: Response): Promise<v
       aiConfigJson: JSON.stringify(aiConfig),
       tagRulesJson: JSON.stringify(tagRules),
     },
-    include: { _count: { select: { items: true } } },
+    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
   });
-  res.status(201).json({ item: normalizeImportSource(created) });
+  await runImport(created.id);
+  const createdWithItems = await prisma.importSource.findUnique({
+    where: { id: created.id },
+    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
+  });
+  res.status(201).json({ item: normalizeImportSource(createdWithItems || created) });
 }
 
 export async function handleUpdateImport(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id || '').trim();
+  try {
+    await assertCanAccessImportSource(req, id);
+  } catch (error) {
+    res.status(error instanceof Error && error.message === 'Импорт не найден.' ? 404 : 403).json({ error: error instanceof Error ? error.message : 'Нет доступа к импорту.' });
+    return;
+  }
   const body = (req.body || {}) as Record<string, unknown>;
   const data: Prisma.ImportSourceUpdateInput = {};
   if (body.name != null) data.name = parseString(body.name) || undefined;
@@ -875,6 +1311,20 @@ export async function handleUpdateImport(req: Request, res: Response): Promise<v
     data.status = status;
   }
   if (body.schedule !== undefined) data.schedule = parseString(body.schedule);
+  if (body.holdingId !== undefined) {
+    const holdingId = parseString(body.holdingId);
+    if (holdingId) {
+      try {
+        await assertCanAccessHolding(req, holdingId);
+      } catch (error) {
+        res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа к выбранной компании.' });
+        return;
+      }
+      data.holding = { connect: { id: holdingId } };
+    } else {
+      data.holding = { disconnect: true };
+    }
+  }
   if (body.aiConfig != null) {
     const config = normalizeConfig(body.aiConfig, []);
     data.aiConfigJson = JSON.stringify(config);
@@ -884,13 +1334,19 @@ export async function handleUpdateImport(req: Request, res: Response): Promise<v
   const updated = await prisma.importSource.update({
     where: { id },
     data,
-    include: { _count: { select: { items: true } } },
+    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
   });
   res.json({ item: normalizeImportSource(updated) });
 }
 
 export async function handleDeleteImport(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id || '').trim();
+  try {
+    await assertCanAccessImportSource(req, id);
+  } catch (error) {
+    res.status(error instanceof Error && error.message === 'Импорт не найден.' ? 404 : 403).json({ error: error instanceof Error ? error.message : 'Нет доступа к импорту.' });
+    return;
+  }
   await prisma.importSource.delete({ where: { id } });
   res.json({ success: true });
 }
@@ -911,6 +1367,7 @@ export async function runImport(importSourceId: string) {
     const rules = normalizeTagRules(safeJsonParse(source.tagRulesJson, []));
     let createdItems = 0;
     let updatedItems = 0;
+    const processedItemIds: string[] = [];
     for (const item of items) {
       const normalizedData = flattenObject(item);
       const externalId = config.externalIdField ? valueToText(normalizedData[config.externalIdField]) || null : null;
@@ -925,7 +1382,7 @@ export async function runImport(importSourceId: string) {
         select: { id: true },
       });
       if (existing) {
-        await prisma.importedItem.update({
+        const updated = await prisma.importedItem.update({
           where: { id: existing.id },
           data: {
             externalId,
@@ -937,9 +1394,10 @@ export async function runImport(importSourceId: string) {
             contentHash,
           },
         });
+        if (processedItemIds.length < MAX_AI_AUTOTAG_ITEMS) processedItemIds.push(updated.id);
         updatedItems += 1;
       } else {
-        await prisma.importedItem.create({
+        const created = await prisma.importedItem.create({
           data: {
             importSourceId,
             externalId,
@@ -951,9 +1409,11 @@ export async function runImport(importSourceId: string) {
             contentHash,
           },
         });
+        if (processedItemIds.length < MAX_AI_AUTOTAG_ITEMS) processedItemIds.push(created.id);
         createdItems += 1;
       }
     }
+    await applyAiAutotagsToImportedItems(importSourceId, processedItemIds, rules);
     const finished = await prisma.importRun.update({
       where: { id: run.id },
       data: {
@@ -986,5 +1446,11 @@ export async function runImport(importSourceId: string) {
 
 export async function handleRunImport(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id || '').trim();
+  try {
+    await assertCanAccessImportSource(req, id);
+  } catch (error) {
+    res.status(error instanceof Error && error.message === 'Импорт не найден.' ? 404 : 403).json({ error: error instanceof Error ? error.message : 'Нет доступа к импорту.' });
+    return;
+  }
   res.json({ run: await runImport(id) });
 }

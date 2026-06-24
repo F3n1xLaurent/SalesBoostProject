@@ -40,6 +40,7 @@ model Holding {
   id          String   @id @default(cuid())
   name        String
   code        String?  @unique
+  description String?
   type        String   @default("own") // "own" | "franchised"
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
@@ -48,6 +49,13 @@ model Holding {
   dealerships Dealership[]
   memberships AccountMembership[]
   dealershipDirections DealershipDirection[]
+  phoneNumberTypes PhoneNumberType[]
+  importSources ImportSource[]
+  callCustomerProfiles CallCustomerProfile[]
+  callScripts CallScript[]
+  callPlans CallPlan[]
+  trainerSessions TrainerSession[]
+  trainerDailyPlans TrainerDailyPlan[]
 
   @@map("holdings")
 }
@@ -58,6 +66,7 @@ model Dealership {
   holdingId   String?
   name        String
   code        String?  @unique
+  description String?
   type        String   @default("own") // "own" | "franchised"
   directionsJson String @default("[]")
   city        String?
@@ -72,6 +81,9 @@ model Dealership {
   memberships     AccountMembership[]
   managerProfiles ManagerProfile[]
   phoneNumbers    PhoneNumber[]
+  voiceCallSessions VoiceCallSession[]
+  trainerSessions TrainerSession[]
+  trainerDailyPlans TrainerDailyPlan[]
 
   @@index([holdingId])
   @@map("dealerships")
@@ -96,6 +108,7 @@ model DealershipDirection {
 
 model ImportSource {
   id          String   @id @default(cuid())
+  holdingId   String?
   name        String
   url         String
   format      String
@@ -112,8 +125,10 @@ model ImportSource {
 
   items       ImportedItem[]
   runs        ImportRun[]
+  holding     Holding? @relation(fields: [holdingId], references: [id], onDelete: SetNull)
 
   @@index([status])
+  @@index([holdingId])
   @@map("import_sources")
 }
 
@@ -136,6 +151,118 @@ model ImportedItem {
   @@index([importSourceId])
   @@index([externalId])
   @@map("imported_items")
+}
+
+model CallCustomerProfile {
+  id                 String   @id @default(cuid())
+  holdingId          String
+  name               String
+  voiceId            String
+  age                Int
+  ageFrom            Int      @default(35)
+  ageTo              Int      @default(35)
+  character          String   @default("")
+  temperament        String
+  patience           String
+  replyLength        String
+  communicationStyle String   @default("")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  holding            Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+
+  @@index([holdingId, updatedAt])
+  @@map("call_customer_profiles")
+}
+
+model CallCustomerVoice {
+  id             String   @id
+  name           String
+  elevenLabsCode String?
+  openaiCode     String?
+  isEnabled      Boolean  @default(true)
+  isDeleted      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([isDeleted, isEnabled, name])
+  @@map("call_customer_voices")
+}
+
+model CallScript {
+  id                  String   @id @default(cuid())
+  holdingId           String
+  name                String
+  profileIdsJson      String   @default("[]")
+  context             String   @default("")
+  dataConditionJson   String   @default("{}")
+  objectionsJson      String   @default("[]")
+  questionsJson       String   @default("[]")
+  successCriteriaJson String   @default("[]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  holding             Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  trainerSessions     TrainerSession[]
+
+  @@index([holdingId, updatedAt])
+  @@map("call_scripts")
+}
+
+model CallPlan {
+  id                  String   @id @default(cuid())
+  holdingId           String
+  name                String
+  targetType          String   // "employees" | "dealerships"
+  targetIdsJson       String   @default("[]")
+  scriptId            String
+  phoneNumberTypeId   String
+  frequency           String   // "daily" | "weekly"
+  callTimeFrom        String
+  callTimeTo          String
+  lastInitiatedAt     DateTime?
+  lastBatchId         String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  holding             Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  calls               CallPlanCall[]
+  voiceCallSessions   VoiceCallSession[]
+
+  @@index([holdingId, updatedAt])
+  @@map("call_plans")
+}
+
+model CallPlanCall {
+  id                  String   @id @default(cuid())
+  planId              String
+  callId              String   @unique
+  employeeId          String?
+  employeeName        String?
+  dealershipId        String?
+  dealershipName      String?
+  phone               String
+  phoneNumberTypeId   String
+  scriptId            String
+  profileId           String?
+  importedItemId      String?
+  promptText          String
+  criteriaJson        String   @default("[]")
+  status              String   @default("running")
+  outcome             String?
+  startedAt           DateTime @default(now())
+  endedAt             DateTime?
+  transcriptJson      String?
+  evaluationJson      String?
+  totalScore          Float?
+  failureReason       String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  plan                CallPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([planId, startedAt])
+  @@map("call_plan_calls")
 }
 
 model ImportRun {
@@ -169,14 +296,17 @@ model CityDictionary {
 
 model PhoneNumberType {
   id        String   @id @default(cuid())
+  holdingId String?
   name      String
   ownership String   // "dealership" | "user"
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  holding      Holding?      @relation(fields: [holdingId], references: [id], onDelete: SetNull)
   phoneNumbers PhoneNumber[]
 
+  @@index([holdingId])
   @@index([ownership, isActive])
   @@map("phone_number_types")
 }
@@ -218,6 +348,11 @@ model ManagerProfile {
   dealership      Dealership @relation(fields: [dealershipId], references: [id], onDelete: Cascade)
   account         Account?   @relation(fields: [accountId], references: [id], onDelete: SetNull)
   telegramUser    User?      @relation("TelegramUserManagerProfile", fields: [telegramUserId], references: [id], onDelete: SetNull)
+  voiceCallSessions VoiceCallSession[]
+  trainerSessions TrainerSession[]
+  trainerScores TrainerScore[]
+  trainerStreak TrainerStreak?
+  trainerDailyPlans TrainerDailyPlan[]
 
   @@index([dealershipId])
   @@index([accountId])
@@ -358,6 +493,99 @@ model TrainingSession {
   @@map("training_sessions")
 }
 
+model TrainerSession {
+  id                     String    @id @default(cuid())
+  employeeId             String
+  branchId               String?
+  companyId              String?
+  sessionType            String    // "plan" | "free"
+  scenarioId             String?
+  status                 String    @default("in_progress") // "in_progress" | "completed" | "cancelled" | "failed" | "paused"
+  difficulty             String    @default("medium") // "easy" | "medium" | "hard"
+  clientType             String?   // "random" | configured client category
+  elevenLabsConversationId String?
+  caseContextJson        String    @default("{}")
+  transcriptJson         String    @default("[]")
+  evaluationJson         String?
+  dimensionsJson         String?
+  checklistResultsJson   String?
+  objectionsAnalysisJson String?
+  topRecommendationsJson String?
+  score                  Float?
+  baseScore              Float?
+  multiplier             Float     @default(1)
+  finalPoints            Int?
+  durationSec            Int?
+  failureReason          String?
+  startedAt              DateTime  @default(now())
+  completedAt            DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  employee               ManagerProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  branch                 Dealership?    @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  company                Holding?       @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  scenario               CallScript?    @relation(fields: [scenarioId], references: [id], onDelete: SetNull)
+  scoreEntry             TrainerScore?
+
+  @@index([employeeId, startedAt])
+  @@index([branchId, startedAt])
+  @@index([companyId, startedAt])
+  @@index([scenarioId, startedAt])
+  @@index([elevenLabsConversationId])
+  @@index([sessionType, status])
+  @@map("trainer_sessions")
+}
+
+model TrainerScore {
+  id               String   @id @default(cuid())
+  employeeId       String
+  trainerSessionId String   @unique
+  baseScore        Float
+  multiplier       Float
+  finalScore       Int
+  earnedAt         DateTime @default(now())
+
+  employee         ManagerProfile  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  trainerSession   TrainerSession  @relation(fields: [trainerSessionId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, earnedAt])
+  @@map("trainer_scores")
+}
+
+model TrainerStreak {
+  employeeId       String   @id
+  currentStreak    Int      @default(0)
+  longestStreak    Int      @default(0)
+  lastActiveDate   String?
+  updatedAt        DateTime @updatedAt
+
+  employee         ManagerProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@map("trainer_streaks")
+}
+
+model TrainerDailyPlan {
+  id               String   @id @default(cuid())
+  employeeId       String
+  companyId        String?
+  branchId         String?
+  planDate         String
+  sessionsJson     String   @default("[]")
+  generatedAt      DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  employee         ManagerProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  company          Holding?       @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  branch           Dealership?    @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@unique([employeeId, planDate])
+  @@index([companyId, planDate])
+  @@index([branchId, planDate])
+  @@map("trainer_daily_plans")
+}
+
 model DialogMessage {
   id        Int      @id @default(autoincrement())
   sessionId Int
@@ -453,15 +681,30 @@ model VoiceCallSession {
   callId           String    @unique  // UUID from start-voice-call
   to               String    // normalized phone +7...
   scenario         String?   // "dialog" | "realtime" | "realtime_pure"
+  source           String    @default("manual") // "manual" | "scheduled" | "batch" | "demo"
+  dealershipId     String?
+  managerId        String?
+  planId           String?
   startedAt        DateTime  @default(now())
   endedAt          DateTime?
   outcome          String?   // "completed" | "no_answer" | "busy" | "failed" | "disconnected"
   durationSec      Int?      // talk time in seconds (null if no answer)
   transcriptJson   String?   // JSON: [{ role: "manager"|"client", text: string }]
   evaluationJson   String?   // same shape as TrainingSession.evaluationJson (V2)
+  dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson
+  checklistResultsJson String? // JSON: checklist results extracted from evaluationJson
+  caseContextJson  String?   // JSON: scenario/profile/item context used for the call
   totalScore       Float?    // 0-100
   failureReason    String?   // if early fail
 
+  dealership       Dealership?     @relation(fields: [dealershipId], references: [id], onDelete: SetNull)
+  manager          ManagerProfile? @relation(fields: [managerId], references: [id], onDelete: SetNull)
+  plan             CallPlan?       @relation(fields: [planId], references: [id], onDelete: SetNull)
+
+  @@index([dealershipId, startedAt])
+  @@index([managerId, startedAt])
+  @@index([planId, startedAt])
+  @@index([source, startedAt])
   @@map("voice_call_sessions")
 }
 

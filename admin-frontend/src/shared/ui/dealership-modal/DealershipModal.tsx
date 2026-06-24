@@ -15,6 +15,7 @@ import { useToast } from '../toast/ToastProvider';
 
 type DealershipFormState = {
   name: string;
+  description: string;
   type: DealershipType;
   directions: DealershipDirection[];
   city: string;
@@ -29,12 +30,15 @@ type Props = {
   mode: 'create' | 'edit';
   open: boolean;
   dealership?: DealershipItem | null;
+  fixedHoldingId?: string | null;
+  fixedHoldingName?: string | null;
   onClose: () => void;
   onSaved: (dealership: DealershipItem) => void;
 };
 
 const EMPTY_FORM: DealershipFormState = {
   name: '',
+  description: '',
   type: 'own',
   directions: [],
   city: '',
@@ -49,6 +53,7 @@ function fillForm(dealership?: DealershipItem | null): DealershipFormState {
   if (!dealership) return EMPTY_FORM;
   return {
     name: dealership.name,
+    description: dealership.description || '',
     type: dealership.type || 'own',
     directions: dealership.directions || [],
     city: dealership.city || '',
@@ -75,6 +80,7 @@ function overlayCardStyle(width = 640): React.CSSProperties {
 function normalizePayload(form: DealershipFormState) {
   return {
     name: form.name.trim(),
+    description: form.description.trim() || null,
     type: form.type,
     directions: form.directions,
     city: form.city.trim() || null,
@@ -202,7 +208,7 @@ function CitySelect(props: {
   );
 }
 
-export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Props) {
+export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedHoldingName, onClose, onSaved }: Props) {
   const [form, setForm] = useState<DealershipFormState>(EMPTY_FORM);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [directions, setDirections] = useState<DealershipDirectionItem[]>([]);
@@ -213,23 +219,31 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
 
   const title = mode === 'create' ? 'Создать точку' : 'Редактировать точку';
   const submitLabel = mode === 'create' ? 'Создать точку' : 'Сохранить изменения';
+  const lockedHoldingId = mode === 'create' ? fixedHoldingId || '' : '';
   const isDirty = useMemo(
     () => JSON.stringify(normalizePayload(form)) !== JSON.stringify(normalizePayload(initialForm)),
     [form, initialForm],
   );
   const canSubmit = useMemo(() => {
-    return form.name.trim().length > 0 && form.workingHoursFrom <= form.workingHoursTo && (mode === 'create' || isDirty);
-  }, [form.name, form.workingHoursFrom, form.workingHoursTo, isDirty, mode]);
+    return form.name.trim().length > 0 && form.workingHoursFrom <= form.workingHoursTo && (mode !== 'create' || !!form.holdingId) && (mode === 'create' || isDirty);
+  }, [form.holdingId, form.name, form.workingHoursFrom, form.workingHoursTo, isDirty, mode]);
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
-      setForm(initialForm);
-      fetchHoldings()
-        .then(setHoldings)
-        .catch(() => setHoldings([]));
+      setForm(lockedHoldingId ? { ...initialForm, holdingId: lockedHoldingId } : initialForm);
+      if (!lockedHoldingId) {
+        fetchHoldings()
+          .then(setHoldings)
+          .catch(() => setHoldings([]));
+      }
     }
     wasOpenRef.current = open;
-  }, [open, initialForm]);
+  }, [lockedHoldingId, open, initialForm]);
+
+  useEffect(() => {
+    if (!open || !lockedHoldingId) return;
+    setForm((current) => current.holdingId === lockedHoldingId ? current : { ...current, holdingId: lockedHoldingId });
+  }, [lockedHoldingId, open]);
 
   useEffect(() => {
     if (!open || !form.holdingId) {
@@ -264,6 +278,10 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
     }
     if (form.workingHoursTo < form.workingHoursFrom) {
       showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Время окончания работы не может быть меньше времени начала.' });
+      return;
+    }
+    if (mode === 'create' && !form.holdingId) {
+      showToast({ type: 'error', title: 'Не удалось создать точку', description: 'Перед созданием точки выберите компанию.' });
       return;
     }
     setSaving(true);
@@ -328,9 +346,36 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
+          {lockedHoldingId ? (
+            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: '#F8FAFC' }}>
+              Компания: {fixedHoldingName || 'выбранная компания'}
+            </div>
+          ) : (
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span>Компания</span>
+              <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
+                <option value="">Без компании</option>
+                {holdings.map((holding) => (
+                  <option key={holding.id} value={holding.id}>{holding.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
             <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+          </label>
+
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span>Описание</span>
+            <textarea
+              className="sa-input"
+              rows={4}
+              value={form.description}
+              onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+              placeholder="Заполните информацию о точке, расскажите чем занимается, какое направление"
+            />
           </label>
 
           <div style={{ display: 'grid', gap: 6 }}>
@@ -422,16 +467,6 @@ export function DealershipModal({ mode, open, dealership, onClose, onSaved }: Pr
               />
             </label>
           </div>
-
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span>Компания</span>
-            <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
-              <option value="">Без компании</option>
-              {holdings.map((holding) => (
-                <option key={holding.id} value={holding.id}>{holding.name}</option>
-              ))}
-            </select>
-          </label>
 
           {mode === 'edit' && (
             <button

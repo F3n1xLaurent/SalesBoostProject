@@ -78,6 +78,7 @@ function normalizeHoldingResponse(
     id: holding.id,
     name: holding.name,
     code: holding.code,
+    description: holding.description,
     type: holding.type as HoldingType,
     isActive: holding.isActive,
     createdAt: holding.createdAt,
@@ -113,6 +114,7 @@ function normalizeDealershipResponse(
     id: dealership.id,
     name: dealership.name,
     code: dealership.code,
+    description: dealership.description,
     type: dealership.type as DealershipType,
     directions: parseDealershipDirectionsJson(dealership.directionsJson),
     city: dealership.city,
@@ -230,6 +232,7 @@ function formatPhoneNumber(value: unknown): string | null {
 function normalizePhoneNumberTypeResponse(type: Prisma.PhoneNumberTypeGetPayload<{}>) {
   return {
     id: type.id,
+    holdingId: type.holdingId,
     name: type.name,
     ownership: type.ownership as PhoneNumberOwnership,
     isActive: type.isActive,
@@ -611,6 +614,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
   const body = (req.body || {}) as Record<string, unknown>;
   const name = parseString(body.name);
   const code = parseString(body.code);
+  const description = parseString(body.description);
   const type = parseHoldingType(body.type, 'own');
   const isActive = parseBoolean(body.isActive, true);
   const dealershipIds = parseDealershipIds(body.dealershipIds);
@@ -624,7 +628,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
     const created = await prisma.$transaction(async (tx) => {
       const resolvedCode = code ?? await generateUniqueHoldingCode(tx, name);
       const holding = await tx.holding.create({
-        data: { name, code: resolvedCode, type, isActive },
+        data: { name, code: resolvedCode, description, type, isActive },
       });
 
       if (dealershipIds.length > 0) {
@@ -674,6 +678,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
   const body = (req.body || {}) as Record<string, unknown>;
   const name = body.name != null ? parseString(body.name) : undefined;
   const code = body.code != null ? parseString(body.code) : undefined;
+  const description = body.description !== undefined ? parseString(body.description) : undefined;
   const type = body.type != null ? parseHoldingType(body.type, 'own') : undefined;
   const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
   const dealershipIds = body.dealershipIds != null ? parseDealershipIds(body.dealershipIds) : undefined;
@@ -688,6 +693,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
       const holdingData: Prisma.HoldingUpdateInput = {};
       if (name !== undefined && name !== null) holdingData.name = name;
       if (code !== undefined) holdingData.code = code;
+      if (description !== undefined) holdingData.description = description;
       if (type !== undefined) holdingData.type = type;
       if (isActive !== undefined) holdingData.isActive = isActive;
 
@@ -1041,6 +1047,7 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   const body = (req.body || {}) as Record<string, unknown>;
   const name = parseString(body.name);
   const code = parseString(body.code);
+  const description = parseString(body.description);
   const type = parseDealershipType(body.type, 'own');
   const directions = parseDealershipDirections(body.directions);
   const city = parseString(body.city);
@@ -1069,6 +1076,7 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
       data: {
         name,
         code: resolvedCode,
+        description,
         type,
         directionsJson: JSON.stringify(directions),
         city,
@@ -1118,6 +1126,7 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
   const body = (req.body || {}) as Record<string, unknown>;
   const name = body.name != null ? parseString(body.name) : undefined;
   const code = body.code != null ? parseString(body.code) : undefined;
+  const description = body.description !== undefined ? parseString(body.description) : undefined;
   const type = body.type != null ? parseDealershipType(body.type, 'own') : undefined;
   const directions = body.directions != null ? parseDealershipDirections(body.directions) : undefined;
   const city = body.city != null ? parseString(body.city) : undefined;
@@ -1160,6 +1169,7 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
     const dealershipData: Prisma.DealershipUpdateInput = {};
     if (name !== undefined && name !== null) dealershipData.name = name;
     if (code !== undefined) dealershipData.code = code;
+    if (description !== undefined) dealershipData.description = description;
     if (type !== undefined) dealershipData.type = type;
     if (directions !== undefined) dealershipData.directionsJson = JSON.stringify(directions);
     if (city !== undefined) dealershipData.city = city;
@@ -1235,14 +1245,42 @@ export async function handleListPhoneNumberTypes(req: Request, res: Response): P
 
   const ownershipRaw = parseString(req.query.ownership);
   const ownership = ownershipRaw === 'dealership' || ownershipRaw === 'user' ? ownershipRaw : null;
+  const holdingId = parseString(req.query.holdingId);
   const onlyActive = parseString(req.query.active) === 'true';
 
   try {
+    const where: Prisma.PhoneNumberTypeWhereInput = {
+      ...(ownership ? { ownership } : {}),
+      ...(onlyActive ? { isActive: true } : {}),
+    };
+    if (holdingId) {
+      if (!canManageHoldingForAccount(account, holdingId) && !isDealershipAdmin(account)) {
+        res.status(403).json({ error: 'Нет доступа к этой компании.' });
+        return;
+      }
+      if (isDealershipAdmin(account) && !canManageHoldingForAccount(account, holdingId)) {
+        const allowedDealership = await prisma.dealership.findFirst({
+          where: { id: { in: getDealershipIds(account) }, holdingId },
+          select: { id: true },
+        });
+        if (!allowedDealership) {
+          res.status(403).json({ error: 'Нет доступа к этой компании.' });
+          return;
+        }
+      }
+      where.holdingId = holdingId;
+    } else if (isHoldingAdmin(account)) {
+      where.holdingId = { in: getHoldingIds(account) };
+    } else if (isDealershipAdmin(account)) {
+      const dealerships = await prisma.dealership.findMany({
+        where: { id: { in: getDealershipIds(account) }, holdingId: { not: null } },
+        select: { holdingId: true },
+      });
+      where.holdingId = { in: [...new Set(dealerships.map((item) => item.holdingId).filter(Boolean))] as string[] };
+    }
+
     const items = await prisma.phoneNumberType.findMany({
-      where: {
-        ...(ownership ? { ownership } : {}),
-        ...(onlyActive ? { isActive: true } : {}),
-      },
+      where,
       orderBy: [{ ownership: 'asc' }, { name: 'asc' }],
     });
     res.json({ items: items.map(normalizePhoneNumberTypeResponse) });
@@ -1267,18 +1305,27 @@ export async function handleCreatePhoneNumberType(req: Request, res: Response): 
   }
 
   const body = (req.body || {}) as Record<string, unknown>;
+  const holdingId = parseString(body.holdingId);
   const name = parseString(body.name);
   const ownership = parsePhoneNumberOwnership(body.ownership);
   const isActive = parseBoolean(body.isActive, true);
 
+  if (!holdingId) {
+    res.status(400).json({ error: 'Компания обязательна.' });
+    return;
+  }
   if (!name) {
     res.status(400).json({ error: 'Название типа номера обязательно.' });
+    return;
+  }
+  if (!canManageHoldingForAccount(account, holdingId)) {
+    res.status(403).json({ error: 'Нет доступа к этой компании.' });
     return;
   }
 
   try {
     const created = await prisma.phoneNumberType.create({
-      data: { name, ownership, isActive },
+      data: { holdingId, name, ownership, isActive },
     });
     res.status(201).json({ item: normalizePhoneNumberTypeResponse(created) });
   } catch (error) {
@@ -1303,6 +1350,7 @@ export async function handleUpdatePhoneNumberType(req: Request, res: Response): 
 
   const typeId = String(req.params.typeId || '').trim();
   const body = (req.body || {}) as Record<string, unknown>;
+  const holdingId = body.holdingId != null ? parseString(body.holdingId) : undefined;
   const name = body.name != null ? parseString(body.name) : undefined;
   const ownership = body.ownership != null ? parsePhoneNumberOwnership(body.ownership) : undefined;
   const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
@@ -1315,11 +1363,29 @@ export async function handleUpdatePhoneNumberType(req: Request, res: Response): 
     res.status(400).json({ error: 'Название типа номера не может быть пустым.' });
     return;
   }
+  if (body.holdingId != null && !holdingId) {
+    res.status(400).json({ error: 'Компания обязательна.' });
+    return;
+  }
+  if (holdingId && !canManageHoldingForAccount(account, holdingId)) {
+    res.status(403).json({ error: 'Нет доступа к этой компании.' });
+    return;
+  }
 
   try {
+    const current = await prisma.phoneNumberType.findUnique({ where: { id: typeId }, select: { holdingId: true } });
+    if (!current) {
+      res.status(404).json({ error: 'Тип номера не найден.' });
+      return;
+    }
+    if (current.holdingId && !canManageHoldingForAccount(account, current.holdingId)) {
+      res.status(403).json({ error: 'Нет доступа к этой компании.' });
+      return;
+    }
     const updated = await prisma.phoneNumberType.update({
       where: { id: typeId },
       data: {
+        ...(holdingId !== undefined ? { holdingId } : {}),
         ...(name !== undefined && name !== null ? { name } : {}),
         ...(ownership !== undefined ? { ownership } : {}),
         ...(isActive !== undefined ? { isActive } : {}),

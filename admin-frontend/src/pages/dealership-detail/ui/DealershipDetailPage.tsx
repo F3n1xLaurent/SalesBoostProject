@@ -1,12 +1,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router';
 import { apiFetch } from '../../../entities/session';
 import {
-  getMockDealershipDetail,
-  getMockDealershipDetailByName,
   STATUS_LABELS,
   type DealershipDetail as Detail,
 } from '../../../shared/lib/admin-panel/mockData';
-import type { DealershipItem, DealershipType } from '../../../shared/api/adminPanel';
+import {
+  excludeDealershipFromAnalyticsPlan,
+  fetchAnalyticsDealershipDetail,
+  fetchAnalyticsDealershipPlans,
+  type AnalyticsAISummary,
+  type AnalyticsPlanParticipation,
+  type DealershipItem,
+  type DealershipType,
+} from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { DealershipPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { ratingClass, answerRateClass, answerTimeClass, statusBadgeClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
@@ -16,6 +23,9 @@ import {
   type CallBatchSnapshot,
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
+import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
+import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
+import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 
 /* ────────────────────── Props ────────────────────── */
 
@@ -26,6 +36,22 @@ type Props = {
   onOpenEmployee?: (id: string) => void;
   onOpenBatchDetail?: (batchId: string) => void;
   onDealershipSaved?: (dealership: DealershipItem) => void;
+};
+
+type DealershipOutcomeBreakdown = {
+  completed: number;
+  no_answer: number;
+  busy: number;
+  failed: number;
+  disconnected: number;
+};
+
+type DealershipAnalyticsDetail = Detail & {
+  aiSummary?: AnalyticsAISummary;
+  noAnswers?: number;
+  outcomeBreakdown?: DealershipOutcomeBreakdown;
+  communicationBreakdown?: { label: string; percent: number; color: string }[];
+  scriptCompliance?: { block: string; rate: number; hint?: string }[];
 };
 
 /* ────────────────────── KPI Card ────────────────────── */
@@ -43,7 +69,57 @@ function dealershipTypeLabel(type?: DealershipType | null): string {
   return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
 }
 
-function buildFallbackDetail(dealership: DealershipItem): Detail {
+function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
+  return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
+}
+
+function planTargetLabel(plan: AnalyticsPlanParticipation): string {
+  if (plan.targetMatch === 'dealership') return 'Точка целиком';
+  return plan.targetsCount === 1 ? '1 сотрудник точки' : `${plan.targetsCount} сотрудников точки`;
+}
+
+function PlanParticipationList({
+  plans,
+  excludingPlanId,
+  onOpenPlan,
+  onExcludePlan,
+}: {
+  plans: AnalyticsPlanParticipation[];
+  excludingPlanId: string | null;
+  onOpenPlan: (id: string) => void;
+  onExcludePlan: (plan: AnalyticsPlanParticipation) => void;
+}) {
+  if (plans.length === 0) {
+    return <div className="sa-meta" style={{ padding: 18 }}>Нет активных расписаний</div>;
+  }
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {plans.map((plan) => (
+        <div key={plan.id} className="sa-card" style={{ padding: 14, display: 'flex', gap: 14, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 220 }}>
+            <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
+            <div className="sa-meta" style={{ marginTop: 4 }}>
+              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)} · {plan.callTimeFrom}-{plan.callTimeTo}
+              {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="sa-btn-outline sa-btn-sm" onClick={() => onOpenPlan(plan.id)}>Настроить</button>
+            <button
+              className="sa-btn-outline sa-btn-sm"
+              disabled={excludingPlanId === plan.id}
+              onClick={() => onExcludePlan(plan)}
+            >
+              {excludingPlanId === plan.id ? 'Исключаем...' : 'Исключить'}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function buildFallbackDetail(dealership: DealershipItem): DealershipAnalyticsDetail {
   return {
     id: dealership.id,
     name: dealership.name,
@@ -62,6 +138,10 @@ function buildFallbackDetail(dealership: DealershipItem): Detail {
     topIssues: [],
     topQuestions: [],
     recommendedTrainings: [],
+    noAnswers: 0,
+    outcomeBreakdown: { completed: 0, no_answer: 0, busy: 0, failed: 0, disconnected: 0 },
+    communicationBreakdown: [],
+    scriptCompliance: [],
   };
 }
 
@@ -166,9 +246,177 @@ function Heatmap({ hourly }: { hourly: number[] }) {
   );
 }
 
+function OutcomeBreakdown({ data }: { data?: DealershipOutcomeBreakdown }) {
+  const rows = [
+    { key: 'completed' as const, label: 'Завершённые', color: '#34D399' },
+    { key: 'no_answer' as const, label: 'Недозвоны', color: '#F87171' },
+    { key: 'busy' as const, label: 'Занято', color: '#FBBF24' },
+    { key: 'failed' as const, label: 'Ошибки', color: '#FB7185' },
+    { key: 'disconnected' as const, label: 'Сброшены', color: '#94A3B8' },
+  ];
+  const total = data ? Object.values(data).reduce((sum, value) => sum + value, 0) : 0;
+  if (!data || total === 0) return <div className="sa-chart-empty">Нет звонков для разбора</div>;
+  return (
+    <div className="sa-hbar-list">
+      {rows.map((row) => {
+        const count = data[row.key] ?? 0;
+        const pct = Math.round((count / total) * 100);
+        return (
+          <div key={row.key} className="sa-hbar-row">
+            <span className="sa-hbar-label">{row.label}</span>
+            <div className="sa-hbar-track">
+              <div className="sa-hbar-fill" style={{ width: `${pct}%`, background: row.color }} />
+            </div>
+            <span className="sa-hbar-score">{count}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CommunicationBreakdown({ data }: { data?: { label: string; percent: number; color: string }[] }) {
+  const visible = (data ?? []).filter((item) => item.percent > 0);
+  if (visible.length === 0) return <div className="sa-chart-empty">Нет оценки коммуникации</div>;
+  return (
+    <div className="sa-comm-grid">
+      {visible.map((item) => (
+        <div key={item.label} className="sa-comm-stat">
+          <div className="sa-comm-stat-bar" style={{ background: item.color, width: `${Math.max(item.percent, 4)}%` }} />
+          <div className="sa-comm-stat-info">
+            <span className="sa-comm-stat-label">{item.label}</span>
+            <span className="sa-comm-stat-pct" style={{ color: item.color }}>{item.percent}%</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScriptCompliance({ data }: { data?: { block: string; rate: number; hint?: string }[] }) {
+  if (!data || data.length === 0) return <div className="sa-chart-empty">Нет рассчитанных блоков скрипта</div>;
+  return (
+    <div className="sa-hbar-list">
+      {[...data].sort((a, b) => a.rate - b.rate).map((item) => (
+        <div key={item.block} className="sa-hbar-row" title={item.hint}>
+          <span className="sa-hbar-label">{item.block}</span>
+          <div className="sa-hbar-track">
+            <div
+              className="sa-hbar-fill"
+              style={{ width: `${item.rate}%`, background: item.rate >= 80 ? '#34D399' : item.rate >= 60 ? '#FBBF24' : '#F87171' }}
+            />
+          </div>
+          <span className={`sa-hbar-score ${ratingClass(item.rate)}`}>{item.rate}%</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ────────────────────── Employees table ────────────────────── */
 
+function EmployeeComparisonModal({
+  rows,
+  onClose,
+  onOpenEmployee,
+}: {
+  rows: Detail['employees'];
+  onClose: () => void;
+  onOpenEmployee?: (id: string) => void;
+}) {
+  if (rows.length < 2) return null;
+  const bestScore = Math.max(...rows.map((row) => row.aiRating));
+  const worstScore = Math.min(...rows.map((row) => row.aiRating));
+  const bestAudits = Math.max(...rows.map((row) => row.auditsCount));
+  const worstAudits = Math.min(...rows.map((row) => row.auditsCount));
+  const leader = [...rows].sort((a, b) => b.aiRating - a.aiRating)[0];
+  const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
+      <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
+        <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
+          <div>
+            <h2 className="sa-section-title" style={{ marginBottom: 4 }}>Сравнение менеджеров салона</h2>
+            <div className="sa-meta">Выбрано: {rows.length}</div>
+          </div>
+          <button type="button" className="sa-btn-outline" onClick={onClose}>Закрыть</button>
+        </div>
+        <div className="sa-table-wrap">
+          <table className="sa-table">
+            <thead>
+              <tr>
+                <th>Метрика</th>
+                {rows.map((row) => (
+                  <th key={row.id} className="sa-text-right">
+                    <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee?.(row.id)}>{row.name}</button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>AI-рейтинг</td>
+                {rows.map((row) => (
+                  <td key={row.id} className="sa-text-right">
+                    <span className={row.aiRating === bestScore ? 'sa-score-green' : row.aiRating === worstScore && bestScore !== worstScore ? 'sa-score-red' : ''}>{row.aiRating}</span>
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td>Проверки</td>
+                {rows.map((row) => (
+                  <td key={row.id} className="sa-text-right">
+                    <span className={row.auditsCount === bestAudits ? 'sa-score-green' : row.auditsCount === worstAudits && bestAudits !== worstAudits ? 'sa-score-red' : ''}>{row.auditsCount}</span>
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td>Типовая ошибка</td>
+                {rows.map((row) => (
+                  <td key={row.id} className="sa-text-right">{row.typicalError}</td>
+                ))}
+              </tr>
+              <tr>
+                <td>Статус</td>
+                {rows.map((row) => (
+                  <td key={row.id} className="sa-text-right">{row.status}</td>
+                ))}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <ComparisonAISummary level="dealership-managers" items={rows.map((row) => ({ ...row, fullName: row.name }))} />
+        </div>
+        <div className="sa-card" style={{ marginTop: 16 }}>
+          <h3 className="sa-card-heading">Анализ различий</h3>
+          <p className="sa-meta" style={{ lineHeight: 1.6 }}>
+            Лидер по рейтингу — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee?.(leader.id)}>{leader.name}</button>.
+            {' '}Самый слабый показатель — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee?.(lagger.id)}>{lagger.name}</button>.
+            {' '}Разницу стоит разбирать через типовые ошибки и историю звонков каждого менеджера.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['employees']; onOpenEmployee?: (id: string) => void }) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const selectedRows = employees.filter((employee) => selectedIds.includes(employee.id));
+
+  function toggleEmployee(id: string) {
+    const employee = employees.find((item) => item.id === id);
+    if (employee && employee.auditsCount === 0) return;
+    setSelectedIds((current) => {
+      if (current.includes(id)) return current.filter((item) => item !== id);
+      if (current.length >= 6) return current;
+      return [...current, id];
+    });
+  }
+
   if (employees.length === 0) return <div className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Нет данных о сотрудниках</div>;
   return (
     <>
@@ -176,6 +424,7 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
         <table className="sa-table sa-table-sortable">
           <thead>
             <tr>
+              <th style={{ width: 44 }} />
               <th>Сотрудник</th>
               <th className="sa-text-right">AI-рейтинг</th>
               <th className="sa-text-right">Проверки</th>
@@ -193,6 +442,15 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
                 tabIndex={0}
                 onKeyDown={(ev) => ev.key === 'Enter' && onOpenEmployee?.(e.id)}
               >
+                <td onClick={(event) => event.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(e.id)}
+                    disabled={e.auditsCount === 0 || (!selectedIds.includes(e.id) && selectedIds.length >= 6)}
+                    onChange={() => toggleEmployee(e.id)}
+                    aria-label={`Выбрать ${e.name}`}
+                  />
+                </td>
                 <td style={{ fontWeight: 600 }}>{e.name}</td>
                 <td className="sa-text-right"><span className={ratingClass(e.aiRating)}>{e.aiRating}</span></td>
                 <td className="sa-text-right">{e.auditsCount}</td>
@@ -207,13 +465,25 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
           </tbody>
         </table>
       </div>
+      {selectedRows.length > 0 && (
+        <div style={{ position: 'fixed', left: 24, right: 24, bottom: 24, zIndex: 60, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div className="sa-card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', pointerEvents: 'auto', boxShadow: '0 16px 40px rgba(15,23,42,.18)' }}>
+            <strong>Выбрано: {selectedRows.length}</strong>
+            <button type="button" className="sa-btn-outline" disabled={selectedRows.length < 2} onClick={() => setComparisonOpen(true)}>Сравнить</button>
+            <button type="button" className="sa-btn-text" onClick={() => setSelectedIds([])}>Сбросить</button>
+          </div>
+        </div>
+      )}
+      {comparisonOpen && (
+        <EmployeeComparisonModal rows={selectedRows} onClose={() => setComparisonOpen(false)} onOpenEmployee={onOpenEmployee} />
+      )}
     </>
   );
 }
 
 /* ────────────────────── Top Issues ────────────────────── */
 
-function TopIssues({ detail }: { detail: Detail }) {
+function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
   return (
     <div className="sa-detail-insights">
       <div className="sa-card" style={{ flex: 1 }}>
@@ -256,32 +526,79 @@ function TopIssues({ detail }: { detail: Detail }) {
 
 /* ────────────────────── Audit History ────────────────────── */
 
-function AuditHistory({ audits }: { audits: Detail['audits'] }) {
+function getCallIdFromAuditId(auditId: string): number | null {
+  const match = String(auditId || '').match(/^call-(\d+)$/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isFinite(id) ? id : null;
+}
+
+function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpenCall: (id: number) => void }) {
+  const pageSize = 10;
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(audits.length / pageSize));
+  const startIndex = (page - 1) * pageSize;
+  const visibleAudits = audits.slice(startIndex, startIndex + pageSize);
+
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPages));
+  }, [totalPages]);
+
   if (audits.length === 0) return <div className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Нет проверок за период</div>;
   return (
-    <div className="sa-table-wrap">
-      <table className="sa-table">
-        <thead>
-          <tr>
-            <th>Дата</th>
-            <th>Тип</th>
-            <th>Сотрудник</th>
-            <th className="sa-text-right">Балл</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {audits.slice(0, 20).map((a) => (
-            <tr key={a.id}>
-              <td>{new Date(a.date).toLocaleDateString('ru-RU')}</td>
-              <td>{a.type === 'training' ? 'Тренажёр' : 'Звонок'}</td>
-              <td>{a.employeeName}</td>
-              <td className="sa-text-right"><span className={ratingClass(a.score)}>{a.score}</span></td>
-              <td><button className="sa-btn-text sa-btn-sm" title="Скоро">Открыть разбор</button></td>
+    <div>
+      <div className="sa-table-wrap">
+        <table className="sa-table">
+          <thead>
+            <tr>
+              <th>Дата</th>
+              <th>Тип</th>
+              <th>Сотрудник</th>
+              <th className="sa-text-right">Балл</th>
+              <th />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {visibleAudits.map((a) => {
+              const callId = a.type === 'call' ? getCallIdFromAuditId(a.id) : null;
+              return (
+                <tr key={a.id}>
+                  <td>{new Date(a.date).toLocaleDateString('ru-RU')}</td>
+                  <td>{a.type === 'training' ? 'Тренажёр' : 'Звонок'}</td>
+                  <td>{a.employeeName}</td>
+                  <td className="sa-text-right"><span className={ratingClass(a.score)}>{a.score}</span></td>
+                  <td>
+                    <button
+                      className="sa-btn-text sa-btn-sm"
+                      disabled={!callId}
+                      title={callId ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
+                      onClick={() => callId && onOpenCall(callId)}
+                    >
+                      Открыть разбор
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {audits.length > pageSize && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
+          <span className="sa-meta">
+            Показаны {startIndex + 1}-{Math.min(startIndex + pageSize, audits.length)} из {audits.length}
+          </span>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={page === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+              Назад
+            </button>
+            <span className="sa-metric-chip">Стр. {page} из {totalPages}</span>
+            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={page === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
+              Вперёд
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -289,9 +606,16 @@ function AuditHistory({ audits }: { audits: Detail['audits'] }) {
 /* ────────────────────── Main Component ────────────────────── */
 
 export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmployee, onOpenBatchDetail, onDealershipSaved }: Props) {
+  const navigate = useNavigate();
+  const [realDetail, setRealDetail] = useState<DealershipAnalyticsDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(true);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [planParticipation, setPlanParticipation] = useState<AnalyticsPlanParticipation[]>([]);
+  const [planActionStatus, setPlanActionStatus] = useState<string | null>(null);
+  const [excludingPlanId, setExcludingPlanId] = useState<string | null>(null);
   const detail = useMemo(
-    () => getMockDealershipDetail(dealershipId) || (dealership?.name ? getMockDealershipDetailByName(dealership.name) : null) || (dealership ? buildFallbackDetail(dealership) : null),
-    [dealershipId, dealership],
+    () => realDetail || (dealership ? buildFallbackDetail(dealership) : null),
+    [dealershipId, dealership, realDetail],
   );
   const [checkLoading, setCheckLoading] = useState(false);
   const [checkStatus, setCheckStatus] = useState<string | null>(null);
@@ -300,7 +624,75 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const [batchSummary, setBatchSummary] = useState<DealershipBatchSummary | null>(null);
   const [editDealershipOpen, setEditDealershipOpen] = useState(false);
   const [phoneNumbersOpen, setPhoneNumbersOpen] = useState(false);
+  const [selectedCallDetail, setSelectedCallDetail] = useState<CallInsightDetail | null>(null);
+  const [selectedCallLoading, setSelectedCallLoading] = useState(false);
+  const [selectedCallError, setSelectedCallError] = useState<string | null>(null);
   const hasActiveManual = !!activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'paused');
+
+  useEffect(() => {
+    let cancelled = false;
+    setDetailLoading(true);
+    setDetailError(null);
+    Promise.all([
+      fetchAnalyticsDealershipDetail(dealershipId),
+      fetchAnalyticsDealershipPlans(dealershipId),
+    ])
+      .then(([item, plans]) => {
+        if (!cancelled) {
+          setRealDetail(item as DealershipAnalyticsDetail | null);
+          setPlanParticipation(plans);
+          setDetailLoading(false);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRealDetail(null);
+          setPlanParticipation([]);
+          setDetailError(error instanceof Error ? error.message : 'Не удалось загрузить данные точки');
+          setDetailLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dealershipId]);
+
+  async function reloadPlanParticipation() {
+    const plans = await fetchAnalyticsDealershipPlans(dealershipId);
+    setPlanParticipation(plans);
+  }
+
+  async function handleExcludePlan(plan: AnalyticsPlanParticipation) {
+    const confirmed = window.confirm(`Исключить точку «${detail?.name ?? ''}» из расписания «${plan.name}»?`);
+    if (!confirmed) return;
+    setPlanActionStatus(null);
+    setExcludingPlanId(plan.id);
+    try {
+      await excludeDealershipFromAnalyticsPlan(dealershipId, plan.id);
+      await reloadPlanParticipation();
+      setPlanActionStatus('Точка исключена из расписания');
+    } catch (error) {
+      setPlanActionStatus(error instanceof Error ? error.message : 'Не удалось исключить точку из расписания');
+    } finally {
+      setExcludingPlanId(null);
+    }
+  }
+
+  async function handleOpenCallDetail(callId: number) {
+    setSelectedCallDetail(null);
+    setSelectedCallError(null);
+    setSelectedCallLoading(true);
+    try {
+      const res = await apiFetch(`/api/admin/call-history/${callId}`);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data) throw new Error(data?.error || 'Не удалось загрузить разбор звонка');
+      setSelectedCallDetail(data as CallInsightDetail);
+    } catch (error) {
+      setSelectedCallError(error instanceof Error ? error.message : 'Не удалось загрузить разбор звонка');
+    } finally {
+      setSelectedCallLoading(false);
+    }
+  }
 
   useEffect(() => {
     try {
@@ -344,6 +736,24 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
     };
   }, [activeBatchId, detail?.id, detail?.name]);
 
+  if (detailLoading) {
+    return (
+      <div>
+        <button className="sa-btn-text" onClick={onBack}>← Точки</button>
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загружаем данные точки...</div>
+      </div>
+    );
+  }
+
+  if (detailError) {
+    return (
+      <div>
+        <button className="sa-btn-text" onClick={onBack}>← Точки</button>
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>{detailError}</div>
+      </div>
+    );
+  }
+
   if (!detail) {
     return (
       <div>
@@ -358,6 +768,8 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const deltaCls = detail.deltaRating !== null
     ? detail.deltaRating > 0 ? 'sa-score-green' : detail.deltaRating < -5 ? 'sa-score-red' : 'sa-score-orange'
     : '';
+  const dealershipNoAnswers = detail.noAnswers ?? detail.outcomeBreakdown?.no_answer ?? 0;
+  const dealershipCalls = detail.auditsCount || Object.values(detail.outcomeBreakdown ?? {}).reduce((sum, value) => sum + value, 0);
 
   async function handleDealershipCheck() {
     setCheckLoading(true);
@@ -442,15 +854,28 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           Сейчас идёт проверка этой точки ({batchSummary.completed}/{batchSummary.total}). Детали и управление — в трее проверок справа внизу.
         </div>
       )}
+      {dealershipNoAnswers > 0 && (
+        <div className="sa-batch-live-error" style={{ marginTop: -4, marginBottom: 16 }}>
+          Недозвоны: {dealershipNoAnswers} из {dealershipCalls} звонков. Проверьте рабочие часы, доступность номеров и расписания прозвона.
+        </div>
+      )}
+
+      <section className="sa-section" style={{ marginBottom: 24 }}>
+        <AISummaryBlock
+          title="AI-сводка по салону"
+          summary={detail.aiSummary}
+          loading={detailLoading}
+          error={detailError}
+        />
+      </section>
 
       {/* KPI */}
       <div className="sa-kpi-grid" style={{ marginBottom: 32 }}>
         <KPI label="AI-рейтинг" value={detail.aiRating} cls={ratingClass(detail.aiRating)} />
         <KPI label="Динамика" value={deltaText} cls={deltaCls} />
         <KPI label="Проверки" value={detail.auditsCount} />
+        <KPI label="Недозвоны" value={dealershipNoAnswers} cls={dealershipNoAnswers > 0 ? 'sa-score-orange' : 'sa-score-green'} />
         <KPI label="Сотрудники" value={detail.employeesCount} />
-        <KPI label="Тип точки" value={dealershipTypeLabel(dealership?.type)} />
-        <KPI label="Время работы" value={formatWorkingHours(dealership)} />
         <KPI
           label="Дозвон"
           value={detail.answerRate !== null ? `${detail.answerRate}%` : '—'}
@@ -464,6 +889,18 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         />
       </div>
 
+      {/* Schedules */}
+      <section className="sa-section" style={{ marginBottom: 32 }}>
+        <h2 className="sa-section-title">Участвует в расписаниях</h2>
+        {planActionStatus && <div className="sa-meta" style={{ marginBottom: 10 }}>{planActionStatus}</div>}
+        <PlanParticipationList
+          plans={planParticipation}
+          excludingPlanId={excludingPlanId}
+          onOpenPlan={(id) => navigate(`/call-settings/plans/${encodeURIComponent(id)}/edit`)}
+          onExcludePlan={handleExcludePlan}
+        />
+      </section>
+
       {/* Charts row */}
       <div className="sa-dashboard-grid" style={{ marginBottom: 32 }}>
         <div className="sa-card sa-grid-card sa-chart-equal">
@@ -471,6 +908,17 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         </div>
         <div className="sa-card sa-grid-card sa-chart-equal">
           <Heatmap hourly={detail.hourlyAnswerRate} />
+        </div>
+      </div>
+
+      <div className="sa-dashboard-grid" style={{ marginBottom: 32 }}>
+        <div className="sa-card sa-grid-card">
+          <h3 className="sa-card-heading">Исходы звонков</h3>
+          <OutcomeBreakdown data={detail.outcomeBreakdown} />
+        </div>
+        <div className="sa-card sa-grid-card">
+          <h3 className="sa-card-heading">Качество коммуникации</h3>
+          <CommunicationBreakdown data={detail.communicationBreakdown} />
         </div>
       </div>
 
@@ -486,10 +934,32 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         <TopIssues detail={detail} />
       </section>
 
+      <section className="sa-section" style={{ marginBottom: 32 }}>
+        <h2 className="sa-section-title">Соблюдение скрипта</h2>
+        <div className="sa-card">
+          <ScriptCompliance data={detail.scriptCompliance} />
+        </div>
+      </section>
+
       {/* Audit history */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">История проверок</h2>
-        <AuditHistory audits={detail.audits} />
+        {(selectedCallLoading || selectedCallError || selectedCallDetail) && (
+          <div className="sa-card" style={{ padding: 16, marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+              <h3 className="sa-card-heading" style={{ margin: 0 }}>Разбор звонка</h3>
+              <button className="sa-btn-text sa-btn-sm" onClick={() => { setSelectedCallDetail(null); setSelectedCallError(null); }}>Закрыть</button>
+            </div>
+            {selectedCallLoading ? (
+              <div className="sa-meta">Загружаем разбор...</div>
+            ) : selectedCallError ? (
+              <div className="sa-meta">{selectedCallError}</div>
+            ) : selectedCallDetail ? (
+              <CallInsightCard detail={selectedCallDetail} />
+            ) : null}
+          </div>
+        )}
+        <AuditHistory audits={detail.audits} onOpenCall={handleOpenCallDetail} />
       </section>
 
       <DealershipModal

@@ -4,6 +4,7 @@ import { PublicVoiceDemoPage } from './pages/public-voice-demo/ui/PublicVoiceDem
 import { LoginRoutePage } from './pages/login/ui/LoginRoutePage';
 import { RequireAuth } from './app/providers/RequireAuth';
 import { AuthBootstrap } from './app/providers/AuthBootstrap';
+import { TrainPage } from './pages/train/ui/TrainPage';
 
 export default function App() {
   return (
@@ -12,6 +13,7 @@ export default function App() {
       <Routes>
         <Route path="/demo-call/*" element={<PublicVoiceDemoPage />} />
         <Route path="/login" element={<LoginRoutePage />} />
+        <Route path="/train/*" element={<RequireAuth><TrainPage /></RequireAuth>} />
         <Route path="/*" element={<RequireAuth><SystemPage /></RequireAuth>} />
       </Routes>
     </>

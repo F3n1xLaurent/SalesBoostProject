@@ -1,18 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
-import type { PlatformSummary, PlatformVoice } from '../../../shared/model/adminPanel';
-import type { TimeSeriesPoint, MockCompany, AuditItem } from '../../../shared/api/adminPanel';
+import { fetchDashboardOverview, fetchHoldings, type DashboardOverview, type HoldingItem, type TimeSeriesPoint } from '../../../shared/api/adminPanel';
+import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 
 const SECTION_GAP = 48;
 
 type DashboardProps = {
-  summary: PlatformSummary | null;
-  voice: PlatformVoice | null;
   loading: boolean;
-  timeSeries?: TimeSeriesPoint[];
-  companies?: MockCompany[];
-  totalAudits?: number;
-  audits?: AuditItem[];
 };
 
 function scoreColorClass(score: number): 'sa-score-green' | 'sa-score-orange' | 'sa-score-red' {
@@ -231,7 +225,7 @@ function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number
 
   return (
     <div className="sa-chart-wrap">
-      <h3 className="sa-chart-title">Среднее время ответа</h3>
+      <h3 className="sa-chart-title">Средняя длительность звонка</h3>
       <svg
         width="100%"
         height={svgH}
@@ -295,7 +289,7 @@ function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number
                   <g>
                     <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="8" fill="#1F2937" opacity="0.92" />
                     <text x={tooltipX + 10} y={tooltipY + 16} fontSize="11" fill="#F9FAFB" fontWeight="600">{d.name}</text>
-                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="#D1D5DB">Время: {d.avgSec} сек</text>
+                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="#D1D5DB">Длительность: {d.avgSec} сек</text>
                     <text x={tooltipX + 10} y={tooltipY + 46} fontSize="11" fill="#D1D5DB">Звонков: {d.totalCalls}</text>
                   </g>
                 );
@@ -308,15 +302,8 @@ function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number
   );
 }
 
-/* ─── Answer Rate by Hour — 12 per row, 2 rows, gray for closed hours ─── */
-const CLOSED_HOURS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 21, 22, 23]);
-
 function AnswerRateByHour({ hourly }: { hourly: number[] }) {
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const callsPerHour = useMemo(
-    () => hourly.map((pct, h) => CLOSED_HOURS.has(h) ? 0 : Math.round(pct * 0.6 + 3)),
-    [hourly]
-  );
 
   if (!hourly || hourly.length === 0) {
     return (
@@ -327,23 +314,20 @@ function AnswerRateByHour({ hourly }: { hourly: number[] }) {
     );
   }
 
-  const workingHours = hourly.filter((_, h) => !CLOSED_HOURS.has(h));
-  const maxVal = Math.max(...workingHours, 1);
+  const maxVal = Math.max(...hourly, 1);
 
   return (
     <div className="sa-chart-wrap sa-heatmap-fill">
       <h3 className="sa-chart-title">Дозвон по часам</h3>
       <div className="sa-heatmap-grid-12" onMouseLeave={() => setHoverHour(null)}>
         {hourly.slice(0, 24).map((pct, hour) => {
-          const isClosed = CLOSED_HOURS.has(hour);
-          const opacity = isClosed ? 0 : 0.15 + (pct / maxVal) * 0.85;
-          const bg = isClosed
-            ? 'rgba(17, 24, 39, 0.05)'
-            : `rgba(34, 197, 94, ${opacity})`;
+          const hasData = pct > 0;
+          const opacity = hasData ? 0.15 + (pct / maxVal) * 0.85 : 0;
+          const bg = hasData ? `rgba(34, 197, 94, ${opacity})` : 'rgba(17, 24, 39, 0.05)';
           return (
             <div
               key={hour}
-              className={`sa-heatmap-cell ${hoverHour === hour ? 'sa-heatmap-cell-hover' : ''} ${isClosed ? 'sa-heatmap-closed' : ''}`}
+              className={`sa-heatmap-cell ${hoverHour === hour ? 'sa-heatmap-cell-hover' : ''} ${!hasData ? 'sa-heatmap-closed' : ''}`}
               style={{ backgroundColor: bg }}
               onMouseEnter={() => setHoverHour(hour)}
             >
@@ -351,14 +335,7 @@ function AnswerRateByHour({ hourly }: { hourly: number[] }) {
               {hoverHour === hour && (
                 <div className="sa-heatmap-tooltip">
                   <div>Час: {hour}:00</div>
-                  {isClosed ? (
-                    <div>Точка закрыта</div>
-                  ) : (
-                    <>
-                      <div>Дозвон: {pct.toFixed(0)}%</div>
-                      <div>Звонков: {callsPerHour[hour]}</div>
-                    </>
-                  )}
+                  <div>{hasData ? `Дозвон: ${pct.toFixed(0)}%` : 'Нет звонков'}</div>
                 </div>
               )}
             </div>
@@ -424,159 +401,123 @@ function AnsweredMissedDonut({ rate, totalCalls }: { rate: number; totalCalls: n
   );
 }
 
-/* ─── Mock data — short names (just the salon name, no "Точка" prefix for bar labels) ─── */
-const MOCK_SALON_NAMES = [
-  'Точка Центральный', 'Точка Север', 'Точка Юг', 'Точка Запад',
-  'Точка Восток', 'Точка Премиум', 'Точка Сити', 'Точка Плюс',
-  'Точка Драйв', 'Точка Мега',
-];
-
-const FALLBACK_ANSWER_TIME = MOCK_SALON_NAMES.slice(0, 8).map((name, i) => ({
-  name,
-  avgSec: [18, 25, 14, 32, 22, 42, 9, 36][i] ?? 20,
-  totalCalls: 8 + (i % 12),
-}));
-
-const MOCK_ANSWER_RATE = 68;
-const MOCK_TOTAL_CALLS = 42;
-const MOCK_HOURLY = [
-  0, 0, 0, 0, 0, 0, 0, 0,
-  55, 72, 78, 82, 85, 88, 80, 75, 70, 65, 58, 52, 48,
-  0, 0, 0,
-];
-const MOCK_TREND_SCORES = [52, 58, 55, 65, 72, 68, 75];
-const MOCK_TOTAL_AUDITS = 147;
-const MOCK_AVG_SCORE = 67;
-
-function getFallbackTrendPoints(): TimeSeriesPoint[] {
-  const today = new Date();
-  return MOCK_TREND_SCORES.map((avgScore, i) => {
-    const d = new Date(today);
-    d.setDate(d.getDate() - (6 - i));
-    return { date: d.toISOString().slice(0, 10), avgScore, count: 4 + (i % 4) };
-  });
-}
-
-function hasTrendVariation(points: TimeSeriesPoint[]): boolean {
-  if (points.length <= 1) return false;
-  const scores = points.map((p) => p.avgScore);
-  return Math.max(...scores) - Math.min(...scores) > 1;
-}
-
-function useMockData(loading: boolean, companies: MockCompany[], timeSeries: TimeSeriesPoint[], voice: PlatformVoice | null) {
-  return useMemo(() => {
-    const useMockCompanies = loading || companies.length === 0;
-    const hasRealCalls = (voice?.totalCalls ?? 0) > 0;
-    const realCallMeaningful = hasRealCalls && (voice?.answeredPercent ?? 0) > 0 && (voice?.answeredPercent ?? 0) < 100;
-    const useMockCallData = !realCallMeaningful;
-    const seriesEmptyOrFlat = timeSeries.length === 0 || timeSeries.every((p) => p.avgScore === 0);
-    const useMockSeries = loading || seriesEmptyOrFlat;
-
-    const mockSalons: MockCompany[] = useMockCompanies
-      ? MOCK_SALON_NAMES.slice(0, 10).map((name, i) => ({
-          id: `mock-${i}`,
-          name,
-          autodealers: 2 + (i % 4),
-          avgAiScore: 45 + ((i * 11 + 7) % 48),
-          answerRate: 55 + ((i * 7 + 13) % 41),
-          lastAudit: new Date(Date.now() - i * 86400000).toISOString().slice(0, 10),
-          trend: i % 3 === 0 ? 1 : i % 3 === 1 ? -1 : 0,
-        }))
-      : companies;
-
-    const today = new Date();
-    const mockTimeSeries: TimeSeriesPoint[] = useMockSeries
-      ? MOCK_TREND_SCORES.map((avgScore, i) => {
-          const d = new Date(today);
-          d.setDate(d.getDate() - (6 - i));
-          return { date: d.toISOString().slice(0, 10), avgScore, count: 4 + (i % 4) };
-        })
-      : timeSeries;
-
-    const answerRate = useMockCallData ? MOCK_ANSWER_RATE : (voice?.answeredPercent ?? 0);
-    const totalCalls = useMockCallData ? MOCK_TOTAL_CALLS : (voice?.totalCalls ?? 0);
-    const hourly = MOCK_HOURLY;
-
-    const answerTimeByCompany = mockSalons.slice(0, 8).map((c, i) => ({
-      name: c.name,
-      avgSec: [18, 25, 14, 32, 22, 42, 9, 36][i] ?? 20 + (i % 15),
-      totalCalls: 8 + (i % 12),
-    }));
-
-    return { salons: mockSalons, timeSeries: mockTimeSeries, answerRate, totalCalls, hourly, answerTimeByCompany };
-  }, [loading, companies, timeSeries, voice]);
-}
-
 /* ─── Main Dashboard ─── */
-export function Dashboard({
-  summary,
-  voice,
-  loading,
-  timeSeries = [],
-  companies = [],
-  totalAudits: totalAuditsProp = 0,
-  audits = [],
-}: DashboardProps) {
-  const { salons: displaySalons, timeSeries: displayTimeSeries, answerRate, totalCalls, hourly, answerTimeByCompany } = useMockData(
-    loading, companies, timeSeries, voice ?? null
-  );
+export function Dashboard({ loading }: DashboardProps) {
+  const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [holdings, setHoldings] = useState<HoldingItem[]>([]);
+  const [holdingsLoading, setHoldingsLoading] = useState(true);
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
 
-  const realAvgScore = summary?.avgScore ?? 0;
-  const realTotalAudits = totalAuditsProp ?? (summary?.totalAttempts ?? 0) + (voice?.totalCalls ?? 0);
+  useEffect(() => {
+    let cancelled = false;
+    setHoldingsLoading(true);
+    fetchHoldings({ status: 'active' })
+      .then((items) => {
+        if (!cancelled) setHoldings(items);
+      })
+      .catch(() => {
+        if (!cancelled) setHoldings([]);
+      })
+      .finally(() => {
+        if (!cancelled) setHoldingsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const platformAvgScore = realAvgScore > 0 ? realAvgScore : MOCK_AVG_SCORE;
-  const totalAudits = realTotalAudits > 0 ? realTotalAudits : MOCK_TOTAL_AUDITS;
-  const totalSalons = displaySalons.length;
-  const totalEmployees = displaySalons.reduce((s, c) => s + (c.autodealers ?? 0), 0) || 0;
-  const hasAuditData = totalAudits > 0 || displayTimeSeries.length > 0;
-
-  const salonAuditCount: Record<string, number> = {};
-  audits.forEach((a) => {
-    salonAuditCount[a.company] = (salonAuditCount[a.company] ?? 0) + 1;
-  });
-  displaySalons.forEach((c, i) => {
-    if (salonAuditCount[c.name] == null) {
-      salonAuditCount[c.name] = 5 + ((i * 3 + 7) % 20);
+  useEffect(() => {
+    if (holdingsLoading) return;
+    if (!selectedHoldingId) {
+      setOverview(null);
+      setDashboardError(null);
+      setDashboardLoading(false);
+      return;
     }
-  });
+    let cancelled = false;
+    setDashboardLoading(true);
+    setDashboardError(null);
+    fetchDashboardOverview({ holdingId: selectedHoldingId })
+      .then((next) => {
+        if (!cancelled) setOverview(next);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOverview(null);
+          setDashboardError('Не удалось загрузить данные дашборда.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDashboardLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [holdingsLoading, selectedHoldingId]);
 
-  const topSalons = [...displaySalons]
-    .sort((a, b) => b.avgAiScore - a.avgAiScore)
-    .slice(0, 5)
+  const isLoading = loading || holdingsLoading || dashboardLoading;
+  const platformAvgScore = overview?.avgScore ?? 0;
+  const totalAudits = overview?.totalAudits ?? 0;
+  const totalSalons = overview?.totalDealerships ?? 0;
+  const totalEmployees = overview?.totalEmployees ?? 0;
+  const answerRate = overview?.answerRate ?? 0;
+  const totalCalls = overview?.totalCalls ?? 0;
+  const displayTimeSeries = overview?.timeSeries ?? [];
+  const hourly = overview?.hourlyAnswerRate ?? [];
+  const answerTimeByCompany = overview?.answerTimeByCompany ?? [];
+
+  const topSalons = (overview?.topDealerships ?? [])
     .map((c, i) => ({
       rank: i + 1,
       name: c.name,
       avgScore: c.avgAiScore,
       answerRate: c.answerRate,
-      totalAudits: String(salonAuditCount[c.name] ?? '—'),
+      totalAudits: String(c.totalAudits),
     }));
 
-  const worstSalons = [...displaySalons]
-    .sort((a, b) => a.avgAiScore - b.avgAiScore)
-    .slice(0, 5)
+  const worstSalons = (overview?.lowDealerships ?? [])
     .map((c, i) => ({
       rank: i + 1,
       name: c.name,
       avgScore: c.avgAiScore,
       answerRate: c.answerRate,
-      totalAudits: String(salonAuditCount[c.name] ?? '—'),
+      totalAudits: String(c.totalAudits),
     }));
 
-  const topWeakness = summary?.topWeaknesses?.[0];
+  const topWeakness = overview?.topWeakness ?? null;
   const badgePrimaryLabel = 'Частая ошибка';
   const badgePrimaryValue = topWeakness
     ? `${topWeakness.weakness} (${topWeakness.count})`
-    : 'Отсутствие следующего шага (42%)';
+    : 'Нет данных';
   const badgeSecondaryLabel = 'Зона риска';
-  const badgeSecondaryValue = 'Вечерняя смена';
+  const badgeSecondaryValue = overview?.riskLabel ?? 'Нет данных';
+  const dashboardHeader = (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 20 }}>
+      <div>
+        <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Дашборд</h1>
+      </div>
+      <select
+        className="sa-select"
+        value={selectedHoldingId}
+        onChange={(event) => setSelectedHoldingId(event.target.value)}
+        style={{ minWidth: 220 }}
+        disabled={holdingsLoading || holdings.length === 0}
+        title="Глобальный фильтр по компаниям"
+      >
+        {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
+        {holdings.map((holding) => (
+          <option key={holding.id} value={holding.id}>{holding.name}</option>
+        ))}
+      </select>
+    </div>
+  );
 
-  const aiBody =
-    'Анализ показывает системные слабости в выявлении потребностей у 42% точек. Среднее время ответа выросло на 12% за месяц. Рекомендуется провести переобучение менеджеров.';
-
-  if (!loading && !hasAuditData && totalSalons === 0) {
+  if (!isLoading && !dashboardError && !overview) {
     return (
       <div className="sa-dashboard-root">
-        <h1 className="sa-page-title">Дашборд</h1>
+        {dashboardHeader}
         <div className="sa-empty-state">
           <p>Нет данных за выбранный период</p>
         </div>
@@ -588,27 +529,27 @@ export function Dashboard({
 
   return (
     <div className="sa-dashboard-root">
-      <h1 className="sa-page-title">Дашборд</h1>
+      {dashboardHeader}
 
       <section className="sa-section" style={{ marginBottom: SECTION_GAP }}>
         <h2 className="sa-section-title">Ключевые метрики</h2>
         <div className="sa-kpi-grid">
-          <KPICard label="Точки" value={totalSalons} loading={loading} noData={!loading && totalSalons === 0} description="Точки компании" />
-          <KPICard label="Сотрудники" value={totalEmployees} loading={loading} noData={!loading && totalEmployees === 0} description="Менеджеры на точках" />
-          <KPICard label="Проверки" value={totalAudits} description="Тесты, тренировки и звонки" loading={loading} />
+          <KPICard label="Точки" value={totalSalons} loading={isLoading} noData={!isLoading && totalSalons === 0} description="Точки компании" />
+          <KPICard label="Сотрудники" value={totalEmployees} loading={isLoading} noData={!isLoading && totalEmployees === 0} description="Менеджеры на точках" />
+          <KPICard label="Проверки" value={totalAudits} description="Тесты, тренировки и звонки" loading={isLoading} />
           <KPICard
             label="Оценка качества"
-            value={loading ? '—' : String(scoreInt)}
+            value={isLoading ? '—' : String(scoreInt)}
             description="Средний балл по всем проверкам (0–100)"
-            loading={loading}
-            valueClass={!loading ? scoreColorClass(platformAvgScore) : ''}
+            loading={isLoading}
+            valueClass={!isLoading ? scoreColorClass(platformAvgScore) : ''}
           />
           <KPICard
             label="Дозвон"
-            value={loading ? '—' : `${answerRate.toFixed(1)}%`}
+            value={isLoading ? '—' : `${answerRate.toFixed(1)}%`}
             description="Доля принятых звонков"
-            loading={loading}
-            valueClass={!loading ? rateColorClass(answerRate) : ''}
+            loading={isLoading}
+            valueClass={!isLoading ? rateColorClass(answerRate) : ''}
           />
         </div>
       </section>
@@ -616,7 +557,9 @@ export function Dashboard({
       <section className="sa-section" style={{ marginBottom: SECTION_GAP }}>
         <AISummaryBlock
           title="AI Резюме"
-          body={aiBody}
+          summary={overview?.aiSummary}
+          loading={isLoading}
+          error={dashboardError}
           badgePrimaryLabel={badgePrimaryLabel}
           badgePrimaryValue={badgePrimaryValue}
           badgeSecondaryLabel={badgeSecondaryLabel}
@@ -628,10 +571,10 @@ export function Dashboard({
         <h2 className="sa-section-title">Аналитика</h2>
         <div className="sa-dashboard-grid">
           <div className="sa-card sa-grid-card sa-chart-equal">
-            <PerformanceTrendChart points={displayTimeSeries.length > 0 && hasTrendVariation(displayTimeSeries) ? displayTimeSeries : getFallbackTrendPoints()} />
+            <PerformanceTrendChart points={displayTimeSeries} />
           </div>
           <div className="sa-card sa-grid-card sa-chart-equal">
-            <AnswerRateByHour hourly={hourly?.length === 24 ? hourly : MOCK_HOURLY} />
+            <AnswerRateByHour hourly={hourly.length === 24 ? hourly : []} />
           </div>
 
           <div className="sa-card sa-grid-card">
@@ -645,12 +588,12 @@ export function Dashboard({
 
           <div className="sa-card sa-grid-card sa-donut-card">
             <AnsweredMissedDonut
-              rate={totalCalls > 0 && answerRate > 0 && answerRate < 100 ? answerRate : MOCK_ANSWER_RATE}
-              totalCalls={totalCalls > 0 && answerRate > 0 && answerRate < 100 ? totalCalls : MOCK_TOTAL_CALLS}
+              rate={totalCalls > 0 ? answerRate : 0}
+              totalCalls={totalCalls}
             />
           </div>
           <div className="sa-card sa-grid-card">
-            <AverageAnswerTimeChart data={answerTimeByCompany?.length ? answerTimeByCompany : FALLBACK_ANSWER_TIME} />
+            <AverageAnswerTimeChart data={answerTimeByCompany} />
           </div>
         </div>
       </section>

@@ -27,6 +27,7 @@ import {
 } from '../../../shared/lib/admin-panel/mockData';
 import { deltaDisplay, ratingClass, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import { UserPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
+import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 
 type Props = {
   role: AdminRole;
@@ -684,6 +685,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [selectedGlobalHoldingId, setSelectedGlobalHoldingId] = useGlobalHoldingFilter(meta?.holdings || [], !loading);
 
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
@@ -724,6 +726,8 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     : detailEmployeeIndex >= 0
       ? MOCK_EMPLOYEES[detailEmployeeIndex]
       : null;
+  const detailManagerProfile = detailActionUser?.managerProfiles[0] ?? null;
+  const detailEmployeeProfileId = detailManagerProfile?.id ?? (detailActionUser ? null : employeeId ?? null);
   const dealershipMap = useMemo(() => new Map((meta?.dealerships || []).map((item) => [item.id, item])), [meta]);
   const holdingFilterOptions = useMemo<SelectOption[]>(
     () => (meta?.holdings || []).map((holding) => ({
@@ -816,6 +820,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     if (holdingFilter) {
       list = list.filter((row) => userMatchesScope(row.user, `holding:${holdingFilter}`));
     }
+    if (selectedGlobalHoldingId) {
+      list = list.filter((row) => userMatchesScope(row.user, `holding:${selectedGlobalHoldingId}`));
+    }
     if (dealershipFilter) {
       list = list.filter((row) => userMatchesScope(row.user, `dealership:${dealershipFilter}`));
     }
@@ -832,7 +839,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       else cmp = (a.employee[userSortKey] ?? -Infinity) - (b.employee[userSortKey] ?? -Infinity);
       return userSortDir === 'asc' ? cmp : -cmp;
     });
-  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, userQuickFilter, userSortDir, userSortKey, users]);
+  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, selectedGlobalHoldingId, userQuickFilter, userSortDir, userSortKey, users]);
 
   const filteredTemplates = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1476,30 +1483,69 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
 
   return (
     <div>
-      <h1 className="sa-page-title">Пользователи</h1>
-      <p className="sa-page-subtitle">
-        {role === 'super'
-          ? 'Суперадмин управляет аккаунтами и шаблонами прав.'
-          : 'Руководитель компании управляет менеджерами своих точек.'}
-      </p>
+      {employeeId ? (
+        null
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
+          <div>
+            <h1 className="sa-page-title">Пользователи</h1>
+            <p className="sa-page-subtitle">
+              {role === 'super'
+                ? 'Суперадмин управляет аккаунтами и шаблонами прав.'
+                : 'Руководитель компании управляет менеджерами своих точек.'}
+            </p>
+          </div>
+          <select
+            className="sa-select"
+            value={selectedGlobalHoldingId}
+            onChange={(event) => setSelectedGlobalHoldingId(event.target.value)}
+            disabled={loading || (meta?.holdings || []).length === 0}
+            style={{ minWidth: 220 }}
+            title="Глобальный фильтр по компаниям"
+          >
+            {(meta?.holdings || []).length === 0 ? <option value="">Нет компаний</option> : null}
+            {(meta?.holdings || []).map((holding) => (
+              <option key={holding.id} value={holding.id}>{holding.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {error && <div className="sa-card" style={{ marginBottom: 16, color: '#991B1B', background: '#FEF2F2' }}>{error}</div>}
       {notice && <div className="sa-card" style={{ marginBottom: 16, color: '#166534', background: '#F0FDF4' }}>{notice}</div>}
 
-      {employeeId ? (
+      {employeeId && loading ? (
+        <div className="sa-card" style={{ padding: 24 }}>
+          <div className="sa-meta">Загрузка сотрудника...</div>
+        </div>
+      ) : employeeId && detailEmployeeProfileId ? (
         <EmployeeDetail
-          employeeId={detailMockEmployee?.id || employeeId}
+          employeeId={detailEmployeeProfileId}
           onBack={() => onBackToUsers?.()}
           onOpenDealership={onOpenDealership}
           onOpenCompanies={onOpenCompanies}
-          mockNotice="Часть параметров на странице пока моковая: AI-рейтинг, динамика, проверки, провалы, коммуникация, ошибки и история проверок."
           detailOverride={detailActionUser ? {
             fullName: userFullName(detailActionUser),
             dealershipName: userScopeLabel(detailActionUser),
             city: detailMockEmployee?.city || '',
           } : undefined}
+          headerRight={(
+            <select
+              className="sa-select"
+              value={selectedGlobalHoldingId}
+              onChange={(event) => setSelectedGlobalHoldingId(event.target.value)}
+              disabled={loading || (meta?.holdings || []).length === 0}
+              style={{ minWidth: 220 }}
+              title="Глобальный фильтр по компаниям"
+            >
+              {(meta?.holdings || []).length === 0 ? <option value="">Нет компаний</option> : null}
+              {(meta?.holdings || []).map((holding) => (
+                <option key={holding.id} value={holding.id}>{holding.name}</option>
+              ))}
+            </select>
+          )}
           actionButtons={detailActionUser && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-start' }}>
               <button type="button" className="sa-btn-outline" onClick={() => { setActiveUserId(detailActionUser.id); fillUserForm(detailActionUser); setEditUserOpen(true); }}>
                 <EditIcon />
                 Редактировать
@@ -1519,6 +1565,16 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
             </div>
           )}
         />
+      ) : employeeId ? (
+        <div className="sa-card" style={{ padding: 24 }}>
+          <button type="button" className="sa-btn-text" onClick={() => onBackToUsers?.()} style={{ marginBottom: 16 }}>
+            Назад к пользователям
+          </button>
+          <h2 className="sa-card-heading">Профиль менеджера не привязан</h2>
+          <p className="sa-meta" style={{ margin: 0 }}>
+            У этого web-аккаунта нет профиля сотрудника. Добавьте роль менеджера и точку в настройках пользователя, чтобы открыть аналитику сотрудника.
+          </p>
+        </div>
       ) : (
         <>
       <div className="sa-card" style={{ padding: '0 20px', marginBottom: 18 }}>

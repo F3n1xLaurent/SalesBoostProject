@@ -17,6 +17,7 @@ import { Audits } from '../../../pages/audits/ui/AuditsPage';
 import { AuditDetail } from '../../../pages/audit-detail/ui/AuditDetailPage';
 import { AuditBatchDetail } from '../../../pages/audit-batch-detail/ui/AuditBatchDetailPage';
 import { Analytics } from '../../../pages/analytics/ui/AnalyticsPage';
+import { CallSettingsPage } from '../../../pages/call-settings/ui/CallSettingsPage';
 import { Settings } from '../../../pages/settings/ui/SettingsPage';
 import { DealerContent } from '../../../pages/dealer/ui/DealerContent';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
@@ -28,6 +29,7 @@ import {
   buildBatchPath,
   buildDealershipPath,
   buildEmployeePath,
+  buildHoldingPath,
   buildUserEmployeePath,
   getDefaultTab,
   normalizeTabForRole,
@@ -41,14 +43,11 @@ import {
   fetchCallBatches,
   fetchDealerships,
   fetchTimeSeries,
-  fetchMockEntities,
   fetchAdminPanelSettings,
   type AuditItem,
   type CallBatchListItem,
   type DealershipItem,
   type TimeSeriesPoint,
-  type MockCompany,
-  type MockDealer,
   type AdminPanelSettings,
 } from '../../../shared/api/adminPanel';
 
@@ -69,6 +68,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
   const [searchParams] = useSearchParams();
   const route = parseAdminPath(location.pathname);
   const activeTab = normalizeTabForRole(route.tab, role);
+  const selectedHoldingId = route.holdingId || null;
   const selectedDealershipId = route.dealershipId || null;
   const selectedEmployeeId = route.employeeId || null;
   const selectedAuditId = route.auditId || null;
@@ -123,8 +123,6 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
   const [auditsLoading, setAuditsLoading] = useState(true);
   const [timeSeries, setTimeSeries] = useState<TimeSeriesPoint[]>([]);
   const [callBatches, setCallBatches] = useState<CallBatchListItem[]>([]);
-  const [companies, setCompanies] = useState<MockCompany[]>([]);
-  const [dealers, setDealers] = useState<MockDealer[]>([]);
   const [realDealerships, setRealDealerships] = useState<DealershipItem[]>([]);
   const [settings, setSettings] = useState<AdminPanelSettings | null>(null);
   const [dataLoading, setDataLoading] = useState(true);
@@ -146,8 +144,6 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
       setAudits([]);
       setTimeSeries([]);
       setCallBatches([]);
-      setCompanies([]);
-      setDealers([]);
       setRealDealerships([]);
       setSettings(null);
       setAuditsLoading(false);
@@ -163,17 +159,14 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
       fetchAudits(200),
       fetchCallBatches(80, 'all'),
       fetchTimeSeries(),
-      fetchMockEntities(),
       fetchDealerships(),
       fetchAdminPanelSettings(),
     ])
-      .then(([a, batches, ts, mock, realD, st]) => {
+      .then(([a, batches, ts, realD, st]) => {
         if (cancelled) return;
         setAudits(a);
         setCallBatches(batches);
         setTimeSeries(ts);
-        setCompanies(mock.companies);
-        setDealers(mock.dealers);
         setRealDealerships(realD);
         setSettings(st);
       })
@@ -182,8 +175,6 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
           setAudits([]);
           setTimeSeries([]);
           setCallBatches([]);
-          setCompanies([]);
-          setDealers([]);
           setRealDealerships([]);
           setSettings(null);
           setBackendNotRunning(true);
@@ -285,17 +276,16 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
             <>
               {activeTab === 'dashboard' && (
                 <Dashboard
-                  summary={summary}
-                  voice={voice}
                   loading={loadingSummary}
-                  timeSeries={timeSeries}
-                  companies={companies}
-                  totalAudits={audits.length}
-                  audits={audits}
                 />
               )}
               {activeTab === 'holdings' && role === 'super' && (
-                <HoldingsPage />
+                <HoldingsPage
+                  holdingId={selectedHoldingId}
+                  onOpenHolding={(id) => navigate(buildHoldingPath(id))}
+                  onBack={() => navigate('/holdings')}
+                  onOpenDealership={(id) => navigate(buildDealershipPath(id))}
+                />
               )}
               {activeTab === 'companies' && !selectedDealershipId && (
                 <Companies
@@ -347,7 +337,6 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
               )}
               {activeTab === 'autodealers' && !selectedEmployeeId && (
                 <Autodealers
-                  dealers={dealers}
                   loading={dataLoading}
                   onSelectEmployee={(id) => navigate(buildEmployeePath(id))}
                 />
@@ -412,6 +401,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
                     }
                   }}
                 />
+              )}
+              {activeTab === 'callSettings' && (
+                <CallSettingsPage />
               )}
             </>
           )}

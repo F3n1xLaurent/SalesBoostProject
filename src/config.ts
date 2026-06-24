@@ -11,6 +11,8 @@ export const config = {
   openaiImportModel: env.openaiImportModel,
   openaiSttModel: env.openaiSttModel,
   openaiTtsModel: env.openaiTtsModel,
+  anthropicApiKey: env.anthropicApiKey,
+  analyticsAiModel: env.analyticsAiModel,
   // Support both IDs and usernames (with or without @)
   adminIdentifiers: env.adminIdentifiers,
   databaseUrl: env.databaseUrl,
@@ -30,6 +32,7 @@ export const config = {
     })(),
   elevenLabsApiKey: env.elevenLabsApiKey,
   elevenLabsVoiceId: env.elevenLabsVoiceId,
+  elevenLabsAgentId: env.elevenLabsAgentId,
   ttsProvider: env.ttsProvider,
   httpsProxy: env.httpsProxy,
   authTokenSecret: env.authTokenSecret,

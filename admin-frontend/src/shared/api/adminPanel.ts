@@ -59,23 +59,319 @@ export interface PlatformVoice {
   };
 }
 
+export interface DashboardDealershipRow {
+  id: string;
+  name: string;
+  managersCount: number;
+  avgAiScore: number;
+  answerRate: number;
+  totalAudits: number;
+  avgDurationSec: number;
+  lastAudit: string | null;
+  trend: number;
+}
+
+export interface DashboardOverview {
+  aiSummary?: AnalyticsAISummary;
+  avgScore: number;
+  totalAudits: number;
+  totalDealerships: number;
+  totalEmployees: number;
+  answerRate: number;
+  totalCalls: number;
+  timeSeries: TimeSeriesPoint[];
+  hourlyAnswerRate: number[];
+  answerTimeByCompany: { id: string; name: string; avgSec: number; totalCalls: number }[];
+  topDealerships: DashboardDealershipRow[];
+  lowDealerships: DashboardDealershipRow[];
+  topWeakness: { weakness: string; count: number } | null;
+  riskLabel: string | null;
+}
+
 export interface AuditItem {
   id: string;
-  type: 'attempt' | 'training' | 'call';
+  type: 'attempt' | 'training' | 'trainer' | 'call';
   company: string;
   dealer: string;
+  dealershipId?: string | null;
+  dealershipName?: string | null;
+  city?: string | null;
+  employeeId?: string | null;
   date: string;
   aiScore: number;
   status: 'Good' | 'Medium' | 'Bad';
+  auditStatus?: 'completed' | 'failed' | 'interrupted';
+  durationSec?: number | null;
+  verdict?: string | null;
+  communicationFlag?: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
   userName: string | null;
   detailId: number;
-  detailType: 'attempt' | 'training' | 'call';
+  detailType: 'attempt' | 'training' | 'trainer' | 'call';
+}
+
+export interface AuditDetailItem {
+  id: string;
+  type: 'trainer' | 'call';
+  dateTime: string;
+  employeeId: string;
+  employeeName: string;
+  dealershipId: string;
+  dealershipName: string;
+  city: string;
+  totalScore: number;
+  verdict: string;
+  status: 'completed' | 'failed' | 'interrupted';
+  duration: number;
+  communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  blocksBreakdown: { block: string; score: number; hint: string }[];
+  checklist: { label: string; result: 'pass' | 'warn' | 'fail'; quote: string }[];
+  transcript: { speaker: 'client' | 'manager'; time: string; text: string; critical?: boolean }[];
+  events: { time: string; label: string; type: 'info' | 'warning' | 'error' }[];
+  errors: { issue: string; percent: number }[];
+  topQuestions: string[];
+  recommendedTrainings: { title: string; description: string }[];
+  answerTimeSec: number | null;
+  attempts: number | null;
+  callback: boolean | null;
+  scenarioName: string | null;
+  assignedBy: string | null;
+  failReason: string | null;
 }
 
 export interface TimeSeriesPoint {
   date: string;
   avgScore: number;
   count: number;
+}
+
+export type AnalyticsImpact = 'high' | 'medium' | 'low';
+export type AnalyticsPriority = 'P0' | 'P1' | 'P2';
+
+export interface AnalyticsAISummary {
+  summary: string;
+  recommendations: string[];
+  source?: 'generated' | 'fallback' | 'llm';
+}
+
+export interface AnalyticsSectionInsight {
+  fact: string;
+  interpretation: string;
+  action: string;
+  stable?: boolean;
+}
+
+export interface AnalyticsOverview {
+  aiSummary?: AnalyticsAISummary;
+  keyInsights: Array<{
+    fact: string;
+    interpretation: string;
+    impact: AnalyticsImpact;
+    delta?: string;
+  }>;
+  actions: Array<{
+    priority: AnalyticsPriority;
+    target: string;
+    action: string;
+    reason: string;
+    expectedEffect: string;
+    drillType?: 'employees' | 'dealership' | 'audits';
+    drillFilter?: string;
+  }>;
+  errorsInsight: AnalyticsSectionInsight;
+  commInsight: AnalyticsSectionInsight;
+  scriptInsight: AnalyticsSectionInsight;
+  trendInsight: AnalyticsSectionInsight;
+  avgScore: number;
+  totalAudits: number;
+  failRate: number;
+  commBreakdown: { label: string; percent: number; color: string }[];
+  topErrors: { error: string; count: number; percent: number }[];
+  weeklyTypeTrend?: { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[];
+  dealershipComparison: { id?: string; name: string; score: number; delta: number }[];
+  dealershipRows?: Array<{
+    id: string;
+    name: string;
+    dealer: string;
+    type: DealershipType;
+    city: string | null;
+    score: number;
+    delta: number;
+    calls: number;
+    noAnswers: number;
+  }>;
+  holdingRows?: Array<{
+    id: string;
+    name: string;
+    type: HoldingType;
+    dealershipsCount: number;
+    score: number;
+    calls: number;
+    noAnswers: number;
+    lowDealerships: number;
+  }>;
+  scriptCompliance: { block: string; rate: number }[];
+  meta?: {
+    linkedCalls: number;
+    scoredCalls: number;
+    ignoredUnlinkedCalls: number;
+  };
+}
+
+export type AnalyticsDealershipStatus = 'norm' | 'risk' | 'critical' | 'no-data';
+
+export interface AnalyticsDealershipRow {
+  id: string;
+  name: string;
+  city: string;
+  type: DealershipType;
+  dealer: string;
+  aiRating: number;
+  answerRate: number | null;
+  avgAnswerTimeSec: number | null;
+  auditsCount: number;
+  employeesCount: number;
+  deltaRating: number | null;
+  status: AnalyticsDealershipStatus;
+}
+
+export interface AnalyticsHoldingRow {
+  id: string;
+  name: string;
+  type: HoldingType;
+  dealershipsCount: number;
+  avgScore: number;
+  calls: number;
+  noAnswers: number;
+  lowDealerships: number;
+  topProblem: string | null;
+}
+
+export interface AnalyticsHoldingDealershipRow {
+  id: string;
+  name: string;
+  dealer: string;
+  type: DealershipType;
+  city: string;
+  score: number;
+  delta: number;
+  calls: number;
+  noAnswers: number;
+  employeesCount: number;
+  status: AnalyticsDealershipStatus;
+}
+
+export interface AnalyticsHoldingDetail extends AnalyticsHoldingRow {
+  aiSummary?: AnalyticsAISummary;
+  dealershipRows: AnalyticsHoldingDealershipRow[];
+  topIssues: { issue: string; percent: number }[];
+  scriptCompliance: { block: string; rate: number }[];
+  meta?: {
+    linkedCalls: number;
+    scoredCalls: number;
+  };
+}
+
+export interface AnalyticsDealershipDetail extends AnalyticsDealershipRow {
+  aiSummary?: AnalyticsAISummary;
+  noAnswers?: number;
+  outcomeBreakdown?: {
+    completed: number;
+    no_answer: number;
+    busy: number;
+    failed: number;
+    disconnected: number;
+  };
+  communicationBreakdown?: { label: string; percent: number; color: string }[];
+  scriptCompliance?: { block: string; rate: number; hint?: string }[];
+  employees: Array<{
+    id: string;
+    name: string;
+    aiRating: number;
+    auditsCount: number;
+    typicalError: string;
+    status: string;
+  }>;
+  audits: Array<{
+    id: string;
+    date: string;
+    type: 'training' | 'call';
+    employeeName: string;
+    score: number;
+  }>;
+  timeSeries: { date: string; avgScore: number; count: number }[];
+  hourlyAnswerRate: number[];
+  topIssues: { issue: string; percent: number }[];
+  topQuestions: string[];
+  recommendedTrainings: { title: string; description: string }[];
+}
+
+export interface AnalyticsManagerDetail {
+  id: string;
+  fullName: string;
+  dealershipId: string;
+  dealershipName: string;
+  city: string;
+  aiRating: number;
+  deltaRating: number | null;
+  auditsCount: number;
+  failsCount: number;
+  noAnswers?: number;
+  noAnswerRate?: number;
+  directCalls?: number;
+  dealershipCalls?: number;
+  dealershipRank?: { rank: number; total: number } | null;
+  outcomeBreakdown?: {
+    completed: number;
+    no_answer: number;
+    busy: number;
+    failed: number;
+    disconnected: number;
+  };
+  communicationBreakdown?: { label: string; percent: number; color: string }[];
+  communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  topMistakeLabel: string;
+  status: AnalyticsDealershipStatus;
+  aiSummary?: AnalyticsAISummary;
+  strengths: string[];
+  growthAreas: string[];
+  trainingFocus: string;
+  timeSeries: { date: string; avgScore: number; count: number }[];
+  comparisonTimeSeries?: { date: string; managerScore: number; dealershipScore: number; networkScore: number }[];
+  blockBreakdown: { block: string; score: number; hint: string }[];
+  topIssues: { issue: string; percent: number }[];
+  topQuestions: string[];
+  recommendedTrainings: { title: string; description: string }[];
+  audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string }>;
+  noAnswerHistory?: Array<{ id: string; date: string; planName: string | null; verdict: string }>;
+  trainer?: {
+    totalPoints: number;
+    currentStreak: number;
+    longestStreak: number;
+    sessionsTotal: number;
+    sessions30d: number;
+    avgScore: number;
+    weeklyScore: { date: string; avgScore: number; count: number }[];
+    weakPatterns: { issue: string; percent: number }[];
+    history: Array<{ id: string; date: string; type: 'plan' | 'free' | string; scenarioName: string; score: number | null; finalPoints: number | null; status: string }>;
+  };
+}
+
+export interface AnalyticsManagerRow {
+  id: string;
+  fullName: string;
+  dealershipId: string;
+  dealershipName: string;
+  city: string;
+  aiRating: number;
+  deltaRating: number | null;
+  auditsCount: number;
+  failsCount: number;
+  communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  topMistakeLabel: string;
+  status: AnalyticsDealershipStatus;
+  dataState: 'full' | 'partial' | 'none';
+  directCalls: number;
+  dealershipCalls: number;
 }
 
 export interface MockCompany {
@@ -130,6 +426,7 @@ export interface HoldingItem {
   id: string;
   name: string;
   code: string | null;
+  description: string | null;
   type: HoldingType;
   isActive: boolean;
   createdAt: string;
@@ -152,6 +449,7 @@ export interface DealershipItem {
   id: string;
   name: string;
   code: string | null;
+  description: string | null;
   type: DealershipType;
   directions: DealershipDirection[];
   city: string | null;
@@ -260,10 +558,177 @@ export interface CallBatchJobItem {
   linkReason?: string | null;
 }
 
+export type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
+export type CustomerPatience = 'low' | 'medium' | 'high';
+export type ReplyLength = 'short' | 'medium' | 'detailed';
+
+export interface CallCustomerProfileItem {
+  id: string;
+  holdingId: string;
+  name: string;
+  voiceId: string;
+  age: number;
+  ageFrom: number;
+  ageTo: number;
+  character: string;
+  temperament: CustomerTemperament;
+  patience: CustomerPatience;
+  replyLength: ReplyLength;
+  communicationStyle: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CallCustomerVoiceItem {
+  id: string;
+  name: string;
+  elevenLabsCode: string | null;
+  openaiCode: string | null;
+  isEnabled: boolean;
+  isDeleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CallScriptObjection {
+  id: string;
+  phrase: string;
+  whenAppropriate: string;
+}
+
+export interface CallScriptQuestion {
+  id: string;
+  text: string;
+  required: boolean;
+}
+
+export interface CallScriptSuccessCriterion {
+  id: string;
+  sourceType: 'question' | 'objection';
+  sourceId: string;
+  expectedAnswer: string;
+  score: number;
+}
+
+export interface CallScriptDataCondition {
+  holdingId: string | null;
+  tags: string[];
+}
+
+export interface CallScriptItem {
+  id: string;
+  holdingId: string;
+  name: string;
+  profileIds: string[];
+  context: string;
+  dataCondition: CallScriptDataCondition;
+  objections: CallScriptObjection[];
+  questions: CallScriptQuestion[];
+  successCriteria: CallScriptSuccessCriterion[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CallPlanTargetType = 'employees' | 'dealerships';
+export type CallPlanFrequency = 'daily' | 'weekly';
+
+export interface CallPlanItem {
+  id: string;
+  holdingId: string;
+  name: string;
+  targetType: CallPlanTargetType;
+  targetIds: string[];
+  scriptId: string;
+  phoneNumberTypeId: string;
+  frequency: CallPlanFrequency;
+  callTimeFrom: string;
+  callTimeTo: string;
+  lastInitiatedAt: string | null;
+  lastBatchId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnalyticsPlanParticipation {
+  id: string;
+  name: string;
+  targetType: CallPlanTargetType;
+  targetMatch: 'dealership' | 'employees';
+  targetsCount: number;
+  frequency: CallPlanFrequency;
+  callTimeFrom: string;
+  callTimeTo: string;
+  lastInitiatedAt: string | null;
+}
+
+export interface CallPlanEmployeeOption {
+  id: string;
+  accountId: string | null;
+  fullName: string;
+  email: string | null;
+  phone: string | null;
+  dealershipId: string;
+  dealershipName: string;
+  phoneNumbers: Array<{ id: string; typeId: string; typeName: string; phone: string }>;
+}
+
+export interface CallPlanDealershipOption {
+  id: string;
+  name: string;
+  city: string | null;
+  address: string | null;
+  employeesCount: number;
+}
+
+export interface CallPlanOptions {
+  employees: CallPlanEmployeeOption[];
+  dealerships: CallPlanDealershipOption[];
+  phoneNumberTypes: PhoneNumberTypeItem[];
+  scripts: CallScriptItem[];
+}
+
+export interface CallPlanPromptPreview {
+  prompt: string;
+  profile: CallCustomerProfileItem | null;
+  importedItem: {
+    id: string;
+    title: string;
+    description: string;
+    tags: string[];
+  } | null;
+  script: CallScriptItem;
+}
+
+export interface CallPlanCallItem {
+  id: string;
+  planId: string;
+  callId: string;
+  employeeId: string | null;
+  employeeName: string | null;
+  dealershipId: string | null;
+  dealershipName: string | null;
+  phone: string;
+  phoneNumberTypeId: string;
+  scriptId: string;
+  profileId: string | null;
+  importedItemId: string | null;
+  status: string;
+  outcome: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  transcript: Array<{ role: 'manager' | 'client'; text: string }>;
+  evaluation: unknown | null;
+  totalScore: number | null;
+  failureReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type PhoneNumberOwnership = 'dealership' | 'user';
 
 export interface PhoneNumberTypeItem {
   id: string;
+  holdingId: string | null;
   name: string;
   ownership: PhoneNumberOwnership;
   isActive: boolean;
@@ -337,6 +802,8 @@ export interface ImportAnalyzeResult {
 
 export interface ImportSourceItem {
   id: string;
+  holdingId: string | null;
+  holdingName: string | null;
   name: string;
   url: string;
   format: ImportFormat;
@@ -370,6 +837,15 @@ export interface ImportedItem {
 export interface ImportedDataItem extends ImportedItem {
   importSourceName: string;
   importSourceFormat: ImportFormat;
+  holdingId: string | null;
+  holdingName: string | null;
+}
+
+export interface ImportedItemsResult {
+  items: ImportedDataItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface ImportRunItem {
@@ -390,6 +866,16 @@ export async function fetchSummary(): Promise<PlatformSummary | null> {
   if (!res.ok) return null;
   const data = await res.json();
   return data as PlatformSummary;
+}
+
+export async function fetchDashboardOverview(filters?: { holdingId?: string | null }): Promise<DashboardOverview | null> {
+  const params = new URLSearchParams();
+  if (filters?.holdingId) params.set('holdingId', filters.holdingId);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/dashboard/overview${suffix}`);
+  if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
+  if (!res.ok) return null;
+  return await res.json() as DashboardOverview;
 }
 
 export async function analyzeImportSource(url: string): Promise<ImportAnalyzeResult> {
@@ -415,6 +901,20 @@ export async function generateImportTagRule(payload: {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось сформировать правило.');
   return data as Omit<ImportTagRule, 'id'>;
+}
+
+export async function generateImportTagRules(payload: {
+  sampleItems: unknown[];
+  availableFields: string[];
+}): Promise<ImportTagRule[]> {
+  const res = await apiFetch(`${API_BASE}/api/imports/generate-tag-rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось сформировать правила.');
+  return Array.isArray(data.rules) ? data.rules as ImportTagRule[] : [];
 }
 
 export async function testImportTagRules(payload: {
@@ -446,8 +946,10 @@ export async function previewImportConfig(payload: {
   return Array.isArray(data.previewItems) ? data.previewItems as ImportPreviewItem[] : [];
 }
 
-export async function fetchImports(): Promise<ImportSourceItem[]> {
-  const res = await apiFetch(`${API_BASE}/api/imports`);
+export async function fetchImports(params?: { holdingId?: string | null }): Promise<ImportSourceItem[]> {
+  const query = new URLSearchParams();
+  if (params?.holdingId) query.set('holdingId', params.holdingId);
+  const res = await apiFetch(`${API_BASE}/api/imports${query.toString() ? `?${query.toString()}` : ''}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить импорты.');
   return Array.isArray(data.items) ? data.items as ImportSourceItem[] : [];
@@ -455,15 +957,37 @@ export async function fetchImports(): Promise<ImportSourceItem[]> {
 
 export async function fetchImportedItems(params?: {
   limit?: number;
+  offset?: number;
   sourceId?: string | null;
-}): Promise<ImportedDataItem[]> {
+  holdingId?: string | null;
+  search?: string;
+  tags?: string[];
+}): Promise<ImportedItemsResult> {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.offset != null) query.set('offset', String(params.offset));
   if (params?.sourceId) query.set('sourceId', params.sourceId);
+  if (params?.holdingId) query.set('holdingId', params.holdingId);
+  if (params?.search?.trim()) query.set('search', params.search.trim());
+  if (params?.tags?.length) query.set('tags', params.tags.join(','));
   const res = await apiFetch(`${API_BASE}/api/imported-items${query.toString() ? `?${query.toString()}` : ''}`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить данные.');
-  return Array.isArray(data.items) ? data.items as ImportedDataItem[] : [];
+  return {
+    items: Array.isArray(data.items) ? data.items as ImportedDataItem[] : [],
+    total: typeof data.total === 'number' ? data.total : 0,
+    limit: typeof data.limit === 'number' ? data.limit : params?.limit ?? 25,
+    offset: typeof data.offset === 'number' ? data.offset : params?.offset ?? 0,
+  };
+}
+
+export async function fetchImportedTags(params?: { holdingId?: string | null }): Promise<string[]> {
+  const query = new URLSearchParams();
+  if (params?.holdingId) query.set('holdingId', params.holdingId);
+  const res = await apiFetch(`${API_BASE}/api/imported-items/tags${query.toString() ? `?${query.toString()}` : ''}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить теги.');
+  return Array.isArray(data.tags) ? data.tags as string[] : [];
 }
 
 export async function fetchImportDetail(id: string): Promise<{
@@ -478,6 +1002,7 @@ export async function fetchImportDetail(id: string): Promise<{
 }
 
 export async function createImportSource(payload: {
+  holdingId: string;
   name: string;
   url: string;
   format: ImportFormat;
@@ -496,7 +1021,7 @@ export async function createImportSource(payload: {
   return data.item as ImportSourceItem;
 }
 
-export async function updateImportSource(id: string, payload: Partial<Pick<ImportSourceItem, 'name' | 'url' | 'status' | 'schedule' | 'aiConfig' | 'tagRules'>>): Promise<ImportSourceItem> {
+export async function updateImportSource(id: string, payload: Partial<Pick<ImportSourceItem, 'holdingId' | 'name' | 'url' | 'status' | 'schedule' | 'aiConfig' | 'tagRules'>>): Promise<ImportSourceItem> {
   const res = await apiFetch(`${API_BASE}/api/imports/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -620,6 +1145,7 @@ export async function fetchCities(params?: { search?: string; limit?: number; of
 
 export async function createHolding(payload: {
   name: string;
+  description?: string | null;
   type?: HoldingType;
   code?: string | null;
   isActive?: boolean;
@@ -639,6 +1165,7 @@ export async function updateHolding(
   holdingId: string,
   payload: {
     name?: string;
+    description?: string | null;
     type?: HoldingType;
     code?: string | null;
     isActive?: boolean;
@@ -666,6 +1193,7 @@ export async function deleteHolding(holdingId: string): Promise<void> {
 export async function createDealership(payload: {
   name: string;
   code?: string | null;
+  description?: string | null;
   type?: DealershipType;
   directions?: DealershipDirection[];
   city?: string | null;
@@ -690,6 +1218,7 @@ export async function updateDealership(
   payload: {
     name?: string;
     code?: string | null;
+    description?: string | null;
     type?: DealershipType;
     directions?: DealershipDirection[];
     city?: string | null;
@@ -719,10 +1248,12 @@ export async function deleteDealership(dealershipId: string): Promise<void> {
 }
 
 export async function fetchPhoneNumberTypes(filters?: {
+  holdingId?: string | null;
   ownership?: PhoneNumberOwnership;
   active?: boolean;
 }): Promise<PhoneNumberTypeItem[]> {
   const params = new URLSearchParams();
+  if (filters?.holdingId) params.set('holdingId', filters.holdingId);
   if (filters?.ownership) params.set('ownership', filters.ownership);
   if (filters?.active) params.set('active', 'true');
   const suffix = params.toString() ? `?${params.toString()}` : '';
@@ -733,6 +1264,7 @@ export async function fetchPhoneNumberTypes(filters?: {
 }
 
 export async function createPhoneNumberType(payload: {
+  holdingId: string;
   name: string;
   ownership: PhoneNumberOwnership;
   isActive?: boolean;
@@ -750,6 +1282,7 @@ export async function createPhoneNumberType(payload: {
 export async function updatePhoneNumberType(
   typeId: string,
   payload: {
+    holdingId?: string;
     name?: string;
     ownership?: PhoneNumberOwnership;
     isActive?: boolean;
@@ -864,6 +1397,177 @@ export async function syncMockOrganization(): Promise<{
   return data.summary ?? { holdingsCreated: 0, dealershipsCreated: 0, dealershipsUpdated: 0 };
 }
 
+export async function fetchCallCustomerProfiles(params: { holdingId: string }): Promise<CallCustomerProfileItem[]> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить профили клиентов.');
+  return Array.isArray(data.items) ? data.items as CallCustomerProfileItem[] : [];
+}
+
+export async function fetchCallCustomerVoices(): Promise<CallCustomerVoiceItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить голоса клиентов.');
+  return Array.isArray(data.items) ? data.items as CallCustomerVoiceItem[] : [];
+}
+
+export async function createCallCustomerVoice(payload: Omit<CallCustomerVoiceItem, 'createdAt' | 'updatedAt'>): Promise<CallCustomerVoiceItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать голос клиента.');
+  return data.item as CallCustomerVoiceItem;
+}
+
+export async function updateCallCustomerVoice(id: string, payload: Omit<CallCustomerVoiceItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallCustomerVoiceItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить голос клиента.');
+  return data.item as CallCustomerVoiceItem;
+}
+
+export async function deleteCallCustomerVoice(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-voices/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить голос клиента.');
+}
+
+export async function createCallCustomerProfile(payload: Omit<CallCustomerProfileItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallCustomerProfileItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать профиль клиента.');
+  return data.item as CallCustomerProfileItem;
+}
+
+export async function updateCallCustomerProfile(id: string, payload: Omit<CallCustomerProfileItem, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>): Promise<CallCustomerProfileItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить профиль клиента.');
+  return data.item as CallCustomerProfileItem;
+}
+
+export async function deleteCallCustomerProfile(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/customer-profiles/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить профиль клиента.');
+}
+
+export async function fetchCallScripts(params: { holdingId: string }): Promise<CallScriptItem[]> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить скрипты.');
+  return Array.isArray(data.items) ? data.items as CallScriptItem[] : [];
+}
+
+export async function createCallScript(payload: Omit<CallScriptItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallScriptItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать скрипт.');
+  return data.item as CallScriptItem;
+}
+
+export async function updateCallScript(id: string, payload: Omit<CallScriptItem, 'id' | 'holdingId' | 'createdAt' | 'updatedAt'>): Promise<CallScriptItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить скрипт.');
+  return data.item as CallScriptItem;
+}
+
+export async function deleteCallScript(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/scripts/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить скрипт.');
+}
+
+export async function fetchCallPlanOptions(params: { holdingId: string }): Promise<CallPlanOptions> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plan-options?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить данные плана прозвона.');
+  return {
+    employees: Array.isArray(data.employees) ? data.employees as CallPlanEmployeeOption[] : [],
+    dealerships: Array.isArray(data.dealerships) ? data.dealerships as CallPlanDealershipOption[] : [],
+    phoneNumberTypes: Array.isArray(data.phoneNumberTypes) ? data.phoneNumberTypes as PhoneNumberTypeItem[] : [],
+    scripts: Array.isArray(data.scripts) ? data.scripts as CallScriptItem[] : [],
+  };
+}
+
+export async function fetchCallPlans(params: { holdingId: string }): Promise<CallPlanItem[]> {
+  const query = new URLSearchParams({ holdingId: params.holdingId });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить планы прозвона.');
+  return Array.isArray(data.items) ? data.items as CallPlanItem[] : [];
+}
+
+export async function createCallPlan(payload: Omit<CallPlanItem, 'id' | 'createdAt' | 'updatedAt' | 'lastInitiatedAt' | 'lastBatchId'>): Promise<CallPlanItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать план прозвона.');
+  return data.item as CallPlanItem;
+}
+
+export async function updateCallPlan(id: string, payload: Omit<CallPlanItem, 'id' | 'createdAt' | 'updatedAt' | 'lastInitiatedAt' | 'lastBatchId'>): Promise<CallPlanItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить план прозвона.');
+  return data.item as CallPlanItem;
+}
+
+export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; callId: string; batchId: string; totalJobs: number }> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/initiate`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось инициировать прозвон.');
+  return data as { item: CallPlanItem; callId: string; batchId: string; totalJobs: number };
+}
+
+export async function previewCallPlanPrompt(id: string): Promise<CallPlanPromptPreview> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/prompt-preview`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось сгенерировать промпт.');
+  return data as CallPlanPromptPreview;
+}
+
+export async function fetchCallPlanCalls(id: string): Promise<CallPlanCallItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/calls`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить историю прозвона.');
+  return Array.isArray(data.items) ? data.items as CallPlanCallItem[] : [];
+}
+
 export async function fetchVoiceDashboard(): Promise<PlatformVoice | null> {
   const res = await apiFetch(`${API_BASE}/api/admin/voice-dashboard`);
   if (!res.ok) return null;
@@ -878,12 +1582,125 @@ export async function fetchAudits(limit = 100): Promise<AuditItem[]> {
   return data.audits ?? [];
 }
 
+export async function fetchAuditDetail(id: string): Promise<AuditDetailItem | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/audits/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error('Не удалось загрузить проверку.');
+  const data = await res.json().catch(() => ({}));
+  return data.item ?? null;
+}
+
 export async function fetchTimeSeries(): Promise<TimeSeriesPoint[]> {
   const res = await apiFetch(`${API_BASE}/api/admin/super-admin/time-series`);
   if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
   if (!res.ok) return [];
   const data = await res.json();
   return data.series ?? [];
+}
+
+export async function fetchAnalyticsOverview(filters?: { holdingId?: string | null }): Promise<AnalyticsOverview | null> {
+  const params = new URLSearchParams();
+  if (filters?.holdingId) params.set('holdingId', filters.holdingId);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/overview${suffix}`);
+  if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
+  if (!res.ok) return null;
+  return await res.json() as AnalyticsOverview;
+}
+
+export async function fetchAnalyticsComparisonSummary(input: {
+  level: string;
+  items: Array<Record<string, unknown>>;
+}): Promise<AnalyticsAISummary> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/comparison-summary`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось сформировать AI-анализ сравнения.');
+  return data.item as AnalyticsAISummary;
+}
+
+export async function fetchAnalyticsDealerships(): Promise<AnalyticsDealershipRow[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || 'Не удалось загрузить аналитику точек.');
+  }
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsDealershipRow[] : [];
+}
+
+export async function fetchAnalyticsHoldings(): Promise<AnalyticsHoldingRow[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/holdings`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || 'Не удалось загрузить аналитику компаний.');
+  }
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsHoldingRow[] : [];
+}
+
+export async function fetchAnalyticsHoldingDetail(id: string): Promise<AnalyticsHoldingDetail | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/holdings/${encodeURIComponent(id)}`);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  return (data.item ?? null) as AnalyticsHoldingDetail | null;
+}
+
+export async function fetchAnalyticsDealershipDetail(id: string): Promise<AnalyticsDealershipDetail | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships/${encodeURIComponent(id)}`);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  return (data.item ?? null) as AnalyticsDealershipDetail | null;
+}
+
+export async function fetchAnalyticsDealershipPlans(id: string): Promise<AnalyticsPlanParticipation[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships/${encodeURIComponent(id)}/plans`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsPlanParticipation[] : [];
+}
+
+export async function excludeDealershipFromAnalyticsPlan(dealershipId: string, planId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships/${encodeURIComponent(dealershipId)}/plans/${encodeURIComponent(planId)}/exclude`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось исключить точку из расписания.');
+}
+
+export async function fetchAnalyticsManagerDetail(id: string): Promise<AnalyticsManagerDetail | null> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers/${encodeURIComponent(id)}`);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  return (data.item ?? null) as AnalyticsManagerDetail | null;
+}
+
+export async function fetchAnalyticsManagerPlans(id: string): Promise<AnalyticsPlanParticipation[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers/${encodeURIComponent(id)}/plans`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsPlanParticipation[] : [];
+}
+
+export async function excludeManagerFromAnalyticsPlan(managerId: string, planId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers/${encodeURIComponent(managerId)}/plans/${encodeURIComponent(planId)}/exclude`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось исключить менеджера из расписания.');
+}
+
+export async function fetchAnalyticsManagers(): Promise<AnalyticsManagerRow[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/managers`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || 'Не удалось загрузить аналитику сотрудников.');
+  }
+  const data = await res.json().catch(() => ({}));
+  return Array.isArray(data.items) ? data.items as AnalyticsManagerRow[] : [];
 }
 
 export async function fetchMockEntities(): Promise<{ companies: MockCompany[]; dealers: MockDealer[] }> {

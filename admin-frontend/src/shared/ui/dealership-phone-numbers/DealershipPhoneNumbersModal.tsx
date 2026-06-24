@@ -5,13 +5,16 @@ import {
   deleteDealershipPhoneNumber,
   deleteUserPhoneNumber,
   fetchDealershipPhoneNumbers,
+  fetchHoldings,
   fetchPhoneNumberTypes,
   fetchUserPhoneNumbers,
   updateDealershipPhoneNumber,
   updateUserPhoneNumber,
+  type HoldingItem,
   type PhoneNumberItem,
   type PhoneNumberTypeItem,
 } from '../../api/adminPanel';
+import { useGlobalHoldingFilter } from '../../lib/global-holding-filter/useGlobalHoldingFilter';
 import { formatPhoneInput, formatPhoneInputLive } from '../phone-number-utils';
 
 type PhoneFormState = {
@@ -46,6 +49,7 @@ function PhoneNumberFormModal(props: {
   types: PhoneNumberTypeItem[];
   saving: boolean;
   error: string | null;
+  contextLabel?: string | null;
   requireChanges?: boolean;
   onClose: () => void;
   onSubmit: (form: PhoneFormState) => void;
@@ -101,6 +105,12 @@ function PhoneNumberFormModal(props: {
           }}
           style={{ display: 'grid', gap: 14 }}
         >
+          {props.contextLabel && (
+            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: '#F8FAFC' }}>
+              {props.contextLabel}
+            </div>
+          )}
+
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Тип номера</span>
             <select className="sa-select" value={form.typeId} onChange={(event) => setForm((current) => ({ ...current, typeId: event.target.value }))} required>
@@ -352,6 +362,9 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
   open: boolean;
   onClose: () => void;
 }) {
+  const [holdings, setHoldings] = useState<HoldingItem[]>([]);
+  const [holdingsLoading, setHoldingsLoading] = useState(true);
+  const [selectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
   const [items, setItems] = useState<PhoneNumberItem[]>([]);
   const [types, setTypes] = useState<PhoneNumberTypeItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -365,6 +378,19 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
     typeId: types[0]?.id || '',
   }), [types]);
 
+  async function loadHoldings() {
+    setHoldingsLoading(true);
+    setError(null);
+    try {
+      setHoldings(await fetchHoldings({ status: 'active' }));
+    } catch (loadError) {
+      setHoldings([]);
+      setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить компании.');
+    } finally {
+      setHoldingsLoading(false);
+    }
+  }
+
   async function loadData() {
     if (!accountId) return;
     setLoading(true);
@@ -372,7 +398,9 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
     try {
       const [numbers, loadedTypes] = await Promise.all([
         fetchUserPhoneNumbers(accountId),
-        fetchPhoneNumberTypes({ ownership: 'user', active: true }),
+        selectedHoldingId
+          ? fetchPhoneNumberTypes({ holdingId: selectedHoldingId, ownership: 'user', active: true })
+          : Promise.resolve([]),
       ]);
       setItems(numbers);
       setTypes(loadedTypes);
@@ -384,8 +412,12 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
   }
 
   useEffect(() => {
-    if (open) loadData();
-  }, [open, accountId]);
+    if (open) void loadHoldings();
+  }, [open]);
+
+  useEffect(() => {
+    if (open) void loadData();
+  }, [open, accountId, selectedHoldingId]);
 
   if (!open) return null;
 
@@ -453,7 +485,7 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="sa-btn-primary" onClick={() => { setError(null); setAddOpen(true); }} disabled={types.length === 0}>
+            <button type="button" className="sa-btn-primary" onClick={() => { setError(null); setAddOpen(true); }} disabled={!selectedHoldingId || types.length === 0}>
               Добавить
             </button>
             <button type="button" className="sa-btn-outline sa-btn-icon" onClick={onClose} aria-label="Закрыть">
@@ -464,9 +496,14 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
           </div>
         </div>
 
-        {types.length === 0 && !loading && (
+        {holdings.length === 0 && !holdingsLoading && (
           <div style={{ padding: 12, borderRadius: 14, background: '#fffbeb', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-            Сначала создайте активный тип номера с принадлежностью “Для пользователей”.
+            Перед добавлением номера пользователя добавьте компанию.
+          </div>
+        )}
+        {selectedHoldingId && types.length === 0 && !loading && (
+          <div style={{ padding: 12, borderRadius: 14, background: '#fffbeb', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
+            Сначала создайте активный тип номера с принадлежностью “Для пользователей” в выбранной компании.
           </div>
         )}
         {error && !addOpen && !editItem && (

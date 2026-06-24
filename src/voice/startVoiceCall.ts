@@ -35,6 +35,12 @@ export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure';
 export interface StartVoiceCallOptions {
   /** 'dialog' = our LLM (voice_dialog), 'realtime' = OpenAI Realtime. Default: 'dialog'. */
   scenario?: VoiceCallScenario;
+  /** Optional prompt passed to Voximplant realtime_pure scenario as customData.instructions. */
+  instructions?: string;
+  /** ElevenLabs voice id passed to external voice scenarios as customData.elevenlabs_voice_id. */
+  elevenLabsVoiceId?: string | null;
+  /** Internal customer voice row id, useful for diagnostics. */
+  customerVoiceId?: string | null;
 }
 
 export interface StartVoiceCallResult {
@@ -124,9 +130,12 @@ export async function startVoiceCall(
       to: toNormalized,
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+      elevenlabs_voice_id: options.elevenLabsVoiceId?.trim() || undefined,
+      customer_voice_id: options.customerVoiceId?.trim() || undefined,
       openai_api_key: openaiApiKey,
       model: getRealtimeModel(),
       realtime_reasoning_effort: getRealtimeReasoningEffort(),
+      instructions: options.instructions,
     };
     // No dialog_url: full script is in the scenario prompt.
   } else if (scenario === 'realtime') {
@@ -141,9 +150,12 @@ export async function startVoiceCall(
       to: toNormalized,
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+      elevenlabs_voice_id: options.elevenLabsVoiceId?.trim() || undefined,
+      customer_voice_id: options.customerVoiceId?.trim() || undefined,
       openai_api_key: openaiApiKey,
       model: getRealtimeModel(),
       realtime_reasoning_effort: getRealtimeReasoningEffort(),
+      instructions: options.instructions,
     };
     // When baseUrl is set, pass dialog_url so Realtime uses our algorithm (virtual client) via function calling.
     if (baseUrl) {
@@ -165,6 +177,8 @@ export async function startVoiceCall(
       to: toNormalized,
       event_url: eventUrl,
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+      elevenlabs_voice_id: options.elevenLabsVoiceId?.trim() || undefined,
+      customer_voice_id: options.customerVoiceId?.trim() || undefined,
       tag: null,
       dialog_url: dialogUrl,
     };

@@ -1,16 +1,27 @@
-import React, { useMemo, useState } from 'react';
-import {
-  getMockAuditDetail,
-  getAuditNavigationIds,
-  AUDIT_TYPE_LABELS,
-  AUDIT_STATUS_LABELS,
-  AUDIT_STATUS_CLASS,
-  type AuditDetailData,
-  type ChecklistItem,
-  type TranscriptLine,
-  type AuditEvent,
-} from '../../../shared/lib/admin-panel/mockData';
-import { ratingClass, statusBadgeClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
+import React, { useEffect, useState } from 'react';
+import { fetchAuditDetail, type AuditDetailItem } from '../../../shared/api/adminPanel';
+import { ratingClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
+
+type ChecklistItem = AuditDetailItem['checklist'][number];
+type TranscriptLine = AuditDetailItem['transcript'][number];
+type AuditEvent = AuditDetailItem['events'][number];
+
+const AUDIT_TYPE_LABELS: Record<AuditDetailItem['type'], string> = {
+  trainer: 'Тренажёр',
+  call: 'Звонок',
+};
+
+const AUDIT_STATUS_LABELS: Record<AuditDetailItem['status'], string> = {
+  completed: 'Завершено',
+  failed: 'Провал',
+  interrupted: 'Прервано',
+};
+
+const AUDIT_STATUS_CLASS: Record<AuditDetailItem['status'], string> = {
+  completed: 'sa-audit-status-completed',
+  failed: 'sa-audit-status-failed',
+  interrupted: 'sa-audit-status-interrupted',
+};
 
 type Props = {
   auditId: string;
@@ -75,17 +86,21 @@ function Checklist({ items }: { items: ChecklistItem[] }) {
   return (
     <div className="sa-card">
       <h3 className="sa-card-heading">Чек-лист</h3>
-      <div className="sa-checklist">
-        {items.map((item, i) => (
+      {items.length === 0 ? (
+        <div className="sa-chart-empty">Нет данных чек-листа</div>
+      ) : (
+        <div className="sa-checklist">
+          {items.map((item, i) => (
           <div key={i} className={`sa-checklist-item ${RESULT_CLS[item.result]}`}>
             <span className="sa-checklist-icon">{RESULT_ICON[item.result]}</span>
             <div className="sa-checklist-content">
               <div className="sa-checklist-label">{item.label}</div>
-              <div className="sa-checklist-quote">«{item.quote}»</div>
+              {item.quote && <div className="sa-checklist-quote">«{item.quote}»</div>}
             </div>
           </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -143,31 +158,42 @@ function DialogSection({ transcript, events }: { transcript: TranscriptLine[]; e
 
 /* ────────────────────── Errors / Questions / Trainings ────────────────────── */
 
-function ErrorsBlock({ detail }: { detail: AuditDetailData }) {
+function ErrorsBlock({ detail }: { detail: AuditDetailItem }) {
   return (
     <div className="sa-detail-insights">
       <div className="sa-card" style={{ flex: 1 }}>
         <h3 className="sa-card-heading">ТОП-ошибки</h3>
-        <ul className="sa-issue-list">
-          {detail.errors.map((item, i) => (
+        {detail.errors.length === 0 ? (
+          <div className="sa-chart-empty">Критичных ошибок не найдено</div>
+        ) : (
+          <ul className="sa-issue-list">
+            {detail.errors.map((item, i) => (
             <li key={i} className="sa-issue-item">
               <span className="sa-issue-name">{item.issue}</span>
               <span className="sa-issue-pct">{item.percent}%</span>
               <div className="sa-issue-bar"><div className="sa-issue-bar-fill" style={{ width: `${item.percent}%` }} /></div>
             </li>
-          ))}
-        </ul>
+            ))}
+          </ul>
+        )}
       </div>
       <div className="sa-card" style={{ flex: 1 }}>
         <h3 className="sa-card-heading">Сложные вопросы</h3>
-        <ol className="sa-question-list">
-          {detail.topQuestions.map((q, i) => <li key={i}>{q}</li>)}
-        </ol>
+        {detail.topQuestions.length === 0 ? (
+          <div className="sa-chart-empty">Нет выделенных вопросов</div>
+        ) : (
+          <ol className="sa-question-list">
+            {detail.topQuestions.map((q, i) => <li key={i}>{q}</li>)}
+          </ol>
+        )}
       </div>
       <div className="sa-card" style={{ flex: 1 }}>
         <h3 className="sa-card-heading">Рекомендованные тренировки</h3>
-        <div className="sa-training-list">
-          {detail.recommendedTrainings.map((t, i) => (
+        {detail.recommendedTrainings.length === 0 ? (
+          <div className="sa-chart-empty">Нет рекомендаций</div>
+        ) : (
+          <div className="sa-training-list">
+            {detail.recommendedTrainings.map((t, i) => (
             <div key={i} className="sa-training-item">
               <div>
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>{t.title}</div>
@@ -175,8 +201,9 @@ function ErrorsBlock({ detail }: { detail: AuditDetailData }) {
               </div>
               <button className="sa-btn-outline sa-btn-sm" disabled title="Функция назначения будет подключена позже">Назначить</button>
             </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -185,14 +212,46 @@ function ErrorsBlock({ detail }: { detail: AuditDetailData }) {
 /* ════════════════════ Main component ════════════════════ */
 
 export function AuditDetail({ auditId, onBack, onNavigate, onOpenEmployee }: Props) {
-  const detail = useMemo(() => getMockAuditDetail(auditId), [auditId]);
-  const nav = useMemo(() => getAuditNavigationIds(auditId), [auditId]);
+  const [detail, setDetail] = useState<AuditDetailItem | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    fetchAuditDetail(auditId)
+      .then((item) => {
+        if (!cancelled) setDetail(item);
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setDetail(null);
+          setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить проверку.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auditId]);
+
+  if (loading) {
+    return (
+      <div>
+        <button className="sa-btn-text" onClick={onBack}>← Проверки</button>
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка проверки...</div>
+      </div>
+    );
+  }
 
   if (!detail) {
     return (
       <div>
         <button className="sa-btn-text" onClick={onBack}>← Проверки</button>
-        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Проверка не найдена</div>
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>{error || 'Проверка не найдена'}</div>
       </div>
     );
   }
@@ -299,16 +358,8 @@ export function AuditDetail({ auditId, onBack, onNavigate, onOpenEmployee }: Pro
 
       {/* ── H) Navigation ── */}
       <div className="sa-audit-nav">
-        {nav.prevId ? (
-          <button className="sa-btn-outline" onClick={() => onNavigate(nav.prevId!)}>
-            ← Предыдущая проверка
-          </button>
-        ) : <span />}
-        {nav.nextId ? (
-          <button className="sa-btn-outline" onClick={() => onNavigate(nav.nextId!)}>
-            Следующая проверка →
-          </button>
-        ) : <span />}
+        <span />
+        <button className="sa-btn-outline" onClick={onBack}>К списку проверок</button>
       </div>
     </div>
   );

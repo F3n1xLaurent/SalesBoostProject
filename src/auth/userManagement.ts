@@ -112,6 +112,14 @@ function parseBoolean(value: unknown, fallback = false): boolean {
   return fallback;
 }
 
+function isUniqueEmailError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; meta?: { target?: unknown } };
+  if (candidate.code !== 'P2002') return false;
+  const target = candidate.meta?.target;
+  return Array.isArray(target) ? target.includes('email') : target === 'email';
+}
+
 function formatPhoneNumber(value: unknown): string | null {
   const raw = String(value ?? '').trim();
   if (!raw) return null;
@@ -429,6 +437,12 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
   }
 
   try {
+    const existing = await prisma.account.findUnique({ where: { email }, select: { id: true } });
+    if (existing) {
+      res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
+      return;
+    }
+
     const created = await prisma.account.create({
       data: {
         email,
@@ -495,6 +509,10 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
     });
     res.status(201).json({ item: normalizeAccountResponse(created) });
   } catch (error) {
+    if (isUniqueEmailError(error)) {
+      res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
+      return;
+    }
     console.error('Create user error:', error);
     res.status(500).json({ error: 'Не удалось создать пользователя.' });
   }
@@ -629,6 +647,10 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
 
     res.json({ item: updated ? normalizeAccountResponse(updated) : null });
   } catch (error) {
+    if (isUniqueEmailError(error)) {
+      res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
+      return;
+    }
     console.error('Update user error:', error);
     res.status(500).json({ error: 'Не удалось обновить пользователя.' });
   }

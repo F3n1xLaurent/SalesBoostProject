@@ -3,6 +3,7 @@ import type { AdminRole, AdminTab } from '../../entities/session/model/types';
 export type AdminRouteMatch = {
   role?: AdminRole;
   tab: AdminTab;
+  holdingId?: string;
   dealershipId?: string;
   employeeId?: string;
   auditId?: string;
@@ -20,6 +21,7 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
   'autodealers',
   'audits',
   'analytics',
+  'callSettings',
   'settings',
 ];
 
@@ -67,6 +69,8 @@ export function tabToPath(tab: AdminTab): string {
       return '/audits';
     case 'analytics':
       return '/analytics';
+    case 'callSettings':
+      return '/call-settings/profiles';
     case 'settings':
       return '/settings';
     case 'dealer-companies':
@@ -96,7 +100,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
 
   if (!section) return { tab: 'dashboard' };
   if (section === 'dashboard') return { tab: 'dashboard' };
-  if (section === 'holdings') return { tab: 'holdings' };
+  if (section === 'holdings') return { tab: 'holdings', holdingId: resource };
   if (section === 'companies') return { tab: 'companies', dealershipId: resource };
   if (section === 'dealership-directions') return { tab: 'dealershipDirections' };
   if (section === 'data' || section === 'imports') return { tab: 'imports' };
@@ -104,6 +108,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'users') return { tab: 'users', employeeId: resource };
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };
   if (section === 'analytics') return { tab: 'analytics' };
+  if (section === 'call-settings') return { tab: 'callSettings' };
   if (section === 'settings') return { tab: 'settings' };
   if (section === 'audits' && resource === 'batches') return { tab: 'audits', batchId: id };
   if (section === 'audits') return { tab: 'audits', auditId: resource };
@@ -125,6 +130,10 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
 
 export function buildDealershipPath(id: string): string {
   return `/companies/${encodeURIComponent(id)}`;
+}
+
+export function buildHoldingPath(id: string): string {
+  return `/holdings/${encodeURIComponent(id)}`;
 }
 
 export function buildEmployeePath(id: string): string {

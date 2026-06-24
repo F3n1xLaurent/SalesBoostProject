@@ -8,6 +8,7 @@ import {
   type DealershipDirectionItem,
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
+import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 
 type DirectionFormState = {
   holdingId: string;
@@ -158,17 +159,17 @@ function DirectionModal(props: {
 export function DealershipDirectionsPage() {
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [items, setItems] = useState<DealershipDirectionItem[]>([]);
-  const [holdingFilter, setHoldingFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editItem, setEditItem] = useState<DealershipDirectionItem | null>(null);
+  const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !loading);
 
   const filtered = useMemo(
-    () => holdingFilter ? items.filter((item) => item.holdingId === holdingFilter) : items,
-    [holdingFilter, items],
+    () => selectedHoldingId ? items.filter((item) => item.holdingId === selectedHoldingId) : [],
+    [selectedHoldingId, items],
   );
 
   async function loadData() {
@@ -181,7 +182,6 @@ export function DealershipDirectionsPage() {
       ]);
       setHoldings(nextHoldings);
       setItems(nextDirections);
-      setHoldingFilter((current) => current || nextHoldings[0]?.id || '');
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить направления точек.');
     } finally {
@@ -251,8 +251,8 @@ export function DealershipDirectionsPage() {
 
   const createInitial = useMemo<DirectionFormState>(() => ({
     ...EMPTY_FORM,
-    holdingId: holdingFilter || holdings[0]?.id || '',
-  }), [holdingFilter, holdings]);
+    holdingId: selectedHoldingId,
+  }), [selectedHoldingId]);
 
   return (
     <div style={{ display: 'grid', gap: 20 }}>
@@ -264,19 +264,28 @@ export function DealershipDirectionsPage() {
               Управляйте направлениями, которые доступны точкам внутри каждой компании.
             </div>
           </div>
-          <button type="button" className="sa-btn-primary" onClick={() => { setError(null); setCreateOpen(true); }}>
-            Создать направление
-          </button>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <select
+              className="sa-select"
+              value={selectedHoldingId}
+              onChange={(event) => {
+                setSelectedHoldingId(event.target.value);
+                setNotice(null);
+              }}
+              style={{ minWidth: 220 }}
+              disabled={loading || holdings.length === 0}
+              title="Глобальный фильтр по компаниям"
+            >
+              {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
+              {holdings.map((holding) => (
+                <option key={holding.id} value={holding.id}>{holding.name}</option>
+              ))}
+            </select>
+            <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => { setError(null); setCreateOpen(true); }}>
+              Создать направление
+            </button>
+          </div>
         </div>
-
-        <label style={{ display: 'grid', gap: 6, maxWidth: 420 }}>
-          <span>Компания</span>
-          <select className="sa-select" value={holdingFilter} onChange={(event) => setHoldingFilter(event.target.value)}>
-            {holdings.map((holding) => (
-              <option key={holding.id} value={holding.id}>{holding.name}</option>
-            ))}
-          </select>
-        </label>
 
         {notice && <div style={{ padding: 12, borderRadius: 14, background: '#ecfdf5', color: '#047857', fontSize: 14 }}>{notice}</div>}
         {error && !createOpen && !editItem && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>{error}</div>}
@@ -295,6 +304,8 @@ export function DealershipDirectionsPage() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={3} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
+              ) : holdings.length === 0 ? (
+                <tr><td colSpan={3} className="sa-meta" style={{ padding: 28 }}>Перед тем, как создавать направления точек, пожалуйста, добавьте компанию.</td></tr>
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={3} className="sa-meta" style={{ padding: 28 }}>Направлений пока нет</td></tr>
               ) : filtered.map((item) => (
