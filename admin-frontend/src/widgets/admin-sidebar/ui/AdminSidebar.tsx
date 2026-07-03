@@ -31,10 +31,10 @@ const SUPER_NAV: NavItem[] = [
 const COMPANY_NAV: NavItem[] = SUPER_NAV.filter((item) => item.id !== 'holdings' && item.id !== 'typesNumbers');
 
 const DEALER_NAV: NavItem[] = [
-  { id: 'dealer-companies', label: 'Точка', icon: <CompaniesIcon /> },
-  { id: 'dealer-calls', label: 'Звонки', icon: <PhoneIcon /> },
-  { id: 'dealer-employees', label: 'Сотрудники', icon: <DealersIcon /> },
-  { id: 'dealer-team', label: 'Команда', icon: <AnalyticsIcon /> },
+  { id: 'dealer-companies', label: 'Дашборд', icon: <DashboardIcon /> },
+  { id: 'audits', label: 'Проверки', icon: <AuditsIcon /> },
+  { id: 'users', label: 'Сотрудники', icon: <DealersIcon /> },
+  // { id: 'dealer-team', label: 'Команда', icon: <AnalyticsIcon /> },
 ];
 
 function TrainerIcon() {

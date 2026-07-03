@@ -1008,6 +1008,9 @@ export function TrainPage() {
         <div className={`train-telegram ${activeSession ? 'train-telegram-chat-open' : ''}`}>
           <aside className="train-chat-sidebar">
             <header className="train-chat-sidebar-head">
+              <button className="train-profile-back-button" onClick={() => navigate('/staff/profile')} title="Назад к профилю" aria-label="Назад к профилю">
+                ←
+              </button>
               <button className="train-profile-button" onClick={() => setProfileOpen(true)}>
                 <span className="train-profile-avatar">{profile?.fullName.slice(0, 1).toUpperCase() || 'M'}</span>
                 <span>

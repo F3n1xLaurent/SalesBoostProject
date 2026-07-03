@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { fetchAuditDetail, type AuditDetailItem } from '../../../shared/api/adminPanel';
-import { ratingClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
+import { ratingClass } from '../../../shared/lib/admin-panel/utils';
 
 type ChecklistItem = AuditDetailItem['checklist'][number];
 type TranscriptLine = AuditDetailItem['transcript'][number];
@@ -282,7 +282,6 @@ export function AuditDetail({ auditId, onBack, onNavigate, onOpenEmployee }: Pro
           <span className={`sa-status-badge ${AUDIT_STATUS_CLASS[detail.status]}`}>
             {AUDIT_STATUS_LABELS[detail.status]}
           </span>
-          <button className="sa-btn-outline" onClick={() => exportPageToPdf(`Проверка_${detail.id}`)}>Экспорт PDF</button>
         </div>
       </div>
 

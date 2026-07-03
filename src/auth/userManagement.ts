@@ -27,6 +27,26 @@ type ManagerProfileInput = {
   status?: string;
 };
 
+type AnalyticsSession = {
+  startedAt: Date;
+  outcome: string | null;
+  totalScore: number | null;
+  dimensionsJson: string | null;
+  checklistResultsJson: string | null;
+  evaluationJson: string | null;
+  failureReason?: string | null;
+};
+
+type UserAnalytics = {
+  aiRating: number;
+  deltaRating: number | null;
+  auditsCount: number;
+  failsCount: number;
+  communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  topMistakeLabel: string;
+  status: 'norm' | 'risk' | 'critical' | 'no-data';
+};
+
 function isPlatformSuperadmin(account: ScopedAccount): boolean {
   return account.memberships.some((membership) => membership.role === APP_ROLES.platformSuperadmin);
 }
@@ -35,8 +55,16 @@ function isHoldingAdmin(account: ScopedAccount): boolean {
   return account.memberships.some((membership) => membership.role === APP_ROLES.holdingAdmin);
 }
 
+function isDealershipAdmin(account: ScopedAccount): boolean {
+  return account.memberships.some((membership) => membership.role === APP_ROLES.dealershipAdmin);
+}
+
 function getHoldingIds(account: ScopedAccount): string[] {
   return [...new Set(account.memberships.filter((membership) => membership.role === APP_ROLES.holdingAdmin && membership.holdingId).map((membership) => membership.holdingId!))];
+}
+
+function getDealershipIds(account: ScopedAccount): string[] {
+  return [...new Set(account.memberships.filter((membership) => membership.role === APP_ROLES.dealershipAdmin && membership.dealershipId).map((membership) => membership.dealershipId!))];
 }
 
 async function getAccessibleDealerships(account: ScopedAccount) {
@@ -48,9 +76,15 @@ async function getAccessibleDealerships(account: ScopedAccount) {
   }
 
   const holdingIds = getHoldingIds(account);
-  if (holdingIds.length === 0) return [];
+  const dealershipIds = getDealershipIds(account);
+  if (holdingIds.length === 0 && dealershipIds.length === 0) return [];
   return prisma.dealership.findMany({
-    where: { holdingId: { in: holdingIds } },
+    where: {
+      OR: [
+        ...(holdingIds.length ? [{ holdingId: { in: holdingIds } }] : []),
+        ...(dealershipIds.length ? [{ id: { in: dealershipIds } }] : []),
+      ],
+    },
     include: { holding: true },
     orderBy: [{ holding: { name: 'asc' } }, { name: 'asc' }],
   });
@@ -61,7 +95,12 @@ async function getAccessibleHoldingIds(account: ScopedAccount): Promise<string[]
     const holdings = await prisma.holding.findMany({ select: { id: true } });
     return holdings.map((holding) => holding.id);
   }
-  return getHoldingIds(account);
+  const holdingIds = getHoldingIds(account);
+  const dealerships = await getAccessibleDealerships(account);
+  return [...new Set([
+    ...holdingIds,
+    ...dealerships.map((dealership) => dealership.holdingId).filter((id): id is string => Boolean(id)),
+  ])];
 }
 
 function parseMemberships(value: unknown): UserMembershipInput[] {
@@ -71,10 +110,16 @@ function parseMemberships(value: unknown): UserMembershipInput[] {
     .filter(Boolean)
     .map((raw) => ({
       role: String(raw!.role || '') as AppRole,
-      holdingId: raw!.holdingId != null ? String(raw!.holdingId) : null,
-      dealershipId: raw!.dealershipId != null ? String(raw!.dealershipId) : null,
+      holdingId: normalizeOptionalId(raw!.holdingId),
+      dealershipId: normalizeOptionalId(raw!.dealershipId),
     }))
     .filter((membership) => membership.role.length > 0);
+}
+
+function normalizeOptionalId(value: unknown): string | null {
+  if (value == null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
 }
 
 function parseManagerProfiles(value: unknown): ManagerProfileInput[] {
@@ -95,6 +140,223 @@ function parseManagerProfiles(value: unknown): ManagerProfileInput[] {
 function parseTemplateIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map((item) => String(item)).filter(Boolean))];
+}
+
+const accountListInclude = {
+  memberships: {
+    include: {
+      holding: true,
+      dealership: {
+        include: {
+          holding: true,
+        },
+      },
+    },
+  },
+  managerProfiles: {
+    include: {
+      dealership: {
+        include: {
+          holding: true,
+        },
+      },
+    },
+  },
+  phoneNumbers: {
+    include: {
+      type: true,
+    },
+  },
+  permissionTemplateAssignments: {
+    include: {
+      template: true,
+    },
+  },
+} satisfies Prisma.AccountInclude;
+
+type AccountListItem = Prisma.AccountGetPayload<{
+  include: typeof accountListInclude;
+}>;
+
+function dealershipIdsFromMemberships(memberships: Array<{ dealershipId?: string | null }>): string[] {
+  return [...new Set(memberships.map((membership) => membership.dealershipId).filter((id): id is string => Boolean(id)))];
+}
+
+async function dealershipIdsForMemberships(memberships: Array<{ holdingId?: string | null; dealershipId?: string | null }>): Promise<string[]> {
+  const directDealershipIds = dealershipIdsFromMemberships(memberships);
+  const holdingIds = [...new Set(memberships.map((membership) => membership.holdingId).filter((id): id is string => Boolean(id)))];
+  if (holdingIds.length === 0) return directDealershipIds;
+
+  const dealerships = await prisma.dealership.findMany({
+    where: { holdingId: { in: holdingIds } },
+    select: { id: true },
+  });
+  return [...new Set([...directDealershipIds, ...dealerships.map((dealership) => dealership.id)])];
+}
+
+function defaultProfileName(params: { displayName?: string | null; email: string }): string {
+  const displayName = params.displayName?.trim();
+  if (displayName) return displayName;
+  const emailName = params.email.split('@')[0]?.trim();
+  return emailName || params.email || 'Пользователь';
+}
+
+async function expandManagerProfilesForDealershipMemberships(
+  memberships: UserMembershipInput[],
+  managerProfiles: ManagerProfileInput[],
+  fallback: { fullName?: string | null; email: string; status?: string | null },
+): Promise<ManagerProfileInput[]> {
+  const out = [...managerProfiles];
+  const profileDealershipIds = new Set(out.map((profile) => profile.dealershipId).filter(Boolean));
+  const fullName = managerProfiles[0]?.fullName || fallback.fullName?.trim() || defaultProfileName({ displayName: fallback.fullName, email: fallback.email });
+
+  for (const dealershipId of await dealershipIdsForMemberships(memberships)) {
+    if (profileDealershipIds.has(dealershipId)) continue;
+    out.push({
+      fullName,
+      dealershipId,
+      email: fallback.email,
+      phone: null,
+      status: fallback.status || 'active',
+    });
+    profileDealershipIds.add(dealershipId);
+  }
+
+  return out;
+}
+
+async function ensureManagerProfilesForAccounts(accounts: AccountListItem[]): Promise<boolean> {
+  let changed = false;
+
+  for (const account of accounts) {
+    const existingDealershipIds = new Set(account.managerProfiles.map((profile) => profile.dealershipId));
+    for (const dealershipId of await dealershipIdsForMemberships(account.memberships)) {
+      if (existingDealershipIds.has(dealershipId)) continue;
+
+      const existing = await prisma.managerProfile.findFirst({
+        where: { accountId: account.id, dealershipId },
+        select: { id: true },
+      });
+      if (existing) {
+        existingDealershipIds.add(dealershipId);
+        continue;
+      }
+
+      await prisma.managerProfile.create({
+        data: {
+          accountId: account.id,
+          dealershipId,
+          fullName: defaultProfileName(account),
+          email: account.email,
+          status: 'active',
+        },
+      });
+      existingDealershipIds.add(dealershipId);
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function safeJsonParseLocal<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function extractDimensionsFromSession(session: { dimensionsJson: string | null; evaluationJson: string | null }): Record<string, number> {
+  const direct = safeJsonParseLocal<Record<string, unknown> | null>(session.dimensionsJson, null);
+  const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+  const source = direct ?? (evaluation?.dimension_scores as Record<string, unknown> | undefined);
+  if (!source || typeof source !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([key, value]) => [key, typeof value === 'number' ? value : Number(value)])
+      .filter(([, value]) => Number.isFinite(value as number)),
+  ) as Record<string, number>;
+}
+
+function extractChecklistFromSession(session: { checklistResultsJson: string | null; evaluationJson: string | null }): Array<{ code?: string; status?: string; comment?: string }> {
+  const direct = safeJsonParseLocal<unknown>(session.checklistResultsJson, null);
+  if (Array.isArray(direct)) return direct as Array<{ code?: string; status?: string; comment?: string }>;
+  const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+  return Array.isArray(evaluation?.checklist) ? evaluation.checklist as Array<{ code?: string; status?: string; comment?: string }> : [];
+}
+
+function scoreFromSessions(sessions: AnalyticsSession[]): number {
+  const scored = sessions.filter((session) => typeof session.totalScore === 'number');
+  return scored.length ? round1(scored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / scored.length) : 0;
+}
+
+function deltaFromSessions(sessions: AnalyticsSession[]): number | null {
+  const now = new Date();
+  const currentStart = new Date(now);
+  currentStart.setDate(currentStart.getDate() - 30);
+  const previousStart = new Date(now);
+  previousStart.setDate(previousStart.getDate() - 60);
+  const current = sessions.filter((session) => typeof session.totalScore === 'number' && session.startedAt >= currentStart);
+  const previous = sessions.filter((session) => typeof session.totalScore === 'number' && session.startedAt >= previousStart && session.startedAt < currentStart);
+  if (!current.length || !previous.length) return null;
+  return Math.round(scoreFromSessions(current) - scoreFromSessions(previous));
+}
+
+function communicationFlagFromSessions(sessions: AnalyticsSession[]): UserAnalytics['communicationFlag'] {
+  if (sessions.some((session) => String(session.failureReason || '').toUpperCase().includes('PROFANITY'))) return 'profanity';
+  const values = sessions
+    .map((session) => extractDimensionsFromSession(session).communication)
+    .filter((value): value is number => typeof value === 'number');
+  if (!values.length) return 'ok';
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  if (avg < 35) return 'aggression';
+  if (avg < 50) return 'low-engagement';
+  if (avg < 70) return 'fillers';
+  return 'ok';
+}
+
+function topIssueFromSessions(sessions: AnalyticsSession[]): string {
+  const counts = new Map<string, number>();
+  for (const session of sessions) {
+    for (const item of extractChecklistFromSession(session)) {
+      const status = String(item.status || '').toUpperCase();
+      if (status !== 'NO' && status !== 'PARTIAL') continue;
+      const key = item.comment || item.code || 'Пункт чек-листа';
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (top) return top[0];
+  const failed = sessions.find((session) => session.failureReason);
+  return failed?.failureReason || 'Нет данных';
+}
+
+function analyticsFromSessions(sessions: AnalyticsSession[]): UserAnalytics {
+  const aiRating = scoreFromSessions(sessions);
+  const failsCount = sessions.filter((session) => typeof session.totalScore === 'number' && (session.totalScore ?? 0) < 50).length;
+  const communicationFlag = communicationFlagFromSessions(sessions);
+  const status: UserAnalytics['status'] = sessions.length === 0
+    ? 'no-data'
+    : aiRating < 50 || failsCount >= 2 || communicationFlag === 'profanity' || communicationFlag === 'aggression'
+      ? 'critical'
+      : aiRating < 70 || communicationFlag === 'fillers' || communicationFlag === 'low-engagement'
+        ? 'risk'
+        : 'norm';
+  return {
+    aiRating,
+    deltaRating: deltaFromSessions(sessions),
+    auditsCount: sessions.length,
+    failsCount,
+    communicationFlag,
+    topMistakeLabel: topIssueFromSessions(sessions),
+    status,
+  };
 }
 
 function parsePermissionKeys(value: unknown): PermissionKey[] {
@@ -118,6 +380,19 @@ function isUniqueEmailError(error: unknown): boolean {
   if (candidate.code !== 'P2002') return false;
   const target = candidate.meta?.target;
   return Array.isArray(target) ? target.includes('email') : target === 'email';
+}
+
+function prismaUserUpdateErrorMessage(error: unknown): string | null {
+  const candidate = error as { code?: unknown; meta?: { field_name?: unknown; cause?: unknown; target?: unknown } };
+  if (candidate.code === 'P2003') {
+    const field = String(candidate.meta?.field_name || candidate.meta?.cause || '');
+    if (field.includes('dealershipId')) return 'Указанная точка не найдена или недоступна.';
+    if (field.includes('holdingId')) return 'Указанная компания не найдена или недоступна.';
+    if (field.includes('templateId')) return 'Указанный шаблон прав не найден.';
+    return 'Некорректная привязка пользователя к компании, точке или шаблону прав.';
+  }
+  if (candidate.code === 'P2025') return 'Пользователь, компания, точка или шаблон прав не найдены.';
+  return null;
 }
 
 function formatPhoneNumber(value: unknown): string | null {
@@ -163,7 +438,30 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
     phoneNumbers: { include: { type: true } };
     permissionTemplateAssignments: { include: { template: true } };
   };
-}>) {
+}>, analyticsByManagerId: Map<string, UserAnalytics> = new Map()) {
+  const managerAnalytics = account.managerProfiles
+    .map((profile) => analyticsByManagerId.get(profile.id))
+    .filter((analytics): analytics is UserAnalytics => Boolean(analytics));
+  const analytics = managerAnalytics.length
+    ? {
+        aiRating: round1(managerAnalytics.reduce((sum, item) => sum + item.aiRating, 0) / managerAnalytics.length),
+        deltaRating: managerAnalytics.some((item) => item.deltaRating !== null)
+          ? Math.round(managerAnalytics.reduce((sum, item) => sum + (item.deltaRating ?? 0), 0) / managerAnalytics.filter((item) => item.deltaRating !== null).length)
+          : null,
+        auditsCount: managerAnalytics.reduce((sum, item) => sum + item.auditsCount, 0),
+        failsCount: managerAnalytics.reduce((sum, item) => sum + item.failsCount, 0),
+        communicationFlag: managerAnalytics.find((item) => item.communicationFlag === 'profanity')?.communicationFlag
+          ?? managerAnalytics.find((item) => item.communicationFlag === 'aggression')?.communicationFlag
+          ?? managerAnalytics.find((item) => item.communicationFlag === 'low-engagement')?.communicationFlag
+          ?? managerAnalytics.find((item) => item.communicationFlag === 'fillers')?.communicationFlag
+          ?? 'ok',
+        topMistakeLabel: managerAnalytics.find((item) => item.topMistakeLabel !== 'Нет данных')?.topMistakeLabel ?? 'Нет данных',
+        status: managerAnalytics.find((item) => item.status === 'critical')?.status
+          ?? managerAnalytics.find((item) => item.status === 'risk')?.status
+          ?? managerAnalytics.find((item) => item.status === 'norm')?.status
+          ?? 'no-data',
+      }
+    : analyticsFromSessions([]);
   return {
     id: account.id,
     email: account.email,
@@ -201,6 +499,7 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
       description: assignment.template.description,
       permissions: JSON.parse(assignment.template.permissionsJson || '[]'),
     })),
+    analytics,
   };
 }
 
@@ -280,15 +579,18 @@ export async function handleRbacMeta(req: Request, res: Response): Promise<void>
     await ensureSystemPermissionTemplates();
   }
 
-  const [holdings, dealerships, templates] = await Promise.all([
-    isPlatformSuperadmin(account)
-      ? prisma.holding.findMany({ orderBy: { name: 'asc' } })
-      : prisma.holding.findMany({ where: { id: { in: getHoldingIds(account) } }, orderBy: { name: 'asc' } }),
+  const [dealerships, templates] = await Promise.all([
     getAccessibleDealerships(account),
     isPlatformSuperadmin(account)
       ? prisma.permissionTemplate.findMany({ orderBy: { name: 'asc' } })
       : Promise.resolve([] as PermissionTemplate[]),
   ]);
+  const holdingIds = [...new Set(dealerships.map((dealership) => dealership.holdingId).filter((id): id is string => Boolean(id)))];
+  const holdings = isPlatformSuperadmin(account)
+    ? await prisma.holding.findMany({ orderBy: { name: 'asc' } })
+    : holdingIds.length
+      ? await prisma.holding.findMany({ where: { id: { in: holdingIds } }, orderBy: { name: 'asc' } })
+      : [];
 
   res.json({
     roles: Object.values(APP_ROLES),
@@ -320,68 +622,70 @@ export async function handleListUsers(req: Request, res: Response): Promise<void
 
   const search = String(req.query.search || '').trim().toLowerCase();
   const holdingIds = getHoldingIds(account);
+  const dealershipIds = getDealershipIds(account);
 
   const where: Prisma.AccountWhereInput = isPlatformSuperadmin(account)
     ? {}
     : {
         OR: [
-          {
-            memberships: {
-              some: {
-                role: APP_ROLES.manager,
-                dealership: {
-                  holdingId: { in: holdingIds },
+          ...(holdingIds.length
+            ? [
+                {
+                  memberships: {
+                    some: {
+                      role: APP_ROLES.manager,
+                      dealership: {
+                        holdingId: { in: holdingIds },
+                      },
+                    },
+                  },
                 },
-              },
-            },
-          },
-          {
-            managerProfiles: {
-              some: {
-                dealership: {
-                  holdingId: { in: holdingIds },
+                {
+                  managerProfiles: {
+                    some: {
+                      dealership: {
+                        holdingId: { in: holdingIds },
+                      },
+                    },
+                  },
                 },
-              },
-            },
-          },
+              ]
+            : []),
+          ...(dealershipIds.length
+            ? [
+                {
+                  memberships: {
+                    some: {
+                      role: APP_ROLES.manager,
+                      dealershipId: { in: dealershipIds },
+                    },
+                  },
+                },
+                {
+                  managerProfiles: {
+                    some: {
+                      dealershipId: { in: dealershipIds },
+                    },
+                  },
+                },
+              ]
+            : []),
         ],
       };
 
-  const accounts = await prisma.account.findMany({
+  let accounts = await prisma.account.findMany({
     where,
-    include: {
-      memberships: {
-        include: {
-          holding: true,
-          dealership: {
-            include: {
-              holding: true,
-            },
-          },
-        },
-      },
-      managerProfiles: {
-        include: {
-          dealership: {
-            include: {
-              holding: true,
-            },
-          },
-        },
-      },
-      phoneNumbers: {
-        include: {
-          type: true,
-        },
-      },
-      permissionTemplateAssignments: {
-        include: {
-          template: true,
-        },
-      },
-    },
+    include: accountListInclude,
     orderBy: { createdAt: 'desc' },
   });
+
+  if (await ensureManagerProfilesForAccounts(accounts)) {
+    accounts = await prisma.account.findMany({
+      where,
+      include: accountListInclude,
+      orderBy: { createdAt: 'desc' },
+    });
+  }
 
   const filtered = search
     ? accounts.filter((item) => {
@@ -397,8 +701,46 @@ export async function handleListUsers(req: Request, res: Response): Promise<void
       })
     : accounts;
 
+  const managerIds = [...new Set(filtered.flatMap((account) => account.managerProfiles.map((profile) => profile.id)))];
+  const voiceSessions = managerIds.length
+    ? await prisma.voiceCallSession.findMany({
+        where: { managerId: { in: managerIds } },
+        select: {
+          managerId: true,
+          startedAt: true,
+          outcome: true,
+          totalScore: true,
+          dimensionsJson: true,
+          checklistResultsJson: true,
+          evaluationJson: true,
+          failureReason: true,
+        },
+        orderBy: { startedAt: 'desc' },
+      })
+    : [];
+
+  const sessionsByManagerId = new Map<string, AnalyticsSession[]>();
+  for (const session of voiceSessions) {
+    if (!session.managerId) continue;
+    const list = sessionsByManagerId.get(session.managerId) ?? [];
+    list.push({
+      startedAt: session.startedAt,
+      outcome: session.outcome,
+      totalScore: session.totalScore,
+      dimensionsJson: session.dimensionsJson,
+      checklistResultsJson: session.checklistResultsJson,
+      evaluationJson: session.evaluationJson,
+      failureReason: session.failureReason,
+    });
+    sessionsByManagerId.set(session.managerId, list);
+  }
+  const analyticsByManagerId = new Map<string, UserAnalytics>();
+  for (const managerId of managerIds) {
+    analyticsByManagerId.set(managerId, analyticsFromSessions(sessionsByManagerId.get(managerId) ?? []));
+  }
+
   res.json({
-    items: filtered.map(normalizeAccountResponse),
+    items: filtered.map((account) => normalizeAccountResponse(account, analyticsByManagerId)),
     canManageTemplates: isPlatformSuperadmin(account),
   });
 }
@@ -416,7 +758,11 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
   const displayName = String(body.displayName || '').trim() || null;
   const status = String(body.status || 'active').trim() || 'active';
   const memberships = parseMemberships(body.memberships);
-  const managerProfiles = parseManagerProfiles(body.managerProfiles);
+  const managerProfiles = await expandManagerProfilesForDealershipMemberships(
+    memberships,
+    parseManagerProfiles(body.managerProfiles),
+    { fullName: displayName, email, status: 'active' },
+  );
   const templateIds = parseTemplateIds(body.templateIds);
 
   if (!email || !password) {
@@ -452,8 +798,8 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
         memberships: {
           create: memberships.map((membership) => ({
             role: membership.role,
-            holdingId: membership.holdingId ?? null,
-            dealershipId: membership.dealershipId ?? null,
+            holdingId: membership.holdingId || null,
+            dealershipId: membership.dealershipId || null,
           })),
         },
         managerProfiles: managerProfiles.length
@@ -513,6 +859,11 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
       res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
       return;
     }
+    const message = prismaUserUpdateErrorMessage(error);
+    if (message) {
+      res.status(400).json({ error: message });
+      return;
+    }
     console.error('Create user error:', error);
     res.status(500).json({ error: 'Не удалось создать пользователя.' });
   }
@@ -544,7 +895,13 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
   const displayName = body.displayName != null ? String(body.displayName).trim() || null : undefined;
   const status = body.status != null ? String(body.status).trim() : undefined;
   const memberships = body.memberships != null ? parseMemberships(body.memberships) : undefined;
-  const managerProfiles = body.managerProfiles != null ? parseManagerProfiles(body.managerProfiles) : undefined;
+  const managerProfiles = body.managerProfiles != null || memberships
+    ? await expandManagerProfilesForDealershipMemberships(
+        memberships ?? [],
+        parseManagerProfiles(body.managerProfiles),
+        { fullName: displayName, email: email || '', status: 'active' },
+      )
+    : undefined;
   const templateIds = body.templateIds != null ? parseTemplateIds(body.templateIds) : undefined;
 
   try {
@@ -574,8 +931,8 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
             data: memberships.map((membership) => ({
               accountId,
               role: membership.role,
-              holdingId: membership.holdingId ?? null,
-              dealershipId: membership.dealershipId ?? null,
+              holdingId: membership.holdingId || null,
+              dealershipId: membership.dealershipId || null,
             })),
           });
         }
@@ -649,6 +1006,11 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
   } catch (error) {
     if (isUniqueEmailError(error)) {
       res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
+      return;
+    }
+    const message = prismaUserUpdateErrorMessage(error);
+    if (message) {
+      res.status(400).json({ error: message });
       return;
     }
     console.error('Update user error:', error);

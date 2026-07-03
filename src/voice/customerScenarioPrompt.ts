@@ -11,6 +11,7 @@ export type CustomerScenarioPromptInput = {
   context?: string | null;
   itemTitle?: string | null;
   itemDescription?: string | null;
+  voiceName?: string | null;
   questions?: ScenarioPromptQuestion[];
   objections?: ScenarioPromptObjection[];
   criteria?: ScenarioPromptCriterion[];
@@ -48,6 +49,7 @@ export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInp
   const context = asText(input.context) || 'Потребность клиента не указана. Веди себя как реалистичный покупатель и уточняй детали по предложению.';
   const itemTitle = asText(input.itemTitle) || 'предложение из выборки';
   const itemDescription = asText(input.itemDescription);
+  const voiceName = asText(input.voiceName);
   const questionLines = buildQuestionLines(input.questions);
   const objectionLines = buildObjectionLines(input.objections);
   const criteriaLines = buildCriteriaLines(input.criteria);
@@ -60,7 +62,8 @@ export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInp
   return [
     '=== ПРОФИЛЬ КЛИЕНТА ===',
     `Возраст: ${age}. Темперамент: ${temperament}. Терпение: ${patience}. Длина реплик: ${replyLength}.`,
-    `Стиль коммуникации: ${communicationStyle}`,
+    voiceName ? `Голос клиента: ${voiceName}. Подстраивай естественность речи под этот голос, но не упоминай название голоса вслух.` : '',
+    `Стиль коммуникации (пример реплик, которые в общем разговоре использовались клиентом, их использовать не нужно, главное скопировать стиль диалога): ${communicationStyle}`,
     '',
     '=== КОНТЕКСТ И ПОТРЕБНОСТЬ ===',
     context,

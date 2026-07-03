@@ -7,7 +7,7 @@ import {
   COMM_BADGE_CLASS,
   type EmployeeDetailData,
 } from '../../../shared/lib/admin-panel/mockData';
-import { ratingClass, deltaDisplay, statusBadgeClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
+import { ratingClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import {
   excludeManagerFromAnalyticsPlan,
   fetchAnalyticsManagerDetail,
@@ -744,7 +744,6 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
         <div className="sa-detail-header-right">
           {headerRight}
           <span className={statusBadgeClass(detail.status)}>{STATUS_LABELS[detail.status]}</span>
-          <button className="sa-btn-outline" onClick={() => exportPageToPdf(`Сотрудник_${detail.fullName}`)}>Экспорт PDF</button>
         </div>
       </div>
 

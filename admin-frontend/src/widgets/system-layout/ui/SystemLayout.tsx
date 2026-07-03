@@ -56,25 +56,26 @@ export type SystemLayoutProps = {
   voice: PlatformVoice | null;
   loadingSummary: boolean;
   role: AdminRole;
+  dealerDealershipId?: string | null;
   profileName: string;
   onRoleChange: (role: AdminRole) => void;
   onLogout: () => void;
   allowedRoles: AdminRole[];
 };
 
-export function SystemLayout({ summary, voice, loadingSummary, role, profileName, onRoleChange, onLogout, allowedRoles }: SystemLayoutProps) {
+export function SystemLayout({ summary, voice, loadingSummary, role, dealerDealershipId = null, profileName, onRoleChange, onLogout, allowedRoles }: SystemLayoutProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const route = parseAdminPath(location.pathname);
-  const activeTab = normalizeTabForRole(route.tab, role);
   const selectedHoldingId = route.holdingId || null;
   const selectedDealershipId = route.dealershipId || null;
+  const activeTab = role === 'dealer' && route.tab === 'companies' && selectedDealershipId
+    ? 'dealer-companies'
+    : normalizeTabForRole(route.tab, role);
   const selectedEmployeeId = route.employeeId || null;
   const selectedAuditId = route.auditId || null;
   const selectedBatchDetailId = route.batchId || null;
-  const auditsInitialScope = searchParams.get('scope') === 'dealerships' ? 'dealerships' : 'employees';
-  const focusedBatchId = searchParams.get('batch_focus') || selectedBatchDetailId;
   const employeeSourceDealership = searchParams.get('source_dealership')
     ? {
       id: searchParams.get('source_dealership') || '',
@@ -83,12 +84,15 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
     : null;
 
   const navigateToTab = (tab: AdminTab) => {
+    if (role === 'dealer' && tab === 'dealer-companies' && dealerDealershipId) {
+      navigate(buildDealershipPath(dealerDealershipId));
+      return;
+    }
     navigate(tabToPath(tab));
   };
 
   const navigateToBatch = (batchId: string) => {
-    const params = new URLSearchParams({ scope: 'dealerships', batch_focus: batchId });
-    navigate(`${buildBatchPath(batchId)}?${params.toString()}`);
+    navigate(buildBatchPath(batchId));
   };
 
   const navigateToEmployee = (employeeId: string, sourceDealership?: { id: string; name: string } | null) => {
@@ -103,19 +107,16 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
     navigate(`${buildEmployeePath(employeeId)}?${params.toString()}`);
   };
 
-  const setAuditsScope = (scope: 'employees' | 'dealerships') => {
-    const next = new URLSearchParams(searchParams);
-    if (scope === 'dealerships') next.set('scope', scope);
-    else next.delete('scope');
-    navigate({ pathname: location.pathname, search: next.toString() ? `?${next.toString()}` : '' }, { replace: true });
-  };
-
   const handleTabChange = (tab: AdminTab) => {
     navigateToTab(tab);
   };
 
   const handleRoleChange = (newRole: AdminRole) => {
     onRoleChange(newRole);
+    if (newRole === 'dealer' && dealerDealershipId) {
+      navigate(buildDealershipPath(dealerDealershipId));
+      return;
+    }
     navigate(tabToPath(getDefaultTab(newRole)));
   };
 
@@ -128,6 +129,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
   const [dataLoading, setDataLoading] = useState(true);
   const [backendNotRunning, setBackendNotRunning] = useState(false);
   const [hasActiveBatch, setHasActiveBatch] = useState(false);
+  const isSuperOrCompany = role === 'super' || role === 'company';
+  const isDealerAudits = role === 'dealer' && activeTab === 'audits';
+  const shouldLoadAuditData = isSuperOrCompany || isDealerAudits;
 
   const handleDealershipSaved = (dealership: DealershipItem) => {
     setRealDealerships((current) => {
@@ -140,7 +144,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
   };
 
   useEffect(() => {
-    if (role !== 'super' && role !== 'company') {
+    if (!shouldLoadAuditData) {
       setAudits([]);
       setTimeSeries([]);
       setCallBatches([]);
@@ -155,6 +159,38 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
     let cancelled = false;
     setDataLoading(true);
     setBackendNotRunning(false);
+
+    if (isDealerAudits) {
+      fetchAudits(200)
+        .then((a) => {
+          if (cancelled) return;
+          setAudits(a);
+          setCallBatches([]);
+          setTimeSeries([]);
+          setRealDealerships([]);
+          setSettings(null);
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setAudits([]);
+            setTimeSeries([]);
+            setCallBatches([]);
+            setRealDealerships([]);
+            setSettings(null);
+            setBackendNotRunning(true);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setAuditsLoading(false);
+            setDataLoading(false);
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
     Promise.all([
       fetchAudits(200),
       fetchCallBatches(80, 'all'),
@@ -189,10 +225,10 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
     return () => {
       cancelled = true;
     };
-  }, [role]);
+  }, [role, activeTab, shouldLoadAuditData, isDealerAudits]);
 
   useEffect(() => {
-    if (role !== 'super' && role !== 'company') return;
+    if (!isSuperOrCompany) return;
     let cancelled = false;
     const pull = async () => {
       try {
@@ -208,14 +244,24 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [role]);
-
-  const isSuperOrCompany = role === 'super' || role === 'company';
+  }, [isSuperOrCompany]);
 
   useEffect(() => {
     if (isTabAllowedForRole(activeTab, role)) return;
     navigate(tabToPath(getDefaultTab(role)), { replace: true });
   }, [activeTab, navigate, role]);
+
+  useEffect(() => {
+    if (role === 'dealer' && selectedBatchDetailId) {
+      navigate('/audits', { replace: true });
+    }
+  }, [navigate, role, selectedBatchDetailId]);
+
+  useEffect(() => {
+    if (role === 'dealer' && activeTab === 'dealer-companies' && !selectedDealershipId && dealerDealershipId) {
+      navigate(buildDealershipPath(dealerDealershipId), { replace: true });
+    }
+  }, [activeTab, dealerDealershipId, navigate, role, selectedDealershipId]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
@@ -261,7 +307,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
         }}
       >
         <div className="super-admin-content">
-          {backendNotRunning && isSuperOrCompany && (
+          {backendNotRunning && shouldLoadAuditData && (
             <StatusNotice tone="warning">
               <strong>Нет данных: бэкенд не запущен.</strong>
               <br />
@@ -359,21 +405,15 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
               {activeTab === 'audits' && !selectedAuditId && !selectedBatchDetailId && (
                 <Audits
                   audits={audits}
-                  callBatches={callBatches}
-                  callBatchesLoading={dataLoading}
-                  onScopeChange={setAuditsScope}
                   loading={auditsLoading}
-                  initialScope={auditsInitialScope}
-                  focusedBatchId={focusedBatchId}
                   onOpenDetail={(auditId) => navigate(buildAuditPath(auditId))}
-                  onOpenBatchDetail={navigateToBatch}
                 />
               )}
               {activeTab === 'audits' && !selectedAuditId && selectedBatchDetailId && (
                 <AuditBatchDetail
                   batchId={selectedBatchDetailId}
                   initialBatch={callBatches.find((b) => b.id === selectedBatchDetailId) ?? null}
-                  onBack={() => navigate('/audits?scope=dealerships')}
+                  onBack={() => navigate('/audits')}
                   onOpenAudit={(auditId) => navigate(buildAuditPath(auditId))}
                   onOpenDealership={(dealershipId) => navigate(buildDealershipPath(dealershipId))}
                 />
@@ -409,8 +449,42 @@ export function SystemLayout({ summary, voice, loadingSummary, role, profileName
           )}
 
           {/* ── Dealer role content ── */}
-          {role === 'dealer' && activeTab.startsWith('dealer-') && (
+          {role === 'dealer' && activeTab.startsWith('dealer-') && activeTab !== 'dealer-companies' && (
             <DealerContent summary={summary} voice={voice} loadingSummary={loadingSummary} activeTab={activeTab as DealerTab} />
+          )}
+          {role === 'dealer' && activeTab === 'dealer-companies' && selectedDealershipId && (
+            <DealershipDetail
+              dealershipId={selectedDealershipId}
+              dealership={null}
+              mode="dealerDashboard"
+              onBack={() => navigate(buildDealershipPath(selectedDealershipId))}
+              onOpenEmployee={(empId) => navigate(buildUserEmployeePath(empId))}
+            />
+          )}
+          {role === 'dealer' && activeTab === 'users' && (
+            <UsersPage
+              role={role}
+              employeeId={selectedEmployeeId}
+              onSelectEmployee={(id) => navigate(buildUserEmployeePath(id))}
+              onBackToUsers={() => navigate('/users')}
+              onOpenDealership={() => navigate('/dealer/companies')}
+              onOpenCompanies={() => navigate('/dealer/companies')}
+            />
+          )}
+          {role === 'dealer' && activeTab === 'audits' && !selectedAuditId && !selectedBatchDetailId && (
+            <Audits
+              audits={audits}
+              loading={auditsLoading}
+              onOpenDetail={(auditId) => navigate(buildAuditPath(auditId))}
+            />
+          )}
+          {role === 'dealer' && activeTab === 'audits' && selectedAuditId && (
+            <AuditDetail
+              auditId={selectedAuditId}
+              onBack={() => navigate('/audits')}
+              onNavigate={(auditId) => navigate(buildAuditPath(auditId))}
+              onOpenEmployee={(empId) => navigate(buildUserEmployeePath(empId))}
+            />
           )}
 
           {/* ── Staff role content ── */}

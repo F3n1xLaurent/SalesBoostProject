@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { apiFetch } from '../../../entities/session';
+import {
+  fetchTrainerHistory,
+  fetchTrainerProfile,
+  type TrainerProfile,
+  type TrainerSessionSummary,
+} from '../../../shared/api/trainer';
 import {
   Card,
   CardBody,
@@ -11,23 +16,6 @@ import {
 } from '@heroui/react';
 
 const API_BASE = '';
-
-const isDevHost =
-  typeof window !== 'undefined' &&
-  (window.location.hostname === 'localhost' ||
-    window.location.hostname === '127.0.0.1' ||
-    window.location.hostname.endsWith('.lhr.life'));
-
-type Attempt = {
-  id: number | string;
-  type: 'attempt' | 'training';
-  sessionId?: number;
-  userName: string;
-  totalScore: number | null;
-  qualityTag: string | null;
-  summary?: string | null;
-  finishedAt?: string | null;
-};
 
 type TrainingMessage = {
   id: number;
@@ -58,64 +46,81 @@ type WebTestHistoryItem = {
   result?: WebTestResult | null;
 };
 
-const mockStaffProfile = {
-  name: 'Иван Петров',
-  level: 'Middle',
-  position: 'Менеджер по продажам',
-  targetScore: 85,
-};
-
-const mockStaffStats = {
-  totalTests: 24,
-  avgScore: 76.3,
-  bestScore: 92,
-  passRate: 79,
-  lastTraining: '2026-02-28T14:30:00Z',
-  strengths: ['Приветствие', 'Выявление потребностей', 'Презентация'],
-  weaknesses: ['Закрытие сделки', 'Работа с возражениями'],
-  recentScores: [72, 78, 65, 82, 88, 71, 76, 85, 79, 92],
-};
-
-const mockStaffTrainings: Attempt[] = [
-  { id: 1, type: 'training', sessionId: 101, userName: 'Иван Петров', totalScore: 78.5, qualityTag: 'Средне', summary: 'Обработка входящего лида — хорошее приветствие, слабое закрытие.', finishedAt: '2026-02-28T10:15:00Z' },
-  { id: 2, type: 'training', sessionId: 102, userName: 'Иван Петров', totalScore: 82.3, qualityTag: 'Хорошо', summary: 'Холодный звонок — уверенная работа с возражениями.', finishedAt: '2026-02-25T15:40:00Z' },
-  { id: 3, type: 'attempt', userName: 'Иван Петров', totalScore: 74.1, qualityTag: 'Средне', summary: 'Презентация автомобиля — слабая аргументация преимуществ.', finishedAt: '2026-02-20T12:05:00Z' },
-  { id: 4, type: 'training', sessionId: 103, userName: 'Иван Петров', totalScore: 92.0, qualityTag: 'Отлично', summary: 'Работа с VIP-клиентом — отлично выстроенный контакт.', finishedAt: '2026-02-15T09:30:00Z' },
-  { id: 5, type: 'attempt', userName: 'Иван Петров', totalScore: 65.0, qualityTag: 'Плохо', summary: 'Обработка жалобы — эмоциональная реакция, потеря контроля.', finishedAt: '2026-02-10T16:20:00Z' },
-];
-
 const STAFF_WEB_HISTORY_STORAGE_KEY = 'staff_web_test_history_v1';
+
+function uniqueNonEmpty(values: Array<string | null | undefined>, limit: number) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values) {
+    const value = raw?.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function trainerQualityTag(score: number | null) {
+  if (score == null) return null;
+  if (score >= 85) return 'Отлично';
+  if (score >= 76) return 'Хорошо';
+  if (score >= 50) return 'Средне';
+  return 'Нужно улучшить';
+}
+
+function trainerFailureReasonLabel(reason: string | null | undefined) {
+  if (!reason) return null;
+  const base = reason.split(':')[0];
+  const labels: Record<string, string> = {
+    PROFANITY: 'Недопустимая лексика',
+    BAD_TONE: 'Грубый / враждебный тон',
+    IGNORED_QUESTIONS: 'Игнорирование вопросов клиента',
+    POOR_COMMUNICATION: 'Низкое качество коммуникации',
+    REPEATED_LOW_EFFORT: 'Повторные некачественные ответы',
+    REPEATED_LOW_QUALITY: 'Повторные некачественные/формальные ответы',
+    DISENGAGEMENT: 'Менеджер завершил коммуникацию / отказался от диалога',
+    rude_language: 'Недопустимая лексика',
+    ignored_questions: 'Игнорирование вопросов клиента',
+    poor_communication: 'Низкое качество коммуникации',
+    repeated_low_effort: 'Повторные некачественные ответы',
+    repeated_low_quality: 'Повторные некачественные/формальные ответы',
+    disengagement: 'Менеджер завершил коммуникацию / отказался от диалога',
+  };
+  if (labels[base]) return labels[base];
+  if (base === 'CRITICAL_EVASION' || base === 'critical_evasion') {
+    const topic = reason.split(':')[1] ?? '';
+    return topic ? `Критический вопрос проигнорирован (${topic})` : 'Критический вопрос проигнорирован';
+  }
+  return 'Тренировка досрочно завершена';
+}
 
 /* ================================================================
    Profile page (statistics)
    ================================================================ */
 
 export function StaffProfileContent() {
-  const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [profile, setProfile] = useState<TrainerProfile | null>(null);
+  const [history, setHistory] = useState<TrainerSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    if (isDevHost) {
-      setAttempts(mockStaffTrainings);
-      setLoading(false);
-      return () => { cancelled = true; };
-    }
+    setError(null);
 
-    apiFetch(`${API_BASE}/api/admin/attempts?page=0&limit=1000`)
-      .then((res) => {
-        if (!res.ok) return {};
-        return res.text().then(t => t ? JSON.parse(t) : {});
+    Promise.all([fetchTrainerProfile(), fetchTrainerHistory()])
+      .then(([nextProfile, nextHistory]) => {
+        if (cancelled) return;
+        setProfile(nextProfile);
+        setHistory(nextHistory);
       })
-      .then((data) => {
-        if (!cancelled) {
-          const list = data?.attempts ?? [];
-          setAttempts(list.length ? list : (isDevHost ? mockStaffTrainings : []));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setAttempts(isDevHost ? mockStaffTrainings : []);
+      .catch((e: any) => {
+        if (cancelled) return;
+        setProfile(null);
+        setHistory([]);
+        setError(e?.message || 'Не удалось загрузить профиль.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -123,22 +128,67 @@ export function StaffProfileContent() {
     return () => { cancelled = true; };
   }, []);
 
-  const stats = mockStaffStats;
+  const completedHistory = useMemo(
+    () => history.filter((item) => item.status === 'completed' || item.status === 'failed'),
+    [history],
+  );
+  const scoredHistory = useMemo(
+    () => completedHistory.filter((item) => item.score != null),
+    [completedHistory],
+  );
+  const stats = useMemo(() => {
+    const scores = scoredHistory.map((item) => Number(item.score));
+    const avgScore = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0;
+    const bestScore = scores.length ? Math.max(...scores) : 0;
+    const passRate = scores.length ? Math.round((scores.filter((score) => score >= 76).length / scores.length) * 100) : 0;
+    const recentScores = scoredHistory.slice(0, 10).map((item) => Math.round(Number(item.score))).reverse();
+    const strengths = uniqueNonEmpty(
+      scoredHistory
+        .filter((item) => Number(item.score) >= 85)
+        .map((item) => item.scenarioName),
+      3,
+    );
+    const weaknesses = uniqueNonEmpty(
+      scoredHistory
+        .filter((item) => Number(item.score) < 76)
+        .map((item) => trainerFailureReasonLabel(item.failureReason) || item.scenarioName),
+      3,
+    );
+    return {
+      totalTests: profile?.sessionsTotal ?? completedHistory.length,
+      avgScore,
+      bestScore,
+      passRate,
+      recentScores,
+      strengths,
+      weaknesses,
+    };
+  }, [completedHistory.length, profile?.sessionsTotal, scoredHistory]);
   const scoreColor = (s: number) => s >= 76 ? 'text-success-400' : s >= 50 ? 'text-warning-400' : 'text-danger-400';
 
   return (
     <div className="space-y-4">
+      {error && (
+        <Card shadow="sm" className="admin-card-light">
+          <CardBody>
+            <p className="text-xs text-danger-400">{error}</p>
+          </CardBody>
+        </Card>
+      )}
+
       {/* Profile header */}
       <Card shadow="sm" className="admin-card-light">
         <CardBody>
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-lg font-semibold">{mockStaffProfile.name}</div>
-              <div className="text-[12px] text-default-500">{mockStaffProfile.position} · Уровень: {mockStaffProfile.level}</div>
+              <div className="text-lg font-semibold">{loading ? 'Загрузка…' : profile?.fullName ?? 'Профиль не найден'}</div>
+              <div className="text-[12px] text-default-500">
+                {profile ? `${profile.branchName}${profile.city ? `, ${profile.city}` : ''} · ${profile.companyName}` : 'Нет данных о сотруднике'}
+              </div>
             </div>
             <div className="text-right">
-              <div className="text-[11px] text-default-500">Цель AI‑оценки</div>
-              <div className="text-2xl font-bold">{mockStaffProfile.targetScore}<span className="text-sm text-default-500">/100</span></div>
+              <div className="text-[11px] text-default-500">AI‑баллы</div>
+              <div className="text-2xl font-bold">{profile?.totalPoints ?? 0}</div>
             </div>
           </div>
         </CardBody>
@@ -165,9 +215,11 @@ export function StaffProfileContent() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <Card shadow="sm" className="admin-card-light">
           <CardBody>
-            <div className="text-sm font-semibold mb-2">✅ Сильные стороны</div>
+            <div className="text-sm font-semibold mb-2">✅ Лучшие сценарии</div>
             <div className="space-y-1">
-              {stats.strengths.map((s, i) => (
+              {stats.strengths.length === 0 ? (
+                <div className="text-xs text-default-500">Появятся после тренировок с высоким баллом.</div>
+              ) : stats.strengths.map((s, i) => (
                 <div key={i} className="text-xs text-default-500 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
                   {s}
@@ -180,7 +232,9 @@ export function StaffProfileContent() {
           <CardBody>
             <div className="text-sm font-semibold mb-2">⚠️ Зоны роста</div>
             <div className="space-y-1">
-              {stats.weaknesses.map((w, i) => (
+              {stats.weaknesses.length === 0 ? (
+                <div className="text-xs text-default-500">Пока нет сессий ниже проходного порога.</div>
+              ) : stats.weaknesses.map((w, i) => (
                 <div key={i} className="text-xs text-default-500 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
                   {w}
@@ -195,18 +249,22 @@ export function StaffProfileContent() {
       <Card shadow="sm" className="admin-card-light">
         <CardBody>
           <div className="text-sm font-semibold mb-3">Динамика баллов (последние 10 тестов)</div>
-          <div className="flex items-end gap-2 h-24">
-            {stats.recentScores.map((s, i) => {
-              const pct = Math.max(10, s);
-              const color = s >= 76 ? 'bg-emerald-500' : s >= 50 ? 'bg-amber-500' : 'bg-rose-500';
-              return (
-                <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                  <div className="text-[10px] text-default-500">{s}</div>
-                  <div className={`w-full rounded-t ${color}`} style={{ height: `${pct}%` }} />
-                </div>
-              );
-            })}
-          </div>
+          {stats.recentScores.length === 0 ? (
+            <p className="text-xs text-default-500">Нет завершённых тренировок с оценкой.</p>
+          ) : (
+            <div className="flex items-end gap-2 h-24">
+              {stats.recentScores.map((s, i) => {
+                const pct = Math.max(10, s);
+                const color = s >= 76 ? 'bg-emerald-500' : s >= 50 ? 'bg-amber-500' : 'bg-rose-500';
+                return (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div className="text-[10px] text-default-500">{s}</div>
+                    <div className={`w-full rounded-t ${color}`} style={{ height: `${pct}%` }} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </CardBody>
       </Card>
 
@@ -216,20 +274,22 @@ export function StaffProfileContent() {
           <div className="text-sm font-semibold mb-3">Последние тренировки</div>
           {loading ? (
             <p className="text-xs text-default-500">Загрузка…</p>
-          ) : attempts.length === 0 ? (
+          ) : history.length === 0 ? (
             <p className="text-xs text-default-500">Нет данных о тренировках.</p>
           ) : (
             <div className="space-y-2">
-              {attempts.slice(0, 5).map((a) => {
-                const score = a.totalScore;
+              {history.slice(0, 5).map((a) => {
+                const score = a.score;
                 const sc = score == null ? 'text-default-500' : scoreColor(score);
+                const finishedAt = a.completedAt ?? a.startedAt;
+                const qualityTag = trainerQualityTag(score);
                 return (
                   <div key={a.id} className="flex items-center justify-between rounded-xl admin-card-inner px-3 py-2">
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium truncate">{a.summary || 'Тренировка'}</div>
+                      <div className="text-xs font-medium truncate">{a.scenarioName || 'Тренировка'}</div>
                       <div className="text-[10px] text-default-500">
-                        {a.finishedAt ? new Date(a.finishedAt).toLocaleDateString('ru-RU') : '—'}
-                        {a.qualityTag && ` · ${a.qualityTag}`}
+                        {finishedAt ? new Date(finishedAt).toLocaleDateString('ru-RU') : '—'}
+                        {qualityTag && ` · ${qualityTag}`}
                       </div>
                     </div>
                     <div className={`text-base font-bold ml-3 ${sc}`}>
