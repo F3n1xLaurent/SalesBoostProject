@@ -28,12 +28,12 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
 const TABS_BY_ROLE: Record<AdminRole, AdminTab[]> = {
   super: SUPER_COMPANY_TABS,
   company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'holdings' && tab !== 'typesNumbers'),
-  dealer: ['dealer-companies', 'dealer-calls', 'dealer-employees', 'dealer-team', 'settings'],
+  dealer: ['dealer-companies', 'audits', 'users', 'dealer-team', 'settings'],
   staff: ['staff-profile', 'staff-trainer', 'settings'],
 };
 
 export function getDefaultTab(role: AdminRole): AdminTab {
-  if (role === 'dealer') return 'dealer-calls';
+  if (role === 'dealer') return 'dealer-companies';
   if (role === 'staff') return 'staff-profile';
   return 'dashboard';
 }
@@ -76,15 +76,15 @@ export function tabToPath(tab: AdminTab): string {
     case 'dealer-companies':
       return '/dealer/companies';
     case 'dealer-calls':
-      return '/dealer/calls';
+      return '/audits';
     case 'dealer-employees':
-      return '/dealer/employees';
+      return '/users';
     case 'dealer-team':
       return '/dealer/team';
     case 'staff-profile':
       return '/staff/profile';
     case 'staff-trainer':
-      return '/staff/trainer';
+      return '/train';
   }
 }
 
@@ -107,6 +107,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'typesNumbers') return { tab: 'typesNumbers' };
   if (section === 'users') return { tab: 'users', employeeId: resource };
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };
+  if (section === 'train') return { role: 'staff', tab: 'staff-trainer' };
   if (section === 'analytics') return { tab: 'analytics' };
   if (section === 'call-settings') return { tab: 'callSettings' };
   if (section === 'settings') return { tab: 'settings' };
@@ -115,9 +116,10 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
 
   if (section === 'dealer') {
     if (resource === 'companies') return { role: 'dealer', tab: 'dealer-companies' };
-    if (resource === 'employees') return { role: 'dealer', tab: 'dealer-employees' };
+    if (resource === 'employees') return { role: 'dealer', tab: 'users' };
+    if (resource === 'calls') return { role: 'dealer', tab: 'audits' };
     if (resource === 'team') return { role: 'dealer', tab: 'dealer-team' };
-    return { role: 'dealer', tab: 'dealer-calls' };
+    return { role: 'dealer', tab: 'audits' };
   }
 
   if (section === 'staff') {

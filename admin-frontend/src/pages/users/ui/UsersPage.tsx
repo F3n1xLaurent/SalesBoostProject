@@ -17,14 +17,6 @@ import {
   type RbacMeta,
   type UserAccountItem,
 } from '../../../shared/api/adminPanel';
-import {
-  COMM_BADGE_CLASS,
-  COMM_LABELS,
-  MOCK_EMPLOYEES,
-  STATUS_LABELS,
-  type CommunicationFlag,
-  type EmployeeFullRow,
-} from '../../../shared/lib/admin-panel/mockData';
 import { deltaDisplay, ratingClass, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import { UserPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
@@ -77,7 +69,6 @@ type UserQuickFilter = 'training' | 'fails' | 'best' | 'comm';
 type UserOwnershipFilter = 'all' | 'own' | 'franchised';
 type UserEmployeeRow = {
   user: UserAccountItem;
-  employee: EmployeeFullRow;
   fullName: string;
   dealershipName: string;
   dealershipNames: string[];
@@ -101,6 +92,29 @@ const USER_COLUMN_DEFS: { key: UserSortKey; label: string; align?: 'right' }[] =
   { key: 'auditsCount', label: 'Проверки', align: 'right' },
   { key: 'failsCount', label: 'Провалы', align: 'right' },
 ];
+
+const USER_ANALYTICS_STATUS_LABELS: Record<UserAccountItem['analytics']['status'], string> = {
+  norm: 'Норма',
+  risk: 'Риск',
+  critical: 'Критично',
+  'no-data': 'Нет данных',
+};
+
+const COMM_LABELS: Record<UserAccountItem['analytics']['communicationFlag'], string> = {
+  ok: 'Ок',
+  fillers: 'Паразиты',
+  aggression: 'Агрессия',
+  profanity: 'Ненормативная',
+  'low-engagement': 'Слабая вовлечённость',
+};
+
+const COMM_BADGE_CLASS: Record<UserAccountItem['analytics']['communicationFlag'], string> = {
+  ok: 'sa-comm-ok',
+  fillers: 'sa-comm-fillers',
+  aggression: 'sa-comm-aggression',
+  profanity: 'sa-comm-profanity',
+  'low-engagement': 'sa-comm-low',
+};
 
 const EMPTY_USER_FORM: UserFormState = {
   email: '',
@@ -342,7 +356,7 @@ function userMatchesOwnership(user: UserAccountItem, ownership: UserOwnershipFil
   ].some((type) => type === ownership);
 }
 
-function commTooltip(flag: CommunicationFlag): string {
+function commTooltip(flag: UserAccountItem['analytics']['communicationFlag']): string {
   switch (flag) {
     case 'ok': return 'Коммуникация в норме';
     case 'fillers': return 'Обнаружены слова-паразиты в речи';
@@ -352,12 +366,13 @@ function commTooltip(flag: CommunicationFlag): string {
   }
 }
 
-function matchesEmployeeQuickFilter(employee: EmployeeFullRow, filter: UserQuickFilter): boolean {
+function matchesUserQuickFilter(user: UserAccountItem, filter: UserQuickFilter): boolean {
+  const analytics = user.analytics;
   switch (filter) {
-    case 'training': return employee.status === 'critical' || employee.status === 'risk';
-    case 'fails': return employee.failsCount >= 1;
-    case 'best': return employee.aiRating >= 80 && employee.status === 'norm';
-    case 'comm': return employee.communicationFlag !== 'ok';
+    case 'training': return analytics.status === 'critical' || analytics.status === 'risk';
+    case 'fails': return analytics.failsCount >= 1;
+    case 'best': return analytics.aiRating >= 80 && analytics.status === 'norm';
+    case 'comm': return analytics.communicationFlag !== 'ok';
   }
 }
 
@@ -652,6 +667,194 @@ function ModalFrame(props: {
   );
 }
 
+function CreateUserModal(props: {
+  open: boolean;
+  onClose: () => void;
+  onSubmit: (form: UserFormState) => Promise<void>;
+  meta: RbacMeta | null;
+  templates: PermissionTemplateItem[];
+  canManageTemplates: boolean;
+  canManageGlobalUsers: boolean;
+  saving: boolean;
+}) {
+  const [form, setForm] = useState<UserFormState>(EMPTY_USER_FORM);
+  const dealershipMap = useMemo(() => new Map((props.meta?.dealerships || []).map((item) => [item.id, item])), [props.meta]);
+  const templateOptions = useMemo<SelectOption[]>(
+    () => props.templates.map((template) => ({
+      value: template.id,
+      label: template.name,
+      description: template.description || `${template.permissions.length} прав`,
+    })),
+    [props.templates],
+  );
+
+  useEffect(() => {
+    if (!props.open) return;
+    setForm({
+      ...EMPTY_USER_FORM,
+      memberships: [{ role: 'manager', holdingId: '', dealershipId: '' }],
+    });
+  }, [props.open]);
+
+  function suggestedTemplateIdForRole(nextRole: string): string {
+    const templateName = defaultTemplateNameForRole(nextRole);
+    if (!templateName) return '';
+    return props.templates.find((template) => template.name === templateName)?.id || '';
+  }
+
+  useEffect(() => {
+    if (!props.open || !props.canManageTemplates || form.templateIds.length > 0) return;
+    const firstRole = props.canManageGlobalUsers ? form.memberships[0]?.role : 'manager';
+    const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
+    if (templateId) setForm((current) => ({ ...current, templateIds: [templateId] }));
+  }, [props.canManageGlobalUsers, props.canManageTemplates, props.open, props.templates, form.memberships, form.templateIds.length]);
+
+  function updateMembership(index: number, patch: Partial<MembershipForm>) {
+    setForm((current) => ({
+      ...current,
+      memberships: current.memberships.map((membership, membershipIndex) =>
+        membershipIndex === index ? { ...membership, ...patch } : membership,
+      ),
+    }));
+  }
+
+  function updateMembershipRole(index: number, nextRole: string) {
+    const templateId = suggestedTemplateIdForRole(nextRole);
+    setForm((current) => ({
+      ...current,
+      memberships: current.memberships.map((membership, membershipIndex) =>
+        membershipIndex === index ? { ...membership, role: nextRole, holdingId: '', dealershipId: '' } : membership,
+      ),
+      templateIds: props.canManageTemplates && templateId ? [templateId] : current.templateIds,
+    }));
+  }
+
+  function availableDealerships(membership: MembershipForm) {
+    const all = props.meta?.dealerships || [];
+    if (membership.holdingId === NO_HOLDING_VALUE) return all.filter((item) => !item.holdingId);
+    if (!membership.holdingId) return [];
+    return all.filter((item) => item.holdingId === membership.holdingId);
+  }
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    await props.onSubmit(form);
+  }
+
+  return (
+    <ModalFrame
+      title="Новый пользователь"
+      subtitle="Создание аккаунта вынесено в отдельное модальное окно."
+      open={props.open}
+      onClose={props.onClose}
+    >
+      <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
+        <label className="sa-form-field">
+          <span>Email</span>
+          <input className="sa-search-input" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} />
+        </label>
+        <label className="sa-form-field">
+          <span>Пароль</span>
+          <input type="password" className="sa-search-input" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} />
+        </label>
+        <label className="sa-form-field">
+          <span>ФИО</span>
+          <input className="sa-search-input" value={form.managerFullName} onChange={(event) => setForm((current) => ({ ...current, managerFullName: event.target.value, displayName: event.target.value }))} />
+        </label>
+        <div>
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ пользователя</div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {form.memberships.map((membership, index) => {
+              const dealerships = availableDealerships(membership);
+              const holdingId = membership.holdingId || dealershipMap.get(membership.dealershipId)?.holdingId || '';
+              const roleOptions = !props.canManageGlobalUsers
+                ? [{ value: 'manager', label: roleLabel('manager'), description: roleDescription('manager') }]
+                : (props.meta?.roles || []).map((item) => ({ value: item, label: roleLabel(item), description: roleDescription(item) }));
+              const holdingOptions = [
+                ...(membership.role === 'dealership_admin' || membership.role === 'manager'
+                  ? [{ value: NO_HOLDING_VALUE, label: 'Без компании', description: 'Показать точки без привязки к компании' }]
+                  : []),
+                ...(props.meta?.holdings || []).map((item) => ({ value: item.id, label: item.name })),
+              ];
+              const dealershipOptions = dealerships.map((item) => ({
+                value: item.id,
+                label: item.name,
+                description: item.holdingName || 'Без компании',
+              }));
+              return (
+                <div key={`${index}-${membership.role}-${membership.dealershipId}`} className="sa-card" style={{ padding: 12 }}>
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    <SearchableSelect
+                      label="Права"
+                      value={props.canManageGlobalUsers ? membership.role : 'manager'}
+                      disabled={!props.canManageGlobalUsers}
+                      options={roleOptions}
+                      placeholder="Выберите права пользователя"
+                      onChange={(value) => updateMembershipRole(index, value)}
+                    />
+                    {membership.role === 'holding_admin' && (
+                      <SearchableSelect
+                        label="Компания"
+                        value={holdingId}
+                        options={(props.meta?.holdings || []).map((item) => ({ value: item.id, label: item.name }))}
+                        placeholder="Выберите компанию"
+                        onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
+                      />
+                    )}
+                    {(membership.role === 'dealership_admin' || membership.role === 'manager') && (
+                      <>
+                        <SearchableSelect
+                          label="Компания"
+                          value={holdingId}
+                          options={holdingOptions}
+                          placeholder="Выберите компанию"
+                          onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
+                        />
+                        <SearchableSelect
+                          label="Точка"
+                          value={membership.dealershipId}
+                          options={dealershipOptions}
+                          placeholder={holdingId ? 'Выберите точку' : 'Сначала выберите компанию'}
+                          onChange={(value) => {
+                            const selectedDealership = dealershipMap.get(value);
+                            updateMembership(index, {
+                              dealershipId: value,
+                              holdingId: selectedDealership?.holdingId || NO_HOLDING_VALUE,
+                            });
+                          }}
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {props.canManageGlobalUsers && (
+            <button type="button" className="sa-btn-text" style={{ marginTop: 10 }} onClick={() => setForm((current) => ({ ...current, memberships: [...current.memberships, { role: 'manager', holdingId: '', dealershipId: '' }] }))}>
+              + Добавить ещё назначение
+            </button>
+          )}
+        </div>
+        {props.canManageTemplates && (
+          <div className="sa-card" style={{ padding: 12 }}>
+            <SearchableSelect
+              label="Шаблон прав"
+              value={form.templateIds[0] || ''}
+              options={templateOptions}
+              placeholder="Выберите шаблон прав"
+              onChange={(value) => setForm((current) => ({ ...current, templateIds: value ? [value] : [] }))}
+            />
+          </div>
+        )}
+        <button type="submit" className="sa-btn-primary" disabled={props.saving}>
+          {props.saving ? 'Сохраняем...' : 'Создать пользователя'}
+        </button>
+      </form>
+    </ModalFrame>
+  );
+}
+
 function KeyValueList(props: { items: Array<{ label: string; value: React.ReactNode }> }) {
   return (
     <div style={{ display: 'grid', gap: 10 }}>
@@ -715,17 +918,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const activeUser = users.find((item) => item.id === activeUserId) ?? null;
   const activeTemplate = templates.find((item) => item.id === activeTemplateId) ?? null;
   const detailUserIndex = employeeId ? users.findIndex((item) => item.id === employeeId) : -1;
-  const detailEmployeeIndex = employeeId ? MOCK_EMPLOYEES.findIndex((item) => item.id === employeeId) : -1;
-  const detailActionUser = detailUserIndex >= 0
-    ? users[detailUserIndex]
-    : detailEmployeeIndex >= 0 && users.length > 0
-      ? users[detailEmployeeIndex % users.length]
-      : null;
-  const detailMockEmployee = detailUserIndex >= 0
-    ? MOCK_EMPLOYEES[detailUserIndex % MOCK_EMPLOYEES.length]
-    : detailEmployeeIndex >= 0
-      ? MOCK_EMPLOYEES[detailEmployeeIndex]
-      : null;
+  const detailActionUser = detailUserIndex >= 0 ? users[detailUserIndex] : null;
   const detailManagerProfile = detailActionUser?.managerProfiles[0] ?? null;
   const detailEmployeeProfileId = detailManagerProfile?.id ?? (detailActionUser ? null : employeeId ?? null);
   const dealershipMap = useMemo(() => new Map((meta?.dealerships || []).map((item) => [item.id, item])), [meta]);
@@ -781,16 +974,14 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   }, []);
 
   const userEmployeeRows = useMemo<UserEmployeeRow[]>(() => {
-    let list = users.map((user, index) => {
-      const employee = MOCK_EMPLOYEES[index % MOCK_EMPLOYEES.length];
+    let list = users.map((user) => {
       const dealershipNames = userDealershipNames(user);
       return {
         user,
-        employee,
         fullName: userFullName(user),
         dealershipNames,
         dealershipName: dealershipNames.join(', ') || userScopeLabel(user),
-        city: employee.city,
+        city: user.managerProfiles[0]?.holdingName || user.memberships[0]?.holdingName || '',
       };
     });
     if (search.trim()) {
@@ -829,14 +1020,14 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     if (ownershipFilter !== 'all') {
       list = list.filter((row) => userMatchesOwnership(row.user, ownershipFilter));
     }
-    if (userQuickFilter) list = list.filter((row) => matchesEmployeeQuickFilter(row.employee, userQuickFilter));
+    if (userQuickFilter) list = list.filter((row) => matchesUserQuickFilter(row.user, userQuickFilter));
 
     return [...list].sort((a, b) => {
       let cmp = 0;
       if (userSortKey === 'fullName') cmp = a.fullName.localeCompare(b.fullName, 'ru');
       else if (userSortKey === 'dealershipName') cmp = a.dealershipName.localeCompare(b.dealershipName, 'ru');
-      else if (userSortKey === 'status') cmp = a.employee.status.localeCompare(b.employee.status, 'ru');
-      else cmp = (a.employee[userSortKey] ?? -Infinity) - (b.employee[userSortKey] ?? -Infinity);
+      else if (userSortKey === 'status') cmp = a.user.analytics.status.localeCompare(b.user.analytics.status, 'ru');
+      else cmp = (a.user.analytics[userSortKey] ?? -Infinity) - (b.user.analytics[userSortKey] ?? -Infinity);
       return userSortDir === 'asc' ? cmp : -cmp;
     });
   }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, selectedGlobalHoldingId, userQuickFilter, userSortDir, userSortKey, users]);
@@ -944,22 +1135,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     return templates.find((template) => template.name === templateName)?.id || '';
   }
 
-  useEffect(() => {
-    if (!createUserOpen || !canManageTemplates || userForm.templateIds.length > 0) return;
-    const firstRole = canManageGlobalUsers ? userForm.memberships[0]?.role : 'manager';
-    const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
-    if (templateId) {
-      setUserForm((current) => ({ ...current, templateIds: [templateId] }));
-    }
-  }, [canManageGlobalUsers, canManageTemplates, createUserOpen, templates, userForm.memberships, userForm.templateIds.length]);
-
-  function resetUserForm() {
-    setUserForm({
-      ...EMPTY_USER_FORM,
-      memberships: [{ role: 'manager', holdingId: '', dealershipId: '' }],
-    });
-  }
-
   function fillUserForm(user: UserAccountItem) {
     const firstProfile = user.managerProfiles[0];
     setUserForm({
@@ -1031,11 +1206,11 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     return all.filter((item) => item.holdingId === membership.holdingId);
   }
 
-  async function saveUser(mode: 'create' | 'edit') {
-    const fullName = userForm.managerFullName.trim();
+  async function saveUser(mode: 'create' | 'edit', form: UserFormState = userForm) {
+    const fullName = form.managerFullName.trim();
     const memberships = (!canManageGlobalUsers
-      ? userForm.memberships.map((membership) => ({ ...membership, role: 'manager' }))
-      : userForm.memberships
+      ? form.memberships.map((membership) => ({ ...membership, role: 'manager' }))
+      : form.memberships
     )
       .map((membership) => ({
         ...membership,
@@ -1043,44 +1218,43 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       }))
       .filter((membership) => membership.role && (membership.holdingId || membership.dealershipId || membership.role === 'platform_superadmin'));
 
-    const managerProfiles = fullName && memberships.some((membership) => membership.role === 'manager')
+    const profileMembership = memberships.find((membership) => membership.dealershipId);
+    const managerProfiles = fullName && profileMembership?.dealershipId
       ? [{
           fullName,
-          dealershipId: memberships.find((membership) => membership.role === 'manager')?.dealershipId || '',
-          email: userForm.email || null,
+          dealershipId: profileMembership.dealershipId,
+          email: form.email || null,
           phone: null,
-          status: userForm.managerStatus,
+          status: form.managerStatus,
         }]
       : [];
 
     const payload: Record<string, unknown> = {
-      email: userForm.email,
+      email: form.email,
       displayName: fullName || null,
-      status: userForm.status,
+      status: form.status,
       memberships,
       managerProfiles,
-      templateIds: canManageTemplates ? userForm.templateIds : [],
+      templateIds: canManageTemplates ? form.templateIds : [],
     };
-    if (userForm.password.trim()) payload.password = userForm.password;
+    if (form.password.trim()) payload.password = form.password;
 
     if (mode === 'create') {
-      return createUser({ ...payload, password: userForm.password });
+      return createUser({ ...payload, password: form.password });
     }
     if (!activeUserId) throw new Error('Пользователь не выбран.');
     return updateUser(activeUserId, payload);
   }
 
-  async function handleCreateUser(event: React.FormEvent) {
-    event.preventDefault();
+  async function handleCreateUser(form: UserFormState) {
     setSavingUser(true);
     setError(null);
     setNotice(null);
     try {
-      const saved = await saveUser('create');
+      const saved = await saveUser('create', form);
       await reloadUsers();
       if (saved) setActiveUserId(saved.id);
       setCreateUserOpen(false);
-      resetUserForm();
       setNotice('Пользователь создан.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось создать пользователя.');
@@ -1527,7 +1701,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           detailOverride={detailActionUser ? {
             fullName: userFullName(detailActionUser),
             dealershipName: userScopeLabel(detailActionUser),
-            city: detailMockEmployee?.city || '',
+            city: detailActionUser.managerProfiles[0]?.holdingName || detailActionUser.memberships[0]?.holdingName || '',
           } : undefined}
           headerRight={(
             <select
@@ -1572,7 +1746,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           </button>
           <h2 className="sa-card-heading">Профиль менеджера не привязан</h2>
           <p className="sa-meta" style={{ margin: 0 }}>
-            У этого web-аккаунта нет профиля сотрудника. Добавьте роль менеджера и точку в настройках пользователя, чтобы открыть аналитику сотрудника.
+            У этого web-аккаунта пока нет профиля для звонков. Добавьте точку в назначениях пользователя, чтобы открыть аналитику.
           </p>
         </div>
       ) : (
@@ -1615,7 +1789,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 type="button"
                 className="sa-btn-primary"
                 onClick={() => {
-                  resetUserForm();
                   setCreateUserOpen(true);
                 }}
               >
@@ -1766,9 +1939,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                   </td></tr>
                 ) : (
                   userEmployeeRows.map((row) => {
-                    const { employee } = row;
                     const actionUser = row.user;
-                    const delta = deltaDisplay(employee.deltaRating);
+                    const analytics = row.user.analytics;
+                    const delta = deltaDisplay(analytics.deltaRating);
                     return (
                       <tr
                         key={row.user.id}
@@ -1783,7 +1956,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                             <span className="sa-avatar-placeholder">{row.fullName.charAt(0).toUpperCase()}</span>
                             <div>
                               <div className="sa-cell-name">{row.fullName}</div>
-                              <div className="sa-cell-city">{row.user.email} · моковые метрики</div>
+                              <div className="sa-cell-city">{row.user.email}</div>
                             </div>
                           </div>
                         </td>
@@ -1801,21 +1974,21 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                             </>
                           )}
                         </td>
-                        <td className="sa-text-right"><span className={ratingClass(employee.aiRating)}>{employee.aiRating}</span></td>
+                        <td className="sa-text-right"><span className={ratingClass(analytics.aiRating)}>{analytics.aiRating}</span></td>
                         <td className="sa-text-right"><span className={delta.cls}>{delta.text}</span></td>
-                        <td className="sa-text-right">{employee.auditsCount}</td>
+                        <td className="sa-text-right">{analytics.auditsCount}</td>
                         <td className="sa-text-right">
-                          <span className={employee.failsCount >= 2 ? 'sa-score-red' : employee.failsCount >= 1 ? 'sa-score-orange' : ''}>
-                            {employee.failsCount}
+                          <span className={analytics.failsCount >= 2 ? 'sa-score-red' : analytics.failsCount >= 1 ? 'sa-score-orange' : ''}>
+                            {analytics.failsCount}
                           </span>
                         </td>
                         <td>
-                          <span className={`sa-comm-badge ${COMM_BADGE_CLASS[employee.communicationFlag]}`} title={commTooltip(employee.communicationFlag)}>
-                            {COMM_LABELS[employee.communicationFlag]}
+                          <span className={`sa-comm-badge ${COMM_BADGE_CLASS[analytics.communicationFlag]}`} title={commTooltip(analytics.communicationFlag)}>
+                            {COMM_LABELS[analytics.communicationFlag]}
                           </span>
                         </td>
-                        <td><span className="sa-top-mistake" title={employee.topMistakeLabel}>{employee.topMistakeLabel}</span></td>
-                        <td><span className={statusBadgeClass(employee.status)}>{STATUS_LABELS[employee.status]}</span></td>
+                        <td><span className="sa-top-mistake" title={analytics.topMistakeLabel}>{analytics.topMistakeLabel}</span></td>
+                        <td><span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span></td>
                         <td onClick={(event) => event.stopPropagation()}>
                           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                             <IconButton label="Просмотр" onClick={() => onSelectEmployee?.(row.user.id)}>
@@ -1850,8 +2023,8 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Нет пользователей по выбранным фильтрам</div>
             ) : (
               userEmployeeRows.map((row) => {
-                const { employee } = row;
-                const delta = deltaDisplay(employee.deltaRating);
+                const analytics = row.user.analytics;
+                const delta = deltaDisplay(analytics.deltaRating);
                 const actionUser = row.user;
                 return (
                   <div
@@ -1866,14 +2039,14 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                         <div className="sa-cell-name">{row.fullName}</div>
                         <div className="sa-cell-city">{row.dealershipName} · {row.city}</div>
                       </div>
-                      <span className={`sa-mobile-rating ${ratingClass(employee.aiRating)}`}>{employee.aiRating}</span>
+                      <span className={`sa-mobile-rating ${ratingClass(analytics.aiRating)}`}>{analytics.aiRating}</span>
                     </div>
                     <div className="sa-mobile-chips">
                       <span className="sa-metric-chip"><span className={delta.cls}>{delta.text}</span></span>
-                      <span className="sa-metric-chip">Проверки: {employee.auditsCount}</span>
-                      <span className="sa-metric-chip">Провалы: {employee.failsCount}</span>
-                      <span className={`sa-comm-badge ${COMM_BADGE_CLASS[employee.communicationFlag]}`}>{COMM_LABELS[employee.communicationFlag]}</span>
-                      <span className={statusBadgeClass(employee.status)}>{STATUS_LABELS[employee.status]}</span>
+                      <span className="sa-metric-chip">Проверки: {analytics.auditsCount}</span>
+                      <span className="sa-metric-chip">Провалы: {analytics.failsCount}</span>
+                      <span className={`sa-comm-badge ${COMM_BADGE_CLASS[analytics.communicationFlag]}`}>{COMM_LABELS[analytics.communicationFlag]}</span>
+                      <span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span>
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }} onClick={(event) => event.stopPropagation()}>
                       <IconButton label="Просмотр" onClick={() => onSelectEmployee?.(row.user.id)}>
@@ -1972,14 +2145,16 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         </>
       )}
 
-      <ModalFrame
-        title="Новый пользователь"
-        subtitle="Создание аккаунта вынесено в отдельное модальное окно."
+      <CreateUserModal
         open={createUserOpen}
         onClose={() => setCreateUserOpen(false)}
-      >
-        {renderUserForm(handleCreateUser, 'Создать пользователя', { showStatus: false })}
-      </ModalFrame>
+        onSubmit={handleCreateUser}
+        meta={meta}
+        templates={templates}
+        canManageTemplates={canManageTemplates}
+        canManageGlobalUsers={canManageGlobalUsers}
+        saving={savingUser}
+      />
 
       <ModalFrame
         title="Просмотр пользователя"

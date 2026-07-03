@@ -684,6 +684,7 @@ function buildCallPlanRealtimePrompt(input: {
   script: Prisma.CallScriptGetPayload<{}>;
   profile: Prisma.CallCustomerProfileGetPayload<{}> | null;
   importedItem: Prisma.ImportedItemGetPayload<{}> | null;
+  customerVoiceName?: string | null;
 }) {
   const profile = input.profile;
   const importedItem = input.importedItem;
@@ -707,6 +708,7 @@ function buildCallPlanRealtimePrompt(input: {
     context,
     itemTitle,
     itemDescription,
+    voiceName: input.customerVoiceName,
     questions,
     objections,
     criteria,
@@ -723,7 +725,7 @@ function buildCallPlanRealtimePrompt(input: {
     'Завершай разговор, когда договорились о следующем шаге, разговор естественно исчерпан, или сотрудник ведёт себя грубо/неадекватно. В конце чётко скажи прощание: «До свидания», «Хорошо, тогда на этом закончим», «Спасибо, до свидания».',
     '',
     '=== ТЕХНИЧЕСКИЙ СИГНАЛ ДЛЯ ЗАВЕРШЕНИЯ ЗВОНКА ===',
-    'После своей последней фразы прощания обязательно один раз вызови функцию end_call с краткой причиной: { "reason": "next_step_scheduled" }, { "reason": "will_think" }, { "reason": "bad_tone" } или другой короткой причиной. Не вызывай end_call раньше последней реплики и не вызывай дважды.',
+    'После своей последней фразы прощания обязательно один раз вызови функцию end_call с краткой причиной: { "reason": "next_step_scheduled" }, { "reason": "will_think" }, { "reason": "bad_tone" } или другой короткой причиной. Не вызывай end_call раньше последней реплики и не вызывай дважды. Вызови только в конце реплики завершения разговора.',
     '',
     '=== ЯЗЫК И СТИЛЬ ===',
     'Язык: только русский. Тон: реалистичный клиент, не поддакивающий. Длина: 1–3 предложения на реплику. Без эмодзи, без мета-комментариев. Не выходи из роли.',
@@ -734,7 +736,7 @@ async function resolveCustomerVoiceForProfile(profile: Prisma.CallCustomerProfil
   if (!profile?.voiceId) return null;
   return prisma.callCustomerVoice.findFirst({
     where: { id: profile.voiceId, isDeleted: false, isEnabled: true },
-    select: { id: true, elevenLabsCode: true },
+    select: { id: true, name: true, elevenLabsCode: true },
   });
 }
 
@@ -757,7 +759,7 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
     const importedItem = await pickImportedSampleForScript(script);
     const customerVoice = await resolveCustomerVoiceForProfile(profile);
     const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
-    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem });
+    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null });
     const result = await startVoiceCall(target.phoneNumber.phone, {
       scenario: 'realtime_pure',
       instructions: prompt,
@@ -833,7 +835,8 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
       : [];
     const profile = pickRandom(profiles);
     const importedItem = await pickImportedSampleForScript(script);
-    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem });
+    const customerVoice = await resolveCustomerVoiceForProfile(profile);
+    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null });
     res.json({
       prompt,
       profile: profile ? normalizeProfile(profile) : null,

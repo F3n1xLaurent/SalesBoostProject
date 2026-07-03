@@ -1,10 +1,15 @@
 import { clearStoredAuth, readStoredAuth } from '../lib/storage';
+import { readCurrentStoredRole } from '../lib/roleStorage';
 
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const stored = readStoredAuth();
   const headers = new Headers(init?.headers || {});
   if (stored?.token) {
     headers.set('Authorization', `Bearer ${stored.token}`);
+  }
+  const currentRole = readCurrentStoredRole();
+  if (currentRole) {
+    headers.set('X-Admin-Role', currentRole);
   }
 
   const response = await fetch(input, {

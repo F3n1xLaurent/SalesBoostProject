@@ -802,6 +802,25 @@
   background: #f3f6fa;
 }
 
+.train-profile-back-button {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 0;
+  border-radius: 50%;
+  background: #eef2ff;
+  color: #1f2937;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.train-profile-back-button:hover {
+  background: #dbe4ff;
+}
+
 .train-profile-button strong,
 .train-profile-button small {
   display: block;

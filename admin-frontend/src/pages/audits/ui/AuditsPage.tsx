@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import type { AuditItem, CallBatchListItem } from '../../../shared/api/adminPanel';
+import type { AuditItem } from '../../../shared/api/adminPanel';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
 
 type AuditType = 'trainer' | 'call';
@@ -43,14 +43,8 @@ const AUDIT_STATUS_CLASS: Record<AuditStatus, string> = {
 
 type Props = {
   audits: AuditItem[];
-  callBatches?: CallBatchListItem[];
-  callBatchesLoading?: boolean;
   loading?: boolean;
-  onScopeChange?: (scope: 'employees' | 'dealerships') => void;
   onOpenDetail?: (auditId: string) => void;
-  onOpenBatchDetail?: (batchId: string) => void;
-  initialScope?: 'employees' | 'dealerships';
-  focusedBatchId?: string | null;
 };
 
 /* ────────────────────── Sort config ────────────────────── */
@@ -140,13 +134,7 @@ function auditItemToRow(item: AuditItem): AuditListRow {
 export function Audits({
   audits,
   loading = false,
-  onScopeChange,
   onOpenDetail,
-  onOpenBatchDetail,
-  callBatches = [],
-  callBatchesLoading = false,
-  initialScope = 'employees',
-  focusedBatchId = null,
 }: Props) {
   const rows = useMemo(() => audits.map(auditItemToRow), [audits]);
   const allCities = useMemo(() => [...new Set(rows.map((row) => row.city).filter((city) => city && city !== '—'))].sort((a, b) => a.localeCompare(b, 'ru')), [rows]);
@@ -161,22 +149,11 @@ export function Audits({
   const [filterStatus, setFilterStatus] = useState<AuditStatus | 'all'>('all');
   const [filterCity, setFilterCity] = useState<Set<string>>(new Set());
   const [filterDealership, setFilterDealership] = useState<Set<string>>(new Set());
-  const [scope, setScope] = useState<'employees' | 'dealerships'>(initialScope);
-  const [batchFilter, setBatchFilter] = useState<'all' | 'manual' | 'auto_daily' | 'single' | 'network'>('all');
   const [page, setPage] = useState(1);
-
-  useEffect(() => {
-    setScope(initialScope);
-  }, [initialScope]);
 
   useEffect(() => {
     setPage(1);
   }, [rows, search, filterType, filterStatus, filterCity, filterDealership, quickFilter, sortKey, sortDir]);
-
-  const handleScopeChange = (nextScope: 'employees' | 'dealerships') => {
-    setScope(nextScope);
-    onScopeChange?.(nextScope);
-  };
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -235,48 +212,6 @@ export function Audits({
     return `${m}:${String(s).padStart(2, '0')}`;
   }
 
-  const filteredBatches = useMemo(() => {
-    let list = [...callBatches];
-    if (batchFilter === 'manual') {
-      list = list.filter((b) => b.mode !== 'auto_daily');
-    } else if (batchFilter === 'auto_daily') {
-      list = list.filter((b) => b.mode === 'auto_daily');
-    } else if (batchFilter === 'single') {
-      list = list.filter((b) => b.mode === 'single_dealership');
-    } else if (batchFilter === 'network') {
-      list = list.filter((b) => b.mode === 'all_dealerships');
-    }
-    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return list;
-  }, [callBatches, batchFilter]);
-
-  function batchTitle(item: CallBatchListItem): string {
-    if (item.title?.trim()) return item.title;
-    if (item.mode === 'auto_daily') return 'Авто-проверка сети';
-    if (item.mode === 'single_dealership') return 'Ручная проверка точки';
-    if (item.mode === 'all_dealerships') return 'Ручная проверка сети';
-    return 'Ручная проверка';
-  }
-
-  function batchStatusLabel(item: CallBatchListItem): string {
-    if (item.status === 'running') return 'В работе';
-    if (item.status === 'paused') return 'Пауза';
-    if (item.status === 'completed') return item.failedJobs > 0 ? 'Завершено с ошибками' : 'Завершено';
-    return 'Остановлено';
-  }
-
-  function batchModeLabel(item: CallBatchListItem): string {
-    if (item.mode === 'auto_daily') return 'Авто-ежедневный';
-    if (item.mode === 'single_dealership') return 'Одна точка';
-    if (item.mode === 'all_dealerships') return 'Сеть';
-    return 'Ручной';
-  }
-
-  function segmentWidth(count: number, total: number): string {
-    if (total <= 0 || count <= 0) return '0%';
-    return `${Math.max(3, (count / total) * 100)}%`;
-  }
-
   return (
     <>
       <h1 className="sa-page-title">Проверки</h1>
@@ -284,23 +219,6 @@ export function Audits({
         Реальные проверки по звонкам: плановые звонки и будущие звонки тренажёра
       </p>
 
-      <div className="sa-audits-scope-tabs">
-        <button
-          className={`sa-audits-scope-tab ${scope === 'employees' ? 'sa-audits-scope-tab-active' : ''}`}
-          onClick={() => handleScopeChange('employees')}
-        >
-          Сотрудники
-        </button>
-        <button
-          className={`sa-audits-scope-tab ${scope === 'dealerships' ? 'sa-audits-scope-tab-active' : ''}`}
-          onClick={() => handleScopeChange('dealerships')}
-        >
-          Точки
-        </button>
-      </div>
-
-      {scope === 'employees' && (
-      <>
       <div className="sa-toolbar">
         <div className="sa-toolbar-row">
           <div className="sa-search-wrap">
@@ -347,10 +265,8 @@ export function Audits({
           ))}
         </div>
       </div>
-      </>
-      )}
 
-      {scope === 'employees' && showFilters && (
+      {showFilters && (
         <div className="sa-filters-panel">
           <div className="sa-filter-group">
             <span className="sa-filter-label">Город</span>
@@ -377,8 +293,6 @@ export function Audits({
         </div>
       )}
 
-      {scope === 'employees' && (
-      <>
       <div className="sa-companies-table-wrap sa-desktop-only">
         <table className="sa-table sa-table-sortable">
           <thead>
@@ -482,119 +396,6 @@ export function Audits({
             </button>
           </div>
         </div>
-      )}
-      </>
-      )}
-
-      {scope === 'dealerships' && (
-        <>
-          <div className="sa-toolbar">
-            <div className="sa-toolbar-chips">
-              {[
-                { id: 'all', label: 'Все' },
-                { id: 'manual', label: 'Ручные batch' },
-                { id: 'auto_daily', label: 'Авто-ежедневные' },
-                { id: 'single', label: 'Одна точка' },
-                { id: 'network', label: 'Сеть' },
-              ].map((f) => (
-                <button
-                  key={f.id}
-                  className={`sa-chip ${batchFilter === f.id ? 'sa-chip-active' : ''}`}
-                  onClick={() => setBatchFilter(f.id as 'all' | 'manual' | 'auto_daily' | 'single' | 'network')}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {callBatchesLoading ? (
-            <div className="sa-meta" style={{ padding: 20 }}>Загрузка batch-проверок...</div>
-          ) : filteredBatches.length === 0 ? (
-            <div className="sa-empty-state">
-              Нет проверок точек по выбранному фильтру
-            </div>
-          ) : (
-            <div className="sa-companies-table-wrap">
-              <table className="sa-table sa-table-sortable">
-                <thead>
-                  <tr>
-                    <th>Дата</th>
-                    <th>Тип batch</th>
-                    <th>Название</th>
-                    <th>Прогресс</th>
-                    <th className="sa-text-right">В работе</th>
-                    <th className="sa-text-right">Ошибки</th>
-                    <th>Статус</th>
-                    <th style={{ width: 32 }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredBatches.map((b) => (
-                    <tr
-                      key={b.id}
-                      className={`sa-row-clickable ${focusedBatchId === b.id ? 'sa-row-focused' : ''}`}
-                      onClick={() => onOpenBatchDetail?.(b.id)}
-                    >
-                      <td>
-                        <div style={{ fontSize: 13 }}>{new Date(b.createdAt).toLocaleString('ru-RU')}</div>
-                      </td>
-                      <td>
-                        <span className="sa-metric-chip">{batchModeLabel(b)}</span>
-                      </td>
-                      <td>
-                        <div className="sa-cell-name">{batchTitle(b)}</div>
-                      </td>
-                      <td>
-                        <div className="sa-batch-table-progress-label">{b.completedJobs}/{b.totalJobs}</div>
-                        <div className="sa-batch-table-progress-track sa-batch-table-progress-track-segmented">
-                          <span
-                            className="sa-batch-segment sa-batch-segment-completed"
-                            style={{ width: segmentWidth(b.completedJobs, b.totalJobs) }}
-                            title={`Выполнено: ${b.completedJobs}`}
-                          />
-                          <span
-                            className="sa-batch-segment sa-batch-segment-active"
-                            style={{ width: segmentWidth(b.inProgressJobs, b.totalJobs) }}
-                            title={`В работе: ${b.inProgressJobs}`}
-                          />
-                          <span
-                            className="sa-batch-segment sa-batch-segment-retry"
-                            style={{ width: segmentWidth(b.retryingJobs, b.totalJobs) }}
-                            title={`Повтор: ${b.retryingJobs}`}
-                          />
-                          <span
-                            className="sa-batch-segment sa-batch-segment-failed"
-                            style={{ width: segmentWidth(b.failedJobs, b.totalJobs) }}
-                            title={`Ошибки: ${b.failedJobs}`}
-                          />
-                          <span
-                            className="sa-batch-segment sa-batch-segment-queued"
-                            style={{ width: segmentWidth(b.queuedJobs, b.totalJobs) }}
-                            title={`Очередь: ${b.queuedJobs}`}
-                          />
-                        </div>
-                        <div className="sa-batch-progress-meta">
-                          <span className="sa-batch-meta-good">✓ {b.completedJobs}</span>
-                          <span className="sa-batch-meta-warn">↻ {b.retryingJobs}</span>
-                          <span className="sa-batch-meta-bad">✕ {b.failedJobs}</span>
-                        </div>
-                      </td>
-                      <td className="sa-text-right">{b.inProgressJobs}</td>
-                      <td className="sa-text-right">{b.failedJobs}</td>
-                      <td>
-                        <span className={`sa-batch-state sa-batch-state-${b.status === 'running' ? 'in_progress' : b.status === 'completed' ? (b.failedJobs > 0 ? 'partial' : 'completed') : b.status === 'paused' ? 'queued' : 'cancelled'}`}>
-                          {batchStatusLabel(b)}
-                        </span>
-                      </td>
-                      <td className="sa-row-chevron-cell">→</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
       )}
     </>
   );

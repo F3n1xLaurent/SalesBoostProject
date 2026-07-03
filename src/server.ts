@@ -4,6 +4,7 @@ import http from 'http';
 import fs from 'fs';
 import os from 'os';
 import type { Telegraf } from 'telegraf';
+import type { Prisma } from '@prisma/client';
 import { WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { config } from './config';
@@ -156,6 +157,90 @@ type AnalyticsSession = {
   managerId: string | null;
   manager?: { id: string; fullName: string } | null;
 };
+
+type ActiveAdminRole = 'super' | 'company' | 'dealer' | 'staff';
+
+function getActiveAdminRole(req: express.Request): ActiveAdminRole | null {
+  const value = String(req.get('x-admin-role') || '').trim();
+  return value === 'super' || value === 'company' || value === 'dealer' || value === 'staff' ? value : null;
+}
+
+function buildVoiceCallSessionScopeWhere(
+  account: express.Request['authAccount'],
+  activeRole?: ActiveAdminRole | null,
+): Prisma.VoiceCallSessionWhereInput {
+  if (!account) return {};
+  if (activeRole === 'super') {
+    return account.memberships.some((membership) => membership.role === 'platform_superadmin') ? {} : { id: -1 };
+  }
+
+  if (activeRole === 'dealer') {
+    const dealershipIds = [
+      ...new Set(account.memberships
+        .filter((membership) => membership.role === 'dealership_admin')
+        .map((membership) => membership.dealershipId)
+        .filter((id): id is string => Boolean(id))),
+    ];
+    return dealershipIds.length > 0 ? { dealershipId: { in: dealershipIds } } : { id: -1 };
+  }
+
+  if (activeRole === 'company') {
+    const holdingIds = [
+      ...new Set(account.memberships
+        .filter((membership) => membership.role === 'holding_admin')
+        .map((membership) => membership.holdingId)
+        .filter((id): id is string => Boolean(id))),
+    ];
+    return holdingIds.length > 0 ? { dealership: { holdingId: { in: holdingIds } } } : { id: -1 };
+  }
+
+  if (account.memberships.some((membership) => membership.role === 'platform_superadmin')) return {};
+
+  const holdingIds = [
+    ...new Set(account.memberships
+      .filter((membership) => membership.role === 'holding_admin')
+      .map((membership) => membership.holdingId)
+      .filter((id): id is string => Boolean(id))),
+  ];
+  const dealershipIds = [
+    ...new Set(account.memberships
+      .filter((membership) => membership.role === 'dealership_admin')
+      .map((membership) => membership.dealershipId)
+      .filter((id): id is string => Boolean(id))),
+  ];
+  const or: Prisma.VoiceCallSessionWhereInput[] = [];
+  if (holdingIds.length > 0) {
+    or.push({ dealership: { holdingId: { in: holdingIds } } });
+  }
+  if (dealershipIds.length > 0) {
+    or.push({ dealershipId: { in: dealershipIds } });
+  }
+
+  return or.length > 0 ? { OR: or } : { id: -1 };
+}
+
+function canAccessDealershipForActiveRole(
+  req: express.Request,
+  dealership: { id: string; holdingId?: string | null },
+): boolean {
+  const account = req.authAccount;
+  if (!account) return false;
+  const activeRole = getActiveAdminRole(req);
+
+  if (activeRole === 'super') {
+    return account.memberships.some((membership) => membership.role === 'platform_superadmin');
+  }
+  if (activeRole === 'dealer') {
+    return account.memberships.some((membership) => membership.role === 'dealership_admin' && membership.dealershipId === dealership.id);
+  }
+  if (activeRole === 'company') {
+    return !!dealership.holdingId && account.memberships.some((membership) => membership.role === 'holding_admin' && membership.holdingId === dealership.holdingId);
+  }
+
+  if (account.memberships.some((membership) => membership.role === 'platform_superadmin')) return true;
+  if (account.memberships.some((membership) => membership.role === 'dealership_admin' && membership.dealershipId === dealership.id)) return true;
+  return !!dealership.holdingId && account.memberships.some((membership) => membership.role === 'holding_admin' && membership.holdingId === dealership.holdingId);
+}
 
 function safeJsonParseLocal<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -330,6 +415,10 @@ function pickTrainerClientAge(ageFrom: number | null | undefined, ageTo: number 
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 
+function ttsVoiceName(voice: TtsVoice | null | undefined): string {
+  return voice === 'female' ? 'женский голос' : 'мужской голос';
+}
+
 function buildTrainerCaseContext(params: {
   sessionType: 'plan' | 'free';
   scenario: { id: string; name: string; context: string; objectionsJson: string; questionsJson: string; successCriteriaJson: string } | null;
@@ -341,6 +430,7 @@ function buildTrainerCaseContext(params: {
     id: string;
     name: string;
     voiceId: string;
+    voiceName?: string | null;
     elevenLabsVoiceId?: string | null;
     age: number;
     ageFrom: number;
@@ -370,6 +460,7 @@ function buildTrainerCaseContext(params: {
       city,
       type: params.customerProfile?.name ? 'script_profile' : params.clientType === 'random' ? 'random' : params.clientType,
       voiceId: params.customerProfile?.voiceId ?? null,
+      voiceName: params.customerProfile?.voiceName ?? null,
       elevenLabsVoiceId: params.customerProfile?.elevenLabsVoiceId ?? null,
       age: clientAge,
       ageFrom: params.customerProfile?.ageFrom ?? params.customerProfile?.age ?? null,
@@ -1108,7 +1199,7 @@ function wavBase64FromPcm16Base64(audioBase64: string, sampleRate = 16000): stri
   return Buffer.concat([header, pcm]).toString('base64');
 }
 
-function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript: TrainerTranscriptTurn[] = []): string {
+function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript: TrainerTranscriptTurn[] = [], ttsVoice?: TtsVoice): string {
   const scenario = caseContext.scenario && typeof caseContext.scenario === 'object'
     ? caseContext.scenario as Record<string, unknown>
     : {};
@@ -1120,6 +1211,7 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     : {};
   const age = Number(clientProfile.age);
   const ageLabel = Number.isFinite(age) ? String(Math.round(age)) : '';
+  const voiceName = String(clientProfile.voiceName || '').trim() || ttsVoiceName(ttsVoice);
   const scenarioQuestions = Array.isArray(scenario.questions)
     ? scenario.questions as Array<{ text?: string; question?: string; required?: boolean }>
     : [];
@@ -1138,6 +1230,7 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     context: String(scenario.context || ''),
     itemTitle: String(scenario.name || ''),
     itemDescription: String(company.branchName || company.name || ''),
+    voiceName,
     questions: scenarioQuestions,
     objections: scenarioObjections,
     criteria: scenarioCriteria,
@@ -1320,7 +1413,7 @@ async function initializeTrainerDialog(params: {
       const firstMessage = trainerInitialClientMessage(caseContext);
       const agentOut = await runElevenLabsAgentTurn({
         sessionId: session.id,
-        prompt: trainerScenarioPrompt(caseContext, existingTranscript),
+        prompt: trainerScenarioPrompt(caseContext, existingTranscript, params.ttsVoice),
         firstMessage,
         elevenLabsVoiceId,
       });
@@ -1463,7 +1556,7 @@ async function runTrainerSessionTurn(params: {
         const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
         const agentOut = await runElevenLabsAgentTurn({
           sessionId: session.id,
-          prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore) : null,
+          prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore, params.ttsVoice) : null,
           managerText: params.managerText,
           elevenLabsVoiceId,
         });
@@ -1626,6 +1719,7 @@ async function runTrainerSessionAudioTurn(params: {
   sessionId: string;
   audioBase64: string;
   durationSec: number | null;
+  ttsVoice: TtsVoice;
 }) {
   const session = await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
   if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
@@ -1644,7 +1738,7 @@ async function runTrainerSessionAudioTurn(params: {
   const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
   const agentOut = await runElevenLabsAgentAudioTurn({
     sessionId: session.id,
-    prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore) : null,
+    prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore, params.ttsVoice) : null,
     audioBase64: params.audioBase64,
     elevenLabsVoiceId,
   });
@@ -2289,9 +2383,10 @@ app.use('/api/trainer', (req, res, next) => {
 });
 
 async function resolveTrainerManager(req: express.Request) {
-  const accountId = req.authAccount?.id;
+  const account = req.authAccount;
+  const accountId = account?.id;
   if (!accountId) return null;
-  return prisma.managerProfile.findFirst({
+  const existing = await prisma.managerProfile.findFirst({
     where: { accountId, status: 'active' },
     include: {
       dealership: {
@@ -2299,6 +2394,25 @@ async function resolveTrainerManager(req: express.Request) {
       },
     },
     orderBy: { createdAt: 'asc' },
+  });
+  if (existing) return existing;
+
+  const dealershipId = account.memberships.find((membership) => membership.dealershipId)?.dealershipId;
+  if (!dealershipId) return null;
+
+  return prisma.managerProfile.create({
+    data: {
+      accountId,
+      dealershipId,
+      fullName: account.displayName?.trim() || account.email.split('@')[0]?.trim() || account.email,
+      email: account.email,
+      status: 'active',
+    },
+    include: {
+      dealership: {
+        include: { holding: true },
+      },
+    },
   });
 }
 
@@ -2529,12 +2643,13 @@ app.post('/api/trainer/session/start', async (req, res) => {
     const customerVoice = customerProfile?.voiceId
       ? await prisma.callCustomerVoice.findFirst({
         where: { id: customerProfile.voiceId, isDeleted: false, isEnabled: true },
-        select: { elevenLabsCode: true },
+        select: { name: true, elevenLabsCode: true },
       })
       : null;
     const trainerCustomerProfile = customerProfile
       ? {
         ...customerProfile,
+        voiceName: customerVoice?.name?.trim() || null,
         elevenLabsVoiceId: customerVoice?.elevenLabsCode?.trim() || null,
       }
       : null;
@@ -2642,6 +2757,7 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
         sessionId: session.id,
         audioBase64,
         durationSec,
+        ttsVoice,
       });
       console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
       return res.json(out);
@@ -4415,6 +4531,7 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
       setVoxSessionId(result.callId, result.callSessionHistoryId);
     }
     const toNormalized = '+' + String(to).replace(/\D/g, '');
+    const manager = await resolveTrainerManager(req);
     try {
       await prisma.voiceCallSession.create({
         data: {
@@ -4422,6 +4539,8 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
           to: toNormalized,
           scenario: result.scenario ?? 'dialog',
           source: 'manual',
+          dealershipId: manager?.dealershipId ?? null,
+          managerId: manager?.id ?? null,
           startedAt: new Date(result.startedAt),
         },
       });
@@ -5504,6 +5623,7 @@ app.get('/api/admin/analytics/dealerships/:id/plans', async (req, res) => {
       include: { managerProfiles: { where: { status: 'active' }, select: { id: true } } },
     });
     if (!dealership) return res.status(404).json({ error: 'Dealership not found' });
+    if (!canAccessDealershipForActiveRole(req, dealership)) return res.status(403).json({ error: 'Нет доступа к этой точке.' });
     if (!dealership.holdingId) return res.json({ items: [] });
 
     const managerIds = new Set(dealership.managerProfiles.map((manager) => manager.id));
@@ -5538,6 +5658,7 @@ app.post('/api/admin/analytics/dealerships/:id/plans/:planId/exclude', async (re
       include: { managerProfiles: { where: { status: 'active' }, select: { id: true } } },
     });
     if (!dealership || !dealership.holdingId) return res.status(404).json({ error: 'Точка не найдена.' });
+    if (!canAccessDealershipForActiveRole(req, dealership)) return res.status(403).json({ error: 'Нет доступа к этой точке.' });
     const plan = await prisma.callPlan.findFirst({ where: { id: planId, holdingId: dealership.holdingId } });
     if (!plan) return res.status(404).json({ error: 'Расписание не найдено.' });
     await assertCanMutateAnalyticsPlan(req, plan.holdingId);
@@ -5571,6 +5692,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
     const id = String(req.params.id || '').trim();
     const dealership = await prisma.dealership.findUnique({ where: { id }, include: { holding: true, managerProfiles: true } });
     if (!dealership) return res.status(404).json({ error: 'Dealership not found' });
+    if (!canAccessDealershipForActiveRole(req, dealership)) return res.status(403).json({ error: 'Нет доступа к этой точке.' });
     const sessions = await prisma.voiceCallSession.findMany({
       where: { dealershipId: id },
       include: { manager: true },
@@ -6025,12 +6147,18 @@ app.get('/api/admin/analytics/managers', async (_req, res) => {
 app.get('/api/admin/super-admin/audits', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const scopeWhere = buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req));
     const voiceSessions = await prisma.voiceCallSession.findMany({
       where: {
-        OR: [
-          { totalScore: { not: null } },
-          { evaluationJson: { not: null } },
-          { outcome: { in: ['completed', 'no_answer', 'busy', 'failed', 'disconnected'] } },
+        AND: [
+          scopeWhere,
+          {
+            OR: [
+              { totalScore: { not: null } },
+              { evaluationJson: { not: null } },
+              { outcome: { in: ['completed', 'no_answer', 'busy', 'failed', 'disconnected'] } },
+            ],
+          },
         ],
       },
       include: {
@@ -6051,7 +6179,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         } catch { /* skip */ }
       }
       const type = s.source === 'trainer' || s.scenario === 'trainer' || s.scenario === 'training' ? 'trainer' as const : 'call' as const;
-      const auditStatus = s.outcome === 'no_answer' || s.outcome === 'busy' || s.outcome === 'disconnected'
+      const auditStatus = s.outcome === 'no_answer' || s.outcome === 'busy'
         ? 'interrupted' as const
         : s.outcome === 'failed' || !!s.failureReason || score < 50
         ? 'failed' as const
@@ -6101,8 +6229,13 @@ app.get('/api/admin/audits/:id', async (req, res) => {
     const numericId = Number.parseInt(rawId.replace(/^call-/, ''), 10);
     if (!Number.isFinite(numericId)) return res.status(400).json({ error: 'Invalid audit id' });
 
-    const session = await prisma.voiceCallSession.findUnique({
-      where: { id: numericId },
+    const session = await prisma.voiceCallSession.findFirst({
+      where: {
+        AND: [
+          { id: numericId },
+          buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req)),
+        ],
+      },
       include: {
         dealership: { include: { holding: true } },
         manager: true,
@@ -6115,7 +6248,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
     const planCriteria = extractPlanCriteriaEvaluation(evaluation);
     const score = scoreFromEvaluation(evaluation, session.totalScore);
     const type = session.source === 'trainer' || session.scenario === 'trainer' || session.scenario === 'training' ? 'trainer' as const : 'call' as const;
-    const status = session.outcome === 'no_answer' || session.outcome === 'busy' || session.outcome === 'disconnected'
+    const status = session.outcome === 'no_answer' || session.outcome === 'busy'
       ? 'interrupted' as const
       : session.outcome === 'failed' || !!session.failureReason || score < 50
       ? 'failed' as const

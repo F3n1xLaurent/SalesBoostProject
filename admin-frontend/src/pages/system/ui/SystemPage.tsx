@@ -45,6 +45,9 @@ export function SystemPage() {
 
   const allowedRoles = auth.status === 'authenticated' ? auth.user.allowedRoles : [];
   const defaultRole = auth.status === 'authenticated' ? auth.user.defaultRole : 'super';
+  const dealerDealershipId = auth.status === 'authenticated'
+    ? auth.user.memberships.find((membership) => membership.role === 'dealership_admin' && membership.dealershipId)?.dealershipId ?? null
+    : null;
   const profileName = auth.status === 'authenticated'
     ? (auth.user.account.displayName?.trim() || auth.user.account.email)
     : '—';
@@ -70,6 +73,12 @@ export function SystemPage() {
     setVoiceDashboard(null);
     setTeamLoading(false);
   }, [role, auth.status]);
+
+  useEffect(() => {
+    if (auth.status !== 'authenticated') return;
+    if (!auth.user.allowedRoles.includes(role)) return;
+    writeStoredRole(auth.user.account.id, role);
+  }, [auth, role]);
 
   async function loadTeamSummary() {
     setTeamLoading(true);
@@ -132,6 +141,7 @@ export function SystemPage() {
       voice={voiceDashboard}
       loadingSummary={teamLoading}
       role={role}
+      dealerDealershipId={dealerDealershipId}
       profileName={profileName}
       onRoleChange={(nextRole) => {
         if (allowedRoles.includes(nextRole)) {

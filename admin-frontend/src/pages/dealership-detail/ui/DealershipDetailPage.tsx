@@ -16,7 +16,7 @@ import {
 } from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { DealershipPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
-import { ratingClass, answerRateClass, answerTimeClass, statusBadgeClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
+import { ratingClass, answerRateClass, answerTimeClass, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import {
   ACTIVE_BATCH_STORAGE_KEY,
   fetchBatchWithSummary,
@@ -36,6 +36,7 @@ type Props = {
   onOpenEmployee?: (id: string) => void;
   onOpenBatchDetail?: (batchId: string) => void;
   onDealershipSaved?: (dealership: DealershipItem) => void;
+  mode?: 'default' | 'dealerDashboard';
 };
 
 type DealershipOutcomeBreakdown = {
@@ -83,11 +84,13 @@ function PlanParticipationList({
   excludingPlanId,
   onOpenPlan,
   onExcludePlan,
+  readOnly = false,
 }: {
   plans: AnalyticsPlanParticipation[];
   excludingPlanId: string | null;
   onOpenPlan: (id: string) => void;
   onExcludePlan: (plan: AnalyticsPlanParticipation) => void;
+  readOnly?: boolean;
 }) {
   if (plans.length === 0) {
     return <div className="sa-meta" style={{ padding: 18 }}>Нет активных расписаний</div>;
@@ -103,16 +106,18 @@ function PlanParticipationList({
               {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="sa-btn-outline sa-btn-sm" onClick={() => onOpenPlan(plan.id)}>Настроить</button>
-            <button
-              className="sa-btn-outline sa-btn-sm"
-              disabled={excludingPlanId === plan.id}
-              onClick={() => onExcludePlan(plan)}
-            >
-              {excludingPlanId === plan.id ? 'Исключаем...' : 'Исключить'}
-            </button>
-          </div>
+          {!readOnly && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="sa-btn-outline sa-btn-sm" onClick={() => onOpenPlan(plan.id)}>Настроить</button>
+              <button
+                className="sa-btn-outline sa-btn-sm"
+                disabled={excludingPlanId === plan.id}
+                onClick={() => onExcludePlan(plan)}
+              >
+                {excludingPlanId === plan.id ? 'Исключаем...' : 'Исключить'}
+              </button>
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -605,8 +610,9 @@ function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpen
 
 /* ────────────────────── Main Component ────────────────────── */
 
-export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmployee, onOpenBatchDetail, onDealershipSaved }: Props) {
+export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmployee, onOpenBatchDetail, onDealershipSaved, mode = 'default' }: Props) {
   const navigate = useNavigate();
+  const isDealerDashboard = mode === 'dealerDashboard';
   const [realDetail, setRealDetail] = useState<DealershipAnalyticsDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -617,8 +623,6 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
     () => realDetail || (dealership ? buildFallbackDetail(dealership) : null),
     [dealershipId, dealership, realDetail],
   );
-  const [checkLoading, setCheckLoading] = useState(false);
-  const [checkStatus, setCheckStatus] = useState<string | null>(null);
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [activeBatch, setActiveBatch] = useState<CallBatchSnapshot | null>(null);
   const [batchSummary, setBatchSummary] = useState<DealershipBatchSummary | null>(null);
@@ -627,7 +631,6 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const [selectedCallDetail, setSelectedCallDetail] = useState<CallInsightDetail | null>(null);
   const [selectedCallLoading, setSelectedCallLoading] = useState(false);
   const [selectedCallError, setSelectedCallError] = useState<string | null>(null);
-  const hasActiveManual = !!activeBatch && (activeBatch.status === 'running' || activeBatch.status === 'paused');
 
   useEffect(() => {
     let cancelled = false;
@@ -739,7 +742,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   if (detailLoading) {
     return (
       <div>
-        <button className="sa-btn-text" onClick={onBack}>← Точки</button>
+        {!isDealerDashboard && <button className="sa-btn-text" onClick={onBack}>← Точки</button>}
         <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загружаем данные точки...</div>
       </div>
     );
@@ -748,7 +751,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   if (detailError) {
     return (
       <div>
-        <button className="sa-btn-text" onClick={onBack}>← Точки</button>
+        {!isDealerDashboard && <button className="sa-btn-text" onClick={onBack}>← Точки</button>}
         <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>{detailError}</div>
       </div>
     );
@@ -757,7 +760,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   if (!detail) {
     return (
       <div>
-        <button className="sa-btn-text" onClick={onBack}>← Точки</button>
+        {!isDealerDashboard && <button className="sa-btn-text" onClick={onBack}>← Точки</button>}
         <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Точка не найдена</div>
       </div>
     );
@@ -771,58 +774,16 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const dealershipNoAnswers = detail.noAnswers ?? detail.outcomeBreakdown?.no_answer ?? 0;
   const dealershipCalls = detail.auditsCount || Object.values(detail.outcomeBreakdown ?? {}).reduce((sum, value) => sum + value, 0);
 
-  async function handleDealershipCheck() {
-    setCheckLoading(true);
-    setCheckStatus(null);
-    try {
-      const numsRes = await apiFetch('/api/admin/test-numbers');
-      const numsData = await numsRes.json().catch(() => ({}));
-      const numbers = Array.isArray(numsData?.numbers) ? numsData.numbers.map((x: unknown) => String(x)).filter((x: string) => x.trim()) : [];
-      if (!numbers.length) {
-        throw new Error('Нет тестовых номеров. Добавьте VOX_TEST_TO или VOX_TEST_NUMBERS');
-      }
-      const res = await apiFetch('/api/admin/call-batches', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mode: 'single_dealership',
-          title: `Проверка точки ${detail.name}`,
-          maxConcurrency: 1,
-          startIntervalMs: 250,
-          maxAttempts: 3,
-          jobs: [{
-            dealershipId: detail.id,
-            dealershipName: detail.name,
-            phone: numbers[0],
-          }],
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Не удалось запустить проверку');
-      const batchId = String(data.batchId || '');
-      if (!batchId) throw new Error('Сервер не вернул batchId');
-      setCheckStatus('Проверка запущена');
-      setActiveBatchId(batchId);
-      try { localStorage.setItem(ACTIVE_BATCH_STORAGE_KEY, batchId); } catch {}
-    } catch (e: unknown) {
-      let message = e instanceof Error ? e.message : 'Ошибка запуска проверки';
-      if (message.includes('Уже есть активная ручная проверка')) {
-        message = 'Уже есть активная ручная проверка. Управляйте ею в трее проверок в правом нижнем углу.';
-      }
-      setCheckStatus(message);
-    } finally {
-      setCheckLoading(false);
-    }
-  }
-
   return (
     <div className="sa-detail-root">
       {/* Breadcrumb */}
-      <div className="sa-breadcrumb">
-        <button className="sa-btn-text" onClick={onBack}>Точки</button>
-        <span className="sa-breadcrumb-sep">→</span>
-        <span>{detail.name}</span>
-      </div>
+      {!isDealerDashboard && (
+        <div className="sa-breadcrumb">
+          <button className="sa-btn-text" onClick={onBack}>Точки</button>
+          <span className="sa-breadcrumb-sep">→</span>
+          <span>{detail.name}</span>
+        </div>
+      )}
 
       {/* Header */}
       <div className="sa-detail-header">
@@ -833,23 +794,12 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           </p>
         </div>
         <div className="sa-detail-header-right">
-          <span className={statusBadgeClass(detail.status)}>{STATUS_LABELS[detail.status]}</span>
-          <button className="sa-btn-outline" onClick={() => setPhoneNumbersOpen(true)}>Номера телефонов</button>
-          <button className="sa-btn-outline" onClick={() => setEditDealershipOpen(true)}>Редактировать</button>
-          <button
-            className="sa-btn-danger"
-            onClick={handleDealershipCheck}
-            disabled={checkLoading || hasActiveManual}
-            title={hasActiveManual ? 'Уже есть активная ручная проверка — управляйте ею в трее проверок.' : undefined}
-          >
-            <span className="sa-btn-danger-dot" />
-            {checkLoading ? 'Запуск...' : 'Проверить точку'}
-          </button>
-          <button className="sa-btn-outline" onClick={() => exportPageToPdf(`Точка_${detail.name}`)}>Экспорт PDF</button>
+          {!isDealerDashboard && <span className={statusBadgeClass(detail.status)}>{STATUS_LABELS[detail.status]}</span>}
+          {!isDealerDashboard && <button className="sa-btn-outline" onClick={() => setPhoneNumbersOpen(true)}>Номера телефонов</button>}
+          {!isDealerDashboard && <button className="sa-btn-outline" onClick={() => setEditDealershipOpen(true)}>Редактировать</button>}
         </div>
       </div>
-      {checkStatus && <div className="sa-batch-live-note" style={{ marginTop: -8, marginBottom: 8 }}>{checkStatus}</div>}
-      {activeBatch && batchSummary && !checkStatus && (
+      {activeBatch && batchSummary && (
         <div className="sa-meta" style={{ marginTop: -8, marginBottom: 12 }}>
           Сейчас идёт проверка этой точки ({batchSummary.completed}/{batchSummary.total}). Детали и управление — в трее проверок справа внизу.
         </div>
@@ -898,6 +848,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           excludingPlanId={excludingPlanId}
           onOpenPlan={(id) => navigate(`/call-settings/plans/${encodeURIComponent(id)}/edit`)}
           onExcludePlan={handleExcludePlan}
+          readOnly={isDealerDashboard}
         />
       </section>
 

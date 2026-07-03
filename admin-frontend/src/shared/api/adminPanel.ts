@@ -523,6 +523,15 @@ export interface UserAccountItem {
     description: string | null;
     permissions: string[];
   }>;
+  analytics: {
+    aiRating: number;
+    deltaRating: number | null;
+    auditsCount: number;
+    failsCount: number;
+    communicationFlag: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+    topMistakeLabel: string;
+    status: 'norm' | 'risk' | 'critical' | 'no-data';
+  };
 }
 
 export interface CallBatchListItem {
