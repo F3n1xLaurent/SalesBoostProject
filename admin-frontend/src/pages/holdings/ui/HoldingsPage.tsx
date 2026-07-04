@@ -15,6 +15,7 @@ import {
   type HoldingType,
 } from '../../../shared/api/adminPanel';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
@@ -402,7 +403,7 @@ function HoldingAnalyticsDetail({
             <div key={issue.issue} className="sa-hbar-row">
               <span className="sa-hbar-label">{issue.issue}</span>
               <div className="sa-hbar-track">
-                <div className="sa-hbar-fill" style={{ width: `${issue.percent}%`, background: issue.percent >= 30 ? '#F87171' : '#FBBF24' }} />
+                <div className="sa-hbar-fill" style={{ width: `${issue.percent}%`, background: issue.percent >= 30 ? 'var(--tb-status-red, #B91C1C)' : 'var(--tb-status-orange, #92400E)' }} />
               </div>
               <span className="sa-hbar-score">{issue.percent}%</span>
             </div>
@@ -416,7 +417,7 @@ function HoldingAnalyticsDetail({
             <div key={block.block} className="sa-hbar-row">
               <span className="sa-hbar-label">{block.block}</span>
               <div className="sa-hbar-track">
-                <div className="sa-hbar-fill" style={{ width: `${block.rate}%`, background: block.rate >= 80 ? '#34D399' : block.rate >= 60 ? '#FBBF24' : '#F87171' }} />
+                <div className="sa-hbar-fill" style={{ width: `${block.rate}%`, background: block.rate >= 80 ? 'var(--tb-status-green, #166534)' : block.rate >= 60 ? 'var(--tb-status-orange, #92400E)' : 'var(--tb-status-red, #B91C1C)' }} />
               </div>
               <span className={`sa-hbar-score ${ratingClass(block.rate)}`}>{block.rate}%</span>
             </div>
@@ -588,6 +589,10 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     () => new Map(analyticsRows.map((item) => [item.id, item])),
     [analyticsRows],
   );
+  const hasActiveFilters =
+    searchInput.trim() !== '' ||
+    holdingTypeFilter !== 'all' ||
+    holdingStatusFilter !== 'all';
   const selectedHoldingRows = useMemo<HoldingListComparisonRow[]>(
     () => holdings
       .filter((item) => selectedHoldingIds.includes(item.id))
@@ -838,9 +843,6 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
   return (
     <div>
       <h1 className="sa-page-title">Компании</h1>
-      <p className="sa-page-subtitle">
-        Отдельный административный контур для управления оргструктурой и связями точек.
-      </p>
       {analyticsLoading && !loading && (
         <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>
           Загружаем аналитику компаний...
@@ -852,8 +854,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         </div>
       )}
 
-      <div className="sa-toolbar">
-        <div className="sa-toolbar-row">
+      <div className="sa-toolbar sa-toolbar-split">
+        <div className="sa-toolbar-filters">
           <div className="sa-search-wrap">
             <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
@@ -866,7 +868,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
             />
           </div>
           <select className="sa-select" value={holdingTypeFilter} onChange={(event) => setHoldingTypeFilter(event.target.value as 'all' | HoldingType)}>
-            <option value="all">Тип компании: все</option>
+            <option value="all">Тип: все</option>
             <option value="own">Собственный</option>
             <option value="franchised">Франчайзинговый</option>
           </select>
@@ -875,32 +877,46 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
             <option value="active">Активный</option>
             <option value="inactive">Деактивированный</option>
           </select>
-          <button type="button" className="sa-btn-primary" onClick={openCreateHolding}>Новая компания</button>
-          <button
-            type="button"
-            className="sa-btn-outline"
-            onClick={() => {
-              setSearchInput('');
-              setDebouncedSearch('');
-              setHoldingTypeFilter('all');
-              setHoldingStatusFilter('all');
-            }}
-          >
-            Сбросить
-          </button>
+          {hasActiveFilters && (
+            <button
+              type="button"
+              className="sa-btn-border-only"
+              onClick={() => {
+                setSearchInput('');
+                setDebouncedSearch('');
+                setHoldingTypeFilter('all');
+                setHoldingStatusFilter('all');
+              }}
+            >
+              Сбросить
+            </button>
+          )}
         </div>
-        <div className="sa-toolbar-chips">
-          <span className="sa-chip">Компаний: {holdings.length}</span>
-          <span className="sa-chip">Точек: {dealerships.length}</span>
-          <span className="sa-chip">Без компании: {unassignedDealerships.length}</span>
+        <div className="sa-toolbar-actions">
+          <button type="button" className="sa-btn-primary" onClick={openCreateHolding}>
+            <LetsIcon name="add-light" size={16} bold />
+            Новая компания
+          </button>
         </div>
       </div>
 
-      <div className="sa-companies-table-wrap sa-desktop-only">
-        <table className="sa-table sa-table-sortable">
+      <div className="sa-companies-table-wrap sa-holdings-table-wrap sa-desktop-only">
+        <table className="sa-table sa-table-sortable sa-holdings-table">
+          <colgroup>
+            <col className="sa-col-check" />
+            <col className="sa-col-name" />
+            <col className="sa-col-type" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-status" />
+            <col className="sa-col-actions" />
+          </colgroup>
           <thead>
             <tr>
-              <th style={{ width: 44 }} />
+              <th />
               <th>Компания</th>
               <th>Тип</th>
               <th className="sa-text-right">Точки</th>
@@ -909,15 +925,14 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
               <th className="sa-text-right">Недозвоны</th>
               <th className="sa-text-right">Ниже 50</th>
               <th>Статус</th>
-              <th style={{ width: 148 }}>Действия</th>
-              <th style={{ width: 32 }} />
+              <th className="sa-text-right sa-holdings-actions-col">Действия</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>Загрузка структуры...</td></tr>
+              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Загрузка структуры...</td></tr>
             ) : holdings.length === 0 ? (
-              <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>По текущим фильтрам компании не найдены.</td></tr>
+              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>По текущим фильтрам компании не найдены.</td></tr>
             ) : (
               holdings.map((item) => {
                 const analytics = analyticsByHoldingId.get(item.id);
@@ -954,8 +969,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                         {item.isActive ? 'Активен' : 'Выключен'}
                       </span>
                     </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 8 }} onClick={(event) => event.stopPropagation()}>
+                    <td className="sa-holdings-actions-cell">
+                      <div onClick={(event) => event.stopPropagation()}>
                         <button type="button" className="sa-btn-outline sa-btn-icon" onClick={() => openEditHolding(item)} aria-label="Редактировать компанию" title="Редактировать">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                             <path d="M12 20h9" />
@@ -971,11 +986,6 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                           </svg>
                         </button>
                       </div>
-                    </td>
-                    <td className="sa-row-chevron-cell">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <polyline points="9 18 15 12 9 6" />
-                      </svg>
                     </td>
                   </tr>
                 );

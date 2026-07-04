@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import '../../../shared/ui/styles/admin-panel.css';
+import '../../../shared/ui/styles/theme-brutal.css';
 import { AdminSidebar, SIDEBAR_WIDTH } from '../../admin-sidebar/ui/AdminSidebar';
 import type { AdminTab, AdminRole } from '../../admin-sidebar/ui/AdminSidebar';
 import { Dashboard } from '../../../pages/dashboard/ui/DashboardPage';
@@ -38,6 +39,7 @@ import {
   tabToPath,
 } from '../../../shared/routing/adminRoutes';
 import { StatusNotice } from '../../../shared/ui/StatusNotice';
+import { isBrutalThemeTab } from '../../../shared/ui/styles/brutalThemeTabs';
 import {
   fetchAudits,
   fetchCallBatches,
@@ -286,7 +288,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   }, [isSuperOrCompany, callBatches]);
 
   return (
-    <div className="super-admin-app">
+    <div className={`super-admin-app${isBrutalThemeTab(activeTab) ? ' theme-brutal' : ''}`}>
       <AdminSidebar
         activeTab={activeTab}
         onTab={handleTabChange}

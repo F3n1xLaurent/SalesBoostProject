@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif&display=swap");
 @import "tailwindcss";
 @import "./theme.css";
 @config "../tailwind.config.cjs";
