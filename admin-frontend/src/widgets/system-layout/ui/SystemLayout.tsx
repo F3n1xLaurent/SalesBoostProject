@@ -39,7 +39,6 @@ import {
   tabToPath,
 } from '../../../shared/routing/adminRoutes';
 import { StatusNotice } from '../../../shared/ui/StatusNotice';
-import { isBrutalThemeTab } from '../../../shared/ui/styles/brutalThemeTabs';
 import {
   fetchAudits,
   fetchCallBatches,
@@ -288,7 +287,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   }, [isSuperOrCompany, callBatches]);
 
   return (
-    <div className={`super-admin-app${isBrutalThemeTab(activeTab) ? ' theme-brutal' : ''}`}>
+    <div className="super-admin-app theme-brutal">
       <AdminSidebar
         activeTab={activeTab}
         onTab={handleTabChange}

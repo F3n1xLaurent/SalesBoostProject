@@ -1,13 +1,9 @@
 import type { AdminTab } from '../../../entities/session/model/types';
 
 /**
- * Tabs with brutal-minimal theme (UI only).
- * - dashboard — Дашборд
- * - holdings — Компании
- * - companies — Точки
+ * Brutal-minimal theme is applied globally on `.super-admin-app`.
+ * This helper is kept for compatibility with any tab-scoped checks.
  */
-export const BRUTAL_THEME_TABS: AdminTab[] = ['dashboard', 'holdings', 'companies'];
-
-export function isBrutalThemeTab(tab: AdminTab): boolean {
-  return BRUTAL_THEME_TABS.includes(tab);
+export function isBrutalThemeTab(_tab?: AdminTab): boolean {
+  return true;
 }

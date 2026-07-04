@@ -87,7 +87,7 @@ export function AISummaryBlock({
           <div className="sa-ai-summary-icon">
             <LetsIcon name="star" size={20} />
           </div>
-          <span className="sa-brutal-card-title">{title}</span>
+          <h2 className="sa-section-title">{title}</h2>
         </div>
         <div className="sa-brutal-card-body sa-ai-summary-content">{content}</div>
       </div>

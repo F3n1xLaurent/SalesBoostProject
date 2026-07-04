@@ -968,6 +968,7 @@ export async function fetchImportedItems(params?: {
   limit?: number;
   offset?: number;
   sourceId?: string | null;
+  sourceIds?: string[];
   holdingId?: string | null;
   search?: string;
   tags?: string[];
@@ -975,7 +976,8 @@ export async function fetchImportedItems(params?: {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.offset != null) query.set('offset', String(params.offset));
-  if (params?.sourceId) query.set('sourceId', params.sourceId);
+  if (params?.sourceIds?.length) query.set('sourceIds', params.sourceIds.join(','));
+  else if (params?.sourceId) query.set('sourceId', params.sourceId);
   if (params?.holdingId) query.set('holdingId', params.holdingId);
   if (params?.search?.trim()) query.set('search', params.search.trim());
   if (params?.tags?.length) query.set('tags', params.tags.join(','));

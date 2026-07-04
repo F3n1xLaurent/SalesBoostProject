@@ -177,6 +177,14 @@ function parseTagFilters(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function parseSourceIds(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(parseSourceIds);
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function assertSafeSourceUrl(rawUrl: unknown): string {
   const value = parseString(rawUrl);
   if (!value) throw new Error('URL источника обязателен.');
@@ -1155,11 +1163,16 @@ export async function handleListImportedItems(req: Request, res: Response): Prom
   const limit = Math.min(Math.max(Number(req.query.limit || 25), 1), 100);
   const offset = Math.max(Number(req.query.offset || 0), 0);
   const sourceId = parseString(req.query.sourceId);
+  const sourceIds = parseSourceIds(req.query.sourceIds);
   const sourceWhere = await buildImportSourceWhereForRequest(req);
   const search = parseString(req.query.search);
   const tagFilters = parseTagFilters(req.query.tags);
   const where: Prisma.ImportedItemWhereInput = {};
-  if (sourceId) where.importSourceId = sourceId;
+  if (sourceIds.length > 0) {
+    where.importSourceId = { in: sourceIds };
+  } else if (sourceId) {
+    where.importSourceId = sourceId;
+  }
   where.importSource = sourceWhere;
   if (search) {
     where.OR = [
