@@ -9,6 +9,7 @@ import {
   type PhoneNumberTypeItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 
 type TypeFormState = {
   name: string;
@@ -26,6 +27,12 @@ const OWNERSHIP_LABELS: Record<PhoneNumberOwnership, string> = {
   dealership: 'Для точек',
   user: 'Для пользователей',
 };
+
+function holdingSelectWidth(holdings: HoldingItem[]): number {
+  const labels = holdings.length > 0 ? holdings.map((holding) => holding.name) : ['Нет компаний'];
+  const longest = labels.reduce((max, label) => (label.length > max.length ? label : max), '');
+  return Math.ceil(longest.length * 7.5 + 52);
+}
 
 function overlayCardStyle(width = 520): React.CSSProperties {
   return {
@@ -173,6 +180,7 @@ export function TypesNumbersPage() {
     () => items.filter((item) => item.ownership === activeOwnership),
     [items, activeOwnership],
   );
+  const companySelectWidth = useMemo(() => holdingSelectWidth(holdings), [holdings]);
 
   async function loadHoldings() {
     setHoldingsLoading(true);
@@ -248,86 +256,92 @@ export function TypesNumbersPage() {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 20 }}>
-      <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <div>
-            <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Типы номеров</h1>
-            <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>
-              Справочник типов телефонных номеров для точек и пользователей.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <select
-              className="sa-select"
-              value={selectedHoldingId}
-              onChange={(event) => {
-                setSelectedHoldingId(event.target.value);
-                setNotice(null);
-              }}
-              style={{ minWidth: 220 }}
-              disabled={holdingsLoading || holdings.length === 0}
-            >
-              {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-              {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
-            </select>
-            <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => { setError(null); setCreateOpen(true); }}>
-              Создать тип
-            </button>
-          </div>
+    <div>
+      <h1 className="sa-page-title">Типы номеров</h1>
+
+      {notice && (
+        <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>{notice}</div>
+      )}
+      {error && !createOpen && !editType && (
+        <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{error}</div>
+      )}
+
+      <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
+        <div className="sa-toolbar-filters">
+          <select
+            className="sa-select"
+            value={selectedHoldingId}
+            onChange={(event) => {
+              setSelectedHoldingId(event.target.value);
+              setNotice(null);
+            }}
+            style={{ width: companySelectWidth }}
+            disabled={holdingsLoading || holdings.length === 0}
+            title="Глобальный фильтр по компаниям"
+          >
+            {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
+            {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
+          </select>
         </div>
-
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {(['dealership', 'user'] as PhoneNumberOwnership[]).map((ownership) => (
-            <button
-              key={ownership}
-              type="button"
-              className={activeOwnership === ownership ? 'sa-btn-primary' : 'sa-btn-outline'}
-              onClick={() => setActiveOwnership(ownership)}
-            >
-              {OWNERSHIP_LABELS[ownership]}
-            </button>
-          ))}
+        <div className="sa-toolbar-actions">
+          <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={() => { setError(null); setCreateOpen(true); }}>
+            <LetsIcon name="add-light" size={16} bold />
+            Создать номер
+          </button>
         </div>
+      </div>
 
-        {notice && <div style={{ padding: 12, borderRadius: 14, background: '#ecfdf5', color: '#047857', fontSize: 14 }}>{notice}</div>}
-        {error && !createOpen && !editType && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>{error}</div>}
-      </section>
+      <div className="sa-dialog-tabs" style={{ marginBottom: 16 }}>
+        {(['dealership', 'user'] as PhoneNumberOwnership[]).map((ownership) => (
+          <button
+            key={ownership}
+            type="button"
+            className={`sa-dialog-tab ${activeOwnership === ownership ? 'sa-dialog-tab-active' : ''}`}
+            onClick={() => setActiveOwnership(ownership)}
+          >
+            {OWNERSHIP_LABELS[ownership]}
+          </button>
+        ))}
+      </div>
 
-      <section className="sa-card" style={{ padding: 20 }}>
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Название</th>
-                <th>Принадлежность</th>
-                <th>Статус</th>
-                <th />
+      <div className="sa-companies-table-wrap sa-holdings-table-wrap">
+        <table className="sa-table sa-holdings-table">
+          <thead>
+            <tr>
+              <th>Название</th>
+              <th>Принадлежность</th>
+              <th>Статус</th>
+              <th className="sa-text-right sa-holdings-actions-col">Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading || holdingsLoading ? (
+              <tr><td colSpan={4} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
+            ) : holdings.length === 0 ? (
+              <tr><td colSpan={4} className="sa-meta" style={{ padding: 32 }}>Перед тем, как создавать типы номеров, пожалуйста, добавьте компанию.</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={4} className="sa-meta" style={{ padding: 32 }}>Типов пока нет</td></tr>
+            ) : filtered.map((item) => (
+              <tr key={item.id}>
+                <td>
+                  <div className="sa-cell-name">{item.name}</div>
+                </td>
+                <td>{OWNERSHIP_LABELS[item.ownership]}</td>
+                <td>
+                  <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                    {item.isActive ? 'Активен' : 'Неактивен'}
+                  </span>
+                </td>
+                <td className="sa-holdings-actions-cell">
+                  <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditType(item); }}>
+                    Редактировать
+                  </button>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading || holdingsLoading ? (
-                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
-              ) : holdings.length === 0 ? (
-                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Перед тем, как создавать типы номеров, пожалуйста, добавьте компанию.</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Типов пока нет</td></tr>
-              ) : filtered.map((item) => (
-                <tr key={item.id}>
-                  <td style={{ fontWeight: 700 }}>{item.name}</td>
-                  <td>{OWNERSHIP_LABELS[item.ownership]}</td>
-                  <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активен' : 'Неактивен'}</span></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditType(item); }}>
-                      Редактировать
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <TypeModal
         open={createOpen}

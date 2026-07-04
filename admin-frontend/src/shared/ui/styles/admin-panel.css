@@ -71,6 +71,12 @@
   transition: opacity 0.16s ease;
 }
 
+.super-admin-sidebar svg.sa-icon-stroke-15 [stroke],
+.super-admin-sidebar svg.sa-icon-stroke-15 path[stroke],
+.super-admin-sidebar svg.sa-icon-stroke-15 g[stroke] {
+  stroke-width: 1.5 !important;
+}
+
 .super-admin-sidebar .sa-sidebar-nav-icon .sa-icon-bold {
   filter: drop-shadow(0 0 0.35px currentColor);
 }

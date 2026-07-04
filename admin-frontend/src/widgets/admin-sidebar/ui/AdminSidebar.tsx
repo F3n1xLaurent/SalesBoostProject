@@ -26,29 +26,29 @@ function getProfileInitials(name: string): string {
 type NavItem = { id: AdminTab; label: string; icon: string };
 
 const SUPER_NAV: NavItem[] = [
-  { id: 'dashboard', label: 'Дашборд', icon: 'chart-duotone-line' },
-  { id: 'holdings', label: 'Компании', icon: 'shop-duotone-line' },
-  { id: 'companies', label: 'Точки', icon: 'pin-duotone-line' },
-  { id: 'dealershipDirections', label: 'Направления точек', icon: 'filter-alt-duotone-line' },
-  { id: 'imports', label: 'Данные', icon: 'database-light' },
-  { id: 'typesNumbers', label: 'Типы номеров', icon: 'phone-duotone-line' },
-  { id: 'users', label: 'Пользователи', icon: 'user-duotone-line' },
-  { id: 'audits', label: 'Проверки', icon: 'check-ring-duotone-line' },
-  { id: 'analytics', label: 'Аналитика', icon: 'pie-chart-light' },
-  { id: 'callSettings', label: 'Настройки обзвона', icon: 'setting-line-duotone-line' },
+  { id: 'dashboard', label: 'Дашборд', icon: 'chart' },
+  { id: 'holdings', label: 'Компании', icon: 'shop' },
+  { id: 'companies', label: 'Точки', icon: 'pin' },
+  { id: 'dealershipDirections', label: 'Направления точек', icon: 'filter' },
+  { id: 'imports', label: 'Данные', icon: 'database' },
+  { id: 'typesNumbers', label: 'Типы номеров', icon: 'phone' },
+  { id: 'users', label: 'Пользователи', icon: 'user' },
+  { id: 'audits', label: 'Проверки', icon: 'check-ring' },
+  { id: 'analytics', label: 'Аналитика', icon: 'pie-chart' },
+  { id: 'callSettings', label: 'Настройки обзвона', icon: 'setting-alt-line' },
 ];
 
 const COMPANY_NAV: NavItem[] = SUPER_NAV.filter((item) => item.id !== 'holdings' && item.id !== 'typesNumbers');
 
 const DEALER_NAV: NavItem[] = [
-  { id: 'dealer-companies', label: 'Дашборд', icon: 'chart-duotone-line' },
-  { id: 'audits', label: 'Проверки', icon: 'check-ring-duotone-line' },
-  { id: 'users', label: 'Сотрудники', icon: 'user-duotone-line' },
+  { id: 'dealer-companies', label: 'Дашборд', icon: 'chart' },
+  { id: 'audits', label: 'Проверки', icon: 'check-ring' },
+  { id: 'users', label: 'Сотрудники', icon: 'user' },
 ];
 
 const STAFF_NAV: NavItem[] = [
-  { id: 'staff-profile', label: 'Профиль', icon: 'user-duotone-line' },
-  { id: 'staff-trainer', label: 'Тренажёр', icon: 'mic-light' },
+  { id: 'staff-profile', label: 'Профиль', icon: 'user' },
+  { id: 'staff-trainer', label: 'Тренажёр', icon: 'mic' },
 ];
 
 type Props = {
@@ -123,7 +123,7 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
             }}
           >
             <span className={`sa-sidebar-nav-icon ${activeTab === item.id ? 'sa-sidebar-nav-icon-active' : ''}`}>
-              <LetsIcon name={item.icon} size={NAV_ICON_SIZE} bold />
+              <LetsIcon name={item.icon} size={NAV_ICON_SIZE} strokeWidth={1.5} />
             </span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               {item.label}
@@ -141,7 +141,7 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
               className={`sa-sidebar-profile-menu-item ${activeTab === 'settings' ? 'active' : ''}`}
               onClick={() => { onTab('settings'); setProfileOpen(false); }}
             >
-              <LetsIcon name="setting-line-light" size={18} />
+              <LetsIcon name="setting-alt-line" size={18} strokeWidth={1.5} />
               <span>Настройки</span>
             </button>
 
@@ -172,7 +172,7 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
                 setProfileOpen(false);
               }}
             >
-              <LetsIcon name="sign-out" size={18} />
+              <LetsIcon name="sign-out" size={18} strokeWidth={1.5} />
               <span>Выйти</span>
             </button>
           </div>
@@ -194,7 +194,7 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
             className="sa-sidebar-profile-chevron"
             style={{ display: 'inline-flex', transform: profileOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.16s ease' }}
           >
-            <LetsIcon name="expand-down" size={14} />
+            <LetsIcon name="expand-down" size={14} strokeWidth={1.5} />
           </span>
         </button>
       </div>
