@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { AuditItem } from '../../../shared/api/adminPanel';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 
 type AuditType = 'trainer' | 'call';
 type AuditStatus = 'completed' | 'failed' | 'interrupted';
@@ -20,6 +21,7 @@ type AuditListRow = {
   status: AuditStatus;
   duration: number;
   communicationFlag: CommunicationFlag;
+  reportIssues: string[];
 };
 
 const AUDIT_TYPE_LABELS: Record<AuditType, string> = {
@@ -76,22 +78,47 @@ function comparator(key: SortKey, dir: SortDir) {
   };
 }
 
-/* ────────────────────── Quick-filter chips ────────────────────── */
+/* ────────────────────── Extended filters ────────────────────── */
 
-type QuickFilter = 'fails' | 'low-score' | 'comm';
+type ScoreBand = 'high' | 'normal' | 'low';
 
-const QUICK_FILTERS: { id: QuickFilter; label: string }[] = [
-  { id: 'fails', label: 'Только провалы' },
-  { id: 'low-score', label: 'Низкий балл (<50)' },
-  { id: 'comm', label: 'Проблемы коммуникации' },
+const SCORE_BAND_OPTIONS: { id: ScoreBand; label: string }[] = [
+  { id: 'high', label: 'Высокий (от 80)' },
+  { id: 'normal', label: 'Нормальный (50–79)' },
+  { id: 'low', label: 'Низкий (до 50)' },
 ];
 
-function matchesQuick(a: AuditListRow, f: QuickFilter): boolean {
-  switch (f) {
-    case 'fails': return a.status === 'failed' || a.status === 'interrupted';
-    case 'low-score': return a.totalScore < 50;
-    case 'comm': return a.communicationFlag !== 'ok';
-  }
+function scoreBand(score: number): ScoreBand {
+  if (score >= 80) return 'high';
+  if (score >= 50) return 'normal';
+  return 'low';
+}
+
+const AUDIT_TYPE_FILTER_OPTIONS = [
+  { value: 'all' as const, label: 'Все типы' },
+  { value: 'trainer' as const, label: 'Тренажёр' },
+  { value: 'call' as const, label: 'Звонок' },
+];
+
+const AUDIT_STATUS_FILTER_OPTIONS = [
+  { value: 'all' as const, label: 'Все статусы' },
+  { value: 'completed' as const, label: 'Завершено' },
+  { value: 'failed' as const, label: 'Провал' },
+  { value: 'interrupted' as const, label: 'Прервано' },
+];
+
+const COMM_ISSUE_LABELS: Record<Exclude<CommunicationFlag, 'ok'>, string> = {
+  fillers: 'Паразиты',
+  aggression: 'Агрессия',
+  profanity: 'Недопустимая лексика',
+  'low-engagement': 'Низкая вовлечённость',
+};
+
+function reportIssuesFromItem(item: AuditItem): string[] {
+  if (item.reportIssues?.length) return item.reportIssues;
+  const flag = item.communicationFlag;
+  if (!flag || flag === 'ok') return [];
+  return [COMM_ISSUE_LABELS[flag]];
 }
 
 /* ────────────────────── Column defs ────────────────────── */
@@ -126,6 +153,7 @@ function auditItemToRow(item: AuditItem): AuditListRow {
     status,
     duration: item.durationSec ?? 0,
     communicationFlag: item.communicationFlag ?? 'ok',
+    reportIssues: reportIssuesFromItem(item),
   };
 }
 
@@ -139,21 +167,26 @@ export function Audits({
   const rows = useMemo(() => audits.map(auditItemToRow), [audits]);
   const allCities = useMemo(() => [...new Set(rows.map((row) => row.city).filter((city) => city && city !== '—'))].sort((a, b) => a.localeCompare(b, 'ru')), [rows]);
   const allDealerships = useMemo(() => [...new Set(rows.map((row) => row.dealershipName).filter((name) => name && name !== 'Без точки'))].sort((a, b) => a.localeCompare(b, 'ru')), [rows]);
+  const allReportIssues = useMemo(
+    () => [...new Set(rows.flatMap((row) => row.reportIssues))].sort((a, b) => a.localeCompare(b, 'ru')),
+    [rows],
+  );
 
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('dateTime');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [quickFilter, setQuickFilter] = useState<QuickFilter | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filterType, setFilterType] = useState<AuditType | 'all'>('all');
   const [filterStatus, setFilterStatus] = useState<AuditStatus | 'all'>('all');
   const [filterCity, setFilterCity] = useState<Set<string>>(new Set());
   const [filterDealership, setFilterDealership] = useState<Set<string>>(new Set());
+  const [filterScoreBands, setFilterScoreBands] = useState<Set<ScoreBand>>(new Set());
+  const [filterProblems, setFilterProblems] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
 
   useEffect(() => {
     setPage(1);
-  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, quickFilter, sortKey, sortDir]);
+  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterScoreBands, filterProblems, sortKey, sortDir]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -167,6 +200,16 @@ export function Audits({
 
   const toggleCity = (c: string) => setFilterCity((p) => { const n = new Set(p); n.has(c) ? n.delete(c) : n.add(c); return n; });
   const toggleDealership = (d: string) => setFilterDealership((p) => { const n = new Set(p); n.has(d) ? n.delete(d) : n.add(d); return n; });
+  const toggleScoreBand = (band: ScoreBand) => setFilterScoreBands((prev) => {
+    const next = new Set(prev);
+    next.has(band) ? next.delete(band) : next.add(band);
+    return next;
+  });
+  const toggleProblem = (issue: string) => setFilterProblems((prev) => {
+    const next = new Set(prev);
+    next.has(issue) ? next.delete(issue) : next.add(issue);
+    return next;
+  });
 
   const filtered = useMemo(() => {
     let list = [...rows];
@@ -184,11 +227,12 @@ export function Audits({
     if (filterStatus !== 'all') list = list.filter((r) => r.status === filterStatus);
     if (filterCity.size > 0) list = list.filter((r) => filterCity.has(r.city));
     if (filterDealership.size > 0) list = list.filter((r) => filterDealership.has(r.dealershipName));
-    if (quickFilter) list = list.filter((r) => matchesQuick(r, quickFilter));
+    if (filterScoreBands.size > 0) list = list.filter((r) => filterScoreBands.has(scoreBand(r.totalScore)));
+    if (filterProblems.size > 0) list = list.filter((r) => r.reportIssues.some((issue) => filterProblems.has(issue)));
 
     list.sort(comparator(sortKey, sortDir));
     return list;
-  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, quickFilter, sortKey, sortDir]);
+  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterScoreBands, filterProblems, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / AUDITS_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -215,59 +259,80 @@ export function Audits({
   return (
     <>
       <h1 className="sa-page-title">Проверки</h1>
-      <p className="sa-page-subtitle">
-        Реальные проверки по звонкам: плановые звонки и будущие звонки тренажёра
-      </p>
 
       <div className="sa-toolbar">
-        <div className="sa-toolbar-row">
-          <div className="sa-search-wrap">
-            <span className="sa-search-icon">🔍</span>
-            <input
-              className="sa-search-input"
-              placeholder="Поиск по сотруднику / точке…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
+        <div className="sa-toolbar-split sa-holdings-toolbar">
+          <div className="sa-toolbar-filters">
+            <div className="sa-search-wrap">
+              <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+              </svg>
+              <input
+                className="sa-search-input"
+                placeholder="Поиск по сотруднику / точке…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
 
-          <select className="sa-select" value={filterType} onChange={(e) => setFilterType(e.target.value as AuditType | 'all')}>
-            <option value="all">Все типы</option>
-            <option value="trainer">Тренажёр</option>
-            <option value="call">Звонок</option>
-          </select>
+            <div className="sa-tag-filter-picker-wrap">
+              <SingleSelectFilterPicker
+                options={AUDIT_TYPE_FILTER_OPTIONS}
+                value={filterType}
+                onChange={setFilterType}
+              />
+            </div>
 
-          <select className="sa-select" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as AuditStatus | 'all')}>
-            <option value="all">Все статусы</option>
-            <option value="completed">Завершено</option>
-            <option value="failed">Провал</option>
-            <option value="interrupted">Прервано</option>
-          </select>
+            <div className="sa-tag-filter-picker-wrap">
+              <SingleSelectFilterPicker
+                options={AUDIT_STATUS_FILTER_OPTIONS}
+                value={filterStatus}
+                onChange={setFilterStatus}
+              />
+            </div>
 
-          <button
-            className={`sa-btn-outline ${showFilters ? 'sa-chip-active' : ''}`}
-            onClick={() => setShowFilters(!showFilters)}
-          >
-            Фильтры {showFilters ? '▲' : '▼'}
-          </button>
-        </div>
-
-        {/* ── Quick chips ── */}
-        <div className="sa-toolbar-chips">
-          {QUICK_FILTERS.map((f) => (
             <button
-              key={f.id}
-              className={`sa-chip ${quickFilter === f.id ? 'sa-chip-active' : ''}`}
-              onClick={() => setQuickFilter(quickFilter === f.id ? null : f.id)}
+              type="button"
+              className={`sa-btn-outline ${showFilters ? 'sa-chip-active' : ''}`}
+              onClick={() => setShowFilters(!showFilters)}
             >
-              {f.label}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+              </svg>
+              Фильтры
             </button>
-          ))}
+          </div>
         </div>
       </div>
 
       {showFilters && (
         <div className="sa-filters-panel">
+          <div className="sa-filter-group">
+            <span className="sa-filter-label">Балл</span>
+            <div className="sa-filter-options">
+              {SCORE_BAND_OPTIONS.map((option) => (
+                <label key={option.id} className="sa-filter-check">
+                  <input type="checkbox" checked={filterScoreBands.has(option.id)} onChange={() => toggleScoreBand(option.id)} />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="sa-filter-group">
+            <span className="sa-filter-label">Проблемы</span>
+            <div className="sa-filter-options">
+              {allReportIssues.length === 0 ? (
+                <span className="sa-meta">Нет зафиксированных проблем в текущей выборке</span>
+              ) : (
+                allReportIssues.map((issue) => (
+                  <label key={issue} className="sa-filter-check">
+                    <input type="checkbox" checked={filterProblems.has(issue)} onChange={() => toggleProblem(issue)} />
+                    {issue}
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
           <div className="sa-filter-group">
             <span className="sa-filter-label">Город</span>
             <div className="sa-filter-options">
@@ -344,7 +409,7 @@ export function Audits({
                     <div className="sa-cell-city">{r.city}</div>
                   </td>
                   <td className="sa-text-right">
-                    <span className={ratingClass(r.totalScore)} style={{ fontSize: 15 }}>{r.totalScore}</span>
+                    <span className={ratingClass(r.totalScore)}>{r.totalScore}</span>
                   </td>
                   <td>
                     <span className={`sa-status-badge ${AUDIT_STATUS_CLASS[r.status]}`}>

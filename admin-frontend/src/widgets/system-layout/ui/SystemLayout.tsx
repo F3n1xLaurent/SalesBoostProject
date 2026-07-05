@@ -22,7 +22,8 @@ import { CallSettingsPage } from '../../../pages/call-settings/ui/CallSettingsPa
 import { Settings } from '../../../pages/settings/ui/SettingsPage';
 import { DealerContent } from '../../../pages/dealer/ui/DealerContent';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
-import { StaffProfileContent, StaffTrainerContent } from '../../../pages/staff/ui/StaffContent';
+import { StaffProfileContent } from '../../../pages/staff/ui/StaffContent';
+import { TrainPage } from '../../../pages/train/ui/TrainPage';
 import type { PlatformSummary, PlatformVoice } from '../../../shared/model/adminPanel';
 import { CallBatchTray } from '../../call-batch-tray/ui/CallBatchTray';
 import {
@@ -308,6 +309,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
         }}
       >
         <div className="super-admin-content">
+          <div key={location.pathname} className="sa-page-enter">
           {backendNotRunning && shouldLoadAuditData && (
             <StatusNotice tone="warning">
               <strong>Нет данных: бэкенд не запущен.</strong>
@@ -493,13 +495,14 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
             <StaffProfileContent />
           )}
           {role === 'staff' && activeTab === 'staff-trainer' && (
-            <StaffTrainerContent />
+            <TrainPage embedded />
           )}
 
           {/* ── Settings (available for all roles) ── */}
           {activeTab === 'settings' && (
             <Settings settings={settings} loading={dataLoading} />
           )}
+          </div>
         </div>
 
         {/* Глобальный трей проверок в правом нижнем углу */}

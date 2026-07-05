@@ -16,6 +16,7 @@ import {
 } from '../../../shared/api/adminPanel';
 import { ratingClass, deltaDisplay } from '../../../shared/lib/admin-panel/utils';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
@@ -42,6 +43,18 @@ const EMPTY_HOLDING_FORM: HoldingFormState = {
   isActive: true,
   dealershipIds: [],
 };
+
+const HOLDING_TYPE_FILTER_OPTIONS = [
+  { value: 'all' as const, label: 'Тип: все' },
+  { value: 'own' as const, label: 'Собственный' },
+  { value: 'franchised' as const, label: 'Франчайзинговый' },
+];
+
+const HOLDING_STATUS_FILTER_OPTIONS = [
+  { value: 'all' as const, label: 'Статус: все' },
+  { value: 'active' as const, label: 'Активный' },
+  { value: 'inactive' as const, label: 'Деактивированный' },
+];
 
 type HoldingSortKey =
   | 'name'
@@ -1004,16 +1017,20 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
               placeholder="Поиск по компании или точке…"
             />
           </div>
-          <select className="sa-select" value={holdingTypeFilter} onChange={(event) => setHoldingTypeFilter(event.target.value as 'all' | HoldingType)}>
-            <option value="all">Тип: все</option>
-            <option value="own">Собственный</option>
-            <option value="franchised">Франчайзинговый</option>
-          </select>
-          <select className="sa-select" value={holdingStatusFilter} onChange={(event) => setHoldingStatusFilter(event.target.value as 'all' | 'active' | 'inactive')}>
-            <option value="all">Статус: все</option>
-            <option value="active">Активный</option>
-            <option value="inactive">Деактивированный</option>
-          </select>
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={HOLDING_TYPE_FILTER_OPTIONS}
+              value={holdingTypeFilter}
+              onChange={setHoldingTypeFilter}
+            />
+          </div>
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={HOLDING_STATUS_FILTER_OPTIONS}
+              value={holdingStatusFilter}
+              onChange={setHoldingStatusFilter}
+            />
+          </div>
           {hasActiveFilters && (
             <button
               type="button"

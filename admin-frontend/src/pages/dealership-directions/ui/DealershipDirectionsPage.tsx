@@ -9,6 +9,7 @@ import {
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 
 type DirectionFormState = {
@@ -361,21 +362,16 @@ export function DealershipDirectionsPage() {
 
       <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
         <div className="sa-toolbar-filters">
-          <select
-            className="sa-select"
+          <HoldingSelectPicker
+            holdings={holdings}
             value={selectedHoldingId}
-            onChange={(event) => {
-              setSelectedHoldingId(event.target.value);
+            onChange={(holdingId) => {
+              setSelectedHoldingId(holdingId);
               setNotice(null);
             }}
             disabled={loading || holdings.length === 0}
-            title="Глобальный фильтр по компаниям"
-          >
-            {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-            {holdings.map((holding) => (
-              <option key={holding.id} value={holding.id}>{holding.name}</option>
-            ))}
-          </select>
+            loading={loading}
+          />
         </div>
         <div className="sa-toolbar-actions">
           <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={openCreate}>

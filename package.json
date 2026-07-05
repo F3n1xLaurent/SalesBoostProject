@@ -44,6 +44,7 @@
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@heroui/react": "^2.8.9",
+    "@ibm/plex": "^6.4.1",
     "@iconify-json/lets-icons": "^1.2.2",
     "@iconify/react": "^6.0.2",
     "@prisma/client": "^5.7.1",

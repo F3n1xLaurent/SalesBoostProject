@@ -9,6 +9,7 @@ import {
   type PhoneNumberTypeItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 
 type TypeFormState = {
@@ -27,12 +28,6 @@ const OWNERSHIP_LABELS: Record<PhoneNumberOwnership, string> = {
   dealership: 'Для точек',
   user: 'Для пользователей',
 };
-
-function holdingSelectWidth(holdings: HoldingItem[]): number {
-  const labels = holdings.length > 0 ? holdings.map((holding) => holding.name) : ['Нет компаний'];
-  const longest = labels.reduce((max, label) => (label.length > max.length ? label : max), '');
-  return Math.ceil(longest.length * 7.5 + 52);
-}
 
 function overlayCardStyle(width = 520): React.CSSProperties {
   return {
@@ -180,8 +175,6 @@ export function TypesNumbersPage() {
     () => items.filter((item) => item.ownership === activeOwnership),
     [items, activeOwnership],
   );
-  const companySelectWidth = useMemo(() => holdingSelectWidth(holdings), [holdings]);
-
   async function loadHoldings() {
     setHoldingsLoading(true);
     setError(null);
@@ -268,20 +261,16 @@ export function TypesNumbersPage() {
 
       <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
         <div className="sa-toolbar-filters">
-          <select
-            className="sa-select"
+          <HoldingSelectPicker
+            holdings={holdings}
             value={selectedHoldingId}
-            onChange={(event) => {
-              setSelectedHoldingId(event.target.value);
+            onChange={(holdingId) => {
+              setSelectedHoldingId(holdingId);
               setNotice(null);
             }}
-            style={{ width: companySelectWidth }}
             disabled={holdingsLoading || holdings.length === 0}
-            title="Глобальный фильтр по компаниям"
-          >
-            {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-            {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
-          </select>
+            loading={holdingsLoading}
+          />
         </div>
         <div className="sa-toolbar-actions">
           <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={() => { setError(null); setCreateOpen(true); }}>

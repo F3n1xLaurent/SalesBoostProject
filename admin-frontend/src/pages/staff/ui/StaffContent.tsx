@@ -5,6 +5,7 @@ import {
   type TrainerProfile,
   type TrainerSessionSummary,
 } from '../../../shared/api/trainer';
+import { BrutalCard } from '../../../shared/ui/brutal-card';
 import {
   Card,
   CardBody,
@@ -95,6 +96,32 @@ function trainerFailureReasonLabel(reason: string | null | undefined) {
   return 'Тренировка досрочно завершена';
 }
 
+function staffScoreClass(score: number): 'sa-score-green' | 'sa-score-orange' | 'sa-score-red' {
+  if (score >= 76) return 'sa-score-green';
+  if (score >= 50) return 'sa-score-orange';
+  return 'sa-score-red';
+}
+
+function staffChartBarClass(score: number): string {
+  if (score >= 76) return 'sa-staff-chart-bar--green';
+  if (score >= 50) return 'sa-staff-chart-bar--orange';
+  return 'sa-staff-chart-bar--red';
+}
+
+function StaffProfileKpi(props: { label: string; value: string; valueClass?: string }) {
+  return (
+    <div className="sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card sa-staff-kpi-card">
+      <div className="sa-kpi-card-top">
+        <div className="sa-kpi-card-heading">{props.label}</div>
+      </div>
+      <div className="sa-kpi-card-spacer" aria-hidden />
+      <div className="sa-kpi-card-bottom">
+        <div className={`sa-kpi-value sa-kpi-value-large ${props.valueClass ?? ''}`.trim()}>{props.value}</div>
+      </div>
+    </div>
+  );
+}
+
 /* ================================================================
    Profile page (statistics)
    ================================================================ */
@@ -164,144 +191,143 @@ export function StaffProfileContent() {
       weaknesses,
     };
   }, [completedHistory.length, profile?.sessionsTotal, scoredHistory]);
-  const scoreColor = (s: number) => s >= 76 ? 'text-success-400' : s >= 50 ? 'text-warning-400' : 'text-danger-400';
+
+  const locationLabel = profile
+    ? [profile.branchName, profile.city].filter(Boolean).join(', ')
+    : null;
 
   return (
-    <div className="space-y-4">
+    <div className="sa-staff-profile-root sa-page-enter">
       {error && (
-        <Card shadow="sm" className="admin-card-light">
-          <CardBody>
-            <p className="text-xs text-danger-400">{error}</p>
-          </CardBody>
-        </Card>
+        <div className="sa-staff-profile-error" role="alert">
+          {error}
+        </div>
       )}
 
-      {/* Profile header */}
-      <Card shadow="sm" className="admin-card-light">
-        <CardBody>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-lg font-semibold">{loading ? 'Загрузка…' : profile?.fullName ?? 'Профиль не найден'}</div>
-              <div className="text-[12px] text-default-500">
-                {profile ? `${profile.branchName}${profile.city ? `, ${profile.city}` : ''} · ${profile.companyName}` : 'Нет данных о сотруднике'}
+      <header className="sa-staff-profile-header">
+        <div className="sa-staff-profile-intro">
+          <h1 className="sa-page-title sa-staff-profile-title">
+            {loading ? 'Загрузка…' : profile?.fullName ?? 'Профиль не найден'}
+          </h1>
+          <p className="sa-staff-profile-meta">
+            {profile
+              ? `${locationLabel ? `${locationLabel} · ` : ''}${profile.companyName}`
+              : 'Нет данных о сотруднике'}
+          </p>
+        </div>
+        <div className="sa-staff-profile-points">
+          <span className="sa-staff-profile-points-label">AI-баллы</span>
+          <span className="sa-kpi-value sa-kpi-value-large">{profile?.totalPoints ?? 0}</span>
+        </div>
+      </header>
+
+      <div className="sa-kpi-grid sa-staff-kpi-grid">
+        <StaffProfileKpi label="Всего тестов" value={String(stats.totalTests)} />
+        <StaffProfileKpi label="Средний балл" value={stats.avgScore.toFixed(1)} valueClass={stats.avgScore ? staffScoreClass(stats.avgScore) : undefined} />
+        <StaffProfileKpi label="Лучший балл" value={String(stats.bestScore)} valueClass={stats.bestScore ? staffScoreClass(stats.bestScore) : undefined} />
+        <StaffProfileKpi label="% прохождения" value={`${stats.passRate}%`} />
+      </div>
+
+      <div className="sa-staff-profile-insights">
+        <BrutalCard title="Лучшие сценарии">
+          {stats.strengths.length === 0 ? (
+            <p className="sa-staff-profile-empty">Появятся после тренировок с высоким баллом.</p>
+          ) : (
+            <ul className="sa-staff-insight-list">
+              {stats.strengths.map((item) => (
+                <li key={item} className="sa-staff-insight-item sa-staff-insight-item--good">
+                  {item}
+                </li>
+              ))}
+            </ul>
+          )}
+        </BrutalCard>
+
+        <BrutalCard title="Зоны роста">
+          {stats.weaknesses.length === 0 ? (
+            <p className="sa-staff-profile-empty">Пока нет сессий ниже проходного порога.</p>
+          ) : (
+            <ul className="sa-staff-insight-list">
+              {stats.weaknesses.map((item) => (
+                <li key={item} className="sa-staff-insight-item sa-staff-insight-item--warn">
+                  {item}
+                </li>
+              ))}
+            </ul>
+          )}
+        </BrutalCard>
+      </div>
+
+      <BrutalCard title="Динамика баллов · последние 10 тестов" className="sa-staff-chart-card">
+        {stats.recentScores.length === 0 ? (
+          <p className="sa-staff-profile-empty">Нет завершённых тренировок с оценкой.</p>
+        ) : (
+          <div className="sa-staff-chart" role="img" aria-label="Динамика баллов за последние тесты">
+            {stats.recentScores.map((score, index) => (
+              <div key={`${score}-${index}`} className="sa-staff-chart-col">
+                <span className="sa-staff-chart-value">{score}</span>
+                <div className="sa-staff-chart-track">
+                  <div
+                    className={`sa-staff-chart-bar ${staffChartBarClass(score)}`}
+                    style={{ height: `${Math.max(12, score)}%` }}
+                  />
+                </div>
               </div>
-            </div>
-            <div className="text-right">
-              <div className="text-[11px] text-default-500">AI‑баллы</div>
-              <div className="text-2xl font-bold">{profile?.totalPoints ?? 0}</div>
-            </div>
+            ))}
           </div>
-        </CardBody>
-      </Card>
+        )}
+      </BrutalCard>
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {[
-          { label: 'Всего тестов', value: String(stats.totalTests), sub: null },
-          { label: 'Средний балл', value: stats.avgScore.toFixed(1), sub: null },
-          { label: 'Лучший балл', value: String(stats.bestScore), sub: null },
-          { label: '% прохождения', value: `${stats.passRate}%`, sub: null },
-        ].map((kpi) => (
-          <Card key={kpi.label} shadow="sm" className="admin-card-light">
-            <CardBody className="text-center py-3">
-              <div className="text-[11px] text-default-500 mb-1">{kpi.label}</div>
-              <div className="text-xl font-bold">{kpi.value}</div>
-            </CardBody>
-          </Card>
-        ))}
-      </div>
-
-      {/* Strengths & Weaknesses */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <Card shadow="sm" className="admin-card-light">
-          <CardBody>
-            <div className="text-sm font-semibold mb-2">✅ Лучшие сценарии</div>
-            <div className="space-y-1">
-              {stats.strengths.length === 0 ? (
-                <div className="text-xs text-default-500">Появятся после тренировок с высоким баллом.</div>
-              ) : stats.strengths.map((s, i) => (
-                <div key={i} className="text-xs text-default-500 flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                  {s}
-                </div>
-              ))}
-            </div>
-          </CardBody>
-        </Card>
-        <Card shadow="sm" className="admin-card-light">
-          <CardBody>
-            <div className="text-sm font-semibold mb-2">⚠️ Зоны роста</div>
-            <div className="space-y-1">
-              {stats.weaknesses.length === 0 ? (
-                <div className="text-xs text-default-500">Пока нет сессий ниже проходного порога.</div>
-              ) : stats.weaknesses.map((w, i) => (
-                <div key={i} className="text-xs text-default-500 flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-                  {w}
-                </div>
-              ))}
-            </div>
-          </CardBody>
-        </Card>
-      </div>
-
-      {/* Recent scores chart */}
-      <Card shadow="sm" className="admin-card-light">
-        <CardBody>
-          <div className="text-sm font-semibold mb-3">Динамика баллов (последние 10 тестов)</div>
-          {stats.recentScores.length === 0 ? (
-            <p className="text-xs text-default-500">Нет завершённых тренировок с оценкой.</p>
-          ) : (
-            <div className="flex items-end gap-2 h-24">
-              {stats.recentScores.map((s, i) => {
-                const pct = Math.max(10, s);
-                const color = s >= 76 ? 'bg-emerald-500' : s >= 50 ? 'bg-amber-500' : 'bg-rose-500';
-                return (
-                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                    <div className="text-[10px] text-default-500">{s}</div>
-                    <div className={`w-full rounded-t ${color}`} style={{ height: `${pct}%` }} />
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardBody>
-      </Card>
-
-      {/* Recent attempts */}
-      <Card shadow="sm" className="admin-card-light">
-        <CardBody>
-          <div className="text-sm font-semibold mb-3">Последние тренировки</div>
-          {loading ? (
-            <p className="text-xs text-default-500">Загрузка…</p>
-          ) : history.length === 0 ? (
-            <p className="text-xs text-default-500">Нет данных о тренировках.</p>
-          ) : (
-            <div className="space-y-2">
-              {history.slice(0, 5).map((a) => {
-                const score = a.score;
-                const sc = score == null ? 'text-default-500' : scoreColor(score);
-                const finishedAt = a.completedAt ?? a.startedAt;
-                const qualityTag = trainerQualityTag(score);
-                return (
-                  <div key={a.id} className="flex items-center justify-between rounded-xl admin-card-inner px-3 py-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium truncate">{a.scenarioName || 'Тренировка'}</div>
-                      <div className="text-[10px] text-default-500">
+      <section className="sa-staff-recent-section">
+        <h2 className="sa-section-title sa-staff-recent-title">Последние тренировки</h2>
+        {loading ? (
+          <p className="sa-staff-profile-empty">Загрузка…</p>
+        ) : history.length === 0 ? (
+          <p className="sa-staff-profile-empty">Нет данных о тренировках.</p>
+        ) : (
+          <div className="sa-companies-table-wrap">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th>Сценарий</th>
+                  <th>Дата</th>
+                  <th>Оценка</th>
+                  <th>Балл</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.slice(0, 5).map((item) => {
+                  const score = item.score;
+                  const finishedAt = item.completedAt ?? item.startedAt;
+                  const qualityTag = trainerQualityTag(score);
+                  return (
+                    <tr key={item.id}>
+                      <td>{item.scenarioName || 'Тренировка'}</td>
+                      <td className="sa-meta">
                         {finishedAt ? new Date(finishedAt).toLocaleDateString('ru-RU') : '—'}
-                        {qualityTag && ` · ${qualityTag}`}
-                      </div>
-                    </div>
-                    <div className={`text-base font-bold ml-3 ${sc}`}>
-                      {score != null ? score.toFixed(0) : 'Н/Д'}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardBody>
-      </Card>
+                      </td>
+                      <td>
+                        {qualityTag ? (
+                          <span className={staffScoreClass(score ?? 0)}>{qualityTag}</span>
+                        ) : (
+                          <span className="sa-meta">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {score != null ? (
+                          <span className={`sa-kpi-value ${staffScoreClass(score)}`}>{score.toFixed(0)}</span>
+                        ) : (
+                          <span className="sa-meta">Н/Д</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

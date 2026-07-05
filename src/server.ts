@@ -641,6 +641,84 @@ function communicationFlagFromSessions(sessions: AnalyticsSession[]): 'ok' | 'fi
   return 'ok';
 }
 
+const AUDIT_CHECKLIST_LABELS: Record<string, string> = {
+  INTRODUCTION: 'Приветствие',
+  SALON_NAME: 'Представление компании / точки',
+  CAR_IDENTIFICATION: 'Уточнение интересующего автомобиля',
+  NEEDS_DISCOVERY: 'Выявление потребностей',
+  INITIATIVE: 'Инициатива менеджера',
+  PRODUCT_PRESENTATION: 'Презентация продукта',
+  CREDIT_EXPLANATION: 'Объяснение кредита / условий',
+  TRADEIN_OFFER: 'Предложение trade-in',
+  OBJECTION_HANDLING: 'Работа с возражениями',
+  NEXT_STEP_PROPOSAL: 'Предложение следующего шага',
+  DATE_FIXATION: 'Фиксация даты / времени',
+  FOLLOW_UP_AGREEMENT: 'Договорённость о контакте',
+  COMMUNICATION_TONE: 'Тон и качество коммуникации',
+};
+
+const AUDIT_ISSUE_LABELS: Record<string, string> = {
+  NO_INTRO: 'Нет корректного приветствия',
+  NO_SALON_NAME: 'Не названа компания / точка',
+  NO_NEEDS_DISCOVERY: 'Не выявлены потребности',
+  WEAK_PRESENTATION: 'Слабая презентация продукта',
+  NO_NEXT_STEP: 'Не предложен следующий шаг',
+  NO_DATE_FIX: 'Не зафиксирована дата / время',
+  WEAK_TRADEIN: 'Слабо раскрыт trade-in',
+  WEAK_CREDIT: 'Слабо объяснены кредитные условия',
+  BAD_TONE: 'Проблема с тоном общения',
+  PASSIVE_STYLE: 'Пассивный стиль ведения диалога',
+  MISINFORMATION: 'Риск неверной информации',
+  REDIRECT_TO_WEBSITE: 'Перевод клиента на сайт вместо помощи',
+  LOW_ENGAGEMENT: 'Низкая вовлечённость',
+  PROFANITY: 'Недопустимая лексика',
+};
+
+const AUDIT_COMM_ISSUE_LABELS: Record<string, string> = {
+  fillers: 'Паразиты',
+  aggression: 'Агрессия',
+  profanity: 'Недопустимая лексика',
+  'low-engagement': 'Низкая вовлечённость',
+};
+
+function extractReportIssuesFromSession(session: { checklistResultsJson: string | null; evaluationJson: string | null }): string[] {
+  const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+  const planCriteria = extractPlanCriteriaEvaluation(evaluation);
+  const rawChecklist = extractChecklistFromSession(session);
+  const issues: string[] = [];
+
+  if (planCriteria) {
+    for (const item of planCriteria.items) {
+      const ratio = item.maxScore > 0 ? item.score / item.maxScore : 0;
+      if (ratio < 0.8) {
+        const label = item.expectedAnswer || 'Провал по критерию скрипта';
+        issues.push(label);
+      }
+    }
+  } else {
+    for (const item of rawChecklist) {
+      const status = String(item.status || '').toUpperCase();
+      if (!['NO', 'PARTIAL'].includes(status)) continue;
+      const label = AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Провальный пункт чек-листа';
+      issues.push(label);
+    }
+  }
+
+  const evalIssues = Array.isArray(evaluation?.issues) ? evaluation.issues as Array<Record<string, unknown>> : [];
+  for (const item of evalIssues) {
+    const label = AUDIT_ISSUE_LABELS[String(item.issue_type || '')]
+      || String(item.recommendation || item.comment || item.issue_type || '').trim();
+    if (label && label !== 'Ошибка') issues.push(label);
+  }
+
+  const commFlag = communicationFlagFromSessions([session as AnalyticsSession]);
+  if (commFlag !== 'ok' && AUDIT_COMM_ISSUE_LABELS[commFlag]) {
+    issues.push(AUDIT_COMM_ISSUE_LABELS[commFlag]);
+  }
+
+  return [...new Set(issues)];
+}
+
 function buildAnalyticsAISummary(input: {
   level: 'network' | 'holding' | 'dealership' | 'manager' | 'comparison';
   name?: string;
@@ -1842,6 +1920,53 @@ async function runTrainerSessionAudioTurn(params: {
   };
 }
 
+async function updateTrainerStreakOnCompletion(employeeId: string, sessionStartedAt: Date): Promise<void> {
+  const today = trainerPlanDate(sessionStartedAt);
+  const yesterday = trainerPlanDate(new Date(sessionStartedAt.getTime() - 24 * 60 * 60 * 1000));
+  const current = await prisma.trainerStreak.findUnique({ where: { employeeId } });
+  const nextCurrent = current?.lastActiveDate === today
+    ? current.currentStreak
+    : current?.lastActiveDate === yesterday
+    ? current.currentStreak + 1
+    : 1;
+  await prisma.trainerStreak.upsert({
+    where: { employeeId },
+    create: {
+      employeeId,
+      currentStreak: nextCurrent,
+      longestStreak: nextCurrent,
+      lastActiveDate: today,
+    },
+    update: {
+      currentStreak: nextCurrent,
+      longestStreak: Math.max(current?.longestStreak ?? 0, nextCurrent),
+      lastActiveDate: today,
+    },
+  });
+}
+
+async function resetTrainerPlanItemForSession(employeeId: string, sessionId: string): Promise<void> {
+  const session = await prisma.trainerSession.findUnique({ where: { id: sessionId } });
+  if (!session || session.sessionType !== 'plan' || session.employeeId !== employeeId) return;
+
+  const planDate = trainerPlanDate(session.startedAt);
+  const plan = await prisma.trainerDailyPlan.findUnique({
+    where: { employeeId_planDate: { employeeId, planDate } },
+  });
+  if (!plan) return;
+
+  const items = safeArray<Record<string, unknown>>(plan.sessionsJson);
+  const nextItems = items.map((item) => (
+    item.trainerSessionId === sessionId && String(item.status) === 'in_progress'
+      ? { ...item, status: 'not_started', trainerSessionId: null }
+      : item
+  ));
+  await prisma.trainerDailyPlan.update({
+    where: { id: plan.id },
+    data: { sessionsJson: jsonStringify(nextItems) },
+  });
+}
+
 async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<void> {
   const session = await prisma.trainerSession.findUnique({
     where: { id: sessionId },
@@ -1890,31 +2015,10 @@ async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<voi
         data: { sessionsJson: jsonStringify(nextItems) },
       });
     }
+  }
 
-    if (session.status === 'completed') {
-      const today = planDate;
-      const yesterday = trainerPlanDate(new Date(session.startedAt.getTime() - 24 * 60 * 60 * 1000));
-      const current = await prisma.trainerStreak.findUnique({ where: { employeeId: session.employeeId } });
-      const nextCurrent = current?.lastActiveDate === today
-        ? current.currentStreak
-        : current?.lastActiveDate === yesterday
-        ? current.currentStreak + 1
-        : 1;
-      await prisma.trainerStreak.upsert({
-        where: { employeeId: session.employeeId },
-        create: {
-          employeeId: session.employeeId,
-          currentStreak: nextCurrent,
-          longestStreak: nextCurrent,
-          lastActiveDate: today,
-        },
-        update: {
-          currentStreak: nextCurrent,
-          longestStreak: Math.max(current?.longestStreak ?? 0, nextCurrent),
-          lastActiveDate: today,
-        },
-      });
-    }
+  if (session.status === 'completed') {
+    await updateTrainerStreakOnCompletion(session.employeeId, session.startedAt);
   }
 }
 
@@ -2608,6 +2712,9 @@ app.post('/api/trainer/session/start', async (req, res) => {
       planItems = safeArray<Record<string, unknown>>(plan?.sessionsJson);
       planItem = planItems.find((item) => item.id === planItemId) ?? planItems.find((item) => item.status === 'not_started') ?? null;
       if (!planItem) return res.status(400).json({ error: 'В плане дня нет доступной сессии.' });
+      if (['completed', 'failed'].includes(String(planItem.status))) {
+        return res.status(400).json({ error: 'Эта задача уже завершена.' });
+      }
       scenarioId = typeof planItem.scenarioId === 'string' ? planItem.scenarioId : scenarioId;
     }
 
@@ -2826,6 +2933,33 @@ app.get('/api/trainer/session/:id/report', async (req, res) => {
   } catch (error) {
     console.error('trainer/session/report error:', error);
     res.status(500).json({ error: 'Не удалось загрузить отчёт тренировки.' });
+  }
+});
+
+app.post('/api/trainer/session/:id/abandon', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const session = await prisma.trainerSession.findFirst({
+      where: { id: String(req.params.id), employeeId: manager.id },
+      include: { scenario: { select: { id: true, name: true } } },
+    });
+    if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+    if (session.status !== 'in_progress') {
+      return res.json({ session: trainerSessionSummary(session) });
+    }
+
+    const updated = await prisma.trainerSession.update({
+      where: { id: session.id },
+      data: { status: 'cancelled', completedAt: new Date() },
+      include: { scenario: { select: { id: true, name: true } } },
+    });
+    await resetTrainerPlanItemForSession(manager.id, session.id);
+    closeElevenLabsAgentConversation(session.id);
+    res.json({ session: trainerSessionSummary(updated) });
+  } catch (error) {
+    console.error('trainer/session/abandon error:', error);
+    res.status(500).json({ error: 'Не удалось прервать тренировку.' });
   }
 });
 
@@ -6205,6 +6339,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         durationSec: s.durationSec ?? 0,
         verdict,
         communicationFlag: communicationFlagFromSessions([s]),
+        reportIssues: extractReportIssuesFromSession(s),
         userName: s.manager?.fullName ?? null,
         detailId: s.id,
         detailType: type,
@@ -6260,37 +6395,8 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       hint: `Средний балл блока «${dimensionLabel(key)}»`,
     })).sort((a, b) => a.score - b.score);
 
-    const checklistLabels: Record<string, string> = {
-      INTRODUCTION: 'Приветствие',
-      SALON_NAME: 'Представление компании / точки',
-      CAR_IDENTIFICATION: 'Уточнение интересующего автомобиля',
-      NEEDS_DISCOVERY: 'Выявление потребностей',
-      INITIATIVE: 'Инициатива менеджера',
-      PRODUCT_PRESENTATION: 'Презентация продукта',
-      CREDIT_EXPLANATION: 'Объяснение кредита / условий',
-      TRADEIN_OFFER: 'Предложение trade-in',
-      OBJECTION_HANDLING: 'Работа с возражениями',
-      NEXT_STEP_PROPOSAL: 'Предложение следующего шага',
-      DATE_FIXATION: 'Фиксация даты / времени',
-      FOLLOW_UP_AGREEMENT: 'Договорённость о контакте',
-      COMMUNICATION_TONE: 'Тон и качество коммуникации',
-    };
-    const issueLabels: Record<string, string> = {
-      NO_INTRO: 'Нет корректного приветствия',
-      NO_SALON_NAME: 'Не названа компания / точка',
-      NO_NEEDS_DISCOVERY: 'Не выявлены потребности',
-      WEAK_PRESENTATION: 'Слабая презентация продукта',
-      NO_NEXT_STEP: 'Не предложен следующий шаг',
-      NO_DATE_FIX: 'Не зафиксирована дата / время',
-      WEAK_TRADEIN: 'Слабо раскрыт trade-in',
-      WEAK_CREDIT: 'Слабо объяснены кредитные условия',
-      BAD_TONE: 'Проблема с тоном общения',
-      PASSIVE_STYLE: 'Пассивный стиль ведения диалога',
-      MISINFORMATION: 'Риск неверной информации',
-      REDIRECT_TO_WEBSITE: 'Перевод клиента на сайт вместо помощи',
-      LOW_ENGAGEMENT: 'Низкая вовлечённость',
-      PROFANITY: 'Недопустимая лексика',
-    };
+    const checklistLabels = AUDIT_CHECKLIST_LABELS;
+    const issueLabels = AUDIT_ISSUE_LABELS;
     const severityScore = (severity: unknown) => {
       const normalized = String(severity || '').toUpperCase();
       if (normalized === 'HIGH') return 100;

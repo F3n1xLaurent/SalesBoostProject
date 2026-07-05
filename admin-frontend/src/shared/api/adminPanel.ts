@@ -104,6 +104,7 @@ export interface AuditItem {
   durationSec?: number | null;
   verdict?: string | null;
   communicationFlag?: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  reportIssues?: string[];
   userName: string | null;
   detailId: number;
   detailType: 'attempt' | 'training' | 'trainer' | 'call';

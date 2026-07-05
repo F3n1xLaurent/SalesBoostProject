@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeImportSource,
   createImportSource,
@@ -22,6 +22,9 @@ import {
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { FilterPickerField } from '../../../shared/ui/filter-picker/FilterPickerField';
+import { FilterPickerMenu } from '../../../shared/ui/filter-picker/FilterPickerMenu';
 
 type WizardStep = 1 | 2 | 3;
 type DataPageTab = 'data' | 'imports';
@@ -70,12 +73,6 @@ function pluralElements(count: number): string {
   if (last === 1) return 'элемент';
   if (last >= 2 && last <= 4) return 'элемента';
   return 'элементов';
-}
-
-function holdingSelectWidth(holdings: HoldingItem[]): number {
-  const labels = holdings.length > 0 ? holdings.map((holding) => holding.name) : ['Нет компаний'];
-  const longest = labels.reduce((max, label) => (label.length > max.length ? label : max), '');
-  return Math.ceil(longest.length * 7.5 + 52);
 }
 
 function filterPickerWidth(labels: string[], min = 120, max = 480): number {
@@ -253,6 +250,7 @@ function MultiSelectFilterPicker(props: {
 }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredOptions = props.options
     .filter((option) => !normalizedQuery || option.label.toLowerCase().includes(normalizedQuery))
@@ -278,36 +276,40 @@ function MultiSelectFilterPicker(props: {
   const isDisabled = props.disabled || props.loading || props.options.length === 0;
 
   return (
-    <div className="sa-tag-filter-picker" style={{ width: pickerWidth }}>
-      <input
-        className="sa-input"
-        value={query}
-        onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => window.setTimeout(() => setOpen(false), 160)}
-        placeholder={props.loading ? (props.loadingPlaceholder || 'Загрузка...') : props.placeholder}
-        disabled={isDisabled}
-      />
-      {open && !props.loading && (
-        <div className="sa-tag-filter-menu">
-          {filteredOptions.length ? filteredOptions.map((option) => {
-            const selected = props.selected.includes(option.value);
-            return (
-              <button
-                key={option.value}
-                type="button"
-                className={`sa-tag-filter-option${selected ? ' sa-tag-filter-option--selected' : ''}`}
-                onMouseDown={(event) => { event.preventDefault(); toggleValue(option.value); }}
-              >
-                <span className="sa-tag-filter-option__label" title={option.label}>{option.label}</span>
-                <input type="checkbox" checked={selected} readOnly tabIndex={-1} aria-hidden="true" />
-              </button>
-            );
-          }) : (
-            <div className="sa-meta" style={{ padding: 10 }}>{props.emptyText || 'Ничего не найдено'}</div>
-          )}
-        </div>
-      )}
+    <div
+      ref={pickerRef}
+      className={`sa-tag-filter-picker${open ? ' sa-tag-filter-picker--open' : ''}`}
+      style={{ width: pickerWidth }}
+    >
+      <FilterPickerField open={open}>
+        <input
+          className="sa-input"
+          value={query}
+          onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 160)}
+          placeholder={props.loading ? (props.loadingPlaceholder || 'Загрузка...') : props.placeholder}
+          disabled={isDisabled}
+        />
+      </FilterPickerField>
+      <FilterPickerMenu open={open && !props.loading} anchorRef={pickerRef}>
+        {filteredOptions.length ? filteredOptions.map((option) => {
+          const selected = props.selected.includes(option.value);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              className={`sa-tag-filter-option${selected ? ' sa-tag-filter-option--selected' : ''}`}
+              onMouseDown={(event) => { event.preventDefault(); toggleValue(option.value); }}
+            >
+              <span className="sa-tag-filter-option__label" title={option.label}>{option.label}</span>
+              <input type="checkbox" checked={selected} readOnly tabIndex={-1} aria-hidden="true" />
+            </button>
+          );
+        }) : (
+          <div className="sa-meta" style={{ padding: 10 }}>{props.emptyText || 'Ничего не найдено'}</div>
+        )}
+      </FilterPickerMenu>
     </div>
   );
 }
@@ -1233,7 +1235,6 @@ export function ImportsPage() {
   const dataTotalPages = Math.max(1, Math.ceil(dataTotal / DATA_PAGE_SIZE));
   const dataPageStart = dataTotal === 0 ? 0 : dataPage * DATA_PAGE_SIZE + 1;
   const dataPageEnd = Math.min(dataTotal, dataPage * DATA_PAGE_SIZE + dataItems.length);
-  const companySelectWidth = useMemo(() => holdingSelectWidth(holdings), [holdings]);
 
   function openDescriptionItem(item: ImportedDataItem) {
     setDescriptionModalItem({
@@ -1255,22 +1256,18 @@ export function ImportsPage() {
           )}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <select
-            className="sa-select"
+          <HoldingSelectPicker
+            holdings={holdings}
             value={selectedHoldingId}
-            onChange={(event) => {
-              setSelectedHoldingId(event.target.value);
+            onChange={(holdingId) => {
+              setSelectedHoldingId(holdingId);
               setSelectedTags([]);
               setSelectedImportIds([]);
               setDataPage(0);
             }}
-            style={{ width: companySelectWidth }}
             disabled={holdingsLoading || holdings.length === 0}
-            title="Глобальный фильтр по компаниям"
-          >
-            {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-            {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
-          </select>
+            loading={holdingsLoading}
+          />
           {activePageTab === 'imports' && (
             <button type="button" className="sa-btn-brutal-3d" disabled={holdings.length === 0} onClick={() => setWizardOpen(true)}>
               Создать импорт

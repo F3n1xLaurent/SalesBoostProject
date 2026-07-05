@@ -17,6 +17,8 @@ import {
 } from '../../../shared/lib/admin-panel/batchUtils';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 
 const API_BASE = '';
 
@@ -71,6 +73,12 @@ function comparator(key: SortKey, dir: SortDir) {
 /* ────────────────────── Period helper ────────────────────── */
 
 type Period = '7d' | '30d' | 'custom';
+
+const PERIOD_FILTER_OPTIONS = [
+  { value: '7d' as const, label: '7 дней' },
+  { value: '30d' as const, label: '30 дней' },
+];
+
 type CompanyRow = DealershipRow & { dealer: string; workingHours: string; type: DealershipType; directions: DealershipDirection[]; isActive: boolean };
 
 function dealershipTypeLabel(type: DealershipType): string {
@@ -557,21 +565,16 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           <h1 className="sa-page-title">Точки</h1>
           <p className="sa-page-subtitle">Управление точками компании и их эффективностью</p>
         </div>
-        <select
-          className="sa-select"
+        <HoldingSelectPicker
+          holdings={holdings}
           value={selectedHoldingId}
-          onChange={(event) => {
-            setSelectedHoldingId(event.target.value);
+          onChange={(holdingId) => {
+            setSelectedHoldingId(holdingId);
             setSelectedComparisonIds([]);
           }}
           disabled={holdingsLoading || holdings.length === 0}
-          style={{ minWidth: 220 }}
-        >
-          {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-          {holdings.map((holding) => (
-            <option key={holding.id} value={holding.id}>{holding.name}</option>
-          ))}
-        </select>
+          loading={holdingsLoading}
+        />
       </div>
       {analyticsLoading && !loading && (
         <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>
@@ -603,11 +606,13 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <select className="sa-select" value={period} onChange={(e) => setPeriod(e.target.value as Period)}>
-            <option value="7d">7 дней</option>
-            <option value="30d">30 дней</option>
-            {/* <option value="custom">Произвольно</option> */}
-          </select>
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={PERIOD_FILTER_OPTIONS}
+              value={period}
+              onChange={(value) => setPeriod(value as Period)}
+            />
+          </div>
           <button className="sa-btn-outline" onClick={() => setShowFilters((v) => !v)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />

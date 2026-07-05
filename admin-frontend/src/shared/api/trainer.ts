@@ -37,6 +37,7 @@ export interface TrainerPlanItem {
   status: 'not_started' | 'in_progress' | 'completed' | 'failed' | string;
   trainerSessionId: string | null;
   caseContextSeed?: string;
+  completedAt?: string | null;
 }
 
 export interface TrainerPlan {
@@ -139,6 +140,13 @@ export async function fetchTrainerReport(id: string): Promise<TrainerReport> {
 
 export async function fetchTrainerDialog(id: string): Promise<{ session: TrainerSessionSummary; caseContext: Record<string, unknown>; transcript: TrainerDialogMessage[] }> {
   return apiJson(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/dialog`);
+}
+
+export async function abandonTrainerSession(id: string): Promise<{ session: TrainerSessionSummary }> {
+  return apiJson(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/abandon`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 export async function sendTrainerVoiceMessage(id: string, payload: {

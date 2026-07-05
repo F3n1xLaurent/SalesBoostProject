@@ -6,10 +6,13 @@ import { tabToPath } from '../../../shared/routing/adminRoutes';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { fetchDashboardOverview, fetchHoldings, type DashboardOverview, type HoldingItem, type TimeSeriesPoint } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 
 const SECTION_GAP = 10;
-const TB_CHART_STROKE = 'var(--primary, #161613)';
-const TB_STATUS_GREEN_RGB = '22, 101, 52';
+/** Neutral chart ink — trend line, duration bars (not score-colored) */
+const TB_CHART_INK = 'var(--tb-ink)';
+/** Matches --tb-status-green (#2D9B5E) — same green as KPI «Дозвон» and tables */
+const TB_STATUS_GREEN_RGB = '45, 155, 94';
 
 type DashboardProps = {
   loading: boolean;
@@ -63,7 +66,7 @@ function KPICard({
         <div className="sa-kpi-card-heading">{label}</div>
         {isInteractive && (
           <span className="sa-kpi-card-link-badge" aria-hidden>
-            <LetsIcon name="arrow-right-light" size={18} bold />
+            <LetsIcon name="arrow-right-long" size={18} strokeWidth={1.5} />
           </span>
         )}
       </div>
@@ -135,8 +138,8 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
       >
         <defs>
           <linearGradient id="trendFillGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={TB_CHART_STROKE} stopOpacity="0.18" />
-            <stop offset="100%" stopColor={TB_CHART_STROKE} stopOpacity="0.02" />
+            <stop offset="0%" stopColor={TB_CHART_INK} stopOpacity="0.18" />
+            <stop offset="100%" stopColor={TB_CHART_INK} stopOpacity="0.02" />
           </linearGradient>
         </defs>
         {[0, 25, 50, 75, 100].map((v) => {
@@ -157,7 +160,7 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
           d={`${pathD} L ${xs[xs.length - 1]} ${padding.top + chartHeight} L ${xs[0]} ${padding.top + chartHeight} Z`}
           fill="url(#trendFillGrad)"
         />
-        <path d={pathD} fill="none" stroke={TB_CHART_STROKE} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={pathD} fill="none" stroke={TB_CHART_INK} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
         {points.map((_, i) => (
           <rect
             key={`hit-${i}`}
@@ -178,8 +181,8 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
             cx={xs[i]}
             cy={ys[i]}
             r={hoverIdx === i ? 6 : 4}
-            fill={hoverIdx === i ? '#fff' : TB_CHART_STROKE}
-            stroke={hoverIdx === i ? TB_CHART_STROKE : 'none'}
+            fill={hoverIdx === i ? '#fff' : TB_CHART_INK}
+            stroke={hoverIdx === i ? TB_CHART_INK : 'none'}
             strokeWidth={hoverIdx === i ? 2.5 : 0}
             style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
           />
@@ -309,8 +312,8 @@ function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: stri
                 width={barW}
                 height={barH}
                 rx={4}
-                fill={TB_CHART_STROKE}
-                opacity={isHover ? 1 : 0.85}
+                fill={TB_CHART_INK}
+                opacity={isHover ? 1 : 0.88}
                 style={{ transition: 'opacity 0.15s ease, fill 0.15s ease' }}
               />
               {isHover && (
@@ -336,10 +339,10 @@ function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: stri
                 const tooltipY = above >= 0 ? above : y + barH + 10;
                 return (
                   <g>
-                    <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="8" fill="#1F2937" opacity="0.92" />
-                    <text x={tooltipX + 10} y={tooltipY + 16} fontSize="11" fill="#F9FAFB" fontWeight="600">{d.name}</text>
-                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="#D1D5DB">Длительность: {d.avgSec} сек</text>
-                    <text x={tooltipX + 10} y={tooltipY + 46} fontSize="11" fill="#D1D5DB">Звонков: {d.totalCalls}</text>
+                    <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="10" fill="var(--tb-ink)" />
+                    <text x={tooltipX + 10} y={tooltipY + 16} fontSize="11" fill="#F1F0EC" fontWeight="600">{d.name}</text>
+                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="rgba(241, 240, 236, 0.78)">Длительность: {d.avgSec} сек</text>
+                    <text x={tooltipX + 10} y={tooltipY + 46} fontSize="11" fill="rgba(241, 240, 236, 0.78)">Звонков: {d.totalCalls}</text>
                   </g>
                 );
               })()}
@@ -412,11 +415,11 @@ function AnsweredMissedDonut({ rate, totalCalls, embedded = false }: { rate: num
           onMouseLeave={() => setHover(null)}
         >
           <svg viewBox="0 0 120 120" className="sa-donut-svg">
-            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--tb-status-red-bg, #FEE2E2)" strokeWidth="14" />
+            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--tb-status-red-bg)" strokeWidth="14" />
             <circle
               cx="60" cy="60" r="52"
               fill="none"
-              stroke={hover === 'missed' ? 'var(--tb-status-red, #B91C1C)' : 'var(--tb-status-green, #166534)'}
+              stroke={hover === 'missed' ? 'var(--tb-status-red)' : 'var(--tb-status-green)'}
               strokeWidth="14"
               strokeDasharray={`${(rate / 100) * 326.73} 326.73`}
               strokeLinecap="round"
@@ -540,23 +543,17 @@ export function Dashboard({ loading }: DashboardProps) {
 
 
   const dashboardHeader = (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
+    <div className="sa-page-header" style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
       <div>
         <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Дашборд</h1>
       </div>
-      <select
-        className="sa-select"
+      <HoldingSelectPicker
+        holdings={holdings}
         value={selectedHoldingId}
-        onChange={(event) => setSelectedHoldingId(event.target.value)}
-        style={{ minWidth: 220 }}
+        onChange={setSelectedHoldingId}
         disabled={holdingsLoading || holdings.length === 0}
-        title="Глобальный фильтр по компаниям"
-      >
-        {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-        {holdings.map((holding) => (
-          <option key={holding.id} value={holding.id}>{holding.name}</option>
-        ))}
-      </select>
+        loading={holdingsLoading}
+      />
     </div>
   );
 
