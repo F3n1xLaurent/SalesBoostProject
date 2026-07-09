@@ -157,6 +157,7 @@ type AnalyticsSession = {
   dealershipId: string | null;
   managerId: string | null;
   manager?: { id: string; fullName: string } | null;
+  dealership?: { type?: string | null; holding?: { type?: string | null } | null } | null;
 };
 
 type ActiveAdminRole = 'super' | 'company' | 'dealer' | 'staff';
@@ -254,6 +255,13 @@ function safeJsonParseLocal<T>(value: string | null | undefined, fallback: T): T
 
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function percent(part: number, total: number): number {
@@ -515,8 +523,23 @@ function analyticsStatus(score: number, answerRate: number | null, calls: number
 }
 
 function scoreFromSessions(sessions: AnalyticsSession[]): number {
-  const scored = sessions.filter((session) => typeof session.totalScore === 'number');
-  return scored.length ? round1(scored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / scored.length) : 0;
+  const scored = sessions
+    .map(scoreFromAnalyticsSession)
+    .filter((score): score is number => typeof score === 'number');
+  return scored.length ? round1(scored.reduce((sum, score) => sum + score, 0) / scored.length) : 0;
+}
+
+function scoreFromAnalyticsSession(session: Pick<AnalyticsSession, 'totalScore' | 'evaluationJson'>): number | null {
+  if (typeof session.totalScore === 'number') return session.totalScore;
+  const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+  const planCriteria = extractPlanCriteriaEvaluation(evaluation);
+  if (planCriteria) return planCriteria.percent;
+  const genericScore = numberOrNull(evaluation?.overall_score_0_100);
+  return genericScore;
+}
+
+function isFranchisedSession(session: Pick<AnalyticsSession, 'dealership'>): boolean {
+  return session.dealership?.type === 'franchised' || session.dealership?.holding?.type === 'franchised';
 }
 
 function answerRateFromSessions(sessions: AnalyticsSession[]): number | null {
@@ -531,10 +554,10 @@ function deltaFromSessions(sessions: AnalyticsSession[]): number | null {
   currentStart.setDate(currentStart.getDate() - 30);
   const previousStart = new Date(now);
   previousStart.setDate(previousStart.getDate() - 60);
-  const current = sessions.filter((session) => typeof session.totalScore === 'number' && session.startedAt >= currentStart);
-  const previous = sessions.filter((session) => typeof session.totalScore === 'number' && session.startedAt >= previousStart && session.startedAt < currentStart);
-  if (!current.length || !previous.length) return null;
-  return Math.round(scoreFromSessions(current) - scoreFromSessions(previous));
+  const current = sessions.filter((session) => typeof scoreFromAnalyticsSession(session) === 'number' && session.startedAt >= currentStart);
+  const previous = sessions.filter((session) => typeof scoreFromAnalyticsSession(session) === 'number' && session.startedAt >= previousStart && session.startedAt < currentStart);
+  if (!current.length) return null;
+  return Math.round(scoreFromSessions(current) - (previous.length ? scoreFromSessions(previous) : 0));
 }
 
 function topIssuesFromSessions(sessions: AnalyticsSession[], limit = 5): { issue: string; percent: number; count: number }[] {
@@ -582,13 +605,14 @@ function timeSeriesFromSessions(sessions: AnalyticsSession[], days = 14): { date
   for (let i = 0; i < days; i++) {
     const date = new Date(start);
     date.setDate(start.getDate() + i);
-    buckets[date.toISOString().slice(0, 10)] = { sum: 0, count: 0 };
+    buckets[localDateKey(date)] = { sum: 0, count: 0 };
   }
   for (const session of sessions) {
-    if (typeof session.totalScore !== 'number') continue;
-    const key = session.startedAt.toISOString().slice(0, 10);
+    const score = scoreFromAnalyticsSession(session);
+    if (typeof score !== 'number') continue;
+    const key = localDateKey(session.startedAt);
     if (!buckets[key]) continue;
-    buckets[key].sum += session.totalScore;
+    buckets[key].sum += score;
     buckets[key].count += 1;
   }
   return Object.entries(buckets).map(([date, value]) => ({
@@ -596,6 +620,56 @@ function timeSeriesFromSessions(sessions: AnalyticsSession[], days = 14): { date
     avgScore: value.count ? Math.round(value.sum / value.count) : 0,
     count: value.count,
   }));
+}
+
+function typeTimeSeriesFromSessions(sessions: AnalyticsSession[], days = 7): {
+  date: string;
+  avgScore: number;
+  count: number;
+  ownScore: number;
+  franchiseScore: number;
+  ownCount: number;
+  franchiseCount: number;
+}[] {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  start.setHours(0, 0, 0, 0);
+  const buckets: Record<string, { ownSum: number; ownCount: number; franchiseSum: number; franchiseCount: number }> = {};
+  for (let i = 0; i < days; i++) {
+    const date = new Date(start);
+    date.setDate(start.getDate() + i);
+    buckets[localDateKey(date)] = { ownSum: 0, ownCount: 0, franchiseSum: 0, franchiseCount: 0 };
+  }
+  for (const session of sessions) {
+    const score = scoreFromAnalyticsSession(session);
+    if (typeof score !== 'number') continue;
+    const key = localDateKey(session.startedAt);
+    const bucket = buckets[key];
+    if (!bucket) continue;
+    if (isFranchisedSession(session)) {
+      bucket.franchiseSum += score;
+      bucket.franchiseCount += 1;
+    } else {
+      bucket.ownSum += score;
+      bucket.ownCount += 1;
+    }
+  }
+  return Object.entries(buckets)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, value]) => {
+      const sum = value.ownSum + value.franchiseSum;
+      const count = value.ownCount + value.franchiseCount;
+      return {
+        date,
+        avgScore: count ? round1(sum / count) : 0,
+        count,
+        ownScore: value.ownCount ? round1(value.ownSum / value.ownCount) : 0,
+        franchiseScore: value.franchiseCount ? round1(value.franchiseSum / value.franchiseCount) : 0,
+        ownCount: value.ownCount,
+        franchiseCount: value.franchiseCount,
+      };
+    });
 }
 
 function weeklyTypeTrendFromSessions(sessions: Array<AnalyticsSession & { dealership?: { type?: string | null } | null }>, weeks = 12): { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[] {
@@ -4174,10 +4248,6 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
   try {
     const holdingId = typeof req.query.holdingId === 'string' ? req.query.holdingId.trim() : '';
     const days = 7;
-    const end = new Date();
-    const start = new Date(end);
-    start.setDate(start.getDate() - (days - 1));
-    start.setHours(0, 0, 0, 0);
 
     const [dealerships, sessions, attempts, trainingSessions] = await Promise.all([
       prisma.dealership.findMany({
@@ -4212,6 +4282,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
           dealershipId: true,
           managerId: true,
           durationSec: true,
+          dealership: { select: { type: true, holding: { select: { type: true } } } },
         },
         orderBy: { startedAt: 'desc' },
       }),
@@ -4247,29 +4318,12 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
     const scoredValues = [
       ...attempts.map((attempt) => attempt.totalScore ?? null),
       ...trainingSessions.map(trainingScore),
-      ...sessions.map((session) => session.totalScore),
+      ...sessions.map(scoreFromAnalyticsSession),
     ].filter((score): score is number => typeof score === 'number');
 
     const avgScore = scoredValues.length
       ? round1(scoredValues.reduce((sum, score) => sum + score, 0) / scoredValues.length)
       : 0;
-
-    const byDay: Record<string, { sum: number; count: number }> = {};
-    for (let i = 0; i < days; i++) {
-      const date = new Date(start);
-      date.setDate(start.getDate() + i);
-      byDay[date.toISOString().slice(0, 10)] = { sum: 0, count: 0 };
-    }
-    const addSeriesScore = (date: Date | null, score: number | null) => {
-      if (!date || typeof score !== 'number') return;
-      const key = date.toISOString().slice(0, 10);
-      if (!byDay[key]) return;
-      byDay[key].sum += score;
-      byDay[key].count += 1;
-    };
-    attempts.forEach((attempt) => addSeriesScore(attempt.finishedAt, attempt.totalScore));
-    trainingSessions.forEach((session) => addSeriesScore(session.completedAt, trainingScore(session)));
-    sessions.forEach((session) => addSeriesScore(session.startedAt, session.totalScore));
 
     const checklistCounts = new Map<string, { count: number; total: number }>();
     for (const session of sessions) {
@@ -4289,7 +4343,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
 
     const dealershipRows = dealerships.map((dealership) => {
       const dealershipSessions = sessions.filter((session) => session.dealershipId === dealership.id);
-      const scored = dealershipSessions.filter((session) => typeof session.totalScore === 'number');
+      const scored = dealershipSessions
+        .map((session) => ({ ...session, resolvedScore: scoreFromAnalyticsSession(session) }))
+        .filter((session) => typeof session.resolvedScore === 'number');
       const durations = dealershipSessions
         .map((session) => session.durationSec)
         .filter((duration): duration is number => typeof duration === 'number' && duration > 0);
@@ -4300,10 +4356,10 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       const currentScored = scored.filter((session) => session.startedAt >= currentStart);
       const previousScored = scored.filter((session) => session.startedAt >= previousStart && session.startedAt < currentStart);
       const currentAvg = currentScored.length
-        ? currentScored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / currentScored.length
+        ? currentScored.reduce((sum, session) => sum + (session.resolvedScore ?? 0), 0) / currentScored.length
         : null;
       const previousAvg = previousScored.length
-        ? previousScored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / previousScored.length
+        ? previousScored.reduce((sum, session) => sum + (session.resolvedScore ?? 0), 0) / previousScored.length
         : null;
       return {
         id: dealership.id,
@@ -4342,13 +4398,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       totalEmployees: dealerships.reduce((sum, dealership) => sum + dealership.managerProfiles.filter((manager) => manager.status === 'active').length, 0),
       answerRate: answerRateFromSessions(sessions) ?? 0,
       totalCalls: sessions.length,
-      timeSeries: Object.entries(byDay)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, value]) => ({
-          date,
-          avgScore: value.count ? round1(value.sum / value.count) : 0,
-          count: value.count,
-        })),
+      timeSeries: typeTimeSeriesFromSessions(sessions, days),
       hourlyAnswerRate,
       answerTimeByCompany: dealershipRows
         .filter((row) => row.avgDurationSec > 0)

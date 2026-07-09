@@ -185,9 +185,10 @@ function normalizePlan(plan: Prisma.CallPlanGetPayload<{}>) {
   };
 }
 
-function normalizePlanCall(call: Prisma.CallPlanCallGetPayload<{}>) {
+function normalizePlanCall(call: Prisma.CallPlanCallGetPayload<{}>, auditId: string | null = null) {
   return {
     id: call.id,
+    auditId,
     planId: call.planId,
     callId: call.callId,
     employeeId: call.employeeId,
@@ -863,7 +864,12 @@ export async function handleListCallPlanCalls(req: Request, res: Response): Prom
       orderBy: { startedAt: 'desc' },
       take: 100,
     });
-    res.json({ items: items.map(normalizePlanCall) });
+    const voiceSessions = await prisma.voiceCallSession.findMany({
+      where: { callId: { in: items.map((item) => item.callId) } },
+      select: { id: true, callId: true },
+    });
+    const auditIds = new Map(voiceSessions.map((session) => [session.callId, `call-${session.id}`]));
+    res.json({ items: items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось загрузить историю прозвона.';
     res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });

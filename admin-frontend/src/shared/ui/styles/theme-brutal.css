@@ -1748,6 +1748,25 @@
   overflow-y: auto;
 }
 
+.theme-brutal .sa-slide-over-backdrop {
+  background: rgba(22, 22, 19, 0.36);
+}
+
+.theme-brutal .sa-slide-over-panel {
+  background: var(--tb-cream);
+  box-shadow: -22px 0 48px rgba(22, 22, 19, 0.18);
+}
+
+.theme-brutal .sa-slide-over-close {
+  background: var(--tb-ink);
+  color: #FFFFFF;
+}
+
+.theme-brutal .sa-slide-over-header {
+  background: #FFFFFF;
+  border-bottom-color: rgba(22, 22, 19, 0.08);
+}
+
 .theme-brutal .sa-modal.sa-modal-medium {
   max-width: min(720px, 100%);
   width: min(720px, 100%);

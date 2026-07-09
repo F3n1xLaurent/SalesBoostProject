@@ -123,12 +123,20 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
   const chartHeight = height - padding.top - padding.bottom;
   const step = points.length <= 1 ? 0 : chartWidth / (points.length - 1);
   const xs = points.map((_, i) => padding.left + i * step);
-  const ys = points.map((p) => padding.top + chartHeight - (p.avgScore / 100) * chartHeight);
-  const pathD = points.map((_, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${ys[i]}`).join(' ');
+  const y = (value: number) => padding.top + chartHeight - (Math.max(0, Math.min(100, value)) / 100) * chartHeight;
+  const ownPathD = points.map((point, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${y(point.ownScore ?? point.avgScore)}`).join(' ');
+  const franchisePathD = points.map((point, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${y(point.franchiseScore ?? point.avgScore)}`).join(' ');
+  const hasTypedSeries = points.some((point) => (point.ownCount ?? 0) > 0 || (point.franchiseCount ?? 0) > 0);
+  const ownColor = 'var(--tb-status-green)';
+  const franchiseColor = 'var(--tb-status-orange)';
 
   return (
     <div className="sa-chart-wrap">
       {!embedded && <h3 className="sa-chart-title">Динамика эффективности</h3>}
+      <div className="sa-chart-legend">
+        <span><i style={{ background: ownColor }} /> Свои салоны</span>
+        <span><i style={{ background: franchiseColor }} /> Салоны франчайзи</span>
+      </div>
       <svg
         width="100%"
         height={height}
@@ -138,8 +146,8 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
       >
         <defs>
           <linearGradient id="trendFillGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={TB_CHART_INK} stopOpacity="0.18" />
-            <stop offset="100%" stopColor={TB_CHART_INK} stopOpacity="0.02" />
+            <stop offset="0%" stopColor={ownColor} stopOpacity="0.12" />
+            <stop offset="100%" stopColor={ownColor} stopOpacity="0.02" />
           </linearGradient>
         </defs>
         {[0, 25, 50, 75, 100].map((v) => {
@@ -156,11 +164,14 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
             {p.date.slice(5)}
           </text>
         ))}
-        <path
-          d={`${pathD} L ${xs[xs.length - 1]} ${padding.top + chartHeight} L ${xs[0]} ${padding.top + chartHeight} Z`}
-          fill="url(#trendFillGrad)"
-        />
-        <path d={pathD} fill="none" stroke={TB_CHART_INK} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        {hasTypedSeries && (
+          <path
+            d={`${ownPathD} L ${xs[xs.length - 1]} ${padding.top + chartHeight} L ${xs[0]} ${padding.top + chartHeight} Z`}
+            fill="url(#trendFillGrad)"
+          />
+        )}
+        <path d={ownPathD} fill="none" stroke={ownColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={franchisePathD} fill="none" stroke={franchiseColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
         {points.map((_, i) => (
           <rect
             key={`hit-${i}`}
@@ -175,32 +186,48 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
         {hoverIdx !== null && (
           <line x1={xs[hoverIdx]} y1={padding.top} x2={xs[hoverIdx]} y2={padding.top + chartHeight} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.4" />
         )}
-        {points.map((p, i) => (
-          <circle
-            key={p.date}
-            cx={xs[i]}
-            cy={ys[i]}
-            r={hoverIdx === i ? 6 : 4}
-            fill={hoverIdx === i ? '#fff' : TB_CHART_INK}
-            stroke={hoverIdx === i ? TB_CHART_INK : 'none'}
-            strokeWidth={hoverIdx === i ? 2.5 : 0}
-            style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
-          />
-        ))}
+        {points.map((p, i) => {
+          const ownScore = p.ownScore ?? p.avgScore;
+          const franchiseScore = p.franchiseScore ?? p.avgScore;
+          return (
+            <React.Fragment key={p.date}>
+              <circle
+                cx={xs[i]}
+                cy={y(ownScore)}
+                r={hoverIdx === i ? 5.5 : 4}
+                fill={hoverIdx === i ? '#fff' : ownColor}
+                stroke={ownColor}
+                strokeWidth={hoverIdx === i ? 2.5 : 0}
+                style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
+              />
+              <circle
+                cx={xs[i]}
+                cy={y(franchiseScore)}
+                r={hoverIdx === i ? 5.5 : 4}
+                fill={hoverIdx === i ? '#fff' : franchiseColor}
+                stroke={franchiseColor}
+                strokeWidth={hoverIdx === i ? 2.5 : 0}
+                style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
+              />
+            </React.Fragment>
+          );
+        })}
         {hoverIdx !== null && (() => {
           const p = points[hoverIdx];
           const tx = xs[hoverIdx];
-          const ty = ys[hoverIdx];
-          const tooltipW = 150;
-          const tooltipH = 62;
+          const ownScore = p.ownScore ?? p.avgScore;
+          const franchiseScore = p.franchiseScore ?? p.avgScore;
+          const ty = Math.min(y(ownScore), y(franchiseScore));
+          const tooltipW = 178;
+          const tooltipH = 76;
           const tooltipX = Math.min(Math.max(tx - tooltipW / 2, 4), width - tooltipW - 4);
           const tooltipY = ty - tooltipH - 14;
           return (
             <g>
               <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="8" fill="#1F2937" opacity="0.92" />
               <text x={tooltipX + 12} y={tooltipY + 18} fontSize="11" fill="#D1D5DB">Дата: {p.date}</text>
-              <text x={tooltipX + 12} y={tooltipY + 34} fontSize="11" fill="#F9FAFB" fontWeight="600">Средний балл: {p.avgScore.toFixed(1)}</text>
-              <text x={tooltipX + 12} y={tooltipY + 50} fontSize="11" fill="#D1D5DB">Проверок: {p.count}</text>
+              <text x={tooltipX + 12} y={tooltipY + 38} fontSize="11" fill="#F9FAFB" fontWeight="600">Свои: {ownScore.toFixed(1)} ({p.ownCount ?? p.count})</text>
+              <text x={tooltipX + 12} y={tooltipY + 58} fontSize="11" fill="#F9FAFB" fontWeight="600">Франчайзи: {franchiseScore.toFixed(1)} ({p.franchiseCount ?? p.count})</text>
             </g>
           );
         })()}

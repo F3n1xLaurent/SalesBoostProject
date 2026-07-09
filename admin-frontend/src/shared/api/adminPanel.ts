@@ -172,6 +172,10 @@ export interface TimeSeriesPoint {
   date: string;
   avgScore: number;
   count: number;
+  ownScore?: number;
+  franchiseScore?: number;
+  ownCount?: number;
+  franchiseCount?: number;
 }
 
 export type AnalyticsImpact = 'high' | 'medium' | 'low';
@@ -740,6 +744,7 @@ export interface CallPlanPromptPreview {
 
 export interface CallPlanCallItem {
   id: string;
+  auditId: string | null;
   planId: string;
   callId: string;
   employeeId: string | null;

@@ -9,6 +9,7 @@ import {
   deleteCallCustomerProfile,
   deleteCallCustomerVoice,
   deleteCallScript,
+  fetchAuditDetail,
   fetchCallPlanOptions,
   fetchCallPlans,
   fetchCallPlanCalls,
@@ -38,6 +39,7 @@ import {
   type CallScriptSuccessCriterion,
   type CustomerPatience,
   type CustomerTemperament,
+  type AuditDetailItem,
   type HoldingItem,
   type ReplyLength,
 } from '../../../shared/api/adminPanel';
@@ -46,6 +48,8 @@ import { $auth } from '../../../entities/session';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { ModalPortal } from '../../../shared/ui/ModalPortal';
+import { SlideOver } from '../../../shared/ui/slide-over';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 
 type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
 type CallSettingsRoute =
@@ -1423,7 +1427,10 @@ export function CallSettingsPage() {
   const [selectedPlan, setSelectedPlan] = useState<CallPlan | null>(null);
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
-  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+  const [analyticsDrawerOpen, setAnalyticsDrawerOpen] = useState(false);
+  const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
+  const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
+  const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
   const canManageVoices = auth.status === 'authenticated' && auth.user.allowedRoles.includes('super');
 
   useEffect(() => {
@@ -1520,13 +1527,13 @@ export function CallSettingsPage() {
       setPlanEditorOpen(false);
       setSelectedPlan(null);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       return;
     }
     if (route.create) {
       setSelectedPlan(null);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       setPlanEditorOpen(true);
       return;
     }
@@ -1534,7 +1541,7 @@ export function CallSettingsPage() {
     if (!route.planId) {
       setSelectedPlan(null);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       return;
     }
     const plan = plans.find((item) => item.id === route.planId);
@@ -1548,7 +1555,7 @@ export function CallSettingsPage() {
     if (route.edit) {
       setSelectedPlan(plan);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       setPlanEditorOpen(true);
       return;
     }
@@ -1716,7 +1723,6 @@ export function CallSettingsPage() {
   async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean }) {
     if (!options?.skipNavigate) navigate(`/call-settings/plans/${encodeURIComponent(plan.id)}`);
     setSelectedPlan(plan);
-    setExpandedCallId(null);
     setPlanCallsLoading(true);
     try {
       setPlanCalls(await fetchCallPlanCalls(plan.id));
@@ -1724,6 +1730,31 @@ export function CallSettingsPage() {
       setError(historyError instanceof Error ? historyError.message : 'Не удалось загрузить историю прозвона.');
     } finally {
       setPlanCallsLoading(false);
+    }
+  }
+
+  function closeAnalyticsDrawer() {
+    setAnalyticsDrawerOpen(false);
+    setAnalyticsDrawerLoading(false);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerDetail(null);
+  }
+
+  async function openCallAnalyticsDrawer(call: CallPlanCallItem) {
+    setAnalyticsDrawerOpen(true);
+    setAnalyticsDrawerLoading(true);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerDetail(null);
+    try {
+      if (!call.auditId) {
+        throw new Error('Аналитика ещё не готова: у звонка пока нет связанной проверки.');
+      }
+      const detail = await fetchAuditDetail(call.auditId);
+      setAnalyticsDrawerDetail(detail);
+    } catch (loadError) {
+      setAnalyticsDrawerError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить аналитику звонка.');
+    } finally {
+      setAnalyticsDrawerLoading(false);
     }
   }
 
@@ -1867,143 +1898,37 @@ export function CallSettingsPage() {
                 <tbody>
                   {planCalls.map((call) => {
                     const analytics = getEvaluationSummary(call.evaluation);
-                    const expanded = expandedCallId === call.id;
                     const score = call.totalScore ?? analytics.overallScore;
                     return (
-                      <React.Fragment key={call.id}>
-                        <tr>
-                          <td>
-                            <strong>{call.employeeName || 'Сотрудник'}</strong>
-                            <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
-                            {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
-                          </td>
-                          <td>
-                            <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
-                          </td>
-                          <td>{call.phone}</td>
-                          <td>{call.outcome || call.status}</td>
-                          <td>
-                            {score != null ? Math.round(score) : '—'}
-                            {analytics.planPercent != null && <div className="sa-meta" style={{ marginTop: 4 }}>Условия: {Math.round(analytics.planPercent)}%</div>}
-                          </td>
-                          <td>
-                            <div>{new Date(call.startedAt).toLocaleString('ru-RU')}</div>
-                            <button
-                              type="button"
-                              className="sa-link-button"
-                              onClick={() => setExpandedCallId(expanded ? null : call.id)}
-                              style={{ padding: 0, border: 0, background: 'transparent', color: 'var(--sa-accent)', fontWeight: 700, cursor: 'pointer', marginTop: 6 }}
-                            >
-                              {expanded ? 'Скрыть аналитику' : 'Показать аналитику'}
-                            </button>
-                          </td>
-                        </tr>
-                        {expanded && (
-                          <tr>
-                            <td colSpan={6} style={{ background: '#f8fafc', padding: 16 }}>
-                              <div style={{ display: 'grid', gap: 14 }}>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">ID обзвона</div>
-                                    <code style={{ display: 'block', marginTop: 6, fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
-                                  </div>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">Общая оценка</div>
-                                    <strong style={{ fontSize: 22 }}>{score != null ? `${Math.round(score)} / 100` : 'Нет оценки'}</strong>
-                                  </div>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">Условия успеха</div>
-                                    <strong style={{ fontSize: 22 }}>
-                                      {analytics.planPercent != null ? `${Math.round(analytics.planPercent)}%` : 'Нет данных'}
-                                    </strong>
-                                    {analytics.planTotal != null && analytics.planMax != null && (
-                                      <div className="sa-meta" style={{ marginTop: 4 }}>{analytics.planTotal} из {analytics.planMax} баллов</div>
-                                    )}
-                                  </div>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">Транскрипт</div>
-                                    <strong style={{ fontSize: 22 }}>{call.transcript.length}</strong>
-                                    <div className="sa-meta" style={{ marginTop: 4 }}>реплик</div>
-                                  </div>
-                                </div>
-
-                                {analytics.summary && (
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta" style={{ marginBottom: 6 }}>Краткий вывод</div>
-                                    <div style={{ fontSize: 14, lineHeight: 1.5 }}>{analytics.summary}</div>
-                                  </div>
-                                )}
-
-                                {analytics.criteriaItems.length > 0 && (
-                                  <div className="sa-card" style={{ padding: 12, display: 'grid', gap: 10 }}>
-                                    <div style={{ fontWeight: 700 }}>Оценка условий успеха</div>
-                                    {analytics.criteriaItems.map((item, index) => {
-                                      const expected = asText(item.expectedAnswer);
-                                      const evidence = asText(item.evidence);
-                                      const rawMaxScore = asNumber(item.maxScore) ?? 0;
-                                      const rawItemScore = asNumber(item.score) ?? 0;
-                                      const maxScore = Math.max(0, rawMaxScore);
-                                      const itemScore = Math.max(0, Math.min(maxScore, rawItemScore));
-                                      return (
-                                        <div key={`${expected}-${index}`} style={{ borderTop: index === 0 ? 0 : '1px solid var(--sa-divider)', paddingTop: index === 0 ? 0 : 10 }}>
-                                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
-                                            <div style={{ fontWeight: 600 }}>{expected || `Критерий ${index + 1}`}</div>
-                                            <span className="sa-chip">{itemScore} / {maxScore}</span>
-                                          </div>
-                                          {evidence && <div className="sa-meta" style={{ marginTop: 5, lineHeight: 1.45 }}>{evidence}</div>}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-
-                                {(analytics.strengths.length > 0 || analytics.issues.length > 0 || analytics.recommendations.length > 0) && (
-                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
-                                    {analytics.strengths.length > 0 && (
-                                      <div className="sa-card" style={{ padding: 12 }}>
-                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Сильные стороны</div>
-                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
-                                          {analytics.strengths.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
-                                        </ul>
-                                      </div>
-                                    )}
-                                    {analytics.issues.length > 0 && (
-                                      <div className="sa-card" style={{ padding: 12 }}>
-                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Что просело</div>
-                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
-                                          {analytics.issues.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
-                                        </ul>
-                                      </div>
-                                    )}
-                                    {analytics.recommendations.length > 0 && (
-                                      <div className="sa-card" style={{ padding: 12 }}>
-                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Рекомендации</div>
-                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
-                                          {analytics.recommendations.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
-                                        </ul>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {call.transcript.length > 0 && (
-                                  <div className="sa-card" style={{ padding: 12, display: 'grid', gap: 8 }}>
-                                    <div style={{ fontWeight: 700 }}>Транскрипт</div>
-                                    <div style={{ display: 'grid', gap: 8, maxHeight: 300, overflow: 'auto' }}>
-                                      {call.transcript.map((turn, index) => (
-                                        <div key={`${turn.role}-${index}`} style={{ display: 'grid', gap: 3 }}>
-                                          <span className="sa-meta">{turn.role === 'client' ? 'Клиент' : 'Сотрудник'}</span>
-                                          <div style={{ fontSize: 13, lineHeight: 1.45 }}>{turn.text}</div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
+                      <tr key={call.id}>
+                        <td>
+                          <strong>{call.employeeName || 'Сотрудник'}</strong>
+                          <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
+                          {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
+                        </td>
+                        <td>
+                          <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
+                        </td>
+                        <td>{call.phone}</td>
+                        <td>{call.outcome || call.status}</td>
+                        <td>
+                          {score != null ? Math.round(score) : '—'}
+                          {analytics.planPercent != null && <div className="sa-meta" style={{ marginTop: 4 }}>Условия: {Math.round(analytics.planPercent)}%</div>}
+                        </td>
+                        <td>
+                          <div>{new Date(call.startedAt).toLocaleString('ru-RU')}</div>
+                          <button
+                            type="button"
+                            className="sa-link-button"
+                            onClick={() => void openCallAnalyticsDrawer(call)}
+                            disabled={!call.auditId}
+                            title={!call.auditId ? 'Аналитика появится после создания проверки по звонку' : undefined}
+                            style={{ padding: 0, border: 0, background: 'transparent', color: call.auditId ? 'var(--sa-accent)' : 'var(--sa-text-secondary)', fontWeight: 700, cursor: call.auditId ? 'pointer' : 'not-allowed', marginTop: 6 }}
+                          >
+                            Показать аналитику
+                          </button>
+                        </td>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -2011,6 +1936,23 @@ export function CallSettingsPage() {
             </div>
           )}
         </section>
+        <SlideOver open={analyticsDrawerOpen} title="Аналитика звонка" width="xl" onClose={closeAnalyticsDrawer}>
+          {analyticsDrawerLoading ? (
+            <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка аналитики...</div>
+          ) : analyticsDrawerError ? (
+            <div className="sa-card" style={{ padding: 20 }}>
+              <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть аналитику</div>
+              <div className="sa-meta" style={{ marginTop: 8 }}>{analyticsDrawerError}</div>
+            </div>
+          ) : analyticsDrawerDetail ? (
+            <AuditAnalyticsReport
+              detail={analyticsDrawerDetail}
+              onOpenEmployee={(employeeId) => navigate(`/users/${encodeURIComponent(employeeId)}`)}
+            />
+          ) : (
+            <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите звонок.</div>
+          )}
+        </SlideOver>
       </div>
     );
   }
