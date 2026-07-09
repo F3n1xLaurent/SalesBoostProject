@@ -137,6 +137,35 @@ export interface AuditDetailItem {
   scenarioName: string | null;
   assignedBy: string | null;
   failReason: string | null;
+  unifiedReport: {
+    version: 'call-report-v1';
+    source: 'call';
+    summary: string;
+    totalScore: number;
+    verdict: 'Хорошо' | 'Средне' | 'Плохо';
+    categories: Array<{ name: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация'; score: number; comment: string }>;
+    strengths: string[];
+    weaknesses: string[];
+    keyFindings: Array<{
+      problemTitle: string;
+      importance: 'Критично' | 'Важно' | 'Средне';
+      category: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация';
+      quote: string;
+      comment: string;
+      betterExample: string;
+    }>;
+    dialog: Array<{
+      role: 'client' | 'manager';
+      text: string;
+      mark: 'positive' | 'normal' | 'negative' | null;
+      comment: string | null;
+    }>;
+    recommendations: Array<{
+      text: string;
+      category: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация';
+      problemTitle: string | null;
+    }>;
+  } | null;
 }
 
 export interface TimeSeriesPoint {

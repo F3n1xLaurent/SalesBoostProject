@@ -1688,6 +1688,44 @@
   border-bottom-color: var(--tb-ink);
 }
 
+.theme-brutal .sa-call-report-meta span,
+.theme-brutal .sa-call-report-category,
+.theme-brutal .sa-call-report-finding,
+.theme-brutal .sa-call-report-turn {
+  border-color: rgba(22, 22, 19, 0.08);
+}
+
+.theme-brutal .sa-call-report-score-main,
+.theme-brutal .sa-call-report-category,
+.theme-brutal .sa-call-report-finding {
+  background: rgba(22, 22, 19, 0.03);
+}
+
+.theme-brutal .sa-call-report-finding blockquote {
+  background: #FFFFFF;
+  border-left-color: var(--tb-ink);
+}
+
+.theme-brutal .sa-call-report-score-main--good,
+.theme-brutal .sa-call-report-mark--good {
+  background: var(--tb-status-green-bg);
+  color: var(--tb-status-green);
+}
+
+.theme-brutal .sa-call-report-score-main--mid,
+.theme-brutal .sa-call-report-mark--normal,
+.theme-brutal .sa-call-report-priority--important {
+  background: var(--tb-status-orange-bg);
+  color: var(--tb-status-orange);
+}
+
+.theme-brutal .sa-call-report-score-main--bad,
+.theme-brutal .sa-call-report-mark--bad,
+.theme-brutal .sa-call-report-priority--critical {
+  background: var(--tb-status-red-bg);
+  color: var(--tb-status-red);
+}
+
 .theme-brutal .sa-modal-overlay {
   background: rgba(22, 22, 19, 0.32);
   z-index: 1300;

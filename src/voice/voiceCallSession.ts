@@ -12,6 +12,7 @@ import { getDefaultState } from '../state/defaultState';
 import { evaluateSessionV2 } from '../llm/evaluatorV2';
 import { getTranscriptFromVoxLog } from './voxLogTranscript';
 import { buildConversationPairs, generateCallSummary, generateReplyImprovements } from './callSummary';
+import { generateUnifiedCallReport } from './unifiedCallReport';
 
 export type VoxWebhookEvent = 'progress' | 'connected' | 'disconnected' | 'failed' | 'busy' | 'no_answer';
 
@@ -351,6 +352,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
     // ---- Extended call summary (team-summary style) + per-answer improvements ----
     let callSummary: unknown = null;
     let replyImprovements: unknown = null;
+    let unifiedCallReport: unknown = null;
     try {
       const checklist = Array.isArray((evaluation as any).checklist) ? (evaluation as any).checklist : [];
       const issues = Array.isArray((evaluation as any).issues) ? (evaluation as any).issues : [];
@@ -380,10 +382,26 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       console.warn('[voice/session] callSummary generation failed:', err instanceof Error ? err.message : err);
     }
 
+    try {
+      unifiedCallReport = await generateUnifiedCallReport({
+        transcript,
+        outcome,
+        totalScore: evaluation.overall_score_0_100 ?? null,
+        evaluation: {
+          ...evaluation,
+          call_summary: callSummary,
+          reply_improvements: replyImprovements,
+        },
+      });
+    } catch (err) {
+      console.warn('[voice/session] unified call report generation failed:', err instanceof Error ? err.message : err);
+    }
+
     const evaluationJson = JSON.stringify({
       ...evaluation,
       call_summary: callSummary,
       reply_improvements: replyImprovements,
+      unified_call_report: unifiedCallReport,
       plan_criteria: await evaluatePlanCriteria(callId, transcript),
     });
     const evaluationForPlan = JSON.parse(evaluationJson);

@@ -18,6 +18,7 @@ import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession } from './voice/voiceCallSession';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
+import { generateUnifiedCallReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
 import {
   cancelCallBatch,
   createCallBatch,
@@ -6379,7 +6380,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
     });
     if (!session) return res.status(404).json({ error: 'Audit not found' });
 
-    const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+    let evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
     const planCriteria = extractPlanCriteriaEvaluation(evaluation);
     const score = scoreFromEvaluation(evaluation, session.totalScore);
     const type = session.source === 'trainer' || session.scenario === 'trainer' || session.scenario === 'training' ? 'trainer' as const : 'call' as const;
@@ -6506,6 +6507,37 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       ...(session.failureReason ? [{ time: '00:00', label: session.failureReason, type: 'error' as const }] : []),
     ];
 
+    const reportTranscript = transcriptRaw
+      .map((line) => ({
+        role: (line.role === 'manager' || line.role === 'assistant' ? 'manager' : 'client') as 'manager' | 'client',
+        text: String(line.text || line.content || '').trim(),
+      }))
+      .filter((line) => line.text);
+    let unifiedReport = normalizeUnifiedCallReport(
+      evaluation?.unified_call_report,
+      { totalScore: score, transcript: reportTranscript },
+    );
+    if (!unifiedReport && type === 'call' && evaluation && reportTranscript.length >= 2) {
+      try {
+        unifiedReport = await generateUnifiedCallReport({
+          transcript: reportTranscript,
+          outcome: session.outcome,
+          totalScore: score,
+          evaluation,
+        });
+        evaluation = {
+          ...evaluation,
+          unified_call_report: unifiedReport,
+        };
+        await prisma.voiceCallSession.update({
+          where: { id: session.id },
+          data: { evaluationJson: JSON.stringify(evaluation) },
+        });
+      } catch (reportError) {
+        console.warn('admin/audits/:id unified report generation failed:', reportError instanceof Error ? reportError.message : reportError);
+      }
+    }
+
     res.json({
       item: {
         id: `call-${session.id}`,
@@ -6534,6 +6566,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         scenarioName: type === 'trainer' ? session.scenario ?? session.plan?.name ?? null : null,
         assignedBy: null,
         failReason: session.failureReason,
+        unifiedReport,
       },
     });
   } catch (err) {
