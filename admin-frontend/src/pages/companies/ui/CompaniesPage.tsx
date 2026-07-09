@@ -259,11 +259,24 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   }, [directionOptions]);
   const availableDirectionFilters = useMemo(() => {
     const used = new Set(rows.flatMap((row) => row.directions));
-    return [...used].map((value) => ({
-      value,
-      label: directionLabelByValue.get(value) || value,
-    })).sort((a, b) => a.label.localeCompare(b.label, 'ru'));
-  }, [directionLabelByValue, rows]);
+    const filters = directionOptions.map((direction) => {
+      const value = used.has(direction.id)
+        ? direction.id
+        : direction.code && used.has(direction.code)
+          ? direction.code
+          : direction.code || direction.id;
+      return { value, label: direction.name };
+    });
+    const knownValues = new Set(
+      directionOptions.flatMap((direction) => [direction.id, direction.code].filter(Boolean) as string[]),
+    );
+    for (const value of used) {
+      if (!knownValues.has(value)) {
+        filters.push({ value, label: directionLabelByValue.get(value) || value });
+      }
+    }
+    return filters.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+  }, [directionLabelByValue, directionOptions, rows]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -429,11 +442,20 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
 
   useEffect(() => {
     let cancelled = false;
-    fetchDealershipDirections({ active: true })
+    if (!selectedHoldingId) {
+      setDirectionOptions([]);
+      setDirectionFilter([]);
+      return () => { cancelled = true; };
+    }
+    fetchDealershipDirections({ holdingId: selectedHoldingId, active: true })
       .then((items) => { if (!cancelled) setDirectionOptions(items); })
       .catch(() => { if (!cancelled) setDirectionOptions([]); });
     return () => { cancelled = true; };
-  }, []);
+  }, [selectedHoldingId]);
+
+  useEffect(() => {
+    setDirectionFilter([]);
+  }, [selectedHoldingId]);
 
   useEffect(() => {
     if (!activeBatchId) return;
@@ -621,23 +643,6 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           </button>
           <button className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => setCreateDealershipOpen(true)}>
             Создать точку
-          </button>
-          <button
-            className="sa-btn-danger"
-            onClick={handleStartAllChecks}
-            disabled={startingBatch || hasActiveManual || !selectedHoldingId}
-            title={hasActiveManual ? 'Уже есть активная ручная проверка — управляйте ею в трее проверок.' : !selectedHoldingId ? 'Сначала добавьте компанию' : undefined}
-          >
-            <span className="sa-btn-danger-dot" />
-            {startingBatch ? 'Запуск...' : 'Проверить все точки'}
-          </button>
-          <button
-            className="sa-btn-outline"
-            onClick={handleStartLocalTest}
-            disabled={startingBatch || hasActiveManual || !selectedHoldingId}
-            title={hasActiveManual ? 'Уже есть активная ручная проверка — управляйте ею в трее проверок.' : !selectedHoldingId ? 'Сначала добавьте компанию' : undefined}
-          >
-            Тестовый прогон (без звонков)
           </button>
         </div>
         <div className="sa-toolbar-chips">

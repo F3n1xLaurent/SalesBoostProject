@@ -189,6 +189,21 @@ model CallCustomerVoice {
   @@map("call_customer_voices")
 }
 
+model CallReportProblem {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  title     String
+  category  String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@index([category])
+  @@map("call_report_problem_catalog")
+}
+
 model CallScript {
   id                  String   @id @default(cuid())
   holdingId           String

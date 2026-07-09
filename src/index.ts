@@ -14,6 +14,7 @@ import { registerManagerMessageHandlers } from './bot';
 import { isTtsEnabled } from './voice/tts';
 import { resolveVoiceCallUrls } from './voice/startVoiceCall';
 import { seedCityDictionaryIfNeeded } from './data/cityDictionary';
+import { seedCallReportProblemCatalog } from './voice/problemCatalog';
 
 const bot = new Telegraf(config.botToken);
 
@@ -281,6 +282,10 @@ async function seedIfNeeded() {
   const seededCities = await seedCityDictionaryIfNeeded(prisma);
   if (seededCities > 0) {
     console.log(`Seeded city dictionary with ${seededCities} cities.`);
+  }
+  const syncedProblems = await seedCallReportProblemCatalog(prisma);
+  if (syncedProblems > 0) {
+    console.log(`Synced call report problem catalog with ${syncedProblems} items.`);
   }
 
   const existingTest = await prisma.test.findFirst({

@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { SYSTEM_PERMISSION_TEMPLATES } from '../src/auth/permissions';
 import { seedCityDictionaryIfNeeded } from '../src/data/cityDictionary';
+import { seedCallReportProblemCatalog } from '../src/voice/problemCatalog';
 
 const prisma = new PrismaClient();
 
@@ -13,6 +14,9 @@ async function main() {
   } else {
     console.log('City dictionary is already complete, skipping seed.');
   }
+
+  const syncedProblems = await seedCallReportProblemCatalog(prisma);
+  console.log(`Synced call report problem catalog with ${syncedProblems} items.`);
 
   await Promise.all(
     SYSTEM_PERMISSION_TEMPLATES.map((template) =>

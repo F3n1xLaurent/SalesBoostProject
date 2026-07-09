@@ -686,6 +686,7 @@ function buildCallPlanRealtimePrompt(input: {
   profile: Prisma.CallCustomerProfileGetPayload<{}> | null;
   importedItem: Prisma.ImportedItemGetPayload<{}> | null;
   customerVoiceName?: string | null;
+  holding: Pick<Prisma.HoldingGetPayload<{}>, 'name' | 'description'>;
 }) {
   const profile = input.profile;
   const importedItem = input.importedItem;
@@ -720,6 +721,10 @@ function buildCallPlanRealtimePrompt(input: {
     'Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ сотруднику компании по конкретному предложению/данным из выборки. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы, отрабатывает возражения и доводит до следующего шага.',
     'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы по предложению, условиям, деталям и следующему шагу.',
     '',
+    '=== ИНФОРМАЦИЯ О КОМПАНИИ ===',
+    `Название компании: ${input.holding.name}`,
+    `Описание компании: ${input.holding.description?.trim() || 'Описание не указано.'}`,
+    '',
     scenarioCore,
     '',
     '=== ЗАВЕРШЕНИЕ ДИАЛОГА ===',
@@ -747,6 +752,8 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
     await assertCanAccessPlan(req, id);
     const plan = await prisma.callPlan.findUnique({ where: { id } });
     if (!plan) throw new Error('План прозвона не найден.');
+    const holding = await prisma.holding.findUnique({ where: { id: plan.holdingId }, select: { name: true, description: true } });
+    if (!holding) throw new Error('Компания плана не найдена.');
     const script = await prisma.callScript.findFirst({ where: { id: plan.scriptId, holdingId: plan.holdingId } });
     if (!script) throw new Error('Скрипт плана не найден.');
     const targets = await buildCallPlanTargets(plan);
@@ -760,7 +767,7 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
     const importedItem = await pickImportedSampleForScript(script);
     const customerVoice = await resolveCustomerVoiceForProfile(profile);
     const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
-    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null });
+    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null, holding });
     const result = await startVoiceCall(target.phoneNumber.phone, {
       scenario: 'realtime_pure',
       instructions: prompt,
@@ -828,6 +835,8 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
     await assertCanAccessPlan(req, id);
     const plan = await prisma.callPlan.findUnique({ where: { id } });
     if (!plan) throw new Error('План прозвона не найден.');
+    const holding = await prisma.holding.findUnique({ where: { id: plan.holdingId }, select: { name: true, description: true } });
+    if (!holding) throw new Error('Компания плана не найдена.');
     const script = await prisma.callScript.findFirst({ where: { id: plan.scriptId, holdingId: plan.holdingId } });
     if (!script) throw new Error('Скрипт плана не найден.');
     const profileIds = safeJsonParse<string[]>(script.profileIdsJson, []);
@@ -837,7 +846,7 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
     const profile = pickRandom(profiles);
     const importedItem = await pickImportedSampleForScript(script);
     const customerVoice = await resolveCustomerVoiceForProfile(profile);
-    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null });
+    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null, holding });
     res.json({
       prompt,
       profile: profile ? normalizeProfile(profile) : null,

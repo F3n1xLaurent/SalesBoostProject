@@ -20,6 +20,12 @@ import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
 import { generateUnifiedCallReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
 import {
+  DEFAULT_CALL_REPORT_PROBLEMS,
+  getCallReportProblemCatalog,
+  seedCallReportProblemCatalog,
+  type ProblemCatalogItem,
+} from './voice/problemCatalog';
+import {
   cancelCallBatch,
   createCallBatch,
   getCallBatch,
@@ -560,11 +566,54 @@ function deltaFromSessions(sessions: AnalyticsSession[]): number | null {
   return Math.round(scoreFromSessions(current) - (previous.length ? scoreFromSessions(previous) : 0));
 }
 
-function topIssuesFromSessions(sessions: AnalyticsSession[], limit = 5): { issue: string; percent: number; count: number }[] {
+const CHECKLIST_PROBLEM_CODE_MAP: Record<string, string> = {
+  INTRODUCTION: 'NO_INTRO_COMPANY',
+  SALON_NAME: 'NO_INTRO_COMPANY',
+  CAR_IDENTIFICATION: 'NO_KEY_PARAMS',
+  NEEDS_DISCOVERY: 'NO_NEEDS_DISCOVERY',
+  INITIATIVE: 'PASSIVE_STYLE',
+  PRODUCT_PRESENTATION: 'WEAK_BENEFIT_PRESENTATION',
+  CREDIT_EXPLANATION: 'WEAK_BENEFIT_PRESENTATION',
+  TRADEIN_OFFER: 'WEAK_BENEFIT_PRESENTATION',
+  OBJECTION_HANDLING: 'WEAK_OBJECTION_HANDLING',
+  NEXT_STEP_PROPOSAL: 'NO_NEXT_STEP',
+  DATE_FIXATION: 'NO_CONCRETE_NEXT_STEP',
+  FOLLOW_UP_AGREEMENT: 'NO_CONCRETE_NEXT_STEP',
+  COMMUNICATION_TONE: 'BAD_TONE',
+};
+
+const ISSUE_PROBLEM_CODE_MAP: Record<string, string> = {
+  NO_INTRO: 'NO_INTRO_COMPANY',
+  NO_SALON_NAME: 'NO_INTRO_COMPANY',
+  NO_NEEDS_DISCOVERY: 'NO_NEEDS_DISCOVERY',
+  WEAK_PRESENTATION: 'WEAK_BENEFIT_PRESENTATION',
+  NO_NEXT_STEP: 'NO_NEXT_STEP',
+  NO_DATE_FIX: 'NO_CONCRETE_NEXT_STEP',
+  WEAK_TRADEIN: 'WEAK_BENEFIT_PRESENTATION',
+  WEAK_CREDIT: 'WEAK_BENEFIT_PRESENTATION',
+  BAD_TONE: 'BAD_TONE',
+  PASSIVE_STYLE: 'PASSIVE_STYLE',
+  MISINFORMATION: 'PRODUCT_MISINFORMATION',
+  REDIRECT_TO_WEBSITE: 'CRITICAL_VIOLATION',
+  LOW_ENGAGEMENT: 'PASSIVE_STYLE',
+  PROFANITY: 'CRITICAL_VIOLATION',
+};
+
+function problemTitleByCode(catalog: ProblemCatalogItem[], code: string | undefined, fallback: string): string {
+  const problemCode = code ? CHECKLIST_PROBLEM_CODE_MAP[code] ?? ISSUE_PROBLEM_CODE_MAP[code] : undefined;
+  return catalog.find((problem) => problem.code === problemCode)?.title || fallback;
+}
+
+function topIssuesFromSessions(
+  sessions: AnalyticsSession[],
+  limit = 5,
+  catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
+): { issue: string; percent: number; count: number }[] {
   const counts = new Map<string, { no: number; total: number }>();
   for (const session of sessions) {
     for (const item of extractChecklistFromSession(session)) {
-      const key = item.comment || item.code || 'Неизвестный блок';
+      const fallback = item.comment || item.code || 'Неизвестный блок';
+      const key = problemTitleByCode(catalog, item.code, fallback);
       const current = counts.get(key) ?? { no: 0, total: 0 };
       current.total += 1;
       if (String(item.status).toUpperCase() === 'NO') current.no += 1;
@@ -756,7 +805,10 @@ const AUDIT_COMM_ISSUE_LABELS: Record<string, string> = {
   'low-engagement': 'Низкая вовлечённость',
 };
 
-function extractReportIssuesFromSession(session: { checklistResultsJson: string | null; evaluationJson: string | null }): string[] {
+function extractReportIssuesFromSession(
+  session: { checklistResultsJson: string | null; evaluationJson: string | null },
+  catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
+): string[] {
   const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
   const planCriteria = extractPlanCriteriaEvaluation(evaluation);
   const rawChecklist = extractChecklistFromSession(session);
@@ -774,15 +826,18 @@ function extractReportIssuesFromSession(session: { checklistResultsJson: string 
     for (const item of rawChecklist) {
       const status = String(item.status || '').toUpperCase();
       if (!['NO', 'PARTIAL'].includes(status)) continue;
-      const label = AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Провальный пункт чек-листа';
+      const fallback = AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Провальный пункт чек-листа';
+      const label = problemTitleByCode(catalog, item.code, fallback);
       issues.push(label);
     }
   }
 
   const evalIssues = Array.isArray(evaluation?.issues) ? evaluation.issues as Array<Record<string, unknown>> : [];
   for (const item of evalIssues) {
-    const label = AUDIT_ISSUE_LABELS[String(item.issue_type || '')]
+    const issueType = String(item.issue_type || '');
+    const fallback = AUDIT_ISSUE_LABELS[issueType]
       || String(item.recommendation || item.comment || item.issue_type || '').trim();
+    const label = problemTitleByCode(catalog, issueType, fallback);
     if (label && label !== 'Ошибка') issues.push(label);
   }
 
@@ -2758,6 +2813,7 @@ app.get('/api/trainer/history', async (req, res) => {
       orderBy: { startedAt: 'desc' },
       take: limit,
     });
+    const catalog = await getCallReportProblemCatalog(prisma);
     res.json({ items: sessions.map(trainerSessionSummary) });
   } catch (error) {
     console.error('trainer/history error:', error);
@@ -5594,7 +5650,7 @@ app.get('/api/admin/analytics/dealerships', async (_req, res) => {
 
 app.get('/api/admin/analytics/holdings', async (_req, res) => {
   try {
-    const [holdings, sessions] = await Promise.all([
+    const [holdings, sessions, catalog] = await Promise.all([
       prisma.holding.findMany({
         where: { isActive: true },
         include: { dealerships: true },
@@ -5614,6 +5670,7 @@ app.get('/api/admin/analytics/holdings', async (_req, res) => {
           managerId: true,
         },
       }),
+      getCallReportProblemCatalog(prisma),
     ]);
 
     const items = holdings.map((holding) => {
@@ -5636,7 +5693,7 @@ app.get('/api/admin/analytics/holdings', async (_req, res) => {
         calls: holdingSessions.length,
         noAnswers: holdingSessions.filter((session) => session.outcome === 'no_answer').length,
         lowDealerships: dealershipScores.filter((item) => item.calls > 0 && item.score < 50).length,
-        topProblem: topIssuesFromSessions(holdingSessions, 1)[0]?.issue ?? null,
+        topProblem: topIssuesFromSessions(holdingSessions, 1, catalog)[0]?.issue ?? null,
       };
     });
     res.json({ items });
@@ -5673,10 +5730,11 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
           orderBy: { startedAt: 'desc' },
         })
       : [];
+    const catalog = await getCallReportProblemCatalog(prisma);
 
     const score = scoreFromSessions(sessions);
     const noAnswers = sessions.filter((session) => session.outcome === 'no_answer').length;
-    const topIssues = topIssuesFromSessions(sessions);
+    const topIssues = topIssuesFromSessions(sessions, 5, catalog);
     const scriptCompliance = dimensionBreakdownFromSessions(sessions).map((item) => ({
       block: item.block,
       rate: item.score,
@@ -6354,6 +6412,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
       orderBy: { startedAt: 'desc' },
       take: limit,
     });
+    const catalog = await getCallReportProblemCatalog(prisma);
 
     const auditFromCall = (s: typeof voiceSessions[number]) => {
       let score = s.totalScore ?? 0;
@@ -6390,7 +6449,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         durationSec: s.durationSec ?? 0,
         verdict,
         communicationFlag: communicationFlagFromSessions([s]),
-        reportIssues: extractReportIssuesFromSession(s),
+        reportIssues: extractReportIssuesFromSession(s, catalog),
         userName: s.manager?.fullName ?? null,
         detailId: s.id,
         detailType: type,

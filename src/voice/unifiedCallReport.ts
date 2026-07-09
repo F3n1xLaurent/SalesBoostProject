@@ -1,6 +1,13 @@
 import { config } from '../config';
+import { prisma } from '../db';
 import { openai } from '../lib/openaiClient';
 import type { TranscriptTurn } from './callHistory';
+import {
+  DEFAULT_CALL_REPORT_PROBLEMS,
+  getCallReportProblemCatalog,
+  problemByTitle,
+  type ProblemCatalogItem,
+} from './problemCatalog';
 
 export type UnifiedReportCategory = 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация';
 export type UnifiedFindingImportance = 'Критично' | 'Важно' | 'Средне';
@@ -58,24 +65,7 @@ export const UNIFIED_REPORT_CATEGORIES: UnifiedReportCategory[] = [
   'Коммуникация',
 ];
 
-export const UNIFIED_REPORT_PROBLEMS: Array<{ title: string; category: UnifiedReportCategory }> = [
-  { title: 'Не представился / не назвал компанию', category: 'Контакт' },
-  { title: 'Не уточнил / не подтвердил имя клиента', category: 'Контакт' },
-  { title: 'Не открыл диалог грамотно после приветствия (сухо передал слово клиенту, не задал открывающий вопрос)', category: 'Контакт' },
-  { title: 'Не выявил потребности клиента (поверхностные вопросы)', category: 'Диагностика' },
-  { title: 'Не уточнил ключевые параметры (город, бюджет, сроки и т.п.)', category: 'Диагностика' },
-  { title: 'Слабое знание характеристик / фактическая ошибка (дезинформация)', category: 'Продукт' },
-  { title: 'Презентация не структурирована, нет акцента на выгодах', category: 'Продукт' },
-  { title: 'Ушёл от вопроса клиента / не дал прямого ответа', category: 'Продукт' },
-  { title: 'Не отработал возражение / отработал слабо', category: 'Закрытие' },
-  { title: 'Не предложил следующий шаг', category: 'Закрытие' },
-  { title: 'Следующий шаг без конкретики (нет даты/времени)', category: 'Закрытие' },
-  { title: 'Пассивный стиль, низкая вовлечённость', category: 'Коммуникация' },
-  { title: 'Грубый / неуважительный тон', category: 'Коммуникация' },
-  { title: 'Монолог, не даёт клиенту говорить', category: 'Коммуникация' },
-  { title: 'Перебивает клиента', category: 'Коммуникация' },
-  { title: 'Критическое нарушение (мат / дезинформация / редирект на сайт вместо работы с клиентом)', category: 'Коммуникация' },
-];
+export const UNIFIED_REPORT_PROBLEMS = DEFAULT_CALL_REPORT_PROBLEMS;
 
 function clampScore(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value);
@@ -99,13 +89,6 @@ function arrayOfText(value: unknown, limit: number): string[] {
     : [];
 }
 
-function problemByTitle(title: unknown) {
-  const normalized = asText(title).toLowerCase();
-  return UNIFIED_REPORT_PROBLEMS.find((problem) => problem.title.toLowerCase() === normalized)
-    ?? UNIFIED_REPORT_PROBLEMS.find((problem) => normalized.includes(problem.title.toLowerCase()) || problem.title.toLowerCase().includes(normalized))
-    ?? null;
-}
-
 function normalizeCategory(value: unknown, fallback: UnifiedReportCategory): UnifiedReportCategory {
   const text = asText(value);
   return UNIFIED_REPORT_CATEGORIES.includes(text as UnifiedReportCategory)
@@ -123,7 +106,11 @@ function normalizeMark(value: unknown): UnifiedDialogMark {
   return text === 'positive' || text === 'negative' || text === 'normal' ? text : 'normal';
 }
 
-export function normalizeUnifiedCallReport(value: unknown, fallback: { totalScore: number; transcript: TranscriptTurn[] }): UnifiedCallReport | null {
+export function normalizeUnifiedCallReport(
+  value: unknown,
+  fallback: { totalScore: number; transcript: TranscriptTurn[] },
+  catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
+): UnifiedCallReport | null {
   if (!value || typeof value !== 'object') return null;
   const source = value as Record<string, unknown>;
   const totalScore = clampScore(source.totalScore ?? fallback.totalScore);
@@ -140,7 +127,7 @@ export function normalizeUnifiedCallReport(value: unknown, fallback: { totalScor
   const findings = (Array.isArray(source.keyFindings) ? source.keyFindings : [])
     .map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-      const problem = problemByTitle(raw.problemTitle);
+      const problem = problemByTitle(catalog, raw.problemTitle);
       if (!problem) return null;
       return {
         problemTitle: problem.title,
@@ -171,7 +158,7 @@ export function normalizeUnifiedCallReport(value: unknown, fallback: { totalScor
   const recommendations = (Array.isArray(source.recommendations) ? source.recommendations : [])
     .map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-      const problem = raw.problemTitle ? problemByTitle(raw.problemTitle) : null;
+      const problem = raw.problemTitle ? problemByTitle(catalog, raw.problemTitle) : null;
       return {
         text: asText(raw.text || item),
         category: normalizeCategory(raw.category, problem?.category ?? 'Коммуникация'),
@@ -203,7 +190,8 @@ export async function generateUnifiedCallReport(input: {
   evaluation: EvaluationInput;
 }): Promise<UnifiedCallReport> {
   const totalScore = clampScore(input.totalScore ?? input.evaluation.overall_score_0_100 ?? 0);
-  const problemCatalog = UNIFIED_REPORT_PROBLEMS
+  const catalog = await getCallReportProblemCatalog(prisma);
+  const problemCatalog = catalog
     .map((problem, index) => `${index + 1}. ${problem.category} — ${problem.title}`)
     .join('\n');
   const transcriptText = input.transcript
@@ -246,7 +234,7 @@ export async function generateUnifiedCallReport(input: {
       strengths: ['короткий буллет без цитат'],
       weaknesses: ['короткий буллет без цитат'],
       keyFindings: [{
-        problemTitle: UNIFIED_REPORT_PROBLEMS[0].title,
+        problemTitle: catalog[0]?.title ?? DEFAULT_CALL_REPORT_PROBLEMS[0].title,
         importance: 'Важно',
         category: 'Контакт',
         quote: 'цитата',
@@ -259,7 +247,7 @@ export async function generateUnifiedCallReport(input: {
         mark: turn.role === 'manager' ? 'normal' : null,
         comment: turn.role === 'manager' ? 'короткий комментарий' : null,
       })),
-      recommendations: [{ text: 'конкретное действие', category: 'Контакт', problemTitle: UNIFIED_REPORT_PROBLEMS[0].title }],
+      recommendations: [{ text: 'конкретное действие', category: 'Контакт', problemTitle: catalog[0]?.title ?? DEFAULT_CALL_REPORT_PROBLEMS[0].title }],
     }, null, 2),
   ].join('\n');
 
@@ -277,7 +265,7 @@ export async function generateUnifiedCallReport(input: {
   const content = response.choices[0]?.message?.content?.trim();
   if (!content) throw new Error('Empty unified call report response');
   const parsed = JSON.parse(content) as unknown;
-  const normalized = normalizeUnifiedCallReport(parsed, { totalScore, transcript: input.transcript });
+  const normalized = normalizeUnifiedCallReport(parsed, { totalScore, transcript: input.transcript }, catalog);
   if (!normalized) throw new Error('Invalid unified call report JSON');
   return normalized;
 }
