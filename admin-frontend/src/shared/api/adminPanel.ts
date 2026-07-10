@@ -147,7 +147,7 @@ export interface AuditDetailItem {
   failReason: string | null;
   unifiedReport: {
     version: 'call-report-v1';
-    source: 'call';
+    source: 'call' | 'trainer';
     summary: string;
     totalScore: number;
     verdict: 'Хорошо' | 'Средне' | 'Плохо';
@@ -384,7 +384,7 @@ export interface AnalyticsManagerDetail {
   topIssues: { issue: string; percent: number }[];
   topQuestions: string[];
   recommendedTrainings: { title: string; description: string }[];
-  audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string }>;
+  audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string; outcome?: string | null }>;
   noAnswerHistory?: Array<{ id: string; date: string; planName: string | null; verdict: string }>;
   trainer?: {
     totalPoints: number;

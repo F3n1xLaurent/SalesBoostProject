@@ -277,9 +277,9 @@ function roleDescription(role: string): string {
 
 function defaultTemplateNameForRole(role: string): string | null {
   if (role === 'platform_superadmin') return 'Суперадмин платформы';
-  if (role === 'holding_admin') return 'Администратор компании';
-  if (role === 'dealership_admin') return 'Администратор точки';
-  if (role === 'manager') return 'Менеджер точки';
+  if (role === 'holding_admin') return 'Администратор холдинга';
+  if (role === 'dealership_admin') return 'Администратор автосалона';
+  if (role === 'manager') return 'Менеджер автосалона';
   return null;
 }
 
@@ -636,11 +636,15 @@ function CreateUserModal(props: {
   }
 
   useEffect(() => {
-    if (!props.open || !props.canManageTemplates || form.templateIds.length > 0) return;
+    if (!props.open || !props.canManageTemplates) return;
     const firstRole = props.canManageGlobalUsers ? form.memberships[0]?.role : 'manager';
     const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
-    if (templateId) setForm((current) => ({ ...current, templateIds: [templateId] }));
-  }, [props.canManageGlobalUsers, props.canManageTemplates, props.open, props.templates, form.memberships, form.templateIds.length]);
+    setForm((current) => {
+      const nextTemplateIds = templateId ? [templateId] : [];
+      if (current.templateIds[0] === nextTemplateIds[0] && current.templateIds.length === nextTemplateIds.length) return current;
+      return { ...current, templateIds: nextTemplateIds };
+    });
+  }, [props.canManageGlobalUsers, props.canManageTemplates, props.open, props.templates, form.memberships]);
 
   function updateMembership(index: number, patch: Partial<MembershipForm>) {
     setForm((current) => ({
@@ -763,23 +767,7 @@ function CreateUserModal(props: {
               );
             })}
           </div>
-          {props.canManageGlobalUsers && (
-            <button type="button" className="sa-btn-text" style={{ marginTop: 10 }} onClick={() => setForm((current) => ({ ...current, memberships: [...current.memberships, { role: 'manager', holdingId: '', dealershipId: '' }] }))}>
-              + Добавить ещё назначение
-            </button>
-          )}
         </div>
-        {props.canManageTemplates && (
-          <div className="sa-card" style={{ padding: 12 }}>
-            <SearchableSelect
-              label="Шаблон прав"
-              value={form.templateIds[0] || ''}
-              options={templateOptions}
-              placeholder="Выберите шаблон прав"
-              onChange={(value) => setForm((current) => ({ ...current, templateIds: value ? [value] : [] }))}
-            />
-          </div>
-        )}
         <button type="submit" className="sa-btn-primary" disabled={props.saving}>
           {props.saving ? 'Сохраняем...' : 'Создать пользователя'}
         </button>

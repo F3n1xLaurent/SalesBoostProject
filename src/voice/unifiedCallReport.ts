@@ -15,7 +15,7 @@ export type UnifiedDialogMark = 'positive' | 'normal' | 'negative';
 
 export type UnifiedCallReport = {
   version: 'call-report-v1';
-  source: 'call';
+  source: 'call' | 'trainer';
   summary: string;
   totalScore: number;
   verdict: 'Хорошо' | 'Средне' | 'Плохо';
@@ -108,7 +108,7 @@ function normalizeMark(value: unknown): UnifiedDialogMark {
 
 export function normalizeUnifiedCallReport(
   value: unknown,
-  fallback: { totalScore: number; transcript: TranscriptTurn[] },
+  fallback: { totalScore: number; transcript: TranscriptTurn[]; source?: UnifiedCallReport['source'] },
   catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
 ): UnifiedCallReport | null {
   if (!value || typeof value !== 'object') return null;
@@ -170,7 +170,7 @@ export function normalizeUnifiedCallReport(
 
   return {
     version: 'call-report-v1',
-    source: 'call',
+    source: source.source === 'trainer' || fallback.source === 'trainer' ? 'trainer' : 'call',
     summary: asText(source.summary) || 'Резюме разговора не сформировано.',
     totalScore,
     verdict: unifiedVerdict(totalScore),
@@ -188,7 +188,10 @@ export async function generateUnifiedCallReport(input: {
   outcome: string | null;
   totalScore: number | null;
   evaluation: EvaluationInput;
+  source?: UnifiedCallReport['source'];
+  scenarioName?: string | null;
 }): Promise<UnifiedCallReport> {
+  const source = input.source ?? 'call';
   const totalScore = clampScore(input.totalScore ?? input.evaluation.overall_score_0_100 ?? 0);
   const catalog = await getCallReportProblemCatalog(prisma);
   const problemCatalog = catalog
@@ -199,11 +202,15 @@ export async function generateUnifiedCallReport(input: {
     .join('\n');
 
   const prompt = [
-    'Сформируй единый отчёт по звонку тайного покупателя строго по ТЗ. Верни ТОЛЬКО валидный JSON.',
+    source === 'trainer'
+      ? 'Сформируй единый отчёт по тренировочной сессии менеджера строго в том же формате, что и отчёт по звонку. Верни ТОЛЬКО валидный JSON.'
+      : 'Сформируй единый отчёт по звонку тайного покупателя строго по ТЗ. Верни ТОЛЬКО валидный JSON.',
     '',
     'Правила:',
     '- Логика скоринга уже рассчитана, не переоценивай с нуля. Используй totalScore, evaluation.dimension_scores, checklist и issues как источник.',
-    '- Отчёт только по звонку, не по тренировке.',
+    source === 'trainer'
+      ? '- Отчёт по тренировке: оценивай поведение менеджера в диалоге с виртуальным клиентом, но структуру отчёта сохраняй такой же, как для звонка.'
+      : '- Отчёт только по звонку, не по тренировке.',
     '- Общий балл 0-100 и verdict: Хорошо для 76-100, Средне для 50-75, Плохо для 0-49.',
     '- categories должны быть ровно 5 и только: Контакт, Диагностика, Продукт, Закрытие, Коммуникация.',
     '- keyFindings: problemTitle выбирай ТОЛЬКО из справочника ниже. Нельзя придумывать новые названия проблем.',
@@ -216,7 +223,9 @@ export async function generateUnifiedCallReport(input: {
     'Справочник проблем:',
     problemCatalog,
     '',
-    `Исход звонка: ${input.outcome ?? '—'}`,
+    source === 'trainer'
+      ? `Сценарий тренировки: ${input.scenarioName ?? '—'}`
+      : `Исход звонка: ${input.outcome ?? '—'}`,
     `Итоговый балл: ${totalScore}/100`,
     '',
     `Evaluation JSON:\n${JSON.stringify(input.evaluation).slice(0, 12000)}`,
@@ -226,7 +235,7 @@ export async function generateUnifiedCallReport(input: {
     'Верни JSON строго по схеме:',
     JSON.stringify({
       version: 'call-report-v1',
-      source: 'call',
+      source,
       summary: '2-3 предложения, общее впечатление от разговора простым языком',
       totalScore,
       verdict: unifiedVerdict(totalScore),
@@ -263,9 +272,25 @@ export async function generateUnifiedCallReport(input: {
   });
 
   const content = response.choices[0]?.message?.content?.trim();
-  if (!content) throw new Error('Empty unified call report response');
+  if (!content) throw new Error('Empty unified report response');
   const parsed = JSON.parse(content) as unknown;
-  const normalized = normalizeUnifiedCallReport(parsed, { totalScore, transcript: input.transcript }, catalog);
-  if (!normalized) throw new Error('Invalid unified call report JSON');
+  const normalized = normalizeUnifiedCallReport(parsed, { totalScore, transcript: input.transcript, source }, catalog);
+  if (!normalized) throw new Error('Invalid unified report JSON');
   return normalized;
+}
+
+export async function generateUnifiedTrainerReport(input: {
+  transcript: TranscriptTurn[];
+  totalScore: number | null;
+  evaluation: EvaluationInput;
+  scenarioName?: string | null;
+}): Promise<UnifiedCallReport> {
+  return generateUnifiedCallReport({
+    transcript: input.transcript,
+    outcome: 'trainer',
+    totalScore: input.totalScore,
+    evaluation: input.evaluation,
+    source: 'trainer',
+    scenarioName: input.scenarioName,
+  });
 }
