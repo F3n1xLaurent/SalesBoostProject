@@ -15,7 +15,7 @@ import { handleVoiceDialog } from './voice/voiceDialog';
 import { handleVoiceStreamMessage } from './voice/voiceStream';
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
-import { finalizeVoiceCallSession } from './voice/voiceCallSession';
+import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
 import { generateUnifiedCallReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
@@ -78,6 +78,7 @@ import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
 import {
   handleAnalyzeImportSource,
+  handleCancelImport,
   handleCreateImport,
   handleDeleteImport,
   handleGenerateImportTagRule,
@@ -88,6 +89,7 @@ import {
   handleListImports,
   handlePreviewImportConfig,
   handleRunImport,
+  startImportScheduler,
   handleTestImportTagRules,
   handleUpdateImport,
 } from './imports/importManagement';
@@ -162,6 +164,9 @@ type AnalyticsSession = {
   checklistResultsJson: string | null;
   dealershipId: string | null;
   managerId: string | null;
+  answerTimeSec?: number | null;
+  durationSec?: number | null;
+  talkDurationSec?: number | null;
   manager?: { id: string; fullName: string } | null;
   dealership?: { type?: string | null; holding?: { type?: string | null } | null } | null;
 };
@@ -225,6 +230,76 @@ function buildVoiceCallSessionScopeWhere(
   }
 
   return or.length > 0 ? { OR: or } : { id: -1 };
+}
+
+function buildTrainerSessionScopeWhere(
+  account: express.Request['authAccount'],
+  activeRole?: ActiveAdminRole | null,
+): Prisma.TrainerSessionWhereInput {
+  if (!account) return {};
+  const noAccess: Prisma.TrainerSessionWhereInput = { id: '__no_access__' };
+
+  if (activeRole === 'super') {
+    return account.memberships.some((membership) => membership.role === 'platform_superadmin') ? {} : noAccess;
+  }
+
+  if (activeRole === 'dealer') {
+    const dealershipIds = [
+      ...new Set(account.memberships
+        .filter((membership) => membership.role === 'dealership_admin')
+        .map((membership) => membership.dealershipId)
+        .filter((id): id is string => Boolean(id))),
+    ];
+    return dealershipIds.length > 0
+      ? { OR: [{ branchId: { in: dealershipIds } }, { employee: { dealershipId: { in: dealershipIds } } }] }
+      : noAccess;
+  }
+
+  if (activeRole === 'company') {
+    const holdingIds = [
+      ...new Set(account.memberships
+        .filter((membership) => membership.role === 'holding_admin')
+        .map((membership) => membership.holdingId)
+        .filter((id): id is string => Boolean(id))),
+    ];
+    return holdingIds.length > 0
+      ? {
+        OR: [
+          { companyId: { in: holdingIds } },
+          { branch: { holdingId: { in: holdingIds } } },
+          { employee: { dealership: { holdingId: { in: holdingIds } } } },
+        ],
+      }
+      : noAccess;
+  }
+
+  if (account.memberships.some((membership) => membership.role === 'platform_superadmin')) return {};
+
+  const holdingIds = [
+    ...new Set(account.memberships
+      .filter((membership) => membership.role === 'holding_admin')
+      .map((membership) => membership.holdingId)
+      .filter((id): id is string => Boolean(id))),
+  ];
+  const dealershipIds = [
+    ...new Set(account.memberships
+      .filter((membership) => membership.role === 'dealership_admin')
+      .map((membership) => membership.dealershipId)
+      .filter((id): id is string => Boolean(id))),
+  ];
+  const or: Prisma.TrainerSessionWhereInput[] = [];
+  if (holdingIds.length > 0) {
+    or.push(
+      { companyId: { in: holdingIds } },
+      { branch: { holdingId: { in: holdingIds } } },
+      { employee: { dealership: { holdingId: { in: holdingIds } } } },
+    );
+  }
+  if (dealershipIds.length > 0) {
+    or.push({ branchId: { in: dealershipIds } }, { employee: { dealershipId: { in: dealershipIds } } });
+  }
+
+  return or.length > 0 ? { OR: or } : noAccess;
 }
 
 function canAccessDealershipForActiveRole(
@@ -552,6 +627,13 @@ function answerRateFromSessions(sessions: AnalyticsSession[]): number | null {
   if (!sessions.length) return null;
   const missed = sessions.filter((session) => session.outcome === 'no_answer' || session.outcome === 'busy' || session.outcome === 'failed').length;
   return percent(sessions.length - missed, sessions.length);
+}
+
+function averagePositiveMetric<T>(items: T[], pick: (item: T) => number | null | undefined): number | null {
+  const values = items
+    .map(pick)
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0);
+  return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
 }
 
 function deltaFromSessions(sessions: AnalyticsSession[]): number | null {
@@ -3328,6 +3410,13 @@ app.post('/api/imports/:id/run', (req, res) => {
   });
 });
 
+app.post('/api/imports/:id/cancel', (req, res) => {
+  handleCancelImport(req, res).catch((error) => {
+    console.error('Cancel import error:', error);
+    res.status(500).json({ error: 'Не удалось остановить загрузку.' });
+  });
+});
+
 app.get('/api/admin/rbac/meta', (req, res) => {
   handleRbacMeta(req, res).catch((error) => {
     console.error('RBAC meta error:', error);
@@ -4338,6 +4427,8 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
           dealershipId: true,
           managerId: true,
           durationSec: true,
+          answerTimeSec: true,
+          talkDurationSec: true,
           dealership: { select: { type: true, holding: { select: { type: true } } } },
         },
         orderBy: { startedAt: 'desc' },
@@ -4403,8 +4494,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         .map((session) => ({ ...session, resolvedScore: scoreFromAnalyticsSession(session) }))
         .filter((session) => typeof session.resolvedScore === 'number');
       const durations = dealershipSessions
-        .map((session) => session.durationSec)
+        .map((session) => session.talkDurationSec ?? session.durationSec)
         .filter((duration): duration is number => typeof duration === 'number' && duration > 0);
+      const avgAnswerTimeSec = averagePositiveMetric(dealershipSessions, (session) => session.answerTimeSec);
       const currentStart = new Date();
       currentStart.setDate(currentStart.getDate() - 30);
       const previousStart = new Date();
@@ -4425,6 +4517,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         answerRate: answerRateFromSessions(dealershipSessions) ?? 0,
         totalAudits: dealershipSessions.length,
         avgDurationSec: durations.length ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length) : 0,
+        avgAnswerTimeSec: avgAnswerTimeSec ?? 0,
         lastAudit: dealershipSessions[0]?.startedAt.toISOString() ?? null,
         trend: currentAvg != null && previousAvg != null ? Math.round(currentAvg - previousAvg) : 0,
       };
@@ -4457,10 +4550,10 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       timeSeries: typeTimeSeriesFromSessions(sessions, days),
       hourlyAnswerRate,
       answerTimeByCompany: dealershipRows
-        .filter((row) => row.avgDurationSec > 0)
-        .sort((a, b) => b.avgDurationSec - a.avgDurationSec)
+        .filter((row) => row.avgAnswerTimeSec > 0)
+        .sort((a, b) => b.avgAnswerTimeSec - a.avgAnswerTimeSec)
         .slice(0, 8)
-        .map((row) => ({ id: row.id, name: row.name, avgSec: row.avgDurationSec, totalCalls: row.totalAudits })),
+        .map((row) => ({ id: row.id, name: row.name, avgSec: row.avgAnswerTimeSec, totalCalls: row.totalAudits })),
       topDealerships: [...dealershipRows]
         .filter((row) => row.totalAudits > 0)
         .sort((a, b) => b.avgAiScore - a.avgAiScore)
@@ -5165,6 +5258,16 @@ app.post('/webhooks/vox', async (req, res) => {
   });
   const isFinalEvent = ['disconnected', 'failed', 'no_answer', 'busy'].includes(event);
   if (!isFinalEvent) {
+    if (event === 'connected') {
+      recordVoiceCallConnected(normalizedPayload).catch((err) => {
+        console.error('[webhooks/vox] recordVoiceCallConnected error:', {
+          requestId,
+          event,
+          callId: (normalizedPayload as { call_id?: unknown }).call_id ?? null,
+          error: err instanceof Error ? err.message : err,
+        });
+      });
+    }
     if (callIdStr) {
       armVoxFinalWatchdog(callIdStr);
     }
@@ -5251,7 +5354,9 @@ app.get('/api/admin/call-history', async (req, res) => {
         startedAt: s.startedAt.toISOString(),
         endedAt: s.endedAt?.toISOString() ?? null,
         outcome: s.outcome,
+        answerTimeSec: s.answerTimeSec,
         durationSec: s.durationSec,
+        talkDurationSec: s.talkDurationSec,
         source: s.source,
         dealershipId: s.dealershipId,
         dealershipName: s.dealership?.name ?? null,
@@ -5616,6 +5721,9 @@ app.get('/api/admin/analytics/dealerships', async (_req, res) => {
           checklistResultsJson: true,
           dealershipId: true,
           managerId: true,
+          answerTimeSec: true,
+          durationSec: true,
+          talkDurationSec: true,
         },
       }),
       prisma.managerProfile.groupBy({ by: ['dealershipId'], _count: { id: true } }),
@@ -5626,6 +5734,7 @@ app.get('/api/admin/analytics/dealerships', async (_req, res) => {
       const score = scoreFromSessions(dealershipSessions);
       const answerRate = answerRateFromSessions(dealershipSessions);
       const delta = deltaFromSessions(dealershipSessions);
+      const avgAnswerTimeSec = averagePositiveMetric(dealershipSessions, (session) => session.answerTimeSec);
       return {
         id: dealership.id,
         name: dealership.name,
@@ -5634,7 +5743,7 @@ app.get('/api/admin/analytics/dealerships', async (_req, res) => {
         dealer: dealership.holding?.name ?? 'Без дилера',
         aiRating: score,
         answerRate,
-        avgAnswerTimeSec: null,
+        avgAnswerTimeSec,
         auditsCount: dealershipSessions.length,
         employeesCount: managerCountByDealership.get(dealership.id) ?? 0,
         deltaRating: delta,
@@ -5700,6 +5809,16 @@ app.get('/api/admin/analytics/holdings', async (_req, res) => {
   } catch (err) {
     console.error('analytics/holdings error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/admin/call-report-problems', async (_req, res) => {
+  try {
+    const items = await getCallReportProblemCatalog(prisma);
+    res.json({ items });
+  } catch (error) {
+    console.error('call-report-problems error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить справочник проблем.' });
   }
 });
 
@@ -5943,6 +6062,8 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
     });
     const score = scoreFromSessions(sessions);
     const answerRate = answerRateFromSessions(sessions);
+    const avgAnswerTimeSec = averagePositiveMetric(sessions, (session) => session.answerTimeSec);
+    const avgCallDurationSec = averagePositiveMetric(sessions, (session) => session.talkDurationSec ?? session.durationSec);
     const delta = deltaFromSessions(sessions);
     const topIssues = topIssuesFromSessions(sessions);
     const noAnswers = sessions.filter((session) => session.outcome === 'no_answer').length;
@@ -5985,7 +6106,8 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
       city: dealership.city || '—',
       aiRating: score,
       answerRate,
-      avgAnswerTimeSec: null,
+      avgAnswerTimeSec,
+      avgCallDurationSec,
       auditsCount: sessions.length,
       employeesCount: dealership.managerProfiles.length,
       deltaRating: delta,
@@ -6390,29 +6512,56 @@ app.get('/api/admin/analytics/managers', async (_req, res) => {
 app.get('/api/admin/super-admin/audits', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
-    const scopeWhere = buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req));
-    const voiceSessions = await prisma.voiceCallSession.findMany({
-      where: {
-        AND: [
-          scopeWhere,
-          {
-            OR: [
-              { totalScore: { not: null } },
-              { evaluationJson: { not: null } },
-              { outcome: { in: ['completed', 'no_answer', 'busy', 'failed', 'disconnected'] } },
-            ],
-          },
-        ],
-      },
-      include: {
-        dealership: { include: { holding: true } },
-        manager: true,
-        plan: true,
-      },
-      orderBy: { startedAt: 'desc' },
-      take: limit,
-    });
-    const catalog = await getCallReportProblemCatalog(prisma);
+    const activeRole = getActiveAdminRole(req);
+    const voiceScopeWhere = buildVoiceCallSessionScopeWhere(req.authAccount, activeRole);
+    const trainerScopeWhere = buildTrainerSessionScopeWhere(req.authAccount, activeRole);
+    const [voiceSessions, trainerSessions, catalog] = await Promise.all([
+      prisma.voiceCallSession.findMany({
+        where: {
+          AND: [
+            voiceScopeWhere,
+            {
+              OR: [
+                { totalScore: { not: null } },
+                { evaluationJson: { not: null } },
+                { outcome: { in: ['completed', 'no_answer', 'busy', 'failed', 'disconnected'] } },
+              ],
+            },
+          ],
+        },
+        include: {
+          dealership: { include: { holding: true } },
+          manager: true,
+          plan: true,
+        },
+        orderBy: { startedAt: 'desc' },
+        take: limit,
+      }),
+      prisma.trainerSession.findMany({
+        where: {
+          AND: [
+            trainerScopeWhere,
+            {
+              status: { in: ['completed', 'failed'] },
+              OR: [
+                { score: { not: null } },
+                { evaluationJson: { not: null } },
+                { failureReason: { not: null } },
+              ],
+            },
+          ],
+        },
+        include: {
+          employee: { include: { dealership: { include: { holding: true } } } },
+          branch: { include: { holding: true } },
+          company: true,
+          scenario: true,
+        },
+        orderBy: { startedAt: 'desc' },
+        take: limit,
+      }),
+      getCallReportProblemCatalog(prisma),
+    ]);
 
     const auditFromCall = (s: typeof voiceSessions[number]) => {
       let score = s.totalScore ?? 0;
@@ -6438,6 +6587,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         type,
         company: s.dealership?.holding?.name ?? 'Без компании',
         dealer: s.dealership?.name ?? s.to,
+        holdingId: s.dealership?.holdingId ?? null,
         dealershipId: s.dealershipId,
         dealershipName: s.dealership?.name ?? null,
         city: s.dealership?.city ?? null,
@@ -6456,8 +6606,39 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
       };
     };
 
-    const items = voiceSessions
-      .map(auditFromCall)
+    const auditFromTrainer = (s: typeof trainerSessions[number]) => {
+      const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(s.evaluationJson, null);
+      const score = scoreFromEvaluation(evaluation, s.score);
+      const branch = s.branch ?? s.employee?.dealership ?? null;
+      const company = s.company ?? branch?.holding ?? s.employee?.dealership?.holding ?? null;
+      const auditStatus = s.status === 'failed' || !!s.failureReason || score < 50
+        ? 'failed' as const
+        : 'completed' as const;
+      return {
+        id: `trainer-${s.id}`,
+        type: 'trainer' as const,
+        company: company?.name ?? 'Без компании',
+        dealer: branch?.name ?? company?.name ?? 'Без точки',
+        holdingId: company?.id ?? branch?.holdingId ?? null,
+        dealershipId: branch?.id ?? null,
+        dealershipName: branch?.name ?? null,
+        city: branch?.city ?? null,
+        employeeId: s.employeeId,
+        date: (s.completedAt ?? s.startedAt).toISOString(),
+        aiScore: Math.round(score * 10) / 10,
+        status: score >= 76 ? 'Good' as const : score >= 50 ? 'Medium' as const : 'Bad' as const,
+        auditStatus,
+        durationSec: s.durationSec ?? 0,
+        verdict: auditStatus === 'failed' ? 'Нуждается в разборе' : 'Оценено',
+        communicationFlag: communicationFlagFromSessions([s as unknown as AnalyticsSession]),
+        reportIssues: extractReportIssuesFromSession(s, catalog),
+        userName: s.employee?.fullName ?? null,
+        detailId: s.id,
+        detailType: 'trainer' as const,
+      };
+    };
+
+    const items = [...voiceSessions.map(auditFromCall), ...trainerSessions.map(auditFromTrainer)]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
       .slice(0, limit);
 
@@ -6471,6 +6652,116 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
 app.get('/api/admin/audits/:id', async (req, res) => {
   try {
     const rawId = String(req.params.id || '').trim();
+    if (rawId.startsWith('trainer-')) {
+      const trainerId = rawId.replace(/^trainer-/, '');
+      const session = await prisma.trainerSession.findFirst({
+        where: {
+          AND: [
+            { id: trainerId },
+            buildTrainerSessionScopeWhere(req.authAccount, getActiveAdminRole(req)),
+          ],
+        },
+        include: {
+          employee: { include: { dealership: { include: { holding: true } } } },
+          branch: { include: { holding: true } },
+          company: true,
+          scenario: true,
+        },
+      });
+      if (!session) return res.status(404).json({ error: 'Audit not found' });
+
+      const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+      const score = scoreFromEvaluation(evaluation, session.score);
+      const status = session.status === 'failed' || !!session.failureReason || score < 50
+        ? 'failed' as const
+        : 'completed' as const;
+      const dimensions = extractDimensionsFromSession(session);
+      const blocksBreakdown = Object.entries(dimensions).map(([key, value]) => ({
+        block: dimensionLabel(key),
+        score: Math.round(value),
+        hint: `Средний балл блока «${dimensionLabel(key)}»`,
+      })).sort((a, b) => a.score - b.score);
+      const rawChecklist = extractChecklistFromSession(session);
+      const checklist = rawChecklist
+        .filter((item) => String(item.status || '').toUpperCase() !== 'NA')
+        .map((item) => {
+          const normalized = String(item.status || '').toUpperCase();
+          return {
+            label: AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Пункт чек-листа',
+            result: normalized === 'YES' ? 'pass' as const : normalized === 'NO' ? 'fail' as const : 'warn' as const,
+            quote: item.comment || (normalized === 'YES' ? 'Выполнено' : normalized === 'NO' ? 'Не выполнено' : 'Частично выполнено'),
+          };
+        });
+      const transcriptRaw = safeJsonParseLocal<Array<{ role?: string; text?: string; content?: string }> | null>(session.transcriptJson, null) ?? [];
+      const duration = session.durationSec ?? 0;
+      const step = transcriptRaw.length > 0 ? Math.max(1, Math.floor(duration / transcriptRaw.length)) : 0;
+      const transcript = transcriptRaw.map((line, index) => {
+        const seconds = index * step;
+        const speaker = line.role === 'manager' || line.role === 'assistant' ? 'manager' as const : 'client' as const;
+        return {
+          speaker,
+          time: `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`,
+          text: String(line.text || line.content || ''),
+          critical: false,
+        };
+      }).filter((line) => line.text.trim());
+      const recommendationsRaw = safeJsonParseLocal<unknown[]>(session.topRecommendationsJson, []);
+      const recommendations = Array.isArray(evaluation?.recommendations) ? evaluation.recommendations as unknown[] : recommendationsRaw;
+      const recommendedTrainings = recommendations.slice(0, 3).map((item) => {
+        const text = typeof item === 'string'
+          ? item
+          : item && typeof item === 'object'
+          ? String((item as Record<string, unknown>).recommendation || (item as Record<string, unknown>).title || (item as Record<string, unknown>).description || 'Рекомендация')
+          : 'Рекомендация';
+        return { title: text, description: 'Отработать в тренажёре' };
+      });
+      const catalog = await getCallReportProblemCatalog(prisma);
+      const reportIssues = extractReportIssuesFromSession(session, catalog);
+      const errors = reportIssues.slice(0, 5).map((issue, index) => ({
+        issue,
+        percent: Math.max(30, Math.min(100, 100 - index * 12)),
+      }));
+      const branch = session.branch ?? session.employee?.dealership ?? null;
+      const company = session.company ?? branch?.holding ?? session.employee?.dealership?.holding ?? null;
+      const endedAt = session.completedAt ?? session.startedAt;
+
+      return res.json({
+        item: {
+          id: `trainer-${session.id}`,
+          type: 'trainer',
+          dateTime: endedAt.toISOString(),
+          employeeId: session.employeeId,
+          employeeName: session.employee?.fullName ?? 'Не назначен',
+          dealershipId: branch?.id ?? '',
+          dealershipName: branch?.name ?? company?.name ?? 'Без точки',
+          city: branch?.city ?? '—',
+          totalScore: score,
+          verdict: status === 'failed' ? 'Нуждается в разборе' : 'Оценено',
+          status,
+          duration,
+          communicationFlag: communicationFlagFromSessions([session as unknown as AnalyticsSession]),
+          blocksBreakdown,
+          checklist,
+          transcript,
+          events: [
+            { time: '00:00', label: 'Тренировка начата', type: 'info' as const },
+            { time: duration ? `${String(Math.floor(duration / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}` : '00:00', label: `Статус: ${session.status}`, type: status === 'completed' ? 'info' as const : 'warning' as const },
+            ...(session.failureReason ? [{ time: '00:00', label: getFailureReasonLabel(session.failureReason), type: 'error' as const }] : []),
+          ],
+          errors,
+          topQuestions: reportIssues.slice(0, 5),
+          recommendedTrainings,
+          answerTimeSec: null,
+          attempts: null,
+          callback: null,
+          scenarioName: session.scenario?.name ?? null,
+          assignedBy: null,
+          failReason: session.failureReason ? getFailureReasonLabel(session.failureReason) : null,
+          unifiedReport: null,
+        },
+      });
+    }
+
     const numericId = Number.parseInt(rawId.replace(/^call-/, ''), 10);
     if (!Number.isFinite(numericId)) return res.status(400).json({ error: 'Invalid audit id' });
 
@@ -6669,7 +6960,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         errors: errorRows,
         topQuestions,
         recommendedTrainings,
-        answerTimeSec: null,
+        answerTimeSec: session.answerTimeSec ?? null,
         attempts: null,
         callback: null,
         scenarioName: type === 'trainer' ? session.scenario ?? session.plan?.name ?? null : null,
@@ -6913,6 +7204,7 @@ export function startServer(): Promise<void> {
 
     const onListen = () => {
       startCallBatchOrchestrator();
+      startImportScheduler();
       resolve();
     };
 

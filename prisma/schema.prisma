@@ -701,9 +701,12 @@ model VoiceCallSession {
   managerId        String?
   planId           String?
   startedAt        DateTime  @default(now())
+  connectedAt      DateTime?
   endedAt          DateTime?
   outcome          String?   // "completed" | "no_answer" | "busy" | "failed" | "disconnected"
+  answerTimeSec    Int?      // seconds from call initialization to connected
   durationSec      Int?      // talk time in seconds (null if no answer)
+  talkDurationSec  Int?      // explicit talk time in seconds for analytics
   transcriptJson   String?   // JSON: [{ role: "manager"|"client", text: string }]
   evaluationJson   String?   // same shape as TrainingSession.evaluationJson (V2)
   dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson

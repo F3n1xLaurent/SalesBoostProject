@@ -12,6 +12,7 @@ export interface VoiceCallRecord {
   callId: string;
   to: string;
   startedAt: string; // ISO
+  connectedAt?: string | null; // ISO
   transcript: TranscriptTurn[];
   /** Voximplant call session history id (used to fetch logs/transcripts). */
   voxSessionId?: number | null;
@@ -31,6 +32,7 @@ export function addCall(callId: string, to: string): void {
     callId,
     to: normalizePhone(to),
     startedAt: new Date().toISOString(),
+    connectedAt: null,
     transcript: [],
     voxSessionId: null,
   };
@@ -40,6 +42,13 @@ export function addCall(callId: string, to: string): void {
     const removed = calls.pop();
     if (removed) byCallId.delete(removed.callId);
   }
+}
+
+export function markCallConnected(callId: string, connectedAt: Date = new Date()): void {
+  const record = byCallId.get(callId);
+  if (!record) return;
+  if (record.connectedAt) return;
+  record.connectedAt = connectedAt.toISOString();
 }
 
 export function setVoxSessionId(callId: string, voxSessionId: number): void {

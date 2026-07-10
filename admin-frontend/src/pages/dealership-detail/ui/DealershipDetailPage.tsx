@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { apiFetch } from '../../../entities/session';
 import {
   STATUS_LABELS,
   type DealershipDetail as Detail,
 } from '../../../shared/lib/admin-panel/mockData';
 import {
   excludeDealershipFromAnalyticsPlan,
+  fetchAuditDetail,
   fetchAnalyticsDealershipDetail,
   fetchAnalyticsDealershipPlans,
   type AnalyticsAISummary,
   type AnalyticsPlanParticipation,
+  type AuditDetailItem,
   type DealershipItem,
   type DealershipType,
 } from '../../../shared/api/adminPanel';
@@ -23,9 +24,10 @@ import {
   type CallBatchSnapshot,
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
-import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
 import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
+import { SlideOver } from '../../../shared/ui/slide-over';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 
 /* ────────────────────── Props ────────────────────── */
 
@@ -132,6 +134,7 @@ function buildFallbackDetail(dealership: DealershipItem): DealershipAnalyticsDet
     aiRating: 0,
     answerRate: null,
     avgAnswerTimeSec: null,
+    avgCallDurationSec: null,
     auditsCount: 0,
     employeesCount: dealership.managersCount,
     deltaRating: null,
@@ -531,14 +534,12 @@ function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
 
 /* ────────────────────── Audit History ────────────────────── */
 
-function getCallIdFromAuditId(auditId: string): number | null {
+function isCallAuditId(auditId: string): boolean {
   const match = String(auditId || '').match(/^call-(\d+)$/);
-  if (!match) return null;
-  const id = Number(match[1]);
-  return Number.isFinite(id) ? id : null;
+  return !!match;
 }
 
-function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpenCall: (id: number) => void }) {
+function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpenCall: (id: string) => void }) {
   const pageSize = 10;
   const [page, setPage] = useState(1);
   const totalPages = Math.max(1, Math.ceil(audits.length / pageSize));
@@ -565,7 +566,7 @@ function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpen
           </thead>
           <tbody>
             {visibleAudits.map((a) => {
-              const callId = a.type === 'call' ? getCallIdFromAuditId(a.id) : null;
+              const canOpenCall = a.type === 'call' && isCallAuditId(a.id);
               return (
                 <tr key={a.id}>
                   <td>{new Date(a.date).toLocaleDateString('ru-RU')}</td>
@@ -575,9 +576,9 @@ function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpen
                   <td>
                     <button
                       className="sa-btn-text sa-btn-sm"
-                      disabled={!callId}
-                      title={callId ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
-                      onClick={() => callId && onOpenCall(callId)}
+                      disabled={!canOpenCall}
+                      title={canOpenCall ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
+                      onClick={() => canOpenCall && onOpenCall(a.id)}
                     >
                       Открыть разбор
                     </button>
@@ -628,9 +629,10 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const [batchSummary, setBatchSummary] = useState<DealershipBatchSummary | null>(null);
   const [editDealershipOpen, setEditDealershipOpen] = useState(false);
   const [phoneNumbersOpen, setPhoneNumbersOpen] = useState(false);
-  const [selectedCallDetail, setSelectedCallDetail] = useState<CallInsightDetail | null>(null);
-  const [selectedCallLoading, setSelectedCallLoading] = useState(false);
-  const [selectedCallError, setSelectedCallError] = useState<string | null>(null);
+  const [analyticsDrawerOpen, setAnalyticsDrawerOpen] = useState(false);
+  const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
+  const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
+  const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -681,19 +683,26 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
     }
   }
 
-  async function handleOpenCallDetail(callId: number) {
-    setSelectedCallDetail(null);
-    setSelectedCallError(null);
-    setSelectedCallLoading(true);
+  function closeAnalyticsDrawer() {
+    setAnalyticsDrawerOpen(false);
+    setAnalyticsDrawerLoading(false);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerDetail(null);
+  }
+
+  async function handleOpenCallDetail(auditId: string) {
+    setAnalyticsDrawerOpen(true);
+    setAnalyticsDrawerDetail(null);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerLoading(true);
     try {
-      const res = await apiFetch(`/api/admin/call-history/${callId}`);
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) throw new Error(data?.error || 'Не удалось загрузить разбор звонка');
-      setSelectedCallDetail(data as CallInsightDetail);
+      const detail = await fetchAuditDetail(auditId);
+      if (!detail) throw new Error('Аналитика звонка не найдена или ещё не готова.');
+      setAnalyticsDrawerDetail(detail);
     } catch (error) {
-      setSelectedCallError(error instanceof Error ? error.message : 'Не удалось загрузить разбор звонка');
+      setAnalyticsDrawerError(error instanceof Error ? error.message : 'Не удалось загрузить аналитику звонка.');
     } finally {
-      setSelectedCallLoading(false);
+      setAnalyticsDrawerLoading(false);
     }
   }
 
@@ -837,6 +846,11 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           cls={detail.avgAnswerTimeSec !== null ? answerTimeClass(detail.avgAnswerTimeSec) : ''}
           suffix={detail.avgAnswerTimeSec !== null ? 'с' : ''}
         />
+        <KPI
+          label="Время звонка"
+          value={detail.avgCallDurationSec != null ? detail.avgCallDurationSec : '—'}
+          suffix={detail.avgCallDurationSec != null ? 'с' : ''}
+        />
       </div>
 
       {/* Schedules */}
@@ -895,21 +909,6 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       {/* Audit history */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">История проверок</h2>
-        {(selectedCallLoading || selectedCallError || selectedCallDetail) && (
-          <div className="sa-card" style={{ padding: 16, marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
-              <h3 className="sa-card-heading" style={{ margin: 0 }}>Разбор звонка</h3>
-              <button className="sa-btn-text sa-btn-sm" onClick={() => { setSelectedCallDetail(null); setSelectedCallError(null); }}>Закрыть</button>
-            </div>
-            {selectedCallLoading ? (
-              <div className="sa-meta">Загружаем разбор...</div>
-            ) : selectedCallError ? (
-              <div className="sa-meta">{selectedCallError}</div>
-            ) : selectedCallDetail ? (
-              <CallInsightCard detail={selectedCallDetail} />
-            ) : null}
-          </div>
-        )}
         <AuditHistory audits={detail.audits} onOpenCall={handleOpenCallDetail} />
       </section>
 
@@ -925,6 +924,23 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         open={phoneNumbersOpen}
         onClose={() => setPhoneNumbersOpen(false)}
       />
+      <SlideOver open={analyticsDrawerOpen} title="Аналитика звонка" width="xl" onClose={closeAnalyticsDrawer}>
+        {analyticsDrawerLoading ? (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка аналитики...</div>
+        ) : analyticsDrawerError ? (
+          <div className="sa-card" style={{ padding: 20 }}>
+            <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть аналитику</div>
+            <div className="sa-meta" style={{ marginTop: 8 }}>{analyticsDrawerError}</div>
+          </div>
+        ) : analyticsDrawerDetail ? (
+          <AuditAnalyticsReport
+            detail={analyticsDrawerDetail}
+            onOpenEmployee={(employeeId) => onOpenEmployee?.(employeeId)}
+          />
+        ) : (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите звонок.</div>
+        )}
+      </SlideOver>
     </div>
   );
 }

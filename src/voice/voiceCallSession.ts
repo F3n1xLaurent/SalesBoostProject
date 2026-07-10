@@ -6,7 +6,7 @@
 import { prisma } from '../db';
 import { openai } from '../lib/openaiClient';
 import { config } from '../config';
-import { getRecordByCallId, type TranscriptTurn } from './callHistory';
+import { getRecordByCallId, markCallConnected, type TranscriptTurn } from './callHistory';
 import { loadCar } from '../data/carLoader';
 import { getDefaultState } from '../state/defaultState';
 import { evaluateSessionV2 } from '../llm/evaluatorV2';
@@ -48,6 +48,16 @@ function normalizeOutcome(event: string, details?: { reason?: string; code?: num
   return 'completed';
 }
 
+function parseWebhookDate(value: unknown, fallback = new Date()): Date {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date;
+}
+
+function secondsBetween(from: Date, to: Date): number {
+  return Math.max(0, Math.round((to.getTime() - from.getTime()) / 1000));
+}
+
 function dialogHistoryFromTranscript(transcript: TranscriptTurn[]): Array<{ role: 'client' | 'manager'; content: string }> {
   return transcript.map((t) => ({
     role: t.role as 'client' | 'manager',
@@ -80,6 +90,44 @@ function clampNumber(value: unknown, min: number, max: number): number {
   const parsed = typeof value === 'number' && Number.isFinite(value) ? value : Number(value);
   if (!Number.isFinite(parsed)) return min;
   return Math.max(min, Math.min(max, parsed));
+}
+
+export async function recordVoiceCallConnected(payload: VoxWebhookPayload): Promise<void> {
+  const callId = payload.call_id;
+  const to = payload.to;
+  if (!callId || !to) {
+    console.warn('[voice/session] recordVoiceCallConnected: missing call_id or to', payload);
+    return;
+  }
+
+  const connectedAt = parseWebhookDate(payload.ts);
+  markCallConnected(callId, connectedAt);
+
+  const record = getRecordByCallId(callId);
+  const existing = await prisma.voiceCallSession.findUnique({
+    where: { callId },
+    select: { startedAt: true, connectedAt: true },
+  });
+  if (existing?.connectedAt) return;
+
+  const startedAt = existing?.startedAt ?? (record ? new Date(record.startedAt) : connectedAt);
+  const toNormalized = '+' + String(to).replace(/\D/g, '');
+  const answerTimeSec = secondsBetween(startedAt, connectedAt);
+
+  await prisma.voiceCallSession.upsert({
+    where: { callId },
+    create: {
+      callId,
+      to: toNormalized,
+      startedAt,
+      connectedAt,
+      answerTimeSec,
+    },
+    update: {
+      connectedAt,
+      answerTimeSec,
+    },
+  });
 }
 
 function normalizePlanCriteriaEvaluation(value: unknown): unknown | null {
@@ -214,6 +262,10 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   }
 
   const record = getRecordByCallId(callId);
+  const existingSession = await prisma.voiceCallSession.findUnique({
+    where: { callId },
+    select: { startedAt: true, connectedAt: true, answerTimeSec: true },
+  });
   const payloadVoxSessionId =
     payload.vox_session_id ??
     (payload.vox_call_id != null ? Number.parseInt(String(payload.vox_call_id), 10) || null : null) ??
@@ -222,9 +274,12 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   // Prefer call_session_history_id saved from StartScenarios response (record),
   // then fallback to webhook payload IDs.
   const resolvedVoxSessionId = recordVoxSessionId ?? payloadVoxSessionId;
-  const startedAt = record ? new Date(record.startedAt) : new Date();
-  const endedAt = new Date();
-  const durationSec = record ? Math.round((endedAt.getTime() - startedAt.getTime()) / 1000) : 0;
+  const startedAt = existingSession?.startedAt ?? (record ? new Date(record.startedAt) : new Date());
+  const endedAt = parseWebhookDate(payload.ts);
+  const connectedAt = existingSession?.connectedAt ?? (record?.connectedAt ? new Date(record.connectedAt) : null);
+  const answerTimeSec = existingSession?.answerTimeSec ?? (connectedAt ? secondsBetween(startedAt, connectedAt) : null);
+  const talkDurationSec = connectedAt ? secondsBetween(connectedAt, endedAt) : null;
+  const durationSec = talkDurationSec ?? (record ? secondsBetween(startedAt, endedAt) : 0);
   const outcome = normalizeOutcome(event, payload.details);
   console.log('[voice/session] finalize start', {
     callId,
@@ -265,18 +320,24 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         callId,
         to: toNormalized,
         startedAt,
+        connectedAt,
         endedAt,
         outcome,
+        answerTimeSec,
         durationSec,
+        talkDurationSec,
         transcriptJson: JSON.stringify(initialTranscript),
         evaluationJson: null,
         totalScore: null,
         failureReason: null,
       },
       update: {
+        connectedAt: connectedAt ?? undefined,
         endedAt,
         outcome,
+        answerTimeSec: answerTimeSec ?? undefined,
         durationSec,
+        talkDurationSec: talkDurationSec ?? undefined,
         transcriptJson: JSON.stringify(initialTranscript),
       },
     });

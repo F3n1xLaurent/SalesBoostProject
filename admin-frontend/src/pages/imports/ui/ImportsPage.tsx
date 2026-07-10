@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeImportSource,
+  cancelImportSource,
   createImportSource,
   deleteImportSource,
   fetchImportDetail,
@@ -551,7 +552,6 @@ function ImportEditModal(props: {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [schedule, setSchedule] = useState('manual');
-  const [status, setStatus] = useState<ImportSourceItem['status']>('active');
   const [tagRules, setTagRules] = useState<ImportTagRule[]>([]);
   const [editTab, setEditTab] = useState<'settings' | 'tags'>('settings');
   const [sourceFields, setSourceFields] = useState<string[]>([]);
@@ -564,7 +564,6 @@ function ImportEditModal(props: {
     setName(props.item.name);
     setUrl(props.item.url);
     setSchedule(props.item.schedule || 'manual');
-    setStatus(props.item.status);
     setTagRules(props.item.tagRules);
     setEditTab('settings');
     setSourceFields(fieldsFromImportSource(props.item));
@@ -603,7 +602,6 @@ function ImportEditModal(props: {
         name: name.trim(),
         url: url.trim(),
         schedule: schedule === 'manual' ? null : schedule,
-        status,
         tagRules,
       });
       props.onSaved(updated);
@@ -636,7 +634,7 @@ function ImportEditModal(props: {
         <div style={{ display: 'grid', gap: 18 }}>
           <section className="sa-card" style={{ padding: 14, display: 'grid', gap: 12 }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
-              <div><div className="sa-meta">Статус</div><strong>{statusLabel(status)}</strong></div>
+              <div><div className="sa-meta">Статус</div><strong>{statusLabel(props.item.status)}</strong></div>
               <div><div className="sa-meta">Запуск</div><strong>{scheduleLabel(schedule === 'manual' ? null : schedule)}</strong></div>
               <div><div className="sa-meta">Формат</div><strong>{props.item.format.toUpperCase()}</strong></div>
               <div><div className="sa-meta">Правил тегов</div><strong>{tagRules.length}</strong></div>
@@ -668,7 +666,7 @@ function ImportEditModal(props: {
             <section className="sa-card" style={{ padding: 16, display: 'grid', gap: 14 }}>
               <div>
                 <h3 style={{ margin: '0 0 4px', fontSize: 17 }}>Настройки источника</h3>
-                <div className="sa-meta">Здесь меняются название, ссылка, периодичность и состояние импорта.</div>
+                <div className="sa-meta">Здесь меняются название, ссылка и периодичность импорта.</div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
                 <label style={{ display: 'grid', gap: 6 }}>
@@ -686,14 +684,6 @@ function ImportEditModal(props: {
                     <option value="hourly">Раз в час</option>
                     <option value="daily">Раз в день</option>
                     <option value="weekly">Раз в неделю</option>
-                  </select>
-                </label>
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span>Состояние</span>
-                  <select className="sa-select" value={status} onChange={(event) => setStatus(event.target.value as ImportSourceItem['status'])}>
-                    <option value="active">Активен</option>
-                    <option value="paused">Пауза</option>
-                    <option value="error">Ошибка</option>
                   </select>
                 </label>
               </div>
@@ -1086,6 +1076,8 @@ export function ImportsPage() {
   const [dataLoading, setDataLoading] = useState(true);
   const [filtersLoading, setFiltersLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [runningImportId, setRunningImportId] = useState<string | null>(null);
+  const runControllersRef = useRef(new Map<string, AbortController>());
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editModalItem, setEditModalItem] = useState<ImportEditModalItem | null>(null);
   const [infoModalData, setInfoModalData] = useState<ImportInfoModalData | null>(null);
@@ -1182,24 +1174,33 @@ export function ImportsPage() {
 
   async function runImport(id: string) {
     setBusyId(id);
+    setRunningImportId(id);
+    const controller = new AbortController();
+    runControllersRef.current.set(id, controller);
     try {
-      await runImportSource(id);
+      await runImportSource(id, { signal: controller.signal });
       await loadList();
       await loadDataItems();
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : 'Не удалось запустить импорт.');
+      if (runError instanceof DOMException && runError.name === 'AbortError') return;
+      setError(runError instanceof Error ? runError.message : 'Не удалось обновить данные.');
     } finally {
-      setBusyId(null);
+      runControllersRef.current.delete(id);
+      setBusyId((current) => (current === id ? null : current));
+      setRunningImportId((current) => (current === id ? null : current));
     }
   }
 
-  async function togglePause(item: ImportSourceItem) {
-    setBusyId(item.id);
+  async function stopImportLoading(item: ImportSourceItem) {
+    runControllersRef.current.get(item.id)?.abort();
+    runControllersRef.current.delete(item.id);
+    setRunningImportId((current) => (current === item.id ? null : current));
+    setBusyId((current) => (current === item.id ? null : current));
     try {
-      await updateImportSource(item.id, { status: item.status === 'paused' ? 'active' : 'paused' });
+      await cancelImportSource(item.id);
       await loadList();
-    } finally {
-      setBusyId(null);
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : 'Не удалось остановить загрузку.');
     }
   }
 
@@ -1235,6 +1236,16 @@ export function ImportsPage() {
   const dataTotalPages = Math.max(1, Math.ceil(dataTotal / DATA_PAGE_SIZE));
   const dataPageStart = dataTotal === 0 ? 0 : dataPage * DATA_PAGE_SIZE + 1;
   const dataPageEnd = Math.min(dataTotal, dataPage * DATA_PAGE_SIZE + dataItems.length);
+  const activeImportId = runningImportId ?? items.find((item) => item.activeRun?.status === 'running')?.id ?? null;
+
+  useEffect(() => {
+    if (!activeImportId) return;
+    const timer = window.setInterval(() => {
+      void loadList();
+      void loadDataItems();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [activeImportId, selectedHoldingId, search, selectedTags, selectedImportIds, dataPage]);
 
   function openDescriptionItem(item: ImportedDataItem) {
     setDescriptionModalItem({
@@ -1484,17 +1495,46 @@ export function ImportsPage() {
                   <tr><td colSpan={7} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
                 ) : items.length === 0 ? (
                   <tr><td colSpan={7} className="sa-meta" style={{ padding: 28 }}>Импортов пока нет</td></tr>
-                ) : items.map((item) => (
+                ) : items.map((item) => {
+                  const isRunningImport = activeImportId === item.id;
+                  const isAnyImportRunning = activeImportId !== null;
+                  return (
                   <tr key={item.id}>
-                    <td style={{ fontWeight: 700 }}>{item.name}</td>
-                    <td><span className={item.status === 'error' ? 'sa-emp-status sa-emp-warn' : 'sa-emp-status'}>{statusLabel(item.status)}</span></td>
+                    <td style={{ fontWeight: 700 }}>
+                      <div style={{ display: 'grid', gap: 4 }}>
+                        <span>{item.name}</span>
+                        {isRunningImport && (
+                          <span className="sa-ai-summary-loading" style={{ fontSize: 12 }}>
+                            <span className="sa-ai-summary-spinner" aria-hidden="true" />
+                            Идёт загрузка данных...
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      {isRunningImport ? (
+                        <span className="sa-emp-status">Загружается</span>
+                      ) : (
+                        <span className={item.status === 'error' ? 'sa-emp-status sa-emp-warn' : 'sa-emp-status'}>{statusLabel(item.status)}</span>
+                      )}
+                    </td>
                     <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.url}</td>
                     <td>{item.format}</td>
                     <td>{formatDate(item.lastRunAt)}</td>
                     <td className="sa-text-right">{item.itemsCount}</td>
                     <td onClick={(event) => event.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                        <button className="sa-btn-outline sa-btn-sm" disabled={busyId === item.id} onClick={() => void runImport(item.id)}>Запустить</button>
+                        {isRunningImport ? (
+                          <button className="sa-btn-danger sa-btn-sm" onClick={() => void stopImportLoading(item)}>Остановить загрузку</button>
+                        ) : !isAnyImportRunning ? (
+                          <button
+                            className="sa-btn-outline sa-btn-sm"
+                            disabled={busyId === item.id}
+                            onClick={() => void runImport(item.id)}
+                          >
+                            Обновить данные
+                          </button>
+                        ) : null}
                         <button
                           className="sa-btn-outline sa-btn-icon"
                           disabled={busyId === item.id}
@@ -1513,12 +1553,11 @@ export function ImportsPage() {
                         >
                           <EditIcon />
                         </button>
-                        <button className="sa-btn-outline sa-btn-sm" disabled={busyId === item.id} onClick={() => void togglePause(item)}>{item.status === 'paused' ? 'Возобновить' : 'Пауза'}</button>
                         <button className="sa-btn-danger sa-btn-sm" disabled={busyId === item.id} onClick={() => void removeImport(item)}>Удалить</button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                );})}
               </tbody>
             </table>
         </div>

@@ -20,6 +20,7 @@ export interface DealershipRow {
   aiRating: number;
   answerRate: number | null;
   avgAnswerTimeSec: number | null;
+  avgCallDurationSec?: number | null;
   auditsCount: number;
   employeesCount: number;
   deltaRating: number | null;

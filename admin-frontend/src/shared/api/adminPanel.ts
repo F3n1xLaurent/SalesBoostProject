@@ -93,6 +93,7 @@ export interface AuditItem {
   type: 'attempt' | 'training' | 'trainer' | 'call';
   company: string;
   dealer: string;
+  holdingId?: string | null;
   dealershipId?: string | null;
   dealershipName?: string | null;
   city?: string | null;
@@ -106,8 +107,15 @@ export interface AuditItem {
   communicationFlag?: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
   reportIssues?: string[];
   userName: string | null;
-  detailId: number;
+  detailId: number | string;
   detailType: 'attempt' | 'training' | 'trainer' | 'call';
+}
+
+export interface CallReportProblemItem {
+  code: string;
+  title: string;
+  category: string;
+  sortOrder: number;
 }
 
 export interface AuditDetailItem {
@@ -262,6 +270,7 @@ export interface AnalyticsDealershipRow {
   aiRating: number;
   answerRate: number | null;
   avgAnswerTimeSec: number | null;
+  avgCallDurationSec?: number | null;
   auditsCount: number;
   employeesCount: number;
   deltaRating: number | null;
@@ -862,6 +871,7 @@ export interface ImportSourceItem {
   createdAt: string;
   updatedAt: string;
   itemsCount: number;
+  activeRun: ImportRunItem | null;
 }
 
 export interface ImportedItem {
@@ -895,7 +905,7 @@ export interface ImportedItemsResult {
 export interface ImportRunItem {
   id: string;
   importSourceId: string;
-  status: 'success' | 'error' | 'running';
+  status: 'success' | 'error' | 'running' | 'cancelled';
   startedAt: string;
   finishedAt: string | null;
   totalItems: number;
@@ -1084,11 +1094,18 @@ export async function deleteImportSource(id: string): Promise<void> {
   if (!res.ok) throw new Error(data?.error || 'Не удалось удалить импорт.');
 }
 
-export async function runImportSource(id: string): Promise<ImportRunItem> {
-  const res = await apiFetch(`${API_BASE}/api/imports/${id}/run`, { method: 'POST' });
+export async function runImportSource(id: string, options?: { signal?: AbortSignal }): Promise<ImportRunItem> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}/run`, { method: 'POST', signal: options?.signal });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось запустить импорт.');
   return data.run as ImportRunItem;
+}
+
+export async function cancelImportSource(id: string): Promise<ImportRunItem | null> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}/cancel`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось остановить загрузку.');
+  return (data.run ?? null) as ImportRunItem | null;
 }
 
 export async function fetchHoldings(filters?: {
@@ -1642,6 +1659,13 @@ export async function fetchTimeSeries(): Promise<TimeSeriesPoint[]> {
   if (!res.ok) return [];
   const data = await res.json();
   return data.series ?? [];
+}
+
+export async function fetchCallReportProblems(): Promise<CallReportProblemItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-report-problems`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить справочник проблем.');
+  return Array.isArray(data.items) ? data.items as CallReportProblemItem[] : [];
 }
 
 export async function fetchAnalyticsOverview(filters?: { holdingId?: string | null }): Promise<AnalyticsOverview | null> {
