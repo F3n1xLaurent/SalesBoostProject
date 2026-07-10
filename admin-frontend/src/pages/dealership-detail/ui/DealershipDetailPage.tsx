@@ -28,6 +28,7 @@ import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlo
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 /* ────────────────────── Props ────────────────────── */
 
@@ -73,6 +74,7 @@ function dealershipTypeLabel(type?: DealershipType | null): string {
 }
 
 function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
+  if (value === 'manual') return 'Вручную';
   return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
 }
 
@@ -104,7 +106,8 @@ function PlanParticipationList({
           <div style={{ minWidth: 220 }}>
             <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
             <div className="sa-meta" style={{ marginTop: 4 }}>
-              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)} · {plan.callTimeFrom}-{plan.callTimeTo}
+              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)}
+              {plan.frequency !== 'manual' ? ` · ${plan.callTimeFrom}-${plan.callTimeTo}` : ''}
               {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
             </div>
           </div>
@@ -341,6 +344,7 @@ function EmployeeComparisonModal({
   const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -407,6 +411,7 @@ function EmployeeComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 

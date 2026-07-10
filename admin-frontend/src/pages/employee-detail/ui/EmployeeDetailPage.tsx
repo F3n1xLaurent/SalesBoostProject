@@ -74,6 +74,7 @@ function KPI({ label, value, cls }: { label: string; value: string | number; cls
 }
 
 function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
+  if (value === 'manual') return 'Вручную';
   return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
 }
 
@@ -102,7 +103,8 @@ function PlanParticipationList({
           <div style={{ minWidth: 220 }}>
             <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
             <div className="sa-meta" style={{ marginTop: 4 }}>
-              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)} · {plan.callTimeFrom}-{plan.callTimeTo}
+              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)}
+              {plan.frequency !== 'manual' ? ` · ${plan.callTimeFrom}-${plan.callTimeTo}` : ''}
               {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
             </div>
           </div>

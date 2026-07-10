@@ -381,7 +381,8 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   if (transcript.length < 2) {
     const reason =
       transcript.length === 0
-        ? 'Transcript unavailable: webhook payload empty and Vox log returned no transcript.'
+        // ? 'Transcript unavailable: webhook payload empty and Vox log returned no transcript.'
+        ? 'Ошибка. Не найдена транскрипция звонка.'
         : `Transcript too short for evaluation: ${transcript.length} turn(s).`;
     console.warn('[voice/session] transcript insufficient', { callId, source: transcriptSource, reason });
     try {

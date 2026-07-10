@@ -16,6 +16,7 @@ import {
 } from '../../api/adminPanel';
 import { useGlobalHoldingFilter } from '../../lib/global-holding-filter/useGlobalHoldingFilter';
 import { formatPhoneInput, formatPhoneInputLive } from '../phone-number-utils';
+import { FixedOverlayPortal } from '../fixed-overlay-portal/FixedOverlayPortal';
 
 type PhoneFormState = {
   typeId: string;
@@ -71,6 +72,7 @@ function PhoneNumberFormModal(props: {
   if (!props.open) return null;
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -153,6 +155,7 @@ function PhoneNumberFormModal(props: {
         </form>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -249,6 +252,7 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
   }
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -354,6 +358,7 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
         />
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -464,6 +469,7 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
   }
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -574,5 +580,6 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
         />
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }

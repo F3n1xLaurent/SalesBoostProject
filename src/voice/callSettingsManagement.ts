@@ -9,13 +9,13 @@ type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
 type CustomerPatience = 'low' | 'medium' | 'high';
 type ReplyLength = 'short' | 'medium' | 'detailed';
 type CallPlanTargetType = 'employees' | 'dealerships';
-type CallPlanFrequency = 'daily' | 'weekly';
+type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
 
 const TEMPERAMENTS = new Set<CustomerTemperament>(['calm', 'doubtful', 'irritated', 'hurried']);
 const PATIENCE = new Set<CustomerPatience>(['low', 'medium', 'high']);
 const REPLY_LENGTHS = new Set<ReplyLength>(['short', 'medium', 'detailed']);
 const CALL_PLAN_TARGET_TYPES = new Set<CallPlanTargetType>(['employees', 'dealerships']);
-const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['daily', 'weekly']);
+const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['manual', 'daily', 'weekly']);
 const TIME_RE = /^([01]\d|2[0-2]):([0-5]\d)$/;
 
 function parseString(value: unknown): string | null {
@@ -185,7 +185,11 @@ function normalizePlan(plan: Prisma.CallPlanGetPayload<{}>) {
   };
 }
 
-function normalizePlanCall(call: Prisma.CallPlanCallGetPayload<{}>, auditId: string | null = null) {
+function normalizePlanCall(
+  call: Prisma.CallPlanCallGetPayload<{}>,
+  auditId: string | null = null,
+  timing: { answerTimeSec: number | null; talkDurationSec: number | null; durationSec: number | null } | null = null,
+) {
   return {
     id: call.id,
     auditId,
@@ -204,6 +208,8 @@ function normalizePlanCall(call: Prisma.CallPlanCallGetPayload<{}>, auditId: str
     outcome: call.outcome,
     startedAt: call.startedAt,
     endedAt: call.endedAt,
+    answerTimeSec: timing?.answerTimeSec ?? null,
+    talkDurationSec: timing?.talkDurationSec ?? timing?.durationSec ?? null,
     transcript: safeJsonParse(call.transcriptJson, []),
     evaluation: safeJsonParse(call.evaluationJson, null),
     totalScore: call.totalScore,
@@ -314,18 +320,20 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
   const targetIds = parseStringArray(body.targetIds);
   const scriptId = parseString(body.scriptId);
   const phoneNumberTypeId = parseString(body.phoneNumberTypeId);
-  const callTimeFrom = parseString(body.callTimeFrom) || '';
-  const callTimeTo = parseString(body.callTimeTo) || '';
+  const callTimeFrom = frequency === 'manual' ? '09:00' : parseString(body.callTimeFrom) || '';
+  const callTimeTo = frequency === 'manual' ? '09:15' : parseString(body.callTimeTo) || '';
   if (!targetType || !CALL_PLAN_TARGET_TYPES.has(targetType)) throw new Error('Выберите тип прозвона.');
   if (targetIds.length === 0) throw new Error('Выберите сотрудников или точки.');
   if (!scriptId) throw new Error('Выберите скрипт.');
   if (!phoneNumberTypeId) throw new Error('Выберите тип номера.');
   if (!frequency || !CALL_PLAN_FREQUENCIES.has(frequency)) throw new Error('Выберите частотность.');
-  if (!TIME_RE.test(callTimeFrom) || !TIME_RE.test(callTimeTo)) throw new Error('Укажите время звонка с 09:00 до 22:00.');
-  const fromMinutes = timeToMinutes(callTimeFrom);
-  const toMinutes = timeToMinutes(callTimeTo);
-  if (fromMinutes < 9 * 60 || toMinutes > 22 * 60 || toMinutes - fromMinutes < 15) {
-    throw new Error('Диапазон времени должен быть с 09:00 до 22:00, минимум 15 минут.');
+  if (frequency !== 'manual') {
+    if (!TIME_RE.test(callTimeFrom) || !TIME_RE.test(callTimeTo)) throw new Error('Укажите время звонка с 09:00 до 22:00.');
+    const fromMinutes = timeToMinutes(callTimeFrom);
+    const toMinutes = timeToMinutes(callTimeTo);
+    if (fromMinutes < 9 * 60 || toMinutes > 22 * 60 || toMinutes - fromMinutes < 15) {
+      throw new Error('Диапазон времени должен быть с 09:00 до 22:00, минимум 15 минут.');
+    }
   }
   return {
     name: parseString(body.name) || (targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек'),
@@ -902,10 +910,14 @@ export async function handleListCallPlanCalls(req: Request, res: Response): Prom
     });
     const voiceSessions = await prisma.voiceCallSession.findMany({
       where: { callId: { in: items.map((item) => item.callId) } },
-      select: { id: true, callId: true },
+      select: { id: true, callId: true, answerTimeSec: true, talkDurationSec: true, durationSec: true },
     });
     const auditIds = new Map(voiceSessions.map((session) => [session.callId, `call-${session.id}`]));
-    res.json({ items: items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null)) });
+    const timings = new Map(voiceSessions.map((session) => [
+      session.callId,
+      { answerTimeSec: session.answerTimeSec, talkDurationSec: session.talkDurationSec, durationSec: session.durationSec },
+    ]));
+    res.json({ items: items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null, timings.get(item.callId) ?? null)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось загрузить историю прозвона.';
     res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });

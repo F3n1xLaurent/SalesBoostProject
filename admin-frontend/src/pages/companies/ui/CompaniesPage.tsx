@@ -16,6 +16,7 @@ import {
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
@@ -107,6 +108,7 @@ function DealershipComparisonModal({
   const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(1040px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -174,6 +176,7 @@ function DealershipComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 

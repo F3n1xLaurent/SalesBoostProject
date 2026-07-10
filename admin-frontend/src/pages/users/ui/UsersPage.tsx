@@ -20,6 +20,7 @@ import { deltaDisplay, ratingClass, statusBadgeClass } from '../../../shared/lib
 import { UserPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type Props = {
   role: AdminRole;
@@ -570,6 +571,7 @@ function ModalFrame(props: {
 }) {
   if (!props.open) return null;
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -597,6 +599,7 @@ function ModalFrame(props: {
         {props.children}
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -612,14 +615,6 @@ function CreateUserModal(props: {
 }) {
   const [form, setForm] = useState<UserFormState>(EMPTY_USER_FORM);
   const dealershipMap = useMemo(() => new Map((props.meta?.dealerships || []).map((item) => [item.id, item])), [props.meta]);
-  const templateOptions = useMemo<SelectOption[]>(
-    () => props.templates.map((template) => ({
-      value: template.id,
-      label: template.name,
-      description: template.description || `${template.permissions.length} прав`,
-    })),
-    [props.templates],
-  );
 
   useEffect(() => {
     if (!props.open) return;
@@ -856,14 +851,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     })),
     [meta],
   );
-  const templateOptions = useMemo<SelectOption[]>(
-    () => templates.map((template) => ({
-      value: template.id,
-      label: template.name,
-      description: template.description || `${template.permissions.length} прав`,
-    })),
-    [templates],
-  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1053,6 +1040,17 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     if (!templateName) return '';
     return templates.find((template) => template.name === templateName)?.id || '';
   }
+
+  useEffect(() => {
+    if (!editUserOpen || !canManageTemplates) return;
+    const firstRole = canManageGlobalUsers ? userForm.memberships[0]?.role : 'manager';
+    const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
+    setUserForm((current) => {
+      const nextTemplateIds = templateId ? [templateId] : [];
+      if (current.templateIds[0] === nextTemplateIds[0] && current.templateIds.length === nextTemplateIds.length) return current;
+      return { ...current, templateIds: nextTemplateIds };
+    });
+  }, [canManageGlobalUsers, canManageTemplates, editUserOpen, templates, userForm.memberships]);
 
   function openEditUser(user: UserAccountItem) {
     setActiveUserId(user.id);
@@ -1395,23 +1393,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               );
             })}
           </div>
-          {canManageGlobalUsers && (
-            <button type="button" className="sa-btn-text" style={{ marginTop: 10 }} onClick={() => setUserForm((current) => ({ ...current, memberships: [...current.memberships, { role: 'manager', holdingId: '', dealershipId: '' }] }))}>
-              + Добавить ещё назначение
-            </button>
-          )}
         </div>
-        {canManageTemplates && (
-          <div className="sa-card" style={{ padding: 12 }}>
-            <SearchableSelect
-              label="Шаблон прав"
-              value={userForm.templateIds[0] || ''}
-              options={templateOptions}
-              placeholder="Выберите шаблон прав"
-              onChange={(value) => setUserForm((current) => ({ ...current, templateIds: value ? [value] : [] }))}
-            />
-          </div>
-        )}
         <div className="sa-holdings-form-footer">
           <div className="sa-holdings-form-footer-left">
             {editDeleteConfirm ? (

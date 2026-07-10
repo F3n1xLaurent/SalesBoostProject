@@ -11,6 +11,7 @@ import {
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type DirectionFormState = {
   holdingId: string;
@@ -80,6 +81,7 @@ function DirectionModal(props: {
   const submitLabel = isCreate ? 'Создать' : 'Сохранить изменения';
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -194,6 +196,7 @@ function DirectionModal(props: {
         </form>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 

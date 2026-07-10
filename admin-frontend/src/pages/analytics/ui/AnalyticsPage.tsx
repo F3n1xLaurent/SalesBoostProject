@@ -6,6 +6,7 @@ import type { AnalyticsImpact, AnalyticsPriority, AnalyticsSectionInsight } from
 import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type AnalyticsProps = {
   summary: PlatformSummary | null;
@@ -282,6 +283,7 @@ function ComparisonModal({ rows, onClose, onOpenDealership }: { rows: Comparable
   ];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }}>
       <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -337,6 +339,7 @@ function ComparisonModal({ rows, onClose, onOpenDealership }: { rows: Comparable
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 

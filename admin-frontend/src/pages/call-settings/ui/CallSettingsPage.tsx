@@ -88,6 +88,7 @@ const REPLY_LENGTHS: Array<{ value: ReplyLength; label: string }> = [
 ];
 
 const PLAN_FREQUENCIES: Array<{ value: CallPlanFrequency; label: string }> = [
+  { value: 'manual', label: 'Вручную' },
   { value: 'daily', label: 'Каждый день' },
   { value: 'weekly', label: 'Раз в неделю' },
 ];
@@ -97,6 +98,35 @@ const CALL_SETTINGS_PATHS: Record<CallSettingsTab, string> = {
   scripts: '/call-settings/scripts',
   plan: '/call-settings/plans',
 };
+
+function formatPlanCallDuration(seconds: number | null | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '—';
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${minutes}:${String(rest).padStart(2, '0')}`;
+}
+
+function formatPlanCallStatus(outcome: string | null | undefined, status: string | null | undefined): string {
+  const value = String(outcome || status || '').trim().toLowerCase();
+  if (value === 'completed' || value === 'disconnected') return 'Завершено';
+  if (value === 'no_answer') return 'Недозвон';
+  if (value === 'busy') return 'Занято';
+  if (value === 'failed') return 'Ошибка';
+  if (value === 'voicemail') return 'Автоответчик';
+  if (value === 'running' || value === 'dialing' || value === 'in_progress' || value === 'progress') return 'В работе';
+  if (value === 'retry_wait') return 'Ожидает повтора';
+  if (value === 'queued') return 'В очереди';
+  if (value === 'cancelled' || value === 'canceled') return 'Отменено';
+  return value || '—';
+}
+
+function planCallStatusClass(outcome: string | null | undefined, status: string | null | undefined): string {
+  const value = String(outcome || status || '').trim().toLowerCase();
+  if (value === 'completed' || value === 'disconnected') return 'sa-audit-status-completed';
+  if (value === 'failed') return 'sa-audit-status-failed';
+  return 'sa-audit-status-interrupted';
+}
 
 const EMPTY_FORM: CustomerProfileForm = {
   name: '',
@@ -1202,6 +1232,7 @@ function CallPlanEditor(props: {
   const selectedEmployeesCount = targetType === 'employees'
     ? targetIds.length
     : props.options.dealerships.filter((item) => targetIds.includes(item.id)).reduce((sum, item) => sum + item.employeesCount, 0);
+  const isManualFrequency = frequency === 'manual';
 
   function switchTargetType(next: CallPlanTargetType) {
     setTargetType(next);
@@ -1333,16 +1364,18 @@ function CallPlanEditor(props: {
               </select>
             </label>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Время звонка c</span>
-              <input className="sa-input" type="time" min="09:00" max="21:45" step={900} value={callTimeFrom} onChange={(event) => setCallTimeFrom(event.target.value)} required />
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Время звонка до</span>
-              <input className="sa-input" type="time" min="09:15" max="22:00" step={900} value={callTimeTo} onChange={(event) => setCallTimeTo(event.target.value)} required />
-            </label>
-          </div>
+          {!isManualFrequency && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span>Время звонка c</span>
+                <input className="sa-input" type="time" min="09:00" max="21:45" step={900} value={callTimeFrom} onChange={(event) => setCallTimeFrom(event.target.value)} required />
+              </label>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span>Время звонка до</span>
+                <input className="sa-input" type="time" min="09:15" max="22:00" step={900} value={callTimeTo} onChange={(event) => setCallTimeTo(event.target.value)} required />
+              </label>
+            </div>
+          )}
         </section>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
@@ -1834,7 +1867,7 @@ export function CallSettingsPage() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>Обновить</button>
             <button type="button" className="sa-btn-outline" onClick={() => navigate(`/call-settings/plans/${encodeURIComponent(selectedPlan.id)}/edit`)}>Редактировать</button>
-            <button type="button" className="sa-btn-primary" onClick={() => initiatePlan(selectedPlan)}>Заинициировать сейчас</button>
+            <button type="button" className="sa-btn-primary" onClick={() => initiatePlan(selectedPlan)}>Позвонить по аудитории</button>
             <button type="button" className="sa-btn-outline" onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>Назад к планам</button>
           </div>
         </section>
@@ -1860,7 +1893,9 @@ export function CallSettingsPage() {
             <div className="sa-card" style={{ padding: 12 }}>
               <div className="sa-meta">Расписание</div>
               <strong>{PLAN_FREQUENCIES.find((item) => item.value === selectedPlan.frequency)?.label || selectedPlan.frequency}</strong>
-              <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
+              {selectedPlan.frequency !== 'manual' && (
+                <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
+              )}
             </div>
           </div>
           <div style={{ display: 'grid', gap: 8 }}>
@@ -1888,10 +1923,11 @@ export function CallSettingsPage() {
                 <thead>
                   <tr>
                     <th>Сотрудник</th>
-                    <th style={{ width: 170 }}>ID обзвона</th>
                     <th style={{ width: 170 }}>Номер</th>
                     <th style={{ width: 150 }}>Статус</th>
                     <th style={{ width: 120 }}>Оценка</th>
+                    <th style={{ width: 130 }}>Время дозвона</th>
+                    <th style={{ width: 140 }}>Время разговора</th>
                     <th style={{ width: 190 }}>Дата</th>
                   </tr>
                 </thead>
@@ -1906,15 +1942,18 @@ export function CallSettingsPage() {
                           <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
                           {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
                         </td>
-                        <td>
-                          <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
-                        </td>
                         <td>{call.phone}</td>
-                        <td>{call.outcome || call.status}</td>
+                        <td>
+                          <span className={`sa-status-badge ${planCallStatusClass(call.outcome, call.status)}`}>
+                            {formatPlanCallStatus(call.outcome, call.status)}
+                          </span>
+                        </td>
                         <td>
                           {score != null ? Math.round(score) : '—'}
                           {analytics.planPercent != null && <div className="sa-meta" style={{ marginTop: 4 }}>Условия: {Math.round(analytics.planPercent)}%</div>}
                         </td>
+                        <td>{formatPlanCallDuration(call.answerTimeSec)}</td>
+                        <td>{formatPlanCallDuration(call.talkDurationSec)}</td>
                         <td>
                           <div>{new Date(call.startedAt).toLocaleString('ru-RU')}</div>
                           <button
@@ -2180,7 +2219,7 @@ export function CallSettingsPage() {
                       <td>{plan.targetType === 'employees' ? `Сотрудники: ${targetCount}` : `Точки: ${plan.targetIds.length} · сотрудников: ${targetCount}`}</td>
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
                       <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
-                      <td>{plan.callTimeFrom} - {plan.callTimeTo}</td>
+                      <td>{plan.frequency === 'manual' ? '—' : `${plan.callTimeFrom} - ${plan.callTimeTo}`}</td>
                       <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
                         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                           <button
@@ -2197,7 +2236,7 @@ export function CallSettingsPage() {
                               <path d="M7 16h10" />
                             </svg>
                           </button>
-                          <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => initiatePlan(plan)}>Заинициировать сейчас</button>
+                          <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => initiatePlan(plan)}>Позвонить по аудитории</button>
                         </div>
                       </td>
                       <td className="sa-row-chevron-cell">→</td>

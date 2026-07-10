@@ -682,7 +682,7 @@ export interface CallScriptItem {
 }
 
 export type CallPlanTargetType = 'employees' | 'dealerships';
-export type CallPlanFrequency = 'daily' | 'weekly';
+export type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
 
 export interface CallPlanItem {
   id: string;
@@ -769,6 +769,8 @@ export interface CallPlanCallItem {
   outcome: string | null;
   startedAt: string;
   endedAt: string | null;
+  answerTimeSec: number | null;
+  talkDurationSec: number | null;
   transcript: Array<{ role: 'manager' | 'client'; text: string }>;
   evaluation: unknown | null;
   totalScore: number | null;

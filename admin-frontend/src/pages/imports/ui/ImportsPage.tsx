@@ -23,6 +23,7 @@ import {
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { FilterPickerField } from '../../../shared/ui/filter-picker/FilterPickerField';
 import { FilterPickerMenu } from '../../../shared/ui/filter-picker/FilterPickerMenu';
@@ -321,6 +322,7 @@ function DescriptionModal(props: {
 }) {
   if (!props.item) return null;
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
       onClick={props.onClose}
@@ -349,6 +351,7 @@ function DescriptionModal(props: {
         </pre>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -614,6 +617,7 @@ function ImportEditModal(props: {
   }
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
       onClick={props.onClose}
@@ -715,6 +719,7 @@ function ImportEditModal(props: {
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -727,6 +732,7 @@ function ImportInfoModal(props: {
   const latestRuns = runs.slice(0, 5);
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
       onClick={props.onClose}
@@ -812,6 +818,7 @@ function ImportInfoModal(props: {
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -930,6 +937,7 @@ function ImportWizard(props: {
   }
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 120 }}
       onClick={props.onClose}
@@ -1056,6 +1064,7 @@ function ImportWizard(props: {
         )}
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 

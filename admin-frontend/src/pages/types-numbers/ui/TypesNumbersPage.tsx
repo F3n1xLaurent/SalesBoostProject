@@ -11,6 +11,7 @@ import {
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type TypeFormState = {
   name: string;
@@ -70,6 +71,7 @@ function TypeModal(props: {
   if (!props.open) return null;
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -143,6 +145,7 @@ function TypeModal(props: {
         </form>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 

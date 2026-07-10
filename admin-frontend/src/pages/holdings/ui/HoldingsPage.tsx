@@ -20,6 +20,7 @@ import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/Singl
 import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type HoldingFormState = {
   name: string;
@@ -164,6 +165,7 @@ function ModalFrame(props: {
 }) {
   if (!props.open) return null;
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -193,6 +195,7 @@ function ModalFrame(props: {
         {props.children}
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -234,6 +237,7 @@ function HoldingComparisonModal({
   const worstNoAnswers = Math.max(...rows.map((row) => row.noAnswers));
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -292,6 +296,7 @@ function HoldingComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -328,6 +333,7 @@ function HoldingListComparisonModal({
   const lagger = [...rows].sort((a, b) => a.avgScore - b.avgScore)[0];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(1040px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -392,6 +398,7 @@ function HoldingListComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
