@@ -14,10 +14,10 @@ import {
   type HoldingItem,
   type HoldingType,
 } from '../../../shared/api/adminPanel';
-import { ratingClass, deltaDisplay } from '../../../shared/lib/admin-panel/utils';
+import { ratingClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
+import { STATUS_LABELS } from '../../../shared/lib/admin-panel/mockData';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
 import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
@@ -68,6 +68,40 @@ type HoldingSortKey =
   | 'status';
 
 type SortDir = 'asc' | 'desc';
+
+function HoldingTrendChart({ points }: { points: { date: string; avgScore: number; count: number }[] }) {
+  if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
+  const W = 760, H = 220;
+  const pad = { top: 18, right: 18, bottom: 34, left: 42 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+  const step = points.length <= 1 ? 0 : cw / (points.length - 1);
+  const xs = points.map((_, index) => pad.left + index * step);
+  const y = (score: number) => pad.top + ch - (Math.max(0, Math.min(score, 100)) / 100) * ch;
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(point.avgScore)}`).join(' ');
+  return (
+    <div className="sa-chart-wrap">
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+        {[0, 25, 50, 75, 100].map((value) => {
+          const gy = y(value);
+          return (
+            <g key={value}>
+              <line x1={pad.left} y1={gy} x2={pad.left + cw} y2={gy} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
+              <text x={pad.left - 8} y={gy + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{value}</text>
+            </g>
+          );
+        })}
+        <path d={path} fill="none" stroke="var(--tb-accent, #111827)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((point, index) => (
+          <g key={point.date}>
+            <circle cx={xs[index]} cy={y(point.avgScore)} r="4" fill="var(--tb-accent, #111827)" />
+            <text x={xs[index]} y={H - 10} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">{point.date.slice(5)}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
 
 const HOLDING_COLUMN_DEFS: { key: HoldingSortKey; label: string; align?: 'right' }[] = [
   { key: 'name', label: 'Компания' },
@@ -493,7 +527,10 @@ function HoldingAnalyticsDetail({
         <HoldingMetricCard label="Салонов ниже 50" value={detail.lowDealerships} valueClass={detail.lowDealerships > 0 ? 'sa-score-red' : 'sa-score-green'} />
       </div>
 
-      <AISummaryBlock title="AI-сводка по дилеру" summary={detail.aiSummary} loading={loading} variant="brutal" />
+      <div className="sa-card" style={{ padding: 18, marginBottom: 20 }}>
+        <h2 className="sa-section-title">Динамика среднего балла</h2>
+        <HoldingTrendChart points={detail.timeSeries ?? []} />
+      </div>
 
       <div className="sa-detail-insights sa-holding-detail-insights">
         <div className="sa-card">
@@ -515,9 +552,9 @@ function HoldingAnalyticsDetail({
           )}
         </div>
         <div className="sa-card">
-          <h2 className="sa-section-title">Соблюдение скрипта</h2>
+          <h2 className="sa-section-title">Распределение по категориям</h2>
           {detail.scriptCompliance.length === 0 ? (
-            <div className="sa-meta">Нет рассчитанных блоков скрипта.</div>
+            <div className="sa-meta">Нет рассчитанных категорий.</div>
           ) : (
             <div className="sa-hbar-list">
               {detail.scriptCompliance.slice(0, 5).map((block) => (
@@ -557,7 +594,7 @@ function HoldingAnalyticsDetail({
                 <th>Салон</th>
                 <th>Город</th>
                 <th className="sa-text-right">Балл</th>
-                <th className="sa-text-right">Динамика</th>
+                <th>Статус</th>
                 <th className="sa-text-right">Звонки</th>
                 <th className="sa-text-right">Недозвоны</th>
                 <th className="sa-text-right">Менеджеры</th>
@@ -566,9 +603,7 @@ function HoldingAnalyticsDetail({
             <tbody>
               {detail.dealershipRows.length === 0 ? (
                 <tr><td colSpan={8} className="sa-meta" style={{ padding: 24 }}>У дилера пока нет салонов.</td></tr>
-              ) : detail.dealershipRows.map((row) => {
-                const delta = deltaDisplay(row.delta);
-                return (
+              ) : detail.dealershipRows.map((row) => (
                 <tr
                   key={row.id}
                   className="sa-row-clickable"
@@ -592,13 +627,12 @@ function HoldingAnalyticsDetail({
                   </td>
                   <td>{row.city}</td>
                   <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                  <td className="sa-text-right"><span className={delta.cls}>{delta.text}</span></td>
+                  <td><span className={statusBadgeClass(row.status)}>{STATUS_LABELS[row.status]}</span></td>
                   <td className="sa-text-right">{row.calls}</td>
                   <td className="sa-text-right">{row.noAnswers}</td>
                   <td className="sa-text-right">{row.employeesCount}</td>
                 </tr>
-                );
-              })}
+              ))}
             </tbody>
           </table>
         </div>

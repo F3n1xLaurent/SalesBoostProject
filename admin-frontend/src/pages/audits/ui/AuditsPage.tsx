@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router';
 import {
   fetchDealerships,
   fetchCallReportProblems,
@@ -176,6 +177,7 @@ export function Audits({
   loading = false,
   onOpenDetail,
 }: Props) {
+  const location = useLocation();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [dealerships, setDealerships] = useState<DealershipItem[]>([]);
@@ -256,6 +258,17 @@ export function Audits({
     const available = new Set(allReportIssues);
     setFilterProblems((current) => new Set([...current].filter((issue) => available.has(issue))));
   }, [allReportIssues]);
+
+  useEffect(() => {
+    const problem = new URLSearchParams(location.search).get('problem');
+    if (!problem || problemCatalogLoading) return;
+    const decoded = problem.trim();
+    const match = allReportIssues.find((issue) => issue === decoded) ?? null;
+    if (!match) return;
+    setShowFilters(true);
+    setFilterProblems(new Set([match]));
+    setPage(1);
+  }, [allReportIssues, location.search, problemCatalogLoading]);
 
   useEffect(() => {
     let cancelled = false;

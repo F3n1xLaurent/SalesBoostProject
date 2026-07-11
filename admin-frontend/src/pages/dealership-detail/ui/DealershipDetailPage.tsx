@@ -24,7 +24,6 @@ import {
   type CallBatchSnapshot,
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
@@ -305,7 +304,7 @@ function CommunicationBreakdown({ data }: { data?: { label: string; percent: num
 }
 
 function ScriptCompliance({ data }: { data?: { block: string; rate: number; hint?: string }[] }) {
-  if (!data || data.length === 0) return <div className="sa-chart-empty">Нет рассчитанных блоков скрипта</div>;
+  if (!data || data.length === 0) return <div className="sa-chart-empty">Нет рассчитанных категорий</div>;
   return (
     <div className="sa-hbar-list">
       {[...data].sort((a, b) => a.rate - b.rate).map((item) => (
@@ -384,12 +383,6 @@ function EmployeeComparisonModal({
                 ))}
               </tr>
               <tr>
-                <td>Типовая ошибка</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right">{row.typicalError}</td>
-                ))}
-              </tr>
-              <tr>
                 <td>Статус</td>
                 {rows.map((row) => (
                   <td key={row.id} className="sa-text-right">{row.status}</td>
@@ -441,7 +434,6 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
               <th>Сотрудник</th>
               <th className="sa-text-right">AI-рейтинг</th>
               <th className="sa-text-right">Проверки</th>
-              <th>Типовая ошибка</th>
               <th>Статус</th>
             </tr>
           </thead>
@@ -467,10 +459,9 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
                 <td style={{ fontWeight: 600 }}>{e.name}</td>
                 <td className="sa-text-right"><span className={ratingClass(e.aiRating)}>{e.aiRating}</span></td>
                 <td className="sa-text-right">{e.auditsCount}</td>
-                <td>{e.typicalError}</td>
                 <td>
-                  <span className={`sa-emp-status ${e.status === 'Нуждается в обучении' ? 'sa-emp-warn' : e.status === 'Стажёр' ? 'sa-emp-trainee' : ''}`}>
-                    {e.status}
+                  <span className={statusBadgeClass(e.status)}>
+                    {STATUS_LABELS[e.status as keyof typeof STATUS_LABELS] ?? e.status}
                   </span>
                 </td>
               </tr>
@@ -496,7 +487,7 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
 
 /* ────────────────────── Top Issues ────────────────────── */
 
-function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
+function TopIssues({ detail, onOpenProblem }: { detail: DealershipAnalyticsDetail; onOpenProblem?: (issue: string) => void }) {
   return (
     <div className="sa-detail-insights">
       <div className="sa-card" style={{ flex: 1 }}>
@@ -520,7 +511,7 @@ function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
         </ol>
       </div>
       <div className="sa-card" style={{ flex: 1 }}>
-        <h3 className="sa-card-heading">Рекомендованные тренировки</h3>
+        <h3 className="sa-card-heading">Рекомендации</h3>
         <div className="sa-training-list">
           {detail.recommendedTrainings.map((t, i) => (
             <div key={i} className="sa-training-item">
@@ -528,7 +519,7 @@ function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>{t.title}</div>
                 <div className="sa-meta">{t.description}</div>
               </div>
-              <button className="sa-btn-outline sa-btn-sm" disabled title="Скоро">Назначить</button>
+              {onOpenProblem && <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenProblem(t.title)}>Проверки →</button>}
             </div>
           ))}
         </div>
@@ -824,15 +815,6 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         </div>
       )}
 
-      <section className="sa-section" style={{ marginBottom: 24 }}>
-        <AISummaryBlock
-          title="AI-сводка по салону"
-          summary={detail.aiSummary}
-          loading={detailLoading}
-          error={detailError}
-        />
-      </section>
-
       {/* KPI */}
       <div className="sa-kpi-grid" style={{ marginBottom: 32 }}>
         <KPI label="AI-рейтинг" value={detail.aiRating} cls={ratingClass(detail.aiRating)} />
@@ -887,8 +869,8 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           <OutcomeBreakdown data={detail.outcomeBreakdown} />
         </div>
         <div className="sa-card sa-grid-card">
-          <h3 className="sa-card-heading">Качество коммуникации</h3>
-          <CommunicationBreakdown data={detail.communicationBreakdown} />
+          <h3 className="sa-card-heading">Распределение по категориям</h3>
+          <ScriptCompliance data={detail.scriptCompliance} />
         </div>
       </div>
 
@@ -901,14 +883,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       {/* Insights */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Аналитика по ошибкам</h2>
-        <TopIssues detail={detail} />
-      </section>
-
-      <section className="sa-section" style={{ marginBottom: 32 }}>
-        <h2 className="sa-section-title">Соблюдение скрипта</h2>
-        <div className="sa-card">
-          <ScriptCompliance data={detail.scriptCompliance} />
-        </div>
+        <TopIssues detail={detail} onOpenProblem={(issue) => navigate(`/audits?problem=${encodeURIComponent(issue)}`)} />
       </section>
 
       {/* Audit history */}

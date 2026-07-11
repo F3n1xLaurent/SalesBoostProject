@@ -16,7 +16,6 @@ import {
   type AnalyticsPlanParticipation,
 } from '../../../shared/api/adminPanel';
 import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 
 type Props = {
   employeeId: string;
@@ -275,7 +274,7 @@ function BlockBreakdown({ data }: { data: { block: string; score: number; hint: 
 
   return (
     <div className="sa-chart-wrap">
-      <h3 className="sa-chart-title">Разбор по блокам</h3>
+      <h3 className="sa-chart-title">Распределение по категориям</h3>
       <div className="sa-hbar-list">
         {data.map((d, i) => (
           <div
@@ -385,13 +384,8 @@ function ProfileStrip({ detail }: { detail: ManagerAnalyticsDetail }) {
         </div>
         <div className="sa-profile-strip-divider" />
         <div className="sa-profile-strip-section">
-          <div className="sa-profile-strip-label">Зоны роста</div>
+          <div className="sa-profile-strip-label">Слабые стороны</div>
           <div className="sa-profile-tags">{detail.growthAreas.map((g) => <span key={g} className="sa-tag sa-tag-orange">{g}</span>)}</div>
-        </div>
-        <div className="sa-profile-strip-divider" />
-        <div className="sa-profile-strip-section">
-          <div className="sa-profile-strip-label">Фокус обучения</div>
-          <div className="sa-profile-strip-value">{detail.trainingFocus}</div>
         </div>
       </div>
     </div>
@@ -400,7 +394,7 @@ function ProfileStrip({ detail }: { detail: ManagerAnalyticsDetail }) {
 
 /* ────────────────────── Trainer insights ────────────────────── */
 
-function TrainerInsights({ detail }: { detail: ManagerAnalyticsDetail }) {
+function TrainerInsights({ detail, onOpenProblem }: { detail: ManagerAnalyticsDetail; onOpenProblem?: (issue: string) => void }) {
   return (
     <div className="sa-detail-insights">
       <div className="sa-card" style={{ flex: 1 }}>
@@ -422,7 +416,7 @@ function TrainerInsights({ detail }: { detail: ManagerAnalyticsDetail }) {
         </ol>
       </div>
       <div className="sa-card" style={{ flex: 1 }}>
-        <h3 className="sa-card-heading">Рекомендованные тренировки</h3>
+        <h3 className="sa-card-heading">Рекомендации</h3>
         <div className="sa-training-list">
           {detail.recommendedTrainings.map((t, i) => (
             <div key={i} className="sa-training-item">
@@ -430,7 +424,7 @@ function TrainerInsights({ detail }: { detail: ManagerAnalyticsDetail }) {
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>{t.title}</div>
                 <div className="sa-meta">{t.description}</div>
               </div>
-              <button className="sa-btn-outline sa-btn-sm" disabled title="Функция назначения будет подключена позже">Назначить</button>
+              {onOpenProblem && <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenProblem(t.title)}>Проверки →</button>}
             </div>
           ))}
         </div>
@@ -762,15 +756,6 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
         </div>
       </div>
 
-      <section className="sa-section" style={{ marginBottom: 20 }}>
-        <AISummaryBlock
-          title="AI-сводка по менеджеру"
-          summary={detail.aiSummary}
-          loading={detailLoading}
-          error={detailError}
-        />
-      </section>
-
       {/* KPI row — full width, no cramped side-by-side with profile */}
       <div className="sa-kpi-grid sa-kpi-grid-emp">
         <KPI label="AI-рейтинг" value={detail.aiRating} cls={ratingClass(detail.aiRating)} />
@@ -817,10 +802,6 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           <h3 className="sa-card-heading">Исходы звонков</h3>
           <OutcomeBreakdown data={detail.outcomeBreakdown} />
         </div>
-        <div className="sa-card sa-grid-card">
-          <h3 className="sa-card-heading">Качество коммуникации</h3>
-          <CommunicationBreakdown data={detail.communicationBreakdown} />
-        </div>
       </div>
 
       <section className="sa-section" style={{ marginBottom: 28 }}>
@@ -831,7 +812,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
       {/* Trainer insights */}
       <section className="sa-section" style={{ marginBottom: 28 }}>
         <h2 className="sa-section-title">Аналитика по ошибкам</h2>
-        <TrainerInsights detail={detail} />
+        <TrainerInsights detail={detail} onOpenProblem={(issue) => navigate(`/audits?problem=${encodeURIComponent(issue)}`)} />
       </section>
 
       {/* Audit history */}

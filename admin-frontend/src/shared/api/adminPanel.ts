@@ -228,8 +228,21 @@ export interface AnalyticsOverview {
   failRate: number;
   commBreakdown: { label: string; percent: number; color: string }[];
   topErrors: { error: string; count: number; percent: number }[];
+  timeSeries?: TimeSeriesPoint[];
   weeklyTypeTrend?: { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[];
+  typeCategoryComparison?: { category: string; ownScore: number; franchiseScore: number }[];
+  typeTopErrors?: {
+    own: { issue: string; count: number; percent: number }[];
+    franchise: { issue: string; count: number; percent: number }[];
+  };
+  leadersLaggards?: {
+    leadersErrors: { issue: string; count: number; percent: number }[];
+    laggardsErrors: { issue: string; count: number; percent: number }[];
+    leadersQuestions: { question: string; count: number; percent: number }[];
+    laggardsQuestions: { question: string; count: number; percent: number }[];
+  };
   dealershipComparison: { id?: string; name: string; score: number; delta: number }[];
+  dealershipTimeSeries?: { id: string; name: string; points: TimeSeriesPoint[] }[];
   dealershipRows?: Array<{
     id: string;
     name: string;
@@ -306,6 +319,7 @@ export interface AnalyticsHoldingDealershipRow {
 export interface AnalyticsHoldingDetail extends AnalyticsHoldingRow {
   aiSummary?: AnalyticsAISummary;
   dealershipRows: AnalyticsHoldingDealershipRow[];
+  timeSeries: { date: string; avgScore: number; count: number }[];
   topIssues: { issue: string; percent: number }[];
   scriptCompliance: { block: string; rate: number }[];
   meta?: {

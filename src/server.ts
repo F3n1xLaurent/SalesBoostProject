@@ -168,6 +168,7 @@ type AnalyticsSession = {
   durationSec?: number | null;
   talkDurationSec?: number | null;
   manager?: { id: string; fullName: string } | null;
+  plan?: { scriptId?: string | null; name?: string | null } | null;
   dealership?: { type?: string | null; holding?: { type?: string | null } | null } | null;
 };
 
@@ -707,6 +708,91 @@ function topIssuesFromSessions(
     .sort((a, b) => b[1].no - a[1].no)
     .slice(0, limit)
     .map(([issue, value]) => ({ issue, count: value.no, percent: percent(value.no, value.total) }));
+}
+
+type ScriptQuestionSource = {
+  id: string;
+  label: string;
+  expectedAnswer: string;
+};
+
+function scriptQuestionSources(script: {
+  questionsJson: string;
+  objectionsJson: string;
+  successCriteriaJson: string;
+}): ScriptQuestionSource[] {
+  const questions = safeJsonParseLocal<Array<{ id?: string; text?: string }>>(script.questionsJson, []);
+  const objections = safeJsonParseLocal<Array<{ id?: string; phrase?: string }>>(script.objectionsJson, []);
+  const criteria = safeJsonParseLocal<Array<{ sourceType?: string; sourceId?: string; expectedAnswer?: string }>>(script.successCriteriaJson, []);
+  return criteria
+    .map((criterion) => {
+      const sourceId = String(criterion.sourceId || '').trim();
+      const sourceType = String(criterion.sourceType || '').trim();
+      const question = sourceType === 'question' ? questions.find((item) => item.id === sourceId) : null;
+      const objection = sourceType === 'objection' ? objections.find((item) => item.id === sourceId) : null;
+      const label = sourceType === 'question'
+        ? String(question?.text || criterion.expectedAnswer || '').trim()
+        : String(objection?.phrase || criterion.expectedAnswer || '').trim();
+      if (!sourceId || !label) return null;
+      return {
+        id: `${sourceType}:${sourceId}`,
+        label,
+        expectedAnswer: String(criterion.expectedAnswer || '').trim(),
+      };
+    })
+    .filter((item): item is ScriptQuestionSource => Boolean(item));
+}
+
+function topScriptQuestionsFromSessions(
+  sessions: AnalyticsSession[],
+  scriptsById: Map<string, { questionsJson: string; objectionsJson: string; successCriteriaJson: string }>,
+  limit = 5,
+): { question: string; percent: number; count: number }[] {
+  const counts = new Map<string, { label: string; fails: number; total: number }>();
+  for (const session of sessions) {
+    const scriptId = session.plan?.scriptId || null;
+    const script = scriptId ? scriptsById.get(scriptId) : null;
+    if (!script) continue;
+    const sources = scriptQuestionSources(script);
+    if (!sources.length) continue;
+    const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+    const planCriteria = extractPlanCriteriaEvaluation(evaluation);
+    const criteriaItems = planCriteria?.items ?? [];
+    for (const source of sources) {
+      const current = counts.get(source.id) ?? { label: source.label, fails: 0, total: 0 };
+      const matchingCriterion = criteriaItems.find((item) => {
+        const expected = item.expectedAnswer.toLowerCase();
+        const sourceExpected = source.expectedAnswer.toLowerCase();
+        const label = source.label.toLowerCase();
+        return (sourceExpected && expected.includes(sourceExpected))
+          || (sourceExpected && sourceExpected.includes(expected))
+          || (label && expected.includes(label))
+          || (label && label.includes(expected));
+      });
+      current.total += 1;
+      const failed = matchingCriterion
+        ? matchingCriterion.maxScore > 0 && matchingCriterion.score < matchingCriterion.maxScore * 0.6
+        : typeof scoreFromAnalyticsSession(session) === 'number' && (scoreFromAnalyticsSession(session) ?? 0) < 60;
+      if (failed) current.fails += 1;
+      counts.set(source.id, current);
+    }
+  }
+  return [...counts.values()]
+    .filter((item) => item.fails > 0)
+    .sort((a, b) => b.fails - a.fails || b.total - a.total)
+    .slice(0, limit)
+    .map((item) => ({ question: item.label, count: item.fails, percent: percent(item.fails, item.total) }));
+}
+
+function categoryComparisonFromSessions(ownSessions: AnalyticsSession[], franchiseSessions: AnalyticsSession[]) {
+  const own = new Map(dimensionBreakdownFromSessions(ownSessions).map((item) => [item.block, item.score]));
+  const franchise = new Map(dimensionBreakdownFromSessions(franchiseSessions).map((item) => [item.block, item.score]));
+  const names = [...new Set([...own.keys(), ...franchise.keys()])];
+  return names.map((category) => ({
+    category,
+    ownScore: own.get(category) ?? 0,
+    franchiseScore: franchise.get(category) ?? 0,
+  }));
 }
 
 function dimensionBreakdownFromSessions(sessions: AnalyticsSession[]): { block: string; score: number; hint: string }[] {
@@ -5460,6 +5546,14 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         orderBy: { name: 'asc' },
       }),
     ]);
+    const scriptIds = [...new Set(sessions.map((session) => session.plan?.scriptId).filter((id): id is string => Boolean(id)))];
+    const scripts = scriptIds.length
+      ? await prisma.callScript.findMany({
+          where: { id: { in: scriptIds } },
+          select: { id: true, questionsJson: true, objectionsJson: true, successCriteriaJson: true },
+        })
+      : [];
+    const scriptsById = new Map(scripts.map((script) => [script.id, script]));
 
     const scored = sessions.filter((session) => typeof session.totalScore === 'number');
     const totalCalls = sessions.length;
@@ -5561,6 +5655,12 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
     const lowDealerships = dealershipStats.filter((item) => item.calls > 0 && item.score < 50).length;
     const topProblem = topErrors[0] ?? null;
     const worstDimension = scriptCompliance[0] ?? null;
+    const ownSessions = sessions.filter((session) => !isFranchisedSession(session));
+    const franchiseSessions = sessions.filter((session) => isFranchisedSession(session));
+    const leaderIds = new Set(comparedDealerships.slice(-3).map((item) => item.id));
+    const laggardIds = new Set(comparedDealerships.slice(0, 3).map((item) => item.id));
+    const leaderSessions = sessions.filter((session) => session.dealershipId && leaderIds.has(session.dealershipId));
+    const laggardSessions = sessions.filter((session) => session.dealershipId && laggardIds.has(session.dealershipId));
 
     const errorsInsight: AnalyticsInsight = topProblem
       ? {
@@ -5688,11 +5788,28 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         { label: 'Слабая коммуникация', percent: percent(communicationWeak, commTotal), color: '#F87171' },
       ],
       topErrors,
+      timeSeries: timeSeriesFromSessions(sessions, 14),
       weeklyTypeTrend: weeklyTypeTrendFromSessions(sessions),
+      typeCategoryComparison: categoryComparisonFromSessions(ownSessions, franchiseSessions),
+      typeTopErrors: {
+        own: topIssuesFromSessions(ownSessions, 5, DEFAULT_CALL_REPORT_PROBLEMS),
+        franchise: topIssuesFromSessions(franchiseSessions, 5, DEFAULT_CALL_REPORT_PROBLEMS),
+      },
+      leadersLaggards: {
+        leadersErrors: topIssuesFromSessions(leaderSessions, 5, DEFAULT_CALL_REPORT_PROBLEMS),
+        laggardsErrors: topIssuesFromSessions(laggardSessions, 5, DEFAULT_CALL_REPORT_PROBLEMS),
+        leadersQuestions: topScriptQuestionsFromSessions(leaderSessions, scriptsById, 5),
+        laggardsQuestions: topScriptQuestionsFromSessions(laggardSessions, scriptsById, 5),
+      },
       dealershipComparison: comparedDealerships.map((item) => ({ id: item.id, name: item.name, score: item.score, delta: item.delta })),
       scriptCompliance,
       holdingRows,
       dealershipRows: dealershipStats.sort((a, b) => b.calls - a.calls || a.score - b.score),
+      dealershipTimeSeries: dealershipStats.map((item) => ({
+        id: item.id,
+        name: item.name,
+        points: timeSeriesFromSessions(sessions.filter((session) => session.dealershipId === item.id), 14),
+      })),
       meta: {
         linkedCalls: totalCalls,
         scoredCalls: scored.length,
@@ -5916,6 +6033,7 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
         lowDealerships,
       }),
       dealershipRows: dealershipRows.sort((a, b) => b.calls - a.calls || a.score - b.score),
+      timeSeries: timeSeriesFromSessions(sessions, 14),
       topIssues: topIssues.map((issue) => ({ issue: issue.issue, percent: issue.percent })),
       scriptCompliance,
       meta: {
@@ -6073,9 +6191,17 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
     if (!canAccessDealershipForActiveRole(req, dealership)) return res.status(403).json({ error: 'Нет доступа к этой точке.' });
     const sessions = await prisma.voiceCallSession.findMany({
       where: { dealershipId: id },
-      include: { manager: true },
+      include: { manager: true, plan: { select: { scriptId: true, name: true } } },
       orderBy: { startedAt: 'desc' },
     });
+    const scriptIds = [...new Set(sessions.map((session) => session.plan?.scriptId).filter((scriptId): scriptId is string => Boolean(scriptId)))];
+    const scripts = scriptIds.length
+      ? await prisma.callScript.findMany({
+          where: { id: { in: scriptIds } },
+          select: { id: true, questionsJson: true, objectionsJson: true, successCriteriaJson: true },
+        })
+      : [];
+    const scriptsById = new Map(scripts.map((script) => [script.id, script]));
     const score = scoreFromSessions(sessions);
     const answerRate = answerRateFromSessions(sessions);
     const avgAnswerTimeSec = averagePositiveMetric(sessions, (session) => session.answerTimeSec);
@@ -6113,7 +6239,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
         aiRating: managerScore,
         auditsCount: managerSessions.length,
         typicalError: managerTopIssue?.issue ?? 'Нет данных',
-        status: managerSessions.length === 0 ? 'Нет данных' : managerScore < 50 ? 'Нуждается в обучении' : managerScore < 70 ? 'Стажёр' : 'Стабильно',
+        status: analyticsStatus(managerScore, null, managerSessions.length),
       };
     });
     const item = {
@@ -6162,10 +6288,10 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
         return rate ?? 0;
       }),
       topIssues: topIssues.map((item) => ({ issue: item.issue, percent: item.percent })),
-      topQuestions: topIssues.slice(0, 5).map((item) => item.issue),
+      topQuestions: topScriptQuestionsFromSessions(sessions, scriptsById, 5).map((item) => item.question),
       recommendedTrainings: topIssues.slice(0, 3).map((item) => ({
         title: item.issue,
-        description: 'Разобрать звонки с повторяющимся NO по этому блоку',
+        description: `Встречается в ${item.percent}% проверок точки. Разберите звонки с этой проблемой и обновите короткий чек-лист менеджеров.`,
       })),
     };
     res.json({ item });
@@ -6247,7 +6373,7 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
     const [sessions, dealershipSessions, networkSessions, dealershipManagers, trainerSessions, trainerScoreAgg, trainerStreak] = await Promise.all([
       prisma.voiceCallSession.findMany({
         where: { managerId: id },
-        include: { plan: { select: { name: true } } },
+        include: { plan: { select: { name: true, scriptId: true } } },
         orderBy: { startedAt: 'desc' },
       }),
       prisma.voiceCallSession.findMany({
@@ -6273,6 +6399,14 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
       }),
       prisma.trainerStreak.findUnique({ where: { employeeId: id } }),
     ]);
+    const scriptIds = [...new Set(sessions.map((session) => session.plan?.scriptId).filter((scriptId): scriptId is string => Boolean(scriptId)))];
+    const scripts = scriptIds.length
+      ? await prisma.callScript.findMany({
+          where: { id: { in: scriptIds } },
+          select: { id: true, questionsJson: true, objectionsJson: true, successCriteriaJson: true },
+        })
+      : [];
+    const scriptsById = new Map(scripts.map((script) => [script.id, script]));
     const score = scoreFromSessions(sessions);
     const delta = deltaFromSessions(sessions);
     const failsCount = sessions.filter((session) => typeof session.totalScore === 'number' && (session.totalScore ?? 0) < 50).length;
@@ -6406,10 +6540,10 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
       })),
       blockBreakdown,
       topIssues: topIssues.map((item) => ({ issue: item.issue, percent: item.percent })),
-      topQuestions: topIssues.slice(0, 5).map((item) => item.issue),
+      topQuestions: topScriptQuestionsFromSessions(sessions, scriptsById, 5).map((item) => item.question),
       recommendedTrainings: topIssues.slice(0, 3).map((item) => ({
         title: item.issue,
-        description: 'Отработать повторяющуюся ошибку по истории звонков',
+        description: `Встречается в ${item.percent}% проверок сотрудника. Начните разбор с цитат в отчётах и сравните с лучшими примерами по категории.`,
       })),
       audits: sessions.map((session) => ({
         id: `call-${session.id}`,
