@@ -587,14 +587,39 @@ function trainerElevenLabsVoiceId(caseContext: Record<string, unknown>): string 
   return voiceId || null;
 }
 
-function dimensionLabel(key: string): string {
-  const labels: Record<string, string> = {
-    first_contact: 'Первый контакт',
-    product_and_sales: 'Продукт и продажа',
+const ANALYTICS_CATEGORIES = ['Контакт', 'Диагностика', 'Продукт', 'Закрытие', 'Коммуникация'] as const;
+type AnalyticsCategory = typeof ANALYTICS_CATEGORIES[number];
+
+function dimensionLabel(key: string): AnalyticsCategory {
+  const normalized = String(key || '').trim().toLowerCase();
+  const labels: Record<string, AnalyticsCategory> = {
+    contact: 'Контакт',
+    first_contact: 'Контакт',
+    intro: 'Контакт',
+    opening: 'Контакт',
+    diagnosis: 'Диагностика',
+    diagnostics: 'Диагностика',
+    needs: 'Диагностика',
+    needs_discovery: 'Диагностика',
+    product: 'Продукт',
+    product_and_sales: 'Продукт',
+    presentation: 'Продукт',
+    product_presentation: 'Продукт',
+    closing: 'Закрытие',
     closing_commitment: 'Закрытие',
+    objections: 'Закрытие',
+    objection_handling: 'Закрытие',
+    next_step: 'Закрытие',
     communication: 'Коммуникация',
+    comm: 'Коммуникация',
+    tone: 'Коммуникация',
   };
-  return labels[key] ?? key;
+  if (labels[normalized]) return labels[normalized];
+  if (normalized.includes('контакт') || normalized.includes('contact') || normalized.includes('intro')) return 'Контакт';
+  if (normalized.includes('диагност') || normalized.includes('needs')) return 'Диагностика';
+  if (normalized.includes('продукт') || normalized.includes('product') || normalized.includes('presentation')) return 'Продукт';
+  if (normalized.includes('закрыт') || normalized.includes('closing') || normalized.includes('objection') || normalized.includes('next')) return 'Закрытие';
+  return 'Коммуникация';
 }
 
 function analyticsStatus(score: number, answerRate: number | null, calls: number): 'norm' | 'risk' | 'critical' | 'no-data' {
@@ -795,22 +820,26 @@ function categoryComparisonFromSessions(ownSessions: AnalyticsSession[], franchi
   }));
 }
 
-function dimensionBreakdownFromSessions(sessions: AnalyticsSession[]): { block: string; score: number; hint: string }[] {
-  const sums = new Map<string, { sum: number; count: number }>();
+function dimensionBreakdownFromSessions(sessions: AnalyticsSession[]): { block: AnalyticsCategory; score: number; hint: string }[] {
+  const sums = new Map<AnalyticsCategory, { sum: number; count: number }>();
   for (const session of sessions) {
     const dimensions = extractDimensionsFromSession(session);
     for (const [key, value] of Object.entries(dimensions)) {
-      const current = sums.get(key) ?? { sum: 0, count: 0 };
+      const category = dimensionLabel(key);
+      const current = sums.get(category) ?? { sum: 0, count: 0 };
       current.sum += value;
       current.count += 1;
-      sums.set(key, current);
+      sums.set(category, current);
     }
   }
-  return [...sums.entries()].map(([key, value]) => ({
-    block: dimensionLabel(key),
+  return ANALYTICS_CATEGORIES.map((category) => {
+    const value = sums.get(category) ?? { sum: 0, count: 0 };
+    return {
+    block: category,
     score: value.count ? Math.round(value.sum / value.count) : 0,
-    hint: `Средний балл блока «${dimensionLabel(key)}»`,
-  }));
+    hint: value.count ? `Средний балл категории «${category}»` : `Нет данных по категории «${category}»`,
+    };
+  });
 }
 
 function timeSeriesFromSessions(sessions: AnalyticsSession[], days = 14): { date: string; avgScore: number; count: number }[] {
