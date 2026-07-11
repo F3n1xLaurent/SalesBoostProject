@@ -16,7 +16,10 @@ import {
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 
 const API_BASE = '';
 
@@ -71,6 +74,12 @@ function comparator(key: SortKey, dir: SortDir) {
 /* ────────────────────── Period helper ────────────────────── */
 
 type Period = '7d' | '30d' | 'custom';
+
+const PERIOD_FILTER_OPTIONS = [
+  { value: '7d' as const, label: '7 дней' },
+  { value: '30d' as const, label: '30 дней' },
+];
+
 type CompanyRow = DealershipRow & { dealer: string; workingHours: string; type: DealershipType; directions: DealershipDirection[]; isActive: boolean };
 
 function dealershipTypeLabel(type: DealershipType): string {
@@ -99,6 +108,7 @@ function DealershipComparisonModal({
   const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(1040px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -166,6 +176,7 @@ function DealershipComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -251,11 +262,24 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   }, [directionOptions]);
   const availableDirectionFilters = useMemo(() => {
     const used = new Set(rows.flatMap((row) => row.directions));
-    return [...used].map((value) => ({
-      value,
-      label: directionLabelByValue.get(value) || value,
-    })).sort((a, b) => a.label.localeCompare(b.label, 'ru'));
-  }, [directionLabelByValue, rows]);
+    const filters = directionOptions.map((direction) => {
+      const value = used.has(direction.id)
+        ? direction.id
+        : direction.code && used.has(direction.code)
+          ? direction.code
+          : direction.code || direction.id;
+      return { value, label: direction.name };
+    });
+    const knownValues = new Set(
+      directionOptions.flatMap((direction) => [direction.id, direction.code].filter(Boolean) as string[]),
+    );
+    for (const value of used) {
+      if (!knownValues.has(value)) {
+        filters.push({ value, label: directionLabelByValue.get(value) || value });
+      }
+    }
+    return filters.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+  }, [directionLabelByValue, directionOptions, rows]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -421,11 +445,20 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
 
   useEffect(() => {
     let cancelled = false;
-    fetchDealershipDirections({ active: true })
+    if (!selectedHoldingId) {
+      setDirectionOptions([]);
+      setDirectionFilter([]);
+      return () => { cancelled = true; };
+    }
+    fetchDealershipDirections({ holdingId: selectedHoldingId, active: true })
       .then((items) => { if (!cancelled) setDirectionOptions(items); })
       .catch(() => { if (!cancelled) setDirectionOptions([]); });
     return () => { cancelled = true; };
-  }, []);
+  }, [selectedHoldingId]);
+
+  useEffect(() => {
+    setDirectionFilter([]);
+  }, [selectedHoldingId]);
 
   useEffect(() => {
     if (!activeBatchId) return;
@@ -557,21 +590,16 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           <h1 className="sa-page-title">Точки</h1>
           <p className="sa-page-subtitle">Управление точками компании и их эффективностью</p>
         </div>
-        <select
-          className="sa-select"
+        <HoldingSelectPicker
+          holdings={holdings}
           value={selectedHoldingId}
-          onChange={(event) => {
-            setSelectedHoldingId(event.target.value);
+          onChange={(holdingId) => {
+            setSelectedHoldingId(holdingId);
             setSelectedComparisonIds([]);
           }}
           disabled={holdingsLoading || holdings.length === 0}
-          style={{ minWidth: 220 }}
-        >
-          {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-          {holdings.map((holding) => (
-            <option key={holding.id} value={holding.id}>{holding.name}</option>
-          ))}
-        </select>
+          loading={holdingsLoading}
+        />
       </div>
       {analyticsLoading && !loading && (
         <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>
@@ -603,11 +631,13 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <select className="sa-select" value={period} onChange={(e) => setPeriod(e.target.value as Period)}>
-            <option value="7d">7 дней</option>
-            <option value="30d">30 дней</option>
-            {/* <option value="custom">Произвольно</option> */}
-          </select>
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={PERIOD_FILTER_OPTIONS}
+              value={period}
+              onChange={(value) => setPeriod(value as Period)}
+            />
+          </div>
           <button className="sa-btn-outline" onClick={() => setShowFilters((v) => !v)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
@@ -616,23 +646,6 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           </button>
           <button className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => setCreateDealershipOpen(true)}>
             Создать точку
-          </button>
-          <button
-            className="sa-btn-danger"
-            onClick={handleStartAllChecks}
-            disabled={startingBatch || hasActiveManual || !selectedHoldingId}
-            title={hasActiveManual ? 'Уже есть активная ручная проверка — управляйте ею в трее проверок.' : !selectedHoldingId ? 'Сначала добавьте компанию' : undefined}
-          >
-            <span className="sa-btn-danger-dot" />
-            {startingBatch ? 'Запуск...' : 'Проверить все точки'}
-          </button>
-          <button
-            className="sa-btn-outline"
-            onClick={handleStartLocalTest}
-            disabled={startingBatch || hasActiveManual || !selectedHoldingId}
-            title={hasActiveManual ? 'Уже есть активная ручная проверка — управляйте ею в трее проверок.' : !selectedHoldingId ? 'Сначала добавьте компанию' : undefined}
-          >
-            Тестовый прогон (без звонков)
           </button>
         </div>
         <div className="sa-toolbar-chips">

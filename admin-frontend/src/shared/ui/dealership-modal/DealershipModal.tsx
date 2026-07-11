@@ -12,6 +12,7 @@ import {
   type HoldingItem,
 } from '../../api/adminPanel';
 import { useToast } from '../toast/ToastProvider';
+import { FixedOverlayPortal } from '../fixed-overlay-portal/FixedOverlayPortal';
 
 type DealershipFormState = {
   name: string;
@@ -318,6 +319,7 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
   }
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -491,5 +493,6 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
         </form>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }

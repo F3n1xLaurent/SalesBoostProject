@@ -1,9 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
+import { useNavigate } from 'react-router';
+import { BrutalCard } from '../../../shared/ui/brutal-card';
+import type { AdminTab } from '../../../entities/session/model/types';
+import { tabToPath } from '../../../shared/routing/adminRoutes';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { fetchDashboardOverview, fetchHoldings, type DashboardOverview, type HoldingItem, type TimeSeriesPoint } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 
-const SECTION_GAP = 48;
+const SECTION_GAP = 10;
+/** Neutral chart ink — trend line, duration bars (not score-colored) */
+const TB_CHART_INK = 'var(--tb-ink)';
+/** Matches --tb-status-green (#2D9B5E) — same green as KPI «Дозвон» and tables */
+const TB_STATUS_GREEN_RGB = '45, 155, 94';
 
 type DashboardProps = {
   loading: boolean;
@@ -33,6 +42,9 @@ function KPICard({
   loading,
   noData,
   valueClass,
+  valueSuffix,
+  navigateTo,
+  onNavigate,
 }: {
   label: string;
   value: string | number;
@@ -40,20 +52,60 @@ function KPICard({
   loading: boolean;
   noData?: boolean;
   valueClass?: string;
+  valueSuffix?: string;
+  navigateTo?: AdminTab;
+  onNavigate?: (tab: AdminTab) => void;
 }) {
   const displayValue = noData ? 'Нет данных' : loading ? '—' : value;
   const isPlaceholder = loading || noData;
+  const isInteractive = Boolean(navigateTo && onNavigate);
+
+  const content = (
+    <>
+      <div className="sa-kpi-card-top">
+        <div className="sa-kpi-card-heading">{label}</div>
+        {isInteractive && (
+          <span className="sa-kpi-card-link-badge" aria-hidden>
+            <LetsIcon name="arrow-right-long" size={18} strokeWidth={1.5} />
+          </span>
+        )}
+      </div>
+      <div className="sa-kpi-card-spacer" aria-hidden />
+      <div className="sa-kpi-card-bottom">
+        {valueSuffix && !isPlaceholder ? (
+          <div className="sa-kpi-value-row">
+            <span className={`sa-kpi-value sa-kpi-value-large ${valueClass ?? ''}`}>{displayValue}</span>
+            <span className="sa-kpi-value-suffix">{valueSuffix}</span>
+          </div>
+        ) : (
+          <div className={`sa-kpi-value ${!isPlaceholder ? 'sa-kpi-value-large' : ''} ${valueClass ?? ''}`}>{displayValue}</div>
+        )}
+        {description && !isPlaceholder && <div className="sa-kpi-desc">{description}</div>}
+      </div>
+    </>
+  );
+
+  if (isInteractive) {
+    return (
+      <button
+        type="button"
+        className="sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card sa-kpi-card-interactive"
+        onClick={() => onNavigate!(navigateTo!)}
+      >
+        {content}
+      </button>
+    );
+  }
+
   return (
-    <div className="sa-card sa-kpi-card">
-      <div className="sa-kpi-label">{label}</div>
-      <div className={`sa-kpi-value ${!isPlaceholder ? 'sa-kpi-value-large' : ''} ${valueClass ?? ''}`}>{displayValue}</div>
-      {description && !isPlaceholder && <div className="sa-kpi-desc">{description}</div>}
+    <div className="sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card">
+      {content}
     </div>
   );
 }
 
 /* ─── Performance Trend Chart ─── */
-function PerformanceTrendChart({ points }: { points: TimeSeriesPoint[] }) {
+function PerformanceTrendChart({ points, embedded = false }: { points: TimeSeriesPoint[]; embedded?: boolean }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   if (points.length === 0) {
@@ -71,12 +123,20 @@ function PerformanceTrendChart({ points }: { points: TimeSeriesPoint[] }) {
   const chartHeight = height - padding.top - padding.bottom;
   const step = points.length <= 1 ? 0 : chartWidth / (points.length - 1);
   const xs = points.map((_, i) => padding.left + i * step);
-  const ys = points.map((p) => padding.top + chartHeight - (p.avgScore / 100) * chartHeight);
-  const pathD = points.map((_, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${ys[i]}`).join(' ');
+  const y = (value: number) => padding.top + chartHeight - (Math.max(0, Math.min(100, value)) / 100) * chartHeight;
+  const ownPathD = points.map((point, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${y(point.ownScore ?? point.avgScore)}`).join(' ');
+  const franchisePathD = points.map((point, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${y(point.franchiseScore ?? point.avgScore)}`).join(' ');
+  const hasTypedSeries = points.some((point) => (point.ownCount ?? 0) > 0 || (point.franchiseCount ?? 0) > 0);
+  const ownColor = 'var(--tb-status-green)';
+  const franchiseColor = 'var(--tb-status-orange)';
 
   return (
     <div className="sa-chart-wrap">
-      <h3 className="sa-chart-title">Динамика эффективности</h3>
+      {!embedded && <h3 className="sa-chart-title">Динамика эффективности</h3>}
+      <div className="sa-chart-legend">
+        <span><i style={{ background: ownColor }} /> Свои салоны</span>
+        <span><i style={{ background: franchiseColor }} /> Салоны франчайзи</span>
+      </div>
       <svg
         width="100%"
         height={height}
@@ -86,8 +146,8 @@ function PerformanceTrendChart({ points }: { points: TimeSeriesPoint[] }) {
       >
         <defs>
           <linearGradient id="trendFillGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--primary, #6366F1)" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="var(--primary, #6366F1)" stopOpacity="0.02" />
+            <stop offset="0%" stopColor={ownColor} stopOpacity="0.12" />
+            <stop offset="100%" stopColor={ownColor} stopOpacity="0.02" />
           </linearGradient>
         </defs>
         {[0, 25, 50, 75, 100].map((v) => {
@@ -104,11 +164,14 @@ function PerformanceTrendChart({ points }: { points: TimeSeriesPoint[] }) {
             {p.date.slice(5)}
           </text>
         ))}
-        <path
-          d={`${pathD} L ${xs[xs.length - 1]} ${padding.top + chartHeight} L ${xs[0]} ${padding.top + chartHeight} Z`}
-          fill="url(#trendFillGrad)"
-        />
-        <path d={pathD} fill="none" stroke="var(--primary, #6366F1)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        {hasTypedSeries && (
+          <path
+            d={`${ownPathD} L ${xs[xs.length - 1]} ${padding.top + chartHeight} L ${xs[0]} ${padding.top + chartHeight} Z`}
+            fill="url(#trendFillGrad)"
+          />
+        )}
+        <path d={ownPathD} fill="none" stroke={ownColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={franchisePathD} fill="none" stroke={franchiseColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
         {points.map((_, i) => (
           <rect
             key={`hit-${i}`}
@@ -123,32 +186,48 @@ function PerformanceTrendChart({ points }: { points: TimeSeriesPoint[] }) {
         {hoverIdx !== null && (
           <line x1={xs[hoverIdx]} y1={padding.top} x2={xs[hoverIdx]} y2={padding.top + chartHeight} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.4" />
         )}
-        {points.map((p, i) => (
-          <circle
-            key={p.date}
-            cx={xs[i]}
-            cy={ys[i]}
-            r={hoverIdx === i ? 6 : 4}
-            fill={hoverIdx === i ? '#fff' : 'var(--primary, #6366F1)'}
-            stroke={hoverIdx === i ? 'var(--primary, #6366F1)' : 'none'}
-            strokeWidth={hoverIdx === i ? 2.5 : 0}
-            style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
-          />
-        ))}
+        {points.map((p, i) => {
+          const ownScore = p.ownScore ?? p.avgScore;
+          const franchiseScore = p.franchiseScore ?? p.avgScore;
+          return (
+            <React.Fragment key={p.date}>
+              <circle
+                cx={xs[i]}
+                cy={y(ownScore)}
+                r={hoverIdx === i ? 5.5 : 4}
+                fill={hoverIdx === i ? '#fff' : ownColor}
+                stroke={ownColor}
+                strokeWidth={hoverIdx === i ? 2.5 : 0}
+                style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
+              />
+              <circle
+                cx={xs[i]}
+                cy={y(franchiseScore)}
+                r={hoverIdx === i ? 5.5 : 4}
+                fill={hoverIdx === i ? '#fff' : franchiseColor}
+                stroke={franchiseColor}
+                strokeWidth={hoverIdx === i ? 2.5 : 0}
+                style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
+              />
+            </React.Fragment>
+          );
+        })}
         {hoverIdx !== null && (() => {
           const p = points[hoverIdx];
           const tx = xs[hoverIdx];
-          const ty = ys[hoverIdx];
-          const tooltipW = 150;
-          const tooltipH = 62;
+          const ownScore = p.ownScore ?? p.avgScore;
+          const franchiseScore = p.franchiseScore ?? p.avgScore;
+          const ty = Math.min(y(ownScore), y(franchiseScore));
+          const tooltipW = 178;
+          const tooltipH = 76;
           const tooltipX = Math.min(Math.max(tx - tooltipW / 2, 4), width - tooltipW - 4);
           const tooltipY = ty - tooltipH - 14;
           return (
             <g>
               <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="8" fill="#1F2937" opacity="0.92" />
               <text x={tooltipX + 12} y={tooltipY + 18} fontSize="11" fill="#D1D5DB">Дата: {p.date}</text>
-              <text x={tooltipX + 12} y={tooltipY + 34} fontSize="11" fill="#F9FAFB" fontWeight="600">Средний балл: {p.avgScore.toFixed(1)}</text>
-              <text x={tooltipX + 12} y={tooltipY + 50} fontSize="11" fill="#D1D5DB">Проверок: {p.count}</text>
+              <text x={tooltipX + 12} y={tooltipY + 38} fontSize="11" fill="#F9FAFB" fontWeight="600">Свои: {ownScore.toFixed(1)} ({p.ownCount ?? p.count})</text>
+              <text x={tooltipX + 12} y={tooltipY + 58} fontSize="11" fill="#F9FAFB" fontWeight="600">Франчайзи: {franchiseScore.toFixed(1)} ({p.franchiseCount ?? p.count})</text>
             </g>
           );
         })()}
@@ -197,13 +276,13 @@ function SalonTable({
 }
 
 /* ─── Average Answer Time — SVG bar chart with clamped tooltip ─── */
-function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number; totalCalls: number }[] }) {
+function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: string; avgSec: number; totalCalls: number }[]; embedded?: boolean }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   if (!data || data.length === 0) {
     return (
       <div className="sa-chart-wrap">
-        <h3 className="sa-chart-title">Среднее время ответа</h3>
+        {!embedded && <h3 className="sa-chart-title">Средняя длительность звонка</h3>}
         <div className="sa-chart-empty">Нет данных за выбранный период</div>
       </div>
     );
@@ -225,7 +304,7 @@ function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number
 
   return (
     <div className="sa-chart-wrap">
-      <h3 className="sa-chart-title">Средняя длительность звонка</h3>
+      {!embedded && <h3 className="sa-chart-title">Средняя длительность звонка</h3>}
       <svg
         width="100%"
         height={svgH}
@@ -260,8 +339,8 @@ function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number
                 width={barW}
                 height={barH}
                 rx={4}
-                fill={isHover ? '#4F46E5' : '#6366F1'}
-                opacity={isHover ? 1 : 0.85}
+                fill={TB_CHART_INK}
+                opacity={isHover ? 1 : 0.88}
                 style={{ transition: 'opacity 0.15s ease, fill 0.15s ease' }}
               />
               {isHover && (
@@ -287,10 +366,10 @@ function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number
                 const tooltipY = above >= 0 ? above : y + barH + 10;
                 return (
                   <g>
-                    <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="8" fill="#1F2937" opacity="0.92" />
-                    <text x={tooltipX + 10} y={tooltipY + 16} fontSize="11" fill="#F9FAFB" fontWeight="600">{d.name}</text>
-                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="#D1D5DB">Длительность: {d.avgSec} сек</text>
-                    <text x={tooltipX + 10} y={tooltipY + 46} fontSize="11" fill="#D1D5DB">Звонков: {d.totalCalls}</text>
+                    <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="10" fill="var(--tb-ink)" />
+                    <text x={tooltipX + 10} y={tooltipY + 16} fontSize="11" fill="#F1F0EC" fontWeight="600">{d.name}</text>
+                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="rgba(241, 240, 236, 0.78)">Длительность: {d.avgSec} сек</text>
+                    <text x={tooltipX + 10} y={tooltipY + 46} fontSize="11" fill="rgba(241, 240, 236, 0.78)">Звонков: {d.totalCalls}</text>
                   </g>
                 );
               })()}
@@ -302,13 +381,13 @@ function AverageAnswerTimeChart({ data }: { data: { name: string; avgSec: number
   );
 }
 
-function AnswerRateByHour({ hourly }: { hourly: number[] }) {
+function AnswerRateByHour({ hourly, embedded = false }: { hourly: number[]; embedded?: boolean }) {
   const [hoverHour, setHoverHour] = useState<number | null>(null);
 
   if (!hourly || hourly.length === 0) {
     return (
       <div className="sa-chart-wrap">
-        <h3 className="sa-chart-title">Дозвон по часам</h3>
+        {!embedded && <h3 className="sa-chart-title">Дозвон по часам</h3>}
         <div className="sa-heatmap-empty">Нет данных за выбранный период</div>
       </div>
     );
@@ -318,16 +397,17 @@ function AnswerRateByHour({ hourly }: { hourly: number[] }) {
 
   return (
     <div className="sa-chart-wrap sa-heatmap-fill">
-      <h3 className="sa-chart-title">Дозвон по часам</h3>
+      {!embedded && <h3 className="sa-chart-title">Дозвон по часам</h3>}
       <div className="sa-heatmap-grid-12" onMouseLeave={() => setHoverHour(null)}>
         {hourly.slice(0, 24).map((pct, hour) => {
           const hasData = pct > 0;
           const opacity = hasData ? 0.15 + (pct / maxVal) * 0.85 : 0;
-          const bg = hasData ? `rgba(34, 197, 94, ${opacity})` : 'rgba(17, 24, 39, 0.05)';
+          const bg = hasData ? `rgba(${TB_STATUS_GREEN_RGB}, ${opacity})` : 'rgba(22, 22, 19, 0.05)';
+          const fillStrength = !hasData ? 'none' : opacity >= 0.42 ? 'strong' : 'light';
           return (
             <div
               key={hour}
-              className={`sa-heatmap-cell ${hoverHour === hour ? 'sa-heatmap-cell-hover' : ''} ${!hasData ? 'sa-heatmap-closed' : ''}`}
+              className={`sa-heatmap-cell sa-heatmap-cell-${fillStrength} ${hoverHour === hour ? 'sa-heatmap-cell-hover' : ''} ${!hasData ? 'sa-heatmap-closed' : ''}`}
               style={{ backgroundColor: bg }}
               onMouseEnter={() => setHoverHour(hour)}
             >
@@ -347,14 +427,14 @@ function AnswerRateByHour({ hourly }: { hourly: number[] }) {
 }
 
 /* ─── Answered vs Missed Donut ─── */
-function AnsweredMissedDonut({ rate, totalCalls }: { rate: number; totalCalls: number }) {
+function AnsweredMissedDonut({ rate, totalCalls, embedded = false }: { rate: number; totalCalls: number; embedded?: boolean }) {
   const [hover, setHover] = useState<'answered' | 'missed' | null>(null);
   const answered = Math.round((rate / 100) * totalCalls);
   const missed = totalCalls - answered;
 
   return (
     <div className="sa-donut-section">
-      <h3 className="sa-chart-title">Принятые и пропущенные</h3>
+      {!embedded && <h3 className="sa-chart-title">Принятые и пропущенные</h3>}
       <div className="sa-donut-wrap-v2">
         <div
           className="sa-donut-v2"
@@ -362,11 +442,11 @@ function AnsweredMissedDonut({ rate, totalCalls }: { rate: number; totalCalls: n
           onMouseLeave={() => setHover(null)}
         >
           <svg viewBox="0 0 120 120" className="sa-donut-svg">
-            <circle cx="60" cy="60" r="52" fill="none" stroke="#FEE2E2" strokeWidth="14" />
+            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--tb-status-red-bg)" strokeWidth="14" />
             <circle
               cx="60" cy="60" r="52"
               fill="none"
-              stroke={hover === 'missed' ? '#F87171' : '#34D399'}
+              stroke={hover === 'missed' ? 'var(--tb-status-red)' : 'var(--tb-status-green)'}
               strokeWidth="14"
               strokeDasharray={`${(rate / 100) * 326.73} 326.73`}
               strokeLinecap="round"
@@ -403,6 +483,8 @@ function AnsweredMissedDonut({ rate, totalCalls }: { rate: number; totalCalls: n
 
 /* ─── Main Dashboard ─── */
 export function Dashboard({ loading }: DashboardProps) {
+  const navigate = useNavigate();
+  const handleKpiNavigate = (tab: AdminTab) => navigate(tabToPath(tab));
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
@@ -486,31 +568,19 @@ export function Dashboard({ loading }: DashboardProps) {
       totalAudits: String(c.totalAudits),
     }));
 
-  const topWeakness = overview?.topWeakness ?? null;
-  const badgePrimaryLabel = 'Частая ошибка';
-  const badgePrimaryValue = topWeakness
-    ? `${topWeakness.weakness} (${topWeakness.count})`
-    : 'Нет данных';
-  const badgeSecondaryLabel = 'Зона риска';
-  const badgeSecondaryValue = overview?.riskLabel ?? 'Нет данных';
+
   const dashboardHeader = (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 20 }}>
+    <div className="sa-page-header" style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
       <div>
         <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Дашборд</h1>
       </div>
-      <select
-        className="sa-select"
+      <HoldingSelectPicker
+        holdings={holdings}
         value={selectedHoldingId}
-        onChange={(event) => setSelectedHoldingId(event.target.value)}
-        style={{ minWidth: 220 }}
+        onChange={setSelectedHoldingId}
         disabled={holdingsLoading || holdings.length === 0}
-        title="Глобальный фильтр по компаниям"
-      >
-        {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-        {holdings.map((holding) => (
-          <option key={holding.id} value={holding.id}>{holding.name}</option>
-        ))}
-      </select>
+        loading={holdingsLoading}
+      />
     </div>
   );
 
@@ -531,18 +601,44 @@ export function Dashboard({ loading }: DashboardProps) {
     <div className="sa-dashboard-root">
       {dashboardHeader}
 
-      <section className="sa-section" style={{ marginBottom: SECTION_GAP }}>
+      <section className="sa-section sa-section-metrics" style={{ marginBottom: SECTION_GAP }}>
         <h2 className="sa-section-title">Ключевые метрики</h2>
         <div className="sa-kpi-grid">
-          <KPICard label="Точки" value={totalSalons} loading={isLoading} noData={!isLoading && totalSalons === 0} description="Точки компании" />
-          <KPICard label="Сотрудники" value={totalEmployees} loading={isLoading} noData={!isLoading && totalEmployees === 0} description="Менеджеры на точках" />
-          <KPICard label="Проверки" value={totalAudits} description="Тесты, тренировки и звонки" loading={isLoading} />
           <KPICard
-            label="Оценка качества"
+            label="Точки"
+            value={totalSalons}
+            loading={isLoading}
+            noData={!isLoading && totalSalons === 0}
+            description="Точки компании"
+            navigateTo="companies"
+            onNavigate={handleKpiNavigate}
+          />
+          <KPICard
+            label="Сотрудники"
+            value={totalEmployees}
+            loading={isLoading}
+            noData={!isLoading && totalEmployees === 0}
+            description="Менеджеры на точках"
+            navigateTo="users"
+            onNavigate={handleKpiNavigate}
+          />
+          <KPICard
+            label="Проверки"
+            value={totalAudits}
+            description="Тесты, тренировки и звонки"
+            loading={isLoading}
+            navigateTo="audits"
+            onNavigate={handleKpiNavigate}
+          />
+          <KPICard
+            label="AI рейтинг"
             value={isLoading ? '—' : String(scoreInt)}
-            description="Средний балл по всем проверкам (0–100)"
+            valueSuffix="из 100"
+            description="Среднее по всем проверкам"
             loading={isLoading}
             valueClass={!isLoading ? scoreColorClass(platformAvgScore) : ''}
+            navigateTo="analytics"
+            onNavigate={handleKpiNavigate}
           />
           <KPICard
             label="Дозвон"
@@ -554,47 +650,33 @@ export function Dashboard({ loading }: DashboardProps) {
         </div>
       </section>
 
-      <section className="sa-section" style={{ marginBottom: SECTION_GAP }}>
-        <AISummaryBlock
-          title="AI Резюме"
-          summary={overview?.aiSummary}
-          loading={isLoading}
-          error={dashboardError}
-          badgePrimaryLabel={badgePrimaryLabel}
-          badgePrimaryValue={badgePrimaryValue}
-          badgeSecondaryLabel={badgeSecondaryLabel}
-          badgeSecondaryValue={badgeSecondaryValue}
-        />
-      </section>
-
-      <section className="sa-section" style={{ marginBottom: SECTION_GAP }}>
+      <section className="sa-section sa-section-analytics" style={{ marginBottom: SECTION_GAP }}>
         <h2 className="sa-section-title">Аналитика</h2>
         <div className="sa-dashboard-grid">
-          <div className="sa-card sa-grid-card sa-chart-equal">
-            <PerformanceTrendChart points={displayTimeSeries} />
-          </div>
-          <div className="sa-card sa-grid-card sa-chart-equal">
-            <AnswerRateByHour hourly={hourly.length === 24 ? hourly : []} />
-          </div>
+          <BrutalCard title="Динамика эффективности" className="sa-grid-card sa-chart-equal">
+            <PerformanceTrendChart points={displayTimeSeries} embedded />
+          </BrutalCard>
+          <BrutalCard title="Дозвон по часам" className="sa-grid-card sa-chart-equal">
+            <AnswerRateByHour hourly={hourly.length === 24 ? hourly : []} embedded />
+          </BrutalCard>
 
-          <div className="sa-card sa-grid-card">
-            <h3 className="sa-card-heading">Лучшие точки</h3>
+          <BrutalCard title="Лучшие точки" className="sa-grid-card">
             <SalonTable rows={topSalons} emptyLabel="Нет данных" />
-          </div>
-          <div className="sa-card sa-grid-card">
-            <h3 className="sa-card-heading">Точки с низким результатом</h3>
+          </BrutalCard>
+          <BrutalCard title="Точки с низким результатом" className="sa-grid-card">
             <SalonTable rows={worstSalons} emptyLabel="Нет данных" />
-          </div>
+          </BrutalCard>
 
-          <div className="sa-card sa-grid-card sa-donut-card">
+          <BrutalCard title="Принятые и пропущенные" className="sa-grid-card sa-donut-card">
             <AnsweredMissedDonut
               rate={totalCalls > 0 ? answerRate : 0}
               totalCalls={totalCalls}
+              embedded
             />
-          </div>
-          <div className="sa-card sa-grid-card">
-            <AverageAnswerTimeChart data={answerTimeByCompany} />
-          </div>
+          </BrutalCard>
+          <BrutalCard title="Средняя длительность звонка" className="sa-grid-card">
+            <AverageAnswerTimeChart data={answerTimeByCompany} embedded />
+          </BrutalCard>
         </div>
       </section>
     </div>

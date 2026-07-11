@@ -189,6 +189,21 @@ model CallCustomerVoice {
   @@map("call_customer_voices")
 }
 
+model CallReportProblem {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  title     String
+  category  String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@index([category])
+  @@map("call_report_problem_catalog")
+}
+
 model CallScript {
   id                  String   @id @default(cuid())
   holdingId           String
@@ -686,9 +701,12 @@ model VoiceCallSession {
   managerId        String?
   planId           String?
   startedAt        DateTime  @default(now())
+  connectedAt      DateTime?
   endedAt          DateTime?
   outcome          String?   // "completed" | "no_answer" | "busy" | "failed" | "disconnected"
+  answerTimeSec    Int?      // seconds from call initialization to connected
   durationSec      Int?      // talk time in seconds (null if no answer)
+  talkDurationSec  Int?      // explicit talk time in seconds for analytics
   transcriptJson   String?   // JSON: [{ role: "manager"|"client", text: string }]
   evaluationJson   String?   // same shape as TrainingSession.evaluationJson (V2)
   dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson

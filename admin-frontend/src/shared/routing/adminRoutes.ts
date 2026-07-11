@@ -8,6 +8,7 @@ export type AdminRouteMatch = {
   employeeId?: string;
   auditId?: string;
   batchId?: string;
+  trainerSessionId?: string;
 };
 
 const SUPER_COMPANY_TABS: AdminTab[] = [
@@ -84,13 +85,17 @@ export function tabToPath(tab: AdminTab): string {
     case 'staff-profile':
       return '/staff/profile';
     case 'staff-trainer':
-      return '/train';
+      return '/staff/trainer';
   }
+}
+
+export function buildTrainerSessionPath(sessionId?: string): string {
+  return sessionId ? `/staff/trainer/${encodeURIComponent(sessionId)}` : '/staff/trainer';
 }
 
 export function getRoleFromPath(pathname: string): AdminRole | undefined {
   if (pathname.startsWith('/dealer')) return 'dealer';
-  if (pathname.startsWith('/staff')) return 'staff';
+  if (pathname.startsWith('/staff') || pathname.startsWith('/train')) return 'staff';
   return undefined;
 }
 
@@ -107,7 +112,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'typesNumbers') return { tab: 'typesNumbers' };
   if (section === 'users') return { tab: 'users', employeeId: resource };
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };
-  if (section === 'train') return { role: 'staff', tab: 'staff-trainer' };
+  if (section === 'train') return { role: 'staff', tab: 'staff-trainer', trainerSessionId: resource };
   if (section === 'analytics') return { tab: 'analytics' };
   if (section === 'call-settings') return { tab: 'callSettings' };
   if (section === 'settings') return { tab: 'settings' };
@@ -123,7 +128,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   }
 
   if (section === 'staff') {
-    if (resource === 'trainer') return { role: 'staff', tab: 'staff-trainer' };
+    if (resource === 'trainer') return { role: 'staff', tab: 'staff-trainer', trainerSessionId: id };
     return { role: 'staff', tab: 'staff-profile' };
   }
 

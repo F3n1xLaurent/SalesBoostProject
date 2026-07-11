@@ -16,7 +16,6 @@ import {
   type AnalyticsPlanParticipation,
 } from '../../../shared/api/adminPanel';
 import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 
 type Props = {
   employeeId: string;
@@ -74,6 +73,7 @@ function KPI({ label, value, cls }: { label: string; value: string | number; cls
 }
 
 function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
+  if (value === 'manual') return 'Вручную';
   return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
 }
 
@@ -102,7 +102,8 @@ function PlanParticipationList({
           <div style={{ minWidth: 220 }}>
             <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
             <div className="sa-meta" style={{ marginTop: 4 }}>
-              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)} · {plan.callTimeFrom}-{plan.callTimeTo}
+              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)}
+              {plan.frequency !== 'manual' ? ` · ${plan.callTimeFrom}-${plan.callTimeTo}` : ''}
               {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
             </div>
           </div>
@@ -273,7 +274,7 @@ function BlockBreakdown({ data }: { data: { block: string; score: number; hint: 
 
   return (
     <div className="sa-chart-wrap">
-      <h3 className="sa-chart-title">Разбор по блокам</h3>
+      <h3 className="sa-chart-title">Распределение по категориям</h3>
       <div className="sa-hbar-list">
         {data.map((d, i) => (
           <div
@@ -371,32 +372,6 @@ function DataCoverage({ detail }: { detail: ManagerAnalyticsDetail }) {
   );
 }
 
-function NoAnswerHistory({ items }: { items?: { id: string; date: string; planName: string | null; verdict: string }[] }) {
-  if (!items || items.length === 0) return <div className="sa-meta" style={{ padding: 18 }}>Недозвонов по менеджеру нет.</div>;
-  return (
-    <div className="sa-table-wrap">
-      <table className="sa-table">
-        <thead>
-          <tr>
-            <th>Дата</th>
-            <th>Расписание</th>
-            <th>Статус</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.slice(0, 12).map((item) => (
-            <tr key={item.id}>
-              <td>{new Date(item.date).toLocaleString('ru-RU')}</td>
-              <td>{item.planName ?? 'Без расписания'}</td>
-              <td><span className="sa-score-red">{item.verdict}</span></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 /* ────────────────────── Profile strip (compact horizontal card) ────────────────────── */
 
 function ProfileStrip({ detail }: { detail: ManagerAnalyticsDetail }) {
@@ -409,13 +384,8 @@ function ProfileStrip({ detail }: { detail: ManagerAnalyticsDetail }) {
         </div>
         <div className="sa-profile-strip-divider" />
         <div className="sa-profile-strip-section">
-          <div className="sa-profile-strip-label">Зоны роста</div>
+          <div className="sa-profile-strip-label">Слабые стороны</div>
           <div className="sa-profile-tags">{detail.growthAreas.map((g) => <span key={g} className="sa-tag sa-tag-orange">{g}</span>)}</div>
-        </div>
-        <div className="sa-profile-strip-divider" />
-        <div className="sa-profile-strip-section">
-          <div className="sa-profile-strip-label">Фокус обучения</div>
-          <div className="sa-profile-strip-value">{detail.trainingFocus}</div>
         </div>
       </div>
     </div>
@@ -424,7 +394,7 @@ function ProfileStrip({ detail }: { detail: ManagerAnalyticsDetail }) {
 
 /* ────────────────────── Trainer insights ────────────────────── */
 
-function TrainerInsights({ detail }: { detail: ManagerAnalyticsDetail }) {
+function TrainerInsights({ detail, onOpenProblem }: { detail: ManagerAnalyticsDetail; onOpenProblem?: (issue: string) => void }) {
   return (
     <div className="sa-detail-insights">
       <div className="sa-card" style={{ flex: 1 }}>
@@ -446,7 +416,7 @@ function TrainerInsights({ detail }: { detail: ManagerAnalyticsDetail }) {
         </ol>
       </div>
       <div className="sa-card" style={{ flex: 1 }}>
-        <h3 className="sa-card-heading">Рекомендованные тренировки</h3>
+        <h3 className="sa-card-heading">Рекомендации</h3>
         <div className="sa-training-list">
           {detail.recommendedTrainings.map((t, i) => (
             <div key={i} className="sa-training-item">
@@ -454,7 +424,7 @@ function TrainerInsights({ detail }: { detail: ManagerAnalyticsDetail }) {
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>{t.title}</div>
                 <div className="sa-meta">{t.description}</div>
               </div>
-              <button className="sa-btn-outline sa-btn-sm" disabled title="Функция назначения будет подключена позже">Назначить</button>
+              {onOpenProblem && <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenProblem(t.title)}>Проверки →</button>}
             </div>
           ))}
         </div>
@@ -539,45 +509,84 @@ function getCallIdFromAuditId(auditId: string): number | null {
   return Number.isFinite(id) ? id : null;
 }
 
+type AuditHistoryFilter = 'all' | 'completed' | 'no_answer' | 'interrupted';
+
+const AUDIT_HISTORY_FILTERS: { value: AuditHistoryFilter; label: string }[] = [
+  { value: 'all', label: 'Все' },
+  { value: 'completed', label: 'Оцененные' },
+  { value: 'no_answer', label: 'Недозвоны' },
+  { value: 'interrupted', label: 'Прочие незавершенные' },
+];
+
 function AuditHistory({ audits, onOpenCall }: { audits: EmployeeDetailData['audits']; onOpenCall: (id: number) => void }) {
+  const [filter, setFilter] = useState<AuditHistoryFilter>('all');
+  const filteredAudits = useMemo(() => {
+    if (filter === 'all') return audits;
+    if (filter === 'completed') {
+      return audits.filter((audit) => audit.outcome === 'completed' || (!audit.outcome && audit.verdict !== 'Недозвон'));
+    }
+    if (filter === 'no_answer') {
+      return audits.filter((audit) => audit.outcome === 'no_answer' || audit.verdict === 'Недозвон');
+    }
+    return audits.filter((audit) => ['busy', 'failed', 'disconnected'].includes(String(audit.outcome || '')));
+  }, [audits, filter]);
+
   if (audits.length === 0) return <div className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Нет проверок за период</div>;
   return (
-    <div className="sa-table-wrap">
-      <table className="sa-table">
-        <thead>
-          <tr>
-            <th>Дата</th>
-            <th>Тип</th>
-            <th className="sa-text-right">Балл</th>
-            <th>Вердикт</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {audits.slice(0, 20).map((a) => {
-            const callId = a.type === 'call' ? getCallIdFromAuditId(a.id) : null;
-            return (
-              <tr key={a.id}>
-                <td>{new Date(a.date).toLocaleDateString('ru-RU')}</td>
-                <td>{a.type === 'training' ? 'Тренажёр' : 'Звонок'}</td>
-                <td className="sa-text-right"><span className={ratingClass(a.score)}>{a.score}</span></td>
-                <td>{a.verdict}</td>
-                <td>
-                  <button
-                    className="sa-btn-text sa-btn-sm"
-                    disabled={!callId}
-                    title={callId ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
-                    onClick={() => callId && onOpenCall(callId)}
-                  >
-                    Открыть разбор
-                  </button>
-                </td>
+    <>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        {AUDIT_HISTORY_FILTERS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={`sa-btn-outline sa-btn-sm ${filter === option.value ? 'sa-chip-active' : ''}`}
+            onClick={() => setFilter(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <div className="sa-table-wrap">
+        <table className="sa-table">
+          <thead>
+            <tr>
+              <th>Дата</th>
+              <th>Тип</th>
+              <th className="sa-text-right">Балл</th>
+              <th>Вердикт</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {filteredAudits.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="sa-meta" style={{ padding: 18, textAlign: 'center' }}>Нет проверок по выбранному фильтру</td>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+            ) : filteredAudits.slice(0, 20).map((a) => {
+              const callId = a.type === 'call' ? getCallIdFromAuditId(a.id) : null;
+              return (
+                <tr key={a.id}>
+                  <td>{new Date(a.date).toLocaleDateString('ru-RU')}</td>
+                  <td>{a.type === 'training' ? 'Тренажёр' : 'Звонок'}</td>
+                  <td className="sa-text-right"><span className={ratingClass(a.score)}>{a.score}</span></td>
+                  <td>{a.verdict}</td>
+                  <td>
+                    <button
+                      className="sa-btn-text sa-btn-sm"
+                      disabled={!callId}
+                      title={callId ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
+                      onClick={() => callId && onOpenCall(callId)}
+                    >
+                      Открыть разбор
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -747,15 +756,6 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
         </div>
       </div>
 
-      <section className="sa-section" style={{ marginBottom: 20 }}>
-        <AISummaryBlock
-          title="AI-сводка по менеджеру"
-          summary={detail.aiSummary}
-          loading={detailLoading}
-          error={detailError}
-        />
-      </section>
-
       {/* KPI row — full width, no cramped side-by-side with profile */}
       <div className="sa-kpi-grid sa-kpi-grid-emp">
         <KPI label="AI-рейтинг" value={detail.aiRating} cls={ratingClass(detail.aiRating)} />
@@ -802,14 +802,6 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           <h3 className="sa-card-heading">Исходы звонков</h3>
           <OutcomeBreakdown data={detail.outcomeBreakdown} />
         </div>
-        <div className="sa-card sa-grid-card">
-          <h3 className="sa-card-heading">Качество коммуникации</h3>
-          <CommunicationBreakdown data={detail.communicationBreakdown} />
-        </div>
-        <div className="sa-card sa-grid-card">
-          <h3 className="sa-card-heading">Покрытие данных</h3>
-          <DataCoverage detail={detail} />
-        </div>
       </div>
 
       <section className="sa-section" style={{ marginBottom: 28 }}>
@@ -820,14 +812,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
       {/* Trainer insights */}
       <section className="sa-section" style={{ marginBottom: 28 }}>
         <h2 className="sa-section-title">Аналитика по ошибкам</h2>
-        <TrainerInsights detail={detail} />
-      </section>
-
-      <section className="sa-section" style={{ marginBottom: 28 }}>
-        <h2 className="sa-section-title">История недозвонов</h2>
-        <div className="sa-card">
-          <NoAnswerHistory items={detail.noAnswerHistory} />
-        </div>
+        <TrainerInsights detail={detail} onOpenProblem={(issue) => navigate(`/audits?problem=${encodeURIComponent(issue)}`)} />
       </section>
 
       {/* Audit history */}

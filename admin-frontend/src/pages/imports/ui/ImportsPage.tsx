@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   analyzeImportSource,
+  cancelImportSource,
   createImportSource,
   deleteImportSource,
   fetchImportDetail,
@@ -22,6 +23,10 @@ import {
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { FilterPickerField } from '../../../shared/ui/filter-picker/FilterPickerField';
+import { FilterPickerMenu } from '../../../shared/ui/filter-picker/FilterPickerMenu';
 
 type WizardStep = 1 | 2 | 3;
 type DataPageTab = 'data' | 'imports';
@@ -29,10 +34,6 @@ type DescriptionModalItem = {
   title: string;
   sourceName: string;
   description: string;
-};
-type TagsModalItem = {
-  title: string;
-  tags: string[];
 };
 type ImportEditModalItem = ImportSourceItem;
 type ImportInfoModalData = {
@@ -66,6 +67,21 @@ const OPERATORS: { value: ImportTagOperator; label: string }[] = [
 ];
 
 const DATA_PAGE_SIZE = 25;
+
+function pluralElements(count: number): string {
+  const abs = Math.abs(count) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return 'элементов';
+  if (last === 1) return 'элемент';
+  if (last >= 2 && last <= 4) return 'элемента';
+  return 'элементов';
+}
+
+function filterPickerWidth(labels: string[], min = 120, max = 480): number {
+  const longest = labels.reduce((maxLabel, label) => (label.length > maxLabel.length ? label : maxLabel), '');
+  const width = Math.ceil(longest.length * 8 + 56);
+  return Math.min(Math.max(width, min), max);
+}
 
 function overlayCardStyle(width = 920): React.CSSProperties {
   return {
@@ -177,21 +193,30 @@ function lineClampStyle(lines: number): React.CSSProperties {
   };
 }
 
-function CompactTagsCell(props: {
-  tags: string[];
-  onOpen: () => void;
-}) {
+function CompactTagsCell(props: { tags: string[] }) {
+  const [expanded, setExpanded] = useState(false);
   if (props.tags.length === 0) return <span className="sa-meta">—</span>;
-  const visible = props.tags.slice(0, 2);
-  const hiddenCount = Math.max(0, props.tags.length - visible.length);
+
+  const hiddenCount = Math.max(0, props.tags.length - 2);
+  const visibleTags = expanded ? props.tags : props.tags.slice(0, 2);
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 5, maxWidth: 220, overflow: 'hidden', whiteSpace: 'nowrap' }}>
-      {visible.map((tag) => (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 5,
+        flexWrap: expanded ? 'wrap' : 'nowrap',
+        maxWidth: '100%',
+        overflow: expanded ? 'visible' : 'hidden',
+      }}
+    >
+      {visibleTags.map((tag) => (
         <span
           key={tag}
           className="sa-chip"
           title={tag}
-          style={{ maxWidth: 94, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}
+          style={{ maxWidth: expanded ? '100%' : 94, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}
         >
           {tag}
         </span>
@@ -200,111 +225,93 @@ function CompactTagsCell(props: {
         <button
           type="button"
           className="sa-btn-outline sa-btn-sm"
-          onClick={props.onOpen}
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded((current) => !current);
+          }}
           style={{ padding: '4px 8px', minHeight: 26, flex: '0 0 auto' }}
-          title={props.tags.join(', ')}
+          title={expanded ? 'Свернуть теги' : props.tags.join(', ')}
+          aria-expanded={expanded}
         >
-          +{hiddenCount}
+          {expanded ? '−' : `+${hiddenCount}`}
         </button>
       )}
     </div>
   );
 }
 
-function TagsModal(props: {
-  item: TagsModalItem | null;
-  onClose: () => void;
-}) {
-  if (!props.item) return null;
-  return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
-      onClick={props.onClose}
-    >
-      <div style={overlayCardStyle(640)} onClick={(event) => event.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 20 }}>Теги</h2>
-            <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13, ...lineClampStyle(1) }}>{props.item.title}</div>
-          </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {props.item.tags.map((tag) => (
-            <span key={tag} className="sa-chip" title={tag} style={{ maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tag}</span>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TagFilterPicker(props: {
-  availableTags: string[];
-  selectedTags: string[];
+function MultiSelectFilterPicker(props: {
+  options: { value: string; label: string }[];
+  selected: string[];
   loading: boolean;
-  onChange: (tags: string[]) => void;
+  placeholder: string;
+  loadingPlaceholder?: string;
+  emptyText?: string;
+  disabled?: boolean;
+  onChange: (values: string[]) => void;
 }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredTags = props.availableTags
-    .filter((tag) => !props.selectedTags.includes(tag))
-    .filter((tag) => !normalizedQuery || tag.toLowerCase().includes(normalizedQuery))
+  const filteredOptions = props.options
+    .filter((option) => !normalizedQuery || option.label.toLowerCase().includes(normalizedQuery))
     .slice(0, 30);
 
-  function addTag(tag: string) {
-    props.onChange([...props.selectedTags, tag]);
-    setQuery('');
-    setOpen(false);
+  const pickerWidth = useMemo(
+    () => filterPickerWidth([
+      props.placeholder,
+      props.loadingPlaceholder || '',
+      ...props.options.map((option) => option.label),
+    ]),
+    [props.options, props.placeholder, props.loadingPlaceholder],
+  );
+
+  function toggleValue(value: string) {
+    if (props.selected.includes(value)) {
+      props.onChange(props.selected.filter((item) => item !== value));
+      return;
+    }
+    props.onChange([...props.selected, value]);
   }
 
+  const isDisabled = props.disabled || props.loading || props.options.length === 0;
+
   return (
-    <div style={{ position: 'relative', display: 'grid', gap: 8 }}>
-      <input
-        className="sa-input"
-        value={query}
-        onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
-        placeholder={props.loading ? 'Загружаем теги...' : 'Найти тег'}
-        disabled={props.loading || props.availableTags.length === 0}
-      />
-      {open && !props.loading && (
-        <div style={{ position: 'absolute', top: 44, left: 0, right: 0, zIndex: 20, maxHeight: 260, overflowY: 'auto', border: '1px solid var(--sa-divider)', borderRadius: 12, background: '#fff', boxShadow: '0 18px 36px rgba(15,23,42,0.14)', padding: 6 }}>
-          {filteredTags.length ? filteredTags.map((tag) => (
+    <div
+      ref={pickerRef}
+      className={`sa-tag-filter-picker${open ? ' sa-tag-filter-picker--open' : ''}`}
+      style={{ width: pickerWidth }}
+    >
+      <FilterPickerField open={open}>
+        <input
+          className="sa-input"
+          value={query}
+          onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => window.setTimeout(() => setOpen(false), 160)}
+          placeholder={props.loading ? (props.loadingPlaceholder || 'Загрузка...') : props.placeholder}
+          disabled={isDisabled}
+        />
+      </FilterPickerField>
+      <FilterPickerMenu open={open && !props.loading} anchorRef={pickerRef}>
+        {filteredOptions.length ? filteredOptions.map((option) => {
+          const selected = props.selected.includes(option.value);
+          return (
             <button
-              key={tag}
+              key={option.value}
               type="button"
-              onMouseDown={(event) => { event.preventDefault(); addTag(tag); }}
-              style={{ width: '100%', border: 0, background: 'transparent', padding: '8px 10px', textAlign: 'left', borderRadius: 8, cursor: 'pointer', color: 'var(--sa-text)' }}
+              className={`sa-tag-filter-option${selected ? ' sa-tag-filter-option--selected' : ''}`}
+              onMouseDown={(event) => { event.preventDefault(); toggleValue(option.value); }}
             >
-              {tag}
+              <span className="sa-tag-filter-option__label" title={option.label}>{option.label}</span>
+              <input type="checkbox" checked={selected} readOnly tabIndex={-1} aria-hidden="true" />
             </button>
-          )) : (
-            <div className="sa-meta" style={{ padding: 10 }}>Теги не найдены</div>
-          )}
-        </div>
-      )}
-      {props.selectedTags.length > 0 && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          {props.selectedTags.map((tag) => (
-            <button
-              key={tag}
-              type="button"
-              className="sa-chip"
-              onClick={() => props.onChange(props.selectedTags.filter((item) => item !== tag))}
-              title="Убрать фильтр"
-              style={{ border: 0, cursor: 'pointer', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}
-            >
-              {tag} ×
-            </button>
-          ))}
-          <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => props.onChange([])}>Сбросить</button>
-        </div>
-      )}
+          );
+        }) : (
+          <div className="sa-meta" style={{ padding: 10 }}>{props.emptyText || 'Ничего не найдено'}</div>
+        )}
+      </FilterPickerMenu>
     </div>
   );
 }
@@ -315,6 +322,7 @@ function DescriptionModal(props: {
 }) {
   if (!props.item) return null;
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
       onClick={props.onClose}
@@ -343,6 +351,7 @@ function DescriptionModal(props: {
         </pre>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -546,7 +555,6 @@ function ImportEditModal(props: {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [schedule, setSchedule] = useState('manual');
-  const [status, setStatus] = useState<ImportSourceItem['status']>('active');
   const [tagRules, setTagRules] = useState<ImportTagRule[]>([]);
   const [editTab, setEditTab] = useState<'settings' | 'tags'>('settings');
   const [sourceFields, setSourceFields] = useState<string[]>([]);
@@ -559,7 +567,6 @@ function ImportEditModal(props: {
     setName(props.item.name);
     setUrl(props.item.url);
     setSchedule(props.item.schedule || 'manual');
-    setStatus(props.item.status);
     setTagRules(props.item.tagRules);
     setEditTab('settings');
     setSourceFields(fieldsFromImportSource(props.item));
@@ -598,7 +605,6 @@ function ImportEditModal(props: {
         name: name.trim(),
         url: url.trim(),
         schedule: schedule === 'manual' ? null : schedule,
-        status,
         tagRules,
       });
       props.onSaved(updated);
@@ -611,6 +617,7 @@ function ImportEditModal(props: {
   }
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
       onClick={props.onClose}
@@ -631,7 +638,7 @@ function ImportEditModal(props: {
         <div style={{ display: 'grid', gap: 18 }}>
           <section className="sa-card" style={{ padding: 14, display: 'grid', gap: 12 }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
-              <div><div className="sa-meta">Статус</div><strong>{statusLabel(status)}</strong></div>
+              <div><div className="sa-meta">Статус</div><strong>{statusLabel(props.item.status)}</strong></div>
               <div><div className="sa-meta">Запуск</div><strong>{scheduleLabel(schedule === 'manual' ? null : schedule)}</strong></div>
               <div><div className="sa-meta">Формат</div><strong>{props.item.format.toUpperCase()}</strong></div>
               <div><div className="sa-meta">Правил тегов</div><strong>{tagRules.length}</strong></div>
@@ -663,7 +670,7 @@ function ImportEditModal(props: {
             <section className="sa-card" style={{ padding: 16, display: 'grid', gap: 14 }}>
               <div>
                 <h3 style={{ margin: '0 0 4px', fontSize: 17 }}>Настройки источника</h3>
-                <div className="sa-meta">Здесь меняются название, ссылка, периодичность и состояние импорта.</div>
+                <div className="sa-meta">Здесь меняются название, ссылка и периодичность импорта.</div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
                 <label style={{ display: 'grid', gap: 6 }}>
@@ -681,14 +688,6 @@ function ImportEditModal(props: {
                     <option value="hourly">Раз в час</option>
                     <option value="daily">Раз в день</option>
                     <option value="weekly">Раз в неделю</option>
-                  </select>
-                </label>
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span>Состояние</span>
-                  <select className="sa-select" value={status} onChange={(event) => setStatus(event.target.value as ImportSourceItem['status'])}>
-                    <option value="active">Активен</option>
-                    <option value="paused">Пауза</option>
-                    <option value="error">Ошибка</option>
                   </select>
                 </label>
               </div>
@@ -720,6 +719,7 @@ function ImportEditModal(props: {
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -732,6 +732,7 @@ function ImportInfoModal(props: {
   const latestRuns = runs.slice(0, 5);
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
       onClick={props.onClose}
@@ -817,6 +818,7 @@ function ImportInfoModal(props: {
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -935,6 +937,7 @@ function ImportWizard(props: {
   }
 
   return (
+    <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 120 }}
       onClick={props.onClose}
@@ -1061,6 +1064,7 @@ function ImportWizard(props: {
         )}
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -1076,15 +1080,17 @@ export function ImportsPage() {
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedImportIds, setSelectedImportIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataLoading, setDataLoading] = useState(true);
   const [filtersLoading, setFiltersLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [runningImportId, setRunningImportId] = useState<string | null>(null);
+  const runControllersRef = useRef(new Map<string, AbortController>());
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editModalItem, setEditModalItem] = useState<ImportEditModalItem | null>(null);
   const [infoModalData, setInfoModalData] = useState<ImportInfoModalData | null>(null);
   const [descriptionModalItem, setDescriptionModalItem] = useState<DescriptionModalItem | null>(null);
-  const [tagsModalItem, setTagsModalItem] = useState<TagsModalItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
 
@@ -1103,6 +1109,7 @@ export function ImportsPage() {
   async function loadList() {
     if (!selectedHoldingId) {
       setItems([]);
+      setSelectedImportIds([]);
       setLoading(false);
       return;
     }
@@ -1111,6 +1118,7 @@ export function ImportsPage() {
     try {
       const next = await fetchImports({ holdingId: selectedHoldingId });
       setItems(next);
+      setSelectedImportIds((current) => current.filter((id) => next.some((item) => item.id === id)));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить импорты.');
     } finally {
@@ -1134,6 +1142,7 @@ export function ImportsPage() {
         holdingId: selectedHoldingId,
         search,
         tags: selectedTags,
+        sourceIds: selectedImportIds,
       });
       setDataItems(result.items);
       setDataTotal(result.total);
@@ -1166,7 +1175,7 @@ export function ImportsPage() {
     void loadList();
     void loadTags();
   }, [selectedHoldingId]);
-  useEffect(() => { void loadDataItems(); }, [selectedHoldingId, search, selectedTags, dataPage]);
+  useEffect(() => { void loadDataItems(); }, [selectedHoldingId, search, selectedTags, selectedImportIds, dataPage]);
   useEffect(() => {
     const maxPage = Math.max(0, Math.ceil(dataTotal / DATA_PAGE_SIZE) - 1);
     if (dataPage > maxPage) setDataPage(maxPage);
@@ -1174,24 +1183,33 @@ export function ImportsPage() {
 
   async function runImport(id: string) {
     setBusyId(id);
+    setRunningImportId(id);
+    const controller = new AbortController();
+    runControllersRef.current.set(id, controller);
     try {
-      await runImportSource(id);
+      await runImportSource(id, { signal: controller.signal });
       await loadList();
       await loadDataItems();
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : 'Не удалось запустить импорт.');
+      if (runError instanceof DOMException && runError.name === 'AbortError') return;
+      setError(runError instanceof Error ? runError.message : 'Не удалось обновить данные.');
     } finally {
-      setBusyId(null);
+      runControllersRef.current.delete(id);
+      setBusyId((current) => (current === id ? null : current));
+      setRunningImportId((current) => (current === id ? null : current));
     }
   }
 
-  async function togglePause(item: ImportSourceItem) {
-    setBusyId(item.id);
+  async function stopImportLoading(item: ImportSourceItem) {
+    runControllersRef.current.get(item.id)?.abort();
+    runControllersRef.current.delete(item.id);
+    setRunningImportId((current) => (current === item.id ? null : current));
+    setBusyId((current) => (current === item.id ? null : current));
     try {
-      await updateImportSource(item.id, { status: item.status === 'paused' ? 'active' : 'paused' });
+      await cancelImportSource(item.id);
       await loadList();
-    } finally {
-      setBusyId(null);
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : 'Не удалось остановить загрузку.');
     }
   }
 
@@ -1227,129 +1245,220 @@ export function ImportsPage() {
   const dataTotalPages = Math.max(1, Math.ceil(dataTotal / DATA_PAGE_SIZE));
   const dataPageStart = dataTotal === 0 ? 0 : dataPage * DATA_PAGE_SIZE + 1;
   const dataPageEnd = Math.min(dataTotal, dataPage * DATA_PAGE_SIZE + dataItems.length);
+  const activeImportId = runningImportId ?? items.find((item) => item.activeRun?.status === 'running')?.id ?? null;
+
+  useEffect(() => {
+    if (!activeImportId) return;
+    const timer = window.setInterval(() => {
+      void loadList();
+      void loadDataItems();
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [activeImportId, selectedHoldingId, search, selectedTags, selectedImportIds, dataPage]);
+
+  function openDescriptionItem(item: ImportedDataItem) {
+    setDescriptionModalItem({
+      title: item.title,
+      sourceName: item.importSourceName,
+      description: item.description,
+    });
+  }
 
   return (
-    <div style={{ display: 'grid', gap: 20 }}>
-      <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
-          <div>
-            <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Данные</h1>
-            <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>Импортированные элементы и настройки источников данных.</div>
-          </div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <select
-              className="sa-select"
-              value={selectedHoldingId}
-              onChange={(event) => {
-                setSelectedHoldingId(event.target.value);
-                setSelectedTags([]);
-                setDataPage(0);
-              }}
-              style={{ minWidth: 220 }}
-              disabled={holdingsLoading || holdings.length === 0}
-            >
-              {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-              {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
-            </select>
-            {activePageTab === 'imports' && <button className="sa-btn-primary" disabled={holdings.length === 0} onClick={() => setWizardOpen(true)}>Создать импорт</button>}
-          </div>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+          <h1 className="sa-page-title" style={{ marginBottom: 0 }}>Данные</h1>
+          {activePageTab === 'data' && (
+            <span className="sa-meta" style={{ fontSize: 14 }}>
+              {dataTotal.toLocaleString('ru-RU')} {pluralElements(dataTotal)}
+            </span>
+          )}
         </div>
-        <div className="sa-dialog-tabs" style={{ marginBottom: 0 }}>
-          <button
-            type="button"
-            className={`sa-dialog-tab ${activePageTab === 'data' ? 'sa-dialog-tab-active' : ''}`}
-            onClick={() => setActivePageTab('data')}
-          >
-            Данные
-          </button>
-          <button
-            type="button"
-            className={`sa-dialog-tab ${activePageTab === 'imports' ? 'sa-dialog-tab-active' : ''}`}
-            onClick={() => setActivePageTab('imports')}
-          >
-            Импорт
-          </button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <HoldingSelectPicker
+            holdings={holdings}
+            value={selectedHoldingId}
+            onChange={(holdingId) => {
+              setSelectedHoldingId(holdingId);
+              setSelectedTags([]);
+              setSelectedImportIds([]);
+              setDataPage(0);
+            }}
+            disabled={holdingsLoading || holdings.length === 0}
+            loading={holdingsLoading}
+          />
+          {activePageTab === 'imports' && (
+            <button type="button" className="sa-btn-brutal-3d" disabled={holdings.length === 0} onClick={() => setWizardOpen(true)}>
+              Создать импорт
+            </button>
+          )}
         </div>
-        {error && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>{error}</div>}
-        {dataError && activePageTab === 'data' && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>{dataError}</div>}
-      </section>
+      </div>
+
+      {error && (
+        <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{error}</div>
+      )}
+      {dataError && activePageTab === 'data' && (
+        <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{dataError}</div>
+      )}
+
+      <div className="sa-dialog-tabs" style={{ marginBottom: 16 }}>
+        <button
+          type="button"
+          className={`sa-dialog-tab ${activePageTab === 'data' ? 'sa-dialog-tab-active' : ''}`}
+          onClick={() => setActivePageTab('data')}
+        >
+          Данные
+        </button>
+        <button
+          type="button"
+          className={`sa-dialog-tab ${activePageTab === 'imports' ? 'sa-dialog-tab-active' : ''}`}
+          onClick={() => setActivePageTab('imports')}
+        >
+          Импорт
+        </button>
+      </div>
 
       {activePageTab === 'data' && (
-        <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <input
-              className="sa-input"
-              value={search}
-              onChange={(event) => {
-                setSearch(event.target.value);
-                setDataPage(0);
-              }}
-              placeholder="Поиск по названию, описанию или данным"
-              style={{ flex: '1 1 280px', minWidth: 0 }}
-            />
-            <div style={{ flex: '1 1 300px', minWidth: 260, maxWidth: 420 }}>
-              <TagFilterPicker
-                availableTags={availableTags}
-                selectedTags={selectedTags}
-                loading={filtersLoading}
-                onChange={(tags) => {
-                  setSelectedTags(tags);
-                  setDataPage(0);
-                }}
-              />
-            </div>
-            <div style={{ minHeight: 38, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'nowrap' }}>
-              <span className="sa-chip">Найдено: {dataTotal}</span>
+        <>
+          <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar" style={{ marginBottom: 16 }}>
+            <div className="sa-toolbar-filters" style={{ flex: 1 }}>
+              <div className="sa-search-wrap">
+                <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+                </svg>
+                <input
+                  className="sa-search-input"
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setDataPage(0);
+                  }}
+                  placeholder="Поиск по названию, описанию или данным"
+                />
+              </div>
+              <div className="sa-tag-filter-picker-wrap">
+                <MultiSelectFilterPicker
+                  options={availableTags.map((tag) => ({ value: tag, label: tag }))}
+                  selected={selectedTags}
+                  loading={filtersLoading}
+                  placeholder="Теги"
+                  loadingPlaceholder="Загружаем теги..."
+                  emptyText="Теги не найдены"
+                  onChange={(tags) => {
+                    setSelectedTags(tags);
+                    setDataPage(0);
+                  }}
+                />
+              </div>
+              <div className="sa-tag-filter-picker-wrap">
+                <MultiSelectFilterPicker
+                  options={items.map((item) => ({ value: item.id, label: item.name }))}
+                  selected={selectedImportIds}
+                  loading={loading}
+                  placeholder="Импорт"
+                  loadingPlaceholder="Загружаем импорты..."
+                  emptyText="Импорты не найдены"
+                  onChange={(importIds) => {
+                    setSelectedImportIds(importIds);
+                    setDataPage(0);
+                  }}
+                />
+              </div>
             </div>
           </div>
-          <div className="sa-table-wrap">
-            <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+
+          {(selectedTags.length > 0 || selectedImportIds.length > 0) && (
+            <div className="sa-tag-filter-chips">
+              {selectedTags.map((tag) => (
+                <button
+                  key={`tag-${tag}`}
+                  type="button"
+                  className="sa-chip sa-tag-filter-chip"
+                  onClick={() => {
+                    setSelectedTags((current) => current.filter((item) => item !== tag));
+                    setDataPage(0);
+                  }}
+                  title={`Убрать фильтр: ${tag}`}
+                >
+                  <span className="sa-tag-filter-chip__label">{tag}</span>
+                  <span className="sa-tag-filter-chip__remove" aria-hidden="true">×</span>
+                </button>
+              ))}
+              {selectedImportIds.map((importId) => {
+                const importItem = items.find((item) => item.id === importId);
+                const label = importItem?.name || 'Импорт';
+                return (
+                  <button
+                    key={`import-${importId}`}
+                    type="button"
+                    className="sa-chip sa-tag-filter-chip"
+                    onClick={() => {
+                      setSelectedImportIds((current) => current.filter((item) => item !== importId));
+                      setDataPage(0);
+                    }}
+                    title={`Убрать фильтр: ${label}`}
+                  >
+                    <span className="sa-tag-filter-chip__label">{label}</span>
+                    <span className="sa-tag-filter-chip__remove" aria-hidden="true">×</span>
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                className="sa-chip sa-tag-filter-chip-reset"
+                onClick={() => {
+                  setSelectedTags([]);
+                  setSelectedImportIds([]);
+                  setDataPage(0);
+                }}
+              >
+                Сбросить всё
+              </button>
+            </div>
+          )}
+
+          <div className="sa-companies-table-wrap sa-holdings-table-wrap">
+            <table className="sa-table sa-holdings-table" style={{ tableLayout: 'fixed', width: '100%' }}>
               <thead>
                 <tr>
-                  <th style={{ width: 180 }}>Название</th>
-                  <th style={{ width: 300 }}>Описание</th>
-                  <th style={{ width: 140 }}>Источник</th>
-                  <th style={{ width: 240 }}>Теги</th>
-                  <th style={{ width: 150 }}>Обновлено</th>
-                  <th style={{ width: 72 }}>Действия</th>
+                  <th style={{ width: 200 }}>Название</th>
+                  <th style={{ width: 320 }}>Описание</th>
+                  <th style={{ width: 160 }}>Источник</th>
+                  <th style={{ width: 260 }}>Теги</th>
+                  <th style={{ width: 160 }}>Обновлено</th>
                 </tr>
               </thead>
               <tbody>
                 {dataLoading ? (
-                  <tr><td colSpan={6} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
+                  <tr><td colSpan={5} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
                 ) : dataItems.length === 0 ? (
-                  <tr><td colSpan={6} className="sa-meta" style={{ padding: 28 }}>Данных пока нет</td></tr>
+                  <tr><td colSpan={5} className="sa-meta" style={{ padding: 28 }}>Данных пока нет</td></tr>
                 ) : dataItems.map((item) => (
-                  <tr key={item.id}>
+                  <tr
+                    key={item.id}
+                    className="sa-row-clickable"
+                    onClick={() => openDescriptionItem(item)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(event) => event.key === 'Enter' && openDescriptionItem(item)}
+                  >
                     <td style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.title}>{item.title}</td>
                     <td style={{ overflow: 'hidden' }}>
                       <div style={{ ...lineClampStyle(2), color: 'var(--sa-text-secondary)' }}>{item.description}</div>
                     </td>
                     <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.importSourceName}>{item.importSourceName}</td>
-                    <td style={{ overflow: 'hidden' }}>
-                      <CompactTagsCell
-                        tags={item.tags}
-                        onOpen={() => setTagsModalItem({ title: item.title, tags: item.tags })}
-                      />
+                    <td onClick={(event) => event.stopPropagation()}>
+                      <CompactTagsCell tags={item.tags} />
                     </td>
                     <td>{formatDate(item.updatedAt)}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="sa-btn-outline sa-btn-icon"
-                        onClick={() => setDescriptionModalItem({ title: item.title, sourceName: item.importSourceName, description: item.description })}
-                        aria-label="Открыть описание"
-                        title="Открыть описание"
-                      >
-                        <EyeIcon />
-                      </button>
-                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginTop: 16 }}>
             <div className="sa-meta">
               Показано {dataPageStart}-{dataPageEnd} из {dataTotal}
             </div>
@@ -1373,13 +1482,12 @@ export function ImportsPage() {
               </button>
             </div>
           </div>
-        </section>
+        </>
       )}
 
       {activePageTab === 'imports' && (
-        <section className="sa-card" style={{ padding: 20 }}>
-          <div className="sa-table-wrap">
-            <table className="sa-table">
+        <div className="sa-companies-table-wrap sa-holdings-table-wrap">
+          <table className="sa-table sa-holdings-table">
               <thead>
                 <tr>
                   <th>Название</th>
@@ -1396,17 +1504,46 @@ export function ImportsPage() {
                   <tr><td colSpan={7} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
                 ) : items.length === 0 ? (
                   <tr><td colSpan={7} className="sa-meta" style={{ padding: 28 }}>Импортов пока нет</td></tr>
-                ) : items.map((item) => (
+                ) : items.map((item) => {
+                  const isRunningImport = activeImportId === item.id;
+                  const isAnyImportRunning = activeImportId !== null;
+                  return (
                   <tr key={item.id}>
-                    <td style={{ fontWeight: 700 }}>{item.name}</td>
-                    <td><span className={item.status === 'error' ? 'sa-emp-status sa-emp-warn' : 'sa-emp-status'}>{statusLabel(item.status)}</span></td>
+                    <td style={{ fontWeight: 700 }}>
+                      <div style={{ display: 'grid', gap: 4 }}>
+                        <span>{item.name}</span>
+                        {isRunningImport && (
+                          <span className="sa-ai-summary-loading" style={{ fontSize: 12 }}>
+                            <span className="sa-ai-summary-spinner" aria-hidden="true" />
+                            Идёт загрузка данных...
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      {isRunningImport ? (
+                        <span className="sa-emp-status">Загружается</span>
+                      ) : (
+                        <span className={item.status === 'error' ? 'sa-emp-status sa-emp-warn' : 'sa-emp-status'}>{statusLabel(item.status)}</span>
+                      )}
+                    </td>
                     <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.url}</td>
                     <td>{item.format}</td>
                     <td>{formatDate(item.lastRunAt)}</td>
                     <td className="sa-text-right">{item.itemsCount}</td>
                     <td onClick={(event) => event.stopPropagation()}>
                       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                        <button className="sa-btn-outline sa-btn-sm" disabled={busyId === item.id} onClick={() => void runImport(item.id)}>Запустить</button>
+                        {isRunningImport ? (
+                          <button className="sa-btn-danger sa-btn-sm" onClick={() => void stopImportLoading(item)}>Остановить загрузку</button>
+                        ) : !isAnyImportRunning ? (
+                          <button
+                            className="sa-btn-outline sa-btn-sm"
+                            disabled={busyId === item.id}
+                            onClick={() => void runImport(item.id)}
+                          >
+                            Обновить данные
+                          </button>
+                        ) : null}
                         <button
                           className="sa-btn-outline sa-btn-icon"
                           disabled={busyId === item.id}
@@ -1425,16 +1562,14 @@ export function ImportsPage() {
                         >
                           <EditIcon />
                         </button>
-                        <button className="sa-btn-outline sa-btn-sm" disabled={busyId === item.id} onClick={() => void togglePause(item)}>{item.status === 'paused' ? 'Возобновить' : 'Пауза'}</button>
                         <button className="sa-btn-danger sa-btn-sm" disabled={busyId === item.id} onClick={() => void removeImport(item)}>Удалить</button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                );})}
               </tbody>
             </table>
-          </div>
-        </section>
+        </div>
       )}
 
       <ImportWizard
@@ -1447,7 +1582,6 @@ export function ImportsPage() {
       <ImportInfoModal data={infoModalData} onClose={() => setInfoModalData(null)} />
       <ImportEditModal item={editModalItem} onClose={() => setEditModalItem(null)} onSaved={handleImportSaved} />
       <DescriptionModal item={descriptionModalItem} onClose={() => setDescriptionModalItem(null)} />
-      <TagsModal item={tagsModalItem} onClose={() => setTagsModalItem(null)} />
     </div>
   );
 }

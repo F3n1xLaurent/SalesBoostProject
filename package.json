@@ -44,6 +44,9 @@
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@heroui/react": "^2.8.9",
+    "@ibm/plex": "^6.4.1",
+    "@iconify-json/lets-icons": "^1.2.2",
+    "@iconify/react": "^6.0.2",
     "@prisma/client": "^5.7.1",
     "@tailwindcss/postcss": "^4.2.1",
     "@vitejs/plugin-react": "^5.1.4",
@@ -78,5 +81,6 @@
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
     "vitest": "^4.0.18"
-  }
+  },
+  "packageManager": "yarn@4.1.1+sha512.ec40d0639bb307441b945d9467139cbb88d14394baac760b52eca038b330d16542d66fef61574271534ace5a200518dabf3b53a85f1f9e4bfa37141b538a9590"
 }

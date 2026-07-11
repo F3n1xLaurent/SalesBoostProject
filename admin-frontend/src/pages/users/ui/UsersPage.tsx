@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import { EmployeeDetail } from '../../employee-detail/ui/EmployeeDetailPage';
 import type { AdminRole } from '../../../widgets/admin-sidebar/ui/AdminSidebar';
 import {
-  changeUserPassword,
   createPermissionTemplate,
   createUser,
   deletePermissionTemplate,
@@ -20,6 +19,8 @@ import {
 import { deltaDisplay, ratingClass, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import { UserPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type Props = {
   role: AdminRole;
@@ -106,14 +107,6 @@ const COMM_LABELS: Record<UserAccountItem['analytics']['communicationFlag'], str
   aggression: 'Агрессия',
   profanity: 'Ненормативная',
   'low-engagement': 'Слабая вовлечённость',
-};
-
-const COMM_BADGE_CLASS: Record<UserAccountItem['analytics']['communicationFlag'], string> = {
-  ok: 'sa-comm-ok',
-  fillers: 'sa-comm-fillers',
-  aggression: 'sa-comm-aggression',
-  profanity: 'sa-comm-profanity',
-  'low-engagement': 'sa-comm-low',
 };
 
 const EMPTY_USER_FORM: UserFormState = {
@@ -285,9 +278,9 @@ function roleDescription(role: string): string {
 
 function defaultTemplateNameForRole(role: string): string | null {
   if (role === 'platform_superadmin') return 'Суперадмин платформы';
-  if (role === 'holding_admin') return 'Администратор компании';
-  if (role === 'dealership_admin') return 'Администратор точки';
-  if (role === 'manager') return 'Менеджер точки';
+  if (role === 'holding_admin') return 'Администратор холдинга';
+  if (role === 'dealership_admin') return 'Администратор автосалона';
+  if (role === 'manager') return 'Менеджер автосалона';
   return null;
 }
 
@@ -376,15 +369,6 @@ function matchesUserQuickFilter(user: UserAccountItem, filter: UserQuickFilter):
   }
 }
 
-function ViewIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
 function EditIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -394,33 +378,10 @@ function EditIcon() {
   );
 }
 
-function KeyIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <circle cx="7.5" cy="15.5" r="5.5" />
-      <path d="M12 11l9-9" />
-      <path d="M17 6l3 3" />
-      <path d="M14 9l3 3" />
-    </svg>
-  );
-}
-
 function PhoneIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M3 6h18" />
-      <path d="M8 6V4h8v2" />
-      <path d="M19 6l-1 14H6L5 6" />
-      <path d="M10 11v5" />
-      <path d="M14 11v5" />
     </svg>
   );
 }
@@ -588,33 +549,6 @@ function SearchableSelect(props: {
   );
 }
 
-function IconButton(props: {
-  label: string;
-  tone?: 'default' | 'danger';
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={props.label}
-      title={props.label}
-      className={props.tone === 'danger' ? 'sa-btn-danger' : 'sa-btn-outline'}
-      onClick={props.onClick}
-      style={{
-        width: 36,
-        height: 36,
-        padding: 0,
-        display: 'inline-grid',
-        placeItems: 'center',
-        borderRadius: 10,
-      }}
-    >
-      {props.children}
-    </button>
-  );
-}
-
 function overlayCardStyle(width = 720): React.CSSProperties {
   return {
     width: `min(100%, ${width}px)`,
@@ -637,6 +571,7 @@ function ModalFrame(props: {
 }) {
   if (!props.open) return null;
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -664,6 +599,7 @@ function ModalFrame(props: {
         {props.children}
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -679,14 +615,6 @@ function CreateUserModal(props: {
 }) {
   const [form, setForm] = useState<UserFormState>(EMPTY_USER_FORM);
   const dealershipMap = useMemo(() => new Map((props.meta?.dealerships || []).map((item) => [item.id, item])), [props.meta]);
-  const templateOptions = useMemo<SelectOption[]>(
-    () => props.templates.map((template) => ({
-      value: template.id,
-      label: template.name,
-      description: template.description || `${template.permissions.length} прав`,
-    })),
-    [props.templates],
-  );
 
   useEffect(() => {
     if (!props.open) return;
@@ -703,11 +631,15 @@ function CreateUserModal(props: {
   }
 
   useEffect(() => {
-    if (!props.open || !props.canManageTemplates || form.templateIds.length > 0) return;
+    if (!props.open || !props.canManageTemplates) return;
     const firstRole = props.canManageGlobalUsers ? form.memberships[0]?.role : 'manager';
     const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
-    if (templateId) setForm((current) => ({ ...current, templateIds: [templateId] }));
-  }, [props.canManageGlobalUsers, props.canManageTemplates, props.open, props.templates, form.memberships, form.templateIds.length]);
+    setForm((current) => {
+      const nextTemplateIds = templateId ? [templateId] : [];
+      if (current.templateIds[0] === nextTemplateIds[0] && current.templateIds.length === nextTemplateIds.length) return current;
+      return { ...current, templateIds: nextTemplateIds };
+    });
+  }, [props.canManageGlobalUsers, props.canManageTemplates, props.open, props.templates, form.memberships]);
 
   function updateMembership(index: number, patch: Partial<MembershipForm>) {
     setForm((current) => ({
@@ -830,23 +762,7 @@ function CreateUserModal(props: {
               );
             })}
           </div>
-          {props.canManageGlobalUsers && (
-            <button type="button" className="sa-btn-text" style={{ marginTop: 10 }} onClick={() => setForm((current) => ({ ...current, memberships: [...current.memberships, { role: 'manager', holdingId: '', dealershipId: '' }] }))}>
-              + Добавить ещё назначение
-            </button>
-          )}
         </div>
-        {props.canManageTemplates && (
-          <div className="sa-card" style={{ padding: 12 }}>
-            <SearchableSelect
-              label="Шаблон прав"
-              value={form.templateIds[0] || ''}
-              options={templateOptions}
-              placeholder="Выберите шаблон прав"
-              onChange={(value) => setForm((current) => ({ ...current, templateIds: value ? [value] : [] }))}
-            />
-          </div>
-        )}
         <button type="submit" className="sa-btn-primary" disabled={props.saving}>
           {props.saving ? 'Сохраняем...' : 'Создать пользователя'}
         </button>
@@ -896,8 +812,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [createUserOpen, setCreateUserOpen] = useState(false);
   const [viewUserOpen, setViewUserOpen] = useState(false);
   const [editUserOpen, setEditUserOpen] = useState(false);
-  const [deleteUserOpen, setDeleteUserOpen] = useState(false);
-  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [editDeleteConfirm, setEditDeleteConfirm] = useState(false);
   const [phoneNumbersUserId, setPhoneNumbersUserId] = useState<string | null>(null);
 
   const [createTemplateOpen, setCreateTemplateOpen] = useState(false);
@@ -906,7 +821,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [deleteTemplateOpen, setDeleteTemplateOpen] = useState(false);
 
   const [userForm, setUserForm] = useState<UserFormState>(EMPTY_USER_FORM);
-  const [passwordForm, setPasswordForm] = useState('');
   const [templateForm, setTemplateForm] = useState<TemplateFormState>(EMPTY_TEMPLATE_FORM);
   const [permissionSearch, setPermissionSearch] = useState('');
   const [openTemplatePermissionGroups, setOpenTemplatePermissionGroups] = useState<string[]>([]);
@@ -936,14 +850,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       description: dealership.holdingName || 'Без компании',
     })),
     [meta],
-  );
-  const templateOptions = useMemo<SelectOption[]>(
-    () => templates.map((template) => ({
-      value: template.id,
-      label: template.name,
-      description: template.description || `${template.permissions.length} прав`,
-    })),
-    [templates],
   );
 
   useEffect(() => {
@@ -1135,6 +1041,24 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     return templates.find((template) => template.name === templateName)?.id || '';
   }
 
+  useEffect(() => {
+    if (!editUserOpen || !canManageTemplates) return;
+    const firstRole = canManageGlobalUsers ? userForm.memberships[0]?.role : 'manager';
+    const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
+    setUserForm((current) => {
+      const nextTemplateIds = templateId ? [templateId] : [];
+      if (current.templateIds[0] === nextTemplateIds[0] && current.templateIds.length === nextTemplateIds.length) return current;
+      return { ...current, templateIds: nextTemplateIds };
+    });
+  }, [canManageGlobalUsers, canManageTemplates, editUserOpen, templates, userForm.memberships]);
+
+  function openEditUser(user: UserAccountItem) {
+    setActiveUserId(user.id);
+    fillUserForm(user);
+    setEditDeleteConfirm(false);
+    setEditUserOpen(true);
+  }
+
   function fillUserForm(user: UserAccountItem) {
     const firstProfile = user.managerProfiles[0];
     setUserForm({
@@ -1272,6 +1196,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       await saveUser('edit');
       await reloadUsers();
       setEditUserOpen(false);
+      setEditDeleteConfirm(false);
       setNotice('Пользователь обновлён.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось обновить пользователя.');
@@ -1288,31 +1213,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     try {
       await deleteUser(activeUserId);
       await reloadUsers();
-      setDeleteUserOpen(false);
+      setEditDeleteConfirm(false);
       setViewUserOpen(false);
       setEditUserOpen(false);
       setActiveUserId(null);
       setNotice('Пользователь удалён.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось удалить пользователя.');
-    } finally {
-      setSavingUser(false);
-    }
-  }
-
-  async function handleChangePasswordSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!activeUserId || !passwordForm) return;
-    setSavingUser(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await changeUserPassword(activeUserId, passwordForm);
-      setPasswordForm('');
-      setChangePasswordOpen(false);
-      setNotice('Пароль у пользователя успешно изменен');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось изменить пароль пользователя.');
     } finally {
       setSavingUser(false);
     }
@@ -1393,8 +1300,15 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           <input className="sa-search-input" value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} />
         </label>
         <label className="sa-form-field">
-          <span>Пароль</span>
-          <input type="password" className="sa-search-input" value={userForm.password} onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))} />
+          <span>Новый пароль</span>
+          <input
+            type="password"
+            className="sa-search-input"
+            value={userForm.password}
+            placeholder="Оставьте пустым, если не меняете"
+            onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))}
+            autoComplete="new-password"
+          />
         </label>
         <label className="sa-form-field">
           <span>ФИО</span>
@@ -1479,26 +1393,34 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               );
             })}
           </div>
-          {canManageGlobalUsers && (
-            <button type="button" className="sa-btn-text" style={{ marginTop: 10 }} onClick={() => setUserForm((current) => ({ ...current, memberships: [...current.memberships, { role: 'manager', holdingId: '', dealershipId: '' }] }))}>
-              + Добавить ещё назначение
-            </button>
-          )}
         </div>
-        {canManageTemplates && (
-          <div className="sa-card" style={{ padding: 12 }}>
-            <SearchableSelect
-              label="Шаблон прав"
-              value={userForm.templateIds[0] || ''}
-              options={templateOptions}
-              placeholder="Выберите шаблон прав"
-              onChange={(value) => setUserForm((current) => ({ ...current, templateIds: value ? [value] : [] }))}
-            />
+        <div className="sa-holdings-form-footer">
+          <div className="sa-holdings-form-footer-left">
+            {editDeleteConfirm ? (
+              <>
+                <span className="sa-holdings-form-delete-hint">
+                  Удалить <strong>{activeUser?.displayName || activeUser?.email}</strong>?
+                </span>
+                <button type="button" className="sa-btn-danger" onClick={() => void handleDeleteUserConfirm()} disabled={savingUser}>
+                  {savingUser ? 'Удаляем...' : 'Удалить'}
+                </button>
+                <button type="button" className="sa-btn-outline" onClick={() => setEditDeleteConfirm(false)} disabled={savingUser}>
+                  Нет
+                </button>
+              </>
+            ) : (
+              <button type="button" className="sa-btn-danger" onClick={() => setEditDeleteConfirm(true)}>
+                Удалить пользователя
+              </button>
+            )}
           </div>
-        )}
-        <button type="submit" className="sa-btn-primary" disabled={savingUser}>
-          {savingUser ? 'Сохраняем...' : submitLabel}
-        </button>
+          <div className="sa-holdings-form-footer-right">
+            <button type="button" className="sa-btn-outline" onClick={() => { setEditUserOpen(false); setEditDeleteConfirm(false); }}>Отмена</button>
+            <button type="submit" className="sa-btn-primary" disabled={savingUser}>
+              {savingUser ? 'Сохраняем...' : submitLabel}
+            </button>
+          </div>
+        </div>
       </form>
     );
   }
@@ -1644,31 +1566,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     );
   }
 
-  const tabButtonStyle = (active: boolean): React.CSSProperties => ({
-    border: 'none',
-    borderBottom: active ? '2px solid #F59E0B' : '2px solid transparent',
-    background: 'transparent',
-    padding: '0 0 14px',
-    fontSize: 15,
-    fontWeight: 700,
-    color: active ? '#111827' : 'var(--sa-text-secondary)',
-    cursor: 'pointer',
-  });
-
   return (
     <div>
       {employeeId ? (
         null
       ) : (
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
-          <div>
-            <h1 className="sa-page-title">Пользователи</h1>
-            <p className="sa-page-subtitle">
-              {role === 'super'
-                ? 'Суперадмин управляет аккаунтами и шаблонами прав.'
-                : 'Руководитель компании управляет менеджерами своих точек.'}
-            </p>
-          </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
+          <h1 className="sa-page-title" style={{ marginBottom: 0 }}>Пользователи</h1>
           <select
             className="sa-select"
             value={selectedGlobalHoldingId}
@@ -1720,21 +1624,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           )}
           actionButtons={detailActionUser && (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-              <button type="button" className="sa-btn-outline" onClick={() => { setActiveUserId(detailActionUser.id); fillUserForm(detailActionUser); setEditUserOpen(true); }}>
+              <button type="button" className="sa-btn-outline" onClick={() => openEditUser(detailActionUser)}>
                 <EditIcon />
                 Редактировать
               </button>
               <button type="button" className="sa-btn-outline" onClick={() => setPhoneNumbersUserId(detailActionUser.id)}>
                 <PhoneIcon />
                 Номера телефонов
-              </button>
-              <button type="button" className="sa-btn-outline" onClick={() => { setActiveUserId(detailActionUser.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
-                <KeyIcon />
-                Сменить пароль
-              </button>
-              <button type="button" className="sa-btn-danger" onClick={() => { setActiveUserId(detailActionUser.id); setDeleteUserOpen(true); }}>
-                <TrashIcon />
-                Удалить
               </button>
             </div>
           )}
@@ -1751,49 +1647,60 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         </div>
       ) : (
         <>
-      <div className="sa-card" style={{ padding: '0 20px', marginBottom: 18 }}>
-        <div style={{ display: 'flex', gap: 24, alignItems: 'center', paddingTop: 18 }}>
-          <button type="button" style={tabButtonStyle(tab === 'users')} onClick={() => setTab('users')}>
-            Списки пользователей
+      <div className="sa-dialog-tabs" style={{ marginBottom: 16 }}>
+        <button
+          type="button"
+          className={`sa-dialog-tab ${tab === 'users' ? 'sa-dialog-tab-active' : ''}`}
+          onClick={() => setTab('users')}
+        >
+          Списки пользователей
+        </button>
+        {canManageTemplates && (
+          <button
+            type="button"
+            className={`sa-dialog-tab ${tab === 'templates' ? 'sa-dialog-tab-active' : ''}`}
+            onClick={() => setTab('templates')}
+          >
+            Шаблоны прав
           </button>
-          {canManageTemplates && (
-            <button type="button" style={tabButtonStyle(tab === 'templates')} onClick={() => setTab('templates')}>
-              Шаблоны прав
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       {tab === 'users' && (
         <>
           <div className="sa-toolbar">
-            <div className="sa-toolbar-row">
-              <div className="sa-search-wrap">
-                <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-                </svg>
-                <input
-                  className="sa-search-input"
-                  placeholder="Поиск по имени / точке / городу..."
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                />
+            <div className="sa-toolbar-split sa-holdings-toolbar">
+              <div className="sa-toolbar-filters">
+                <div className="sa-search-wrap">
+                  <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+                  </svg>
+                  <input
+                    className="sa-search-input"
+                    placeholder="Поиск по имени / точке / городу..."
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                </div>
+                <button type="button" className="sa-btn-border-only" onClick={() => setShowUserFilters((current) => !current)}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                  </svg>
+                  Фильтры
+                </button>
               </div>
-              <button className="sa-btn-outline" onClick={() => setShowUserFilters((current) => !current)}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-                </svg>
-                Фильтры
-              </button>
-              <button
-                type="button"
-                className="sa-btn-primary"
-                onClick={() => {
-                  setCreateUserOpen(true);
-                }}
-              >
-                Новый пользователь
-              </button>
+              <div className="sa-toolbar-actions">
+                <button
+                  type="button"
+                  className="sa-btn-brutal-3d"
+                  onClick={() => {
+                    setCreateUserOpen(true);
+                  }}
+                >
+                  <LetsIcon name="add-light" size={16} bold />
+                  Новый пользователь
+                </button>
+              </div>
             </div>
             <div className="sa-toolbar-chips">
               {USER_QUICK_FILTERS.map((filter) => (
@@ -1902,8 +1809,20 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
             </div>
           )}
 
-          <div className="sa-companies-table-wrap sa-desktop-only">
-            <table className="sa-table sa-table-sortable">
+          <div className="sa-companies-table-wrap sa-holdings-table-wrap sa-desktop-only">
+            <table className="sa-table sa-table-sortable sa-holdings-table sa-users-table">
+              <colgroup>
+                <col className="sa-col-user" />
+                <col className="sa-col-dealership" />
+                <col className="sa-col-num" />
+                <col className="sa-col-num" />
+                <col className="sa-col-num" />
+                <col className="sa-col-num" />
+                <col className="sa-col-comm" />
+                <col className="sa-col-mistake" />
+                <col className="sa-col-status" />
+                <col className="sa-col-actions" />
+              </colgroup>
               <thead>
                 <tr>
                   {USER_COLUMN_DEFS.map((col) => (
@@ -1926,7 +1845,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                       {userSortKey === 'status' ? (userSortDir === 'asc' ? '↑' : '↓') : '⇅'}
                     </span>
                   </th>
-                  <th style={{ width: 228 }}>Действия</th>
+                  <th className="sa-text-right sa-holdings-actions-col">Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -1952,25 +1871,16 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                         onKeyDown={(event) => event.key === 'Enter' && onSelectEmployee?.(row.user.id)}
                       >
                         <td>
-                          <div className="sa-emp-name-cell">
-                            <span className="sa-avatar-placeholder">{row.fullName.charAt(0).toUpperCase()}</span>
-                            <div>
-                              <div className="sa-cell-name">{row.fullName}</div>
-                              <div className="sa-cell-city">{row.user.email}</div>
-                            </div>
-                          </div>
+                          <div className="sa-cell-name">{row.fullName}</div>
+                          <div className="sa-cell-city">{row.user.email}</div>
                         </td>
                         <td>
                           {row.dealershipNames.length > 0 ? (
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                              {row.dealershipNames.map((name) => (
-                                <span key={name} className="sa-metric-chip">{name}</span>
-                              ))}
-                            </div>
+                            <div className="sa-cell-name">{row.dealershipNames.join(', ')}</div>
                           ) : (
                             <>
                               <div className="sa-cell-name">{row.dealershipName}</div>
-                              <div className="sa-cell-city">{row.city}</div>
+                              {row.city ? <div className="sa-cell-city">{row.city}</div> : null}
                             </>
                           )}
                         </td>
@@ -1982,30 +1892,36 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                             {analytics.failsCount}
                           </span>
                         </td>
-                        <td>
-                          <span className={`sa-comm-badge ${COMM_BADGE_CLASS[analytics.communicationFlag]}`} title={commTooltip(analytics.communicationFlag)}>
-                            {COMM_LABELS[analytics.communicationFlag]}
-                          </span>
+                        <td title={commTooltip(analytics.communicationFlag)}>
+                          {COMM_LABELS[analytics.communicationFlag]}
                         </td>
                         <td><span className="sa-top-mistake" title={analytics.topMistakeLabel}>{analytics.topMistakeLabel}</span></td>
                         <td><span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span></td>
-                        <td onClick={(event) => event.stopPropagation()}>
-                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                            <IconButton label="Просмотр" onClick={() => onSelectEmployee?.(row.user.id)}>
-                              <ViewIcon />
-                            </IconButton>
-                            <IconButton label="Номера телефонов" onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}>
-                              <PhoneIcon />
-                            </IconButton>
-                            <IconButton label="Редактировать" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); fillUserForm(actionUser); setEditUserOpen(true); }}>
-                              <EditIcon />
-                            </IconButton>
-                            <IconButton label="Сменить пароль" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
-                              <KeyIcon />
-                            </IconButton>
-                            <IconButton label="Удалить" tone="danger" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setDeleteUserOpen(true); }}>
-                              <TrashIcon />
-                            </IconButton>
+                        <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
+                          <div>
+                            <button
+                              type="button"
+                              className="sa-btn-icon sa-btn-brutal-3d-icon"
+                              onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}
+                              aria-label="Номера телефонов"
+                              title="Номера телефонов"
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              className="sa-btn-icon sa-btn-brutal-3d-icon"
+                              onClick={() => actionUser && openEditUser(actionUser)}
+                              aria-label="Редактировать"
+                              title="Редактировать"
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <path d="M12 20h9" />
+                                <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                              </svg>
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -2045,25 +1961,33 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                       <span className="sa-metric-chip"><span className={delta.cls}>{delta.text}</span></span>
                       <span className="sa-metric-chip">Проверки: {analytics.auditsCount}</span>
                       <span className="sa-metric-chip">Провалы: {analytics.failsCount}</span>
-                      <span className={`sa-comm-badge ${COMM_BADGE_CLASS[analytics.communicationFlag]}`}>{COMM_LABELS[analytics.communicationFlag]}</span>
+                      <span>{COMM_LABELS[analytics.communicationFlag]}</span>
                       <span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span>
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }} onClick={(event) => event.stopPropagation()}>
-                      <IconButton label="Просмотр" onClick={() => onSelectEmployee?.(row.user.id)}>
-                        <ViewIcon />
-                      </IconButton>
-                      <IconButton label="Номера телефонов" onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}>
-                        <PhoneIcon />
-                      </IconButton>
-                      <IconButton label="Редактировать" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); fillUserForm(actionUser); setEditUserOpen(true); }}>
-                        <EditIcon />
-                      </IconButton>
-                      <IconButton label="Сменить пароль" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setPasswordForm(''); setChangePasswordOpen(true); }}>
-                        <KeyIcon />
-                      </IconButton>
-                      <IconButton label="Удалить" tone="danger" onClick={() => { if (!actionUser) return; setActiveUserId(actionUser.id); setDeleteUserOpen(true); }}>
-                        <TrashIcon />
-                      </IconButton>
+                      <button
+                        type="button"
+                        className="sa-btn-icon sa-btn-brutal-3d-icon"
+                        onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}
+                        aria-label="Номера телефонов"
+                        title="Номера телефонов"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                          <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className="sa-btn-icon sa-btn-brutal-3d-icon"
+                        onClick={() => actionUser && openEditUser(actionUser)}
+                        aria-label="Редактировать"
+                        title="Редактировать"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                        </svg>
+                      </button>
                     </div>
                   </div>
                 );
@@ -2207,61 +2131,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         title="Редактировать пользователя"
         subtitle="Изменение пользователя выполняется через отдельное модальное окно."
         open={editUserOpen}
-        onClose={() => setEditUserOpen(false)}
+        onClose={() => { setEditUserOpen(false); setEditDeleteConfirm(false); }}
       >
         {renderUserForm(handleEditUser, 'Сохранить пользователя')}
-      </ModalFrame>
-
-      <ModalFrame
-        title="Удалить пользователя"
-        subtitle="Удаление необратимо."
-        open={deleteUserOpen && !!activeUser}
-        onClose={() => setDeleteUserOpen(false)}
-        width={520}
-      >
-        {activeUser && (
-          <div style={{ display: 'grid', gap: 16 }}>
-            <p style={{ margin: 0 }}>
-              Удалить пользователя <strong>{activeUser.displayName || activeUser.email}</strong>?
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button type="button" className="sa-btn-outline" onClick={() => setDeleteUserOpen(false)}>Отмена</button>
-              <button type="button" className="sa-btn-danger" onClick={handleDeleteUserConfirm} disabled={savingUser}>
-                {savingUser ? 'Удаляем...' : 'Удалить'}
-              </button>
-            </div>
-          </div>
-        )}
-      </ModalFrame>
-
-      <ModalFrame
-        title="Сменить пароль"
-        subtitle={activeUser ? `Пользователь: ${activeUser.displayName || activeUser.email}` : undefined}
-        open={changePasswordOpen && !!activeUser}
-        onClose={() => setChangePasswordOpen(false)}
-        width={520}
-      >
-        {activeUser && (
-          <form onSubmit={handleChangePasswordSubmit} style={{ display: 'grid', gap: 14 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Новый пароль</span>
-              <input
-                type="password"
-                className="sa-input"
-                value={passwordForm}
-                onChange={(event) => setPasswordForm(event.target.value)}
-                autoComplete="new-password"
-                required
-              />
-            </label>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button type="button" className="sa-btn-outline" onClick={() => setChangePasswordOpen(false)}>Отмена</button>
-              <button type="submit" className="sa-btn-primary" disabled={savingUser || !passwordForm}>
-                {savingUser ? 'Сохраняем...' : 'Сменить пароль'}
-              </button>
-            </div>
-          </form>
-        )}
       </ModalFrame>
 
       <ModalFrame

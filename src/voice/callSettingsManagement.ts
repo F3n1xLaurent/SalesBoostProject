@@ -9,13 +9,13 @@ type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
 type CustomerPatience = 'low' | 'medium' | 'high';
 type ReplyLength = 'short' | 'medium' | 'detailed';
 type CallPlanTargetType = 'employees' | 'dealerships';
-type CallPlanFrequency = 'daily' | 'weekly';
+type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
 
 const TEMPERAMENTS = new Set<CustomerTemperament>(['calm', 'doubtful', 'irritated', 'hurried']);
 const PATIENCE = new Set<CustomerPatience>(['low', 'medium', 'high']);
 const REPLY_LENGTHS = new Set<ReplyLength>(['short', 'medium', 'detailed']);
 const CALL_PLAN_TARGET_TYPES = new Set<CallPlanTargetType>(['employees', 'dealerships']);
-const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['daily', 'weekly']);
+const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['manual', 'daily', 'weekly']);
 const TIME_RE = /^([01]\d|2[0-2]):([0-5]\d)$/;
 
 function parseString(value: unknown): string | null {
@@ -185,9 +185,14 @@ function normalizePlan(plan: Prisma.CallPlanGetPayload<{}>) {
   };
 }
 
-function normalizePlanCall(call: Prisma.CallPlanCallGetPayload<{}>) {
+function normalizePlanCall(
+  call: Prisma.CallPlanCallGetPayload<{}>,
+  auditId: string | null = null,
+  timing: { answerTimeSec: number | null; talkDurationSec: number | null; durationSec: number | null } | null = null,
+) {
   return {
     id: call.id,
+    auditId,
     planId: call.planId,
     callId: call.callId,
     employeeId: call.employeeId,
@@ -203,6 +208,8 @@ function normalizePlanCall(call: Prisma.CallPlanCallGetPayload<{}>) {
     outcome: call.outcome,
     startedAt: call.startedAt,
     endedAt: call.endedAt,
+    answerTimeSec: timing?.answerTimeSec ?? null,
+    talkDurationSec: timing?.talkDurationSec ?? timing?.durationSec ?? null,
     transcript: safeJsonParse(call.transcriptJson, []),
     evaluation: safeJsonParse(call.evaluationJson, null),
     totalScore: call.totalScore,
@@ -313,18 +320,20 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
   const targetIds = parseStringArray(body.targetIds);
   const scriptId = parseString(body.scriptId);
   const phoneNumberTypeId = parseString(body.phoneNumberTypeId);
-  const callTimeFrom = parseString(body.callTimeFrom) || '';
-  const callTimeTo = parseString(body.callTimeTo) || '';
+  const callTimeFrom = frequency === 'manual' ? '09:00' : parseString(body.callTimeFrom) || '';
+  const callTimeTo = frequency === 'manual' ? '09:15' : parseString(body.callTimeTo) || '';
   if (!targetType || !CALL_PLAN_TARGET_TYPES.has(targetType)) throw new Error('Выберите тип прозвона.');
   if (targetIds.length === 0) throw new Error('Выберите сотрудников или точки.');
   if (!scriptId) throw new Error('Выберите скрипт.');
   if (!phoneNumberTypeId) throw new Error('Выберите тип номера.');
   if (!frequency || !CALL_PLAN_FREQUENCIES.has(frequency)) throw new Error('Выберите частотность.');
-  if (!TIME_RE.test(callTimeFrom) || !TIME_RE.test(callTimeTo)) throw new Error('Укажите время звонка с 09:00 до 22:00.');
-  const fromMinutes = timeToMinutes(callTimeFrom);
-  const toMinutes = timeToMinutes(callTimeTo);
-  if (fromMinutes < 9 * 60 || toMinutes > 22 * 60 || toMinutes - fromMinutes < 15) {
-    throw new Error('Диапазон времени должен быть с 09:00 до 22:00, минимум 15 минут.');
+  if (frequency !== 'manual') {
+    if (!TIME_RE.test(callTimeFrom) || !TIME_RE.test(callTimeTo)) throw new Error('Укажите время звонка с 09:00 до 22:00.');
+    const fromMinutes = timeToMinutes(callTimeFrom);
+    const toMinutes = timeToMinutes(callTimeTo);
+    if (fromMinutes < 9 * 60 || toMinutes > 22 * 60 || toMinutes - fromMinutes < 15) {
+      throw new Error('Диапазон времени должен быть с 09:00 до 22:00, минимум 15 минут.');
+    }
   }
   return {
     name: parseString(body.name) || (targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек'),
@@ -685,6 +694,7 @@ function buildCallPlanRealtimePrompt(input: {
   profile: Prisma.CallCustomerProfileGetPayload<{}> | null;
   importedItem: Prisma.ImportedItemGetPayload<{}> | null;
   customerVoiceName?: string | null;
+  holding: Pick<Prisma.HoldingGetPayload<{}>, 'name' | 'description'>;
 }) {
   const profile = input.profile;
   const importedItem = input.importedItem;
@@ -719,6 +729,37 @@ function buildCallPlanRealtimePrompt(input: {
     'Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ сотруднику компании по конкретному предложению/данным из выборки. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы, отрабатывает возражения и доводит до следующего шага.',
     'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы по предложению, условиям, деталям и следующему шагу.',
     '',
+    '=== ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК (КРИТИЧНО) ===',
+    'Если в начале разговора или в любой момент становится понятно, что на другом конце не живой сотрудник, а голосовой помощник, автоответчик, виртуальный ассистент или сервис записи сообщений, НЕ продолжай обычный сценарий диалога.',
+    '',
+    'К признакам относятся, например:',
+    '- собеседник сообщает, что абонент занят или недоступен;',
+    '- предлагает оставить сообщение;',
+    '- говорит, что может записать информацию;',
+    '- представляется голосовым помощником, виртуальным ассистентом или секретарём;',
+    '- просит говорить после сигнала или обещает передать сообщение владельцу.',
+    '',
+    'В этом случае:',
+    '',
+    '1. Один раз произнеси ровно:',
+    '   "Прошу прощения, до свидания."',
+    '',
+    '2. Сразу после этого вызови:',
+    '   end_call({ "reason": "voicemail" })',
+    '',
+    'После обнаружения голосового помощника запрещено:',
+    '- продолжать разговор;',
+    '- задавать вопросы;',
+    '- повторять первую реплику;',
+    '- пытаться пройти сценарий продажи;',
+    '- вызывать end_call с любой другой причиной.',
+    '',
+    'Исключение: если обнаружен голосовой помощник или автоответчик, не выполняй обычный сценарий завершения разговора. Вместо этого используй только сценарий "ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК".',
+    '',
+    '=== ИНФОРМАЦИЯ О КОМПАНИИ ===',
+    `Название компании: ${input.holding.name}`,
+    `Описание компании: ${input.holding.description?.trim() || 'Описание не указано.'}`,
+    '',
     scenarioCore,
     '',
     '=== ЗАВЕРШЕНИЕ ДИАЛОГА ===',
@@ -746,6 +787,8 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
     await assertCanAccessPlan(req, id);
     const plan = await prisma.callPlan.findUnique({ where: { id } });
     if (!plan) throw new Error('План прозвона не найден.');
+    const holding = await prisma.holding.findUnique({ where: { id: plan.holdingId }, select: { name: true, description: true } });
+    if (!holding) throw new Error('Компания плана не найдена.');
     const script = await prisma.callScript.findFirst({ where: { id: plan.scriptId, holdingId: plan.holdingId } });
     if (!script) throw new Error('Скрипт плана не найден.');
     const targets = await buildCallPlanTargets(plan);
@@ -759,7 +802,7 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
     const importedItem = await pickImportedSampleForScript(script);
     const customerVoice = await resolveCustomerVoiceForProfile(profile);
     const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
-    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null });
+    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null, holding });
     const result = await startVoiceCall(target.phoneNumber.phone, {
       scenario: 'realtime_pure',
       instructions: prompt,
@@ -827,6 +870,8 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
     await assertCanAccessPlan(req, id);
     const plan = await prisma.callPlan.findUnique({ where: { id } });
     if (!plan) throw new Error('План прозвона не найден.');
+    const holding = await prisma.holding.findUnique({ where: { id: plan.holdingId }, select: { name: true, description: true } });
+    if (!holding) throw new Error('Компания плана не найдена.');
     const script = await prisma.callScript.findFirst({ where: { id: plan.scriptId, holdingId: plan.holdingId } });
     if (!script) throw new Error('Скрипт плана не найден.');
     const profileIds = safeJsonParse<string[]>(script.profileIdsJson, []);
@@ -836,7 +881,7 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
     const profile = pickRandom(profiles);
     const importedItem = await pickImportedSampleForScript(script);
     const customerVoice = await resolveCustomerVoiceForProfile(profile);
-    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null });
+    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null, holding });
     res.json({
       prompt,
       profile: profile ? normalizeProfile(profile) : null,
@@ -863,7 +908,16 @@ export async function handleListCallPlanCalls(req: Request, res: Response): Prom
       orderBy: { startedAt: 'desc' },
       take: 100,
     });
-    res.json({ items: items.map(normalizePlanCall) });
+    const voiceSessions = await prisma.voiceCallSession.findMany({
+      where: { callId: { in: items.map((item) => item.callId) } },
+      select: { id: true, callId: true, answerTimeSec: true, talkDurationSec: true, durationSec: true },
+    });
+    const auditIds = new Map(voiceSessions.map((session) => [session.callId, `call-${session.id}`]));
+    const timings = new Map(voiceSessions.map((session) => [
+      session.callId,
+      { answerTimeSec: session.answerTimeSec, talkDurationSec: session.talkDurationSec, durationSec: session.durationSec },
+    ]));
+    res.json({ items: items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null, timings.get(item.callId) ?? null)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось загрузить историю прозвона.';
     res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });

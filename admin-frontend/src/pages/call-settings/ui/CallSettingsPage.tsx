@@ -9,6 +9,7 @@ import {
   deleteCallCustomerProfile,
   deleteCallCustomerVoice,
   deleteCallScript,
+  fetchAuditDetail,
   fetchCallPlanOptions,
   fetchCallPlans,
   fetchCallPlanCalls,
@@ -38,11 +39,17 @@ import {
   type CallScriptSuccessCriterion,
   type CustomerPatience,
   type CustomerTemperament,
+  type AuditDetailItem,
   type HoldingItem,
   type ReplyLength,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { $auth } from '../../../entities/session';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { ModalPortal } from '../../../shared/ui/ModalPortal';
+import { SlideOver } from '../../../shared/ui/slide-over';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 
 type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
 type CallSettingsRoute =
@@ -81,6 +88,7 @@ const REPLY_LENGTHS: Array<{ value: ReplyLength; label: string }> = [
 ];
 
 const PLAN_FREQUENCIES: Array<{ value: CallPlanFrequency; label: string }> = [
+  { value: 'manual', label: 'Вручную' },
   { value: 'daily', label: 'Каждый день' },
   { value: 'weekly', label: 'Раз в неделю' },
 ];
@@ -90,6 +98,35 @@ const CALL_SETTINGS_PATHS: Record<CallSettingsTab, string> = {
   scripts: '/call-settings/scripts',
   plan: '/call-settings/plans',
 };
+
+function formatPlanCallDuration(seconds: number | null | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '—';
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${minutes}:${String(rest).padStart(2, '0')}`;
+}
+
+function formatPlanCallStatus(outcome: string | null | undefined, status: string | null | undefined): string {
+  const value = String(outcome || status || '').trim().toLowerCase();
+  if (value === 'completed' || value === 'disconnected') return 'Завершено';
+  if (value === 'no_answer') return 'Недозвон';
+  if (value === 'busy') return 'Занято';
+  if (value === 'failed') return 'Ошибка';
+  if (value === 'voicemail') return 'Автоответчик';
+  if (value === 'running' || value === 'dialing' || value === 'in_progress' || value === 'progress') return 'В работе';
+  if (value === 'retry_wait') return 'Ожидает повтора';
+  if (value === 'queued') return 'В очереди';
+  if (value === 'cancelled' || value === 'canceled') return 'Отменено';
+  return value || '—';
+}
+
+function planCallStatusClass(outcome: string | null | undefined, status: string | null | undefined): string {
+  const value = String(outcome || status || '').trim().toLowerCase();
+  if (value === 'completed' || value === 'disconnected') return 'sa-audit-status-completed';
+  if (value === 'failed') return 'sa-audit-status-failed';
+  return 'sa-audit-status-interrupted';
+}
 
 const EMPTY_FORM: CustomerProfileForm = {
   name: '',
@@ -192,18 +229,6 @@ function getEvaluationSummary(evaluation: unknown) {
   };
 }
 
-function overlayCardStyle(width = 720): React.CSSProperties {
-  return {
-    width: `min(100%, ${width}px)`,
-    maxHeight: '90vh',
-    overflowY: 'auto',
-    background: '#fff',
-    borderRadius: 24,
-    boxShadow: '0 28px 80px rgba(15,23,42,0.28)',
-    padding: 22,
-  };
-}
-
 function createId(): string {
   return `item-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -258,8 +283,7 @@ function ScriptTextModal(props: {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 150 }} onClick={props.onClose}>
-      <div style={overlayCardStyle(560)} onClick={(event) => event.stopPropagation()}>
+    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-medium">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
           <h2 style={{ margin: 0, fontSize: 22 }}>{props.title}</h2>
           <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
@@ -282,8 +306,7 @@ function ScriptTextModal(props: {
             <button type="submit" className="sa-btn-primary" disabled={!first.trim()}>Добавить</button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalPortal>
   );
 }
 
@@ -310,8 +333,7 @@ function QuestionModal(props: {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 150 }} onClick={props.onClose}>
-      <div style={overlayCardStyle(560)} onClick={(event) => event.stopPropagation()}>
+    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-medium">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
           <h2 style={{ margin: 0, fontSize: 22 }}>Добавить вопрос</h2>
           <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
@@ -339,8 +361,7 @@ function QuestionModal(props: {
             <button type="submit" className="sa-btn-primary" disabled={!text.trim()}>Добавить</button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalPortal>
   );
 }
 
@@ -398,11 +419,7 @@ function ProfileModal(props: {
   }
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
-      onClick={props.onClose}
-    >
-      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()}>
+    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-medium">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 24 }}>{isEdit ? 'Редактировать профиль клиента' : 'Создать профиль клиента'}</h2>
@@ -504,8 +521,7 @@ function ProfileModal(props: {
             <button type="submit" className="sa-btn-primary" disabled={!form.name.trim() || activeVoices.length === 0}>{isEdit ? 'Сохранить профиль' : 'Создать профиль'}</button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalPortal>
   );
 }
 
@@ -572,11 +588,7 @@ function VoicesModal(props: {
   }
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 132 }}
-      onClick={props.onClose}
-    >
-      <div style={{ ...overlayCardStyle(), width: 'min(980px, 96vw)' }} onClick={(event) => event.stopPropagation()}>
+    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-wide">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 24 }}>Голоса клиентов</h2>
@@ -656,8 +668,7 @@ function VoicesModal(props: {
             <button type="submit" className="sa-btn-primary" disabled={props.savingId === 'new' || !newVoice.id.trim() || !newVoice.name.trim()}>Добавить голос</button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalPortal>
   );
 }
 
@@ -1221,6 +1232,7 @@ function CallPlanEditor(props: {
   const selectedEmployeesCount = targetType === 'employees'
     ? targetIds.length
     : props.options.dealerships.filter((item) => targetIds.includes(item.id)).reduce((sum, item) => sum + item.employeesCount, 0);
+  const isManualFrequency = frequency === 'manual';
 
   function switchTargetType(next: CallPlanTargetType) {
     setTargetType(next);
@@ -1352,16 +1364,18 @@ function CallPlanEditor(props: {
               </select>
             </label>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Время звонка c</span>
-              <input className="sa-input" type="time" min="09:00" max="21:45" step={900} value={callTimeFrom} onChange={(event) => setCallTimeFrom(event.target.value)} required />
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Время звонка до</span>
-              <input className="sa-input" type="time" min="09:15" max="22:00" step={900} value={callTimeTo} onChange={(event) => setCallTimeTo(event.target.value)} required />
-            </label>
-          </div>
+          {!isManualFrequency && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span>Время звонка c</span>
+                <input className="sa-input" type="time" min="09:00" max="21:45" step={900} value={callTimeFrom} onChange={(event) => setCallTimeFrom(event.target.value)} required />
+              </label>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span>Время звонка до</span>
+                <input className="sa-input" type="time" min="09:15" max="22:00" step={900} value={callTimeTo} onChange={(event) => setCallTimeTo(event.target.value)} required />
+              </label>
+            </div>
+          )}
         </section>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
@@ -1382,8 +1396,7 @@ function PromptPreviewModal(props: {
 }) {
   if (!props.preview) return null;
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 160 }} onClick={props.onClose}>
-      <div style={overlayCardStyle(980)} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Тест промпта">
+    <ModalPortal open onClose={props.onClose} modalClassName="sa-modal-wide">
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 24 }}>Тест промпта</h2>
@@ -1414,8 +1427,7 @@ function PromptPreviewModal(props: {
             <button type="button" className="sa-btn-primary" onClick={props.onClose}>Закрыть</button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalPortal>
   );
 }
 
@@ -1448,7 +1460,10 @@ export function CallSettingsPage() {
   const [selectedPlan, setSelectedPlan] = useState<CallPlan | null>(null);
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
-  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
+  const [analyticsDrawerOpen, setAnalyticsDrawerOpen] = useState(false);
+  const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
+  const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
+  const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
   const canManageVoices = auth.status === 'authenticated' && auth.user.allowedRoles.includes('super');
 
   useEffect(() => {
@@ -1545,13 +1560,13 @@ export function CallSettingsPage() {
       setPlanEditorOpen(false);
       setSelectedPlan(null);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       return;
     }
     if (route.create) {
       setSelectedPlan(null);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       setPlanEditorOpen(true);
       return;
     }
@@ -1559,7 +1574,7 @@ export function CallSettingsPage() {
     if (!route.planId) {
       setSelectedPlan(null);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       return;
     }
     const plan = plans.find((item) => item.id === route.planId);
@@ -1573,7 +1588,7 @@ export function CallSettingsPage() {
     if (route.edit) {
       setSelectedPlan(plan);
       setPlanCalls([]);
-      setExpandedCallId(null);
+      closeAnalyticsDrawer();
       setPlanEditorOpen(true);
       return;
     }
@@ -1741,7 +1756,6 @@ export function CallSettingsPage() {
   async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean }) {
     if (!options?.skipNavigate) navigate(`/call-settings/plans/${encodeURIComponent(plan.id)}`);
     setSelectedPlan(plan);
-    setExpandedCallId(null);
     setPlanCallsLoading(true);
     try {
       setPlanCalls(await fetchCallPlanCalls(plan.id));
@@ -1749,6 +1763,31 @@ export function CallSettingsPage() {
       setError(historyError instanceof Error ? historyError.message : 'Не удалось загрузить историю прозвона.');
     } finally {
       setPlanCallsLoading(false);
+    }
+  }
+
+  function closeAnalyticsDrawer() {
+    setAnalyticsDrawerOpen(false);
+    setAnalyticsDrawerLoading(false);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerDetail(null);
+  }
+
+  async function openCallAnalyticsDrawer(call: CallPlanCallItem) {
+    setAnalyticsDrawerOpen(true);
+    setAnalyticsDrawerLoading(true);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerDetail(null);
+    try {
+      if (!call.auditId) {
+        throw new Error('Аналитика ещё не готова: у звонка пока нет связанной проверки.');
+      }
+      const detail = await fetchAuditDetail(call.auditId);
+      setAnalyticsDrawerDetail(detail);
+    } catch (loadError) {
+      setAnalyticsDrawerError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить аналитику звонка.');
+    } finally {
+      setAnalyticsDrawerLoading(false);
     }
   }
 
@@ -1828,7 +1867,7 @@ export function CallSettingsPage() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>Обновить</button>
             <button type="button" className="sa-btn-outline" onClick={() => navigate(`/call-settings/plans/${encodeURIComponent(selectedPlan.id)}/edit`)}>Редактировать</button>
-            <button type="button" className="sa-btn-primary" onClick={() => initiatePlan(selectedPlan)}>Заинициировать сейчас</button>
+            <button type="button" className="sa-btn-primary" onClick={() => initiatePlan(selectedPlan)}>Позвонить по аудитории</button>
             <button type="button" className="sa-btn-outline" onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>Назад к планам</button>
           </div>
         </section>
@@ -1854,7 +1893,9 @@ export function CallSettingsPage() {
             <div className="sa-card" style={{ padding: 12 }}>
               <div className="sa-meta">Расписание</div>
               <strong>{PLAN_FREQUENCIES.find((item) => item.value === selectedPlan.frequency)?.label || selectedPlan.frequency}</strong>
-              <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
+              {selectedPlan.frequency !== 'manual' && (
+                <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
+              )}
             </div>
           </div>
           <div style={{ display: 'grid', gap: 8 }}>
@@ -1882,153 +1923,51 @@ export function CallSettingsPage() {
                 <thead>
                   <tr>
                     <th>Сотрудник</th>
-                    <th style={{ width: 170 }}>ID обзвона</th>
                     <th style={{ width: 170 }}>Номер</th>
                     <th style={{ width: 150 }}>Статус</th>
                     <th style={{ width: 120 }}>Оценка</th>
+                    <th style={{ width: 130 }}>Время дозвона</th>
+                    <th style={{ width: 140 }}>Время разговора</th>
                     <th style={{ width: 190 }}>Дата</th>
                   </tr>
                 </thead>
                 <tbody>
                   {planCalls.map((call) => {
                     const analytics = getEvaluationSummary(call.evaluation);
-                    const expanded = expandedCallId === call.id;
                     const score = call.totalScore ?? analytics.overallScore;
                     return (
-                      <React.Fragment key={call.id}>
-                        <tr>
-                          <td>
-                            <strong>{call.employeeName || 'Сотрудник'}</strong>
-                            <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
-                            {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
-                          </td>
-                          <td>
-                            <code style={{ fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
-                          </td>
-                          <td>{call.phone}</td>
-                          <td>{call.outcome || call.status}</td>
-                          <td>
-                            {score != null ? Math.round(score) : '—'}
-                            {analytics.planPercent != null && <div className="sa-meta" style={{ marginTop: 4 }}>Условия: {Math.round(analytics.planPercent)}%</div>}
-                          </td>
-                          <td>
-                            <div>{new Date(call.startedAt).toLocaleString('ru-RU')}</div>
-                            <button
-                              type="button"
-                              className="sa-link-button"
-                              onClick={() => setExpandedCallId(expanded ? null : call.id)}
-                              style={{ padding: 0, border: 0, background: 'transparent', color: 'var(--sa-accent)', fontWeight: 700, cursor: 'pointer', marginTop: 6 }}
-                            >
-                              {expanded ? 'Скрыть аналитику' : 'Показать аналитику'}
-                            </button>
-                          </td>
-                        </tr>
-                        {expanded && (
-                          <tr>
-                            <td colSpan={6} style={{ background: '#f8fafc', padding: 16 }}>
-                              <div style={{ display: 'grid', gap: 14 }}>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">ID обзвона</div>
-                                    <code style={{ display: 'block', marginTop: 6, fontSize: 12, wordBreak: 'break-all' }}>{call.callId}</code>
-                                  </div>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">Общая оценка</div>
-                                    <strong style={{ fontSize: 22 }}>{score != null ? `${Math.round(score)} / 100` : 'Нет оценки'}</strong>
-                                  </div>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">Условия успеха</div>
-                                    <strong style={{ fontSize: 22 }}>
-                                      {analytics.planPercent != null ? `${Math.round(analytics.planPercent)}%` : 'Нет данных'}
-                                    </strong>
-                                    {analytics.planTotal != null && analytics.planMax != null && (
-                                      <div className="sa-meta" style={{ marginTop: 4 }}>{analytics.planTotal} из {analytics.planMax} баллов</div>
-                                    )}
-                                  </div>
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta">Транскрипт</div>
-                                    <strong style={{ fontSize: 22 }}>{call.transcript.length}</strong>
-                                    <div className="sa-meta" style={{ marginTop: 4 }}>реплик</div>
-                                  </div>
-                                </div>
-
-                                {analytics.summary && (
-                                  <div className="sa-card" style={{ padding: 12 }}>
-                                    <div className="sa-meta" style={{ marginBottom: 6 }}>Краткий вывод</div>
-                                    <div style={{ fontSize: 14, lineHeight: 1.5 }}>{analytics.summary}</div>
-                                  </div>
-                                )}
-
-                                {analytics.criteriaItems.length > 0 && (
-                                  <div className="sa-card" style={{ padding: 12, display: 'grid', gap: 10 }}>
-                                    <div style={{ fontWeight: 700 }}>Оценка условий успеха</div>
-                                    {analytics.criteriaItems.map((item, index) => {
-                                      const expected = asText(item.expectedAnswer);
-                                      const evidence = asText(item.evidence);
-                                      const rawMaxScore = asNumber(item.maxScore) ?? 0;
-                                      const rawItemScore = asNumber(item.score) ?? 0;
-                                      const maxScore = Math.max(0, rawMaxScore);
-                                      const itemScore = Math.max(0, Math.min(maxScore, rawItemScore));
-                                      return (
-                                        <div key={`${expected}-${index}`} style={{ borderTop: index === 0 ? 0 : '1px solid var(--sa-divider)', paddingTop: index === 0 ? 0 : 10 }}>
-                                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
-                                            <div style={{ fontWeight: 600 }}>{expected || `Критерий ${index + 1}`}</div>
-                                            <span className="sa-chip">{itemScore} / {maxScore}</span>
-                                          </div>
-                                          {evidence && <div className="sa-meta" style={{ marginTop: 5, lineHeight: 1.45 }}>{evidence}</div>}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-
-                                {(analytics.strengths.length > 0 || analytics.issues.length > 0 || analytics.recommendations.length > 0) && (
-                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
-                                    {analytics.strengths.length > 0 && (
-                                      <div className="sa-card" style={{ padding: 12 }}>
-                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Сильные стороны</div>
-                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
-                                          {analytics.strengths.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
-                                        </ul>
-                                      </div>
-                                    )}
-                                    {analytics.issues.length > 0 && (
-                                      <div className="sa-card" style={{ padding: 12 }}>
-                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Что просело</div>
-                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
-                                          {analytics.issues.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
-                                        </ul>
-                                      </div>
-                                    )}
-                                    {analytics.recommendations.length > 0 && (
-                                      <div className="sa-card" style={{ padding: 12 }}>
-                                        <div style={{ fontWeight: 700, marginBottom: 8 }}>Рекомендации</div>
-                                        <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45 }}>
-                                          {analytics.recommendations.slice(0, 5).map((item) => <li key={item}>{item}</li>)}
-                                        </ul>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {call.transcript.length > 0 && (
-                                  <div className="sa-card" style={{ padding: 12, display: 'grid', gap: 8 }}>
-                                    <div style={{ fontWeight: 700 }}>Транскрипт</div>
-                                    <div style={{ display: 'grid', gap: 8, maxHeight: 300, overflow: 'auto' }}>
-                                      {call.transcript.map((turn, index) => (
-                                        <div key={`${turn.role}-${index}`} style={{ display: 'grid', gap: 3 }}>
-                                          <span className="sa-meta">{turn.role === 'client' ? 'Клиент' : 'Сотрудник'}</span>
-                                          <div style={{ fontSize: 13, lineHeight: 1.45 }}>{turn.text}</div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
+                      <tr key={call.id}>
+                        <td>
+                          <strong>{call.employeeName || 'Сотрудник'}</strong>
+                          <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
+                          {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
+                        </td>
+                        <td>{call.phone}</td>
+                        <td>
+                          <span className={`sa-status-badge ${planCallStatusClass(call.outcome, call.status)}`}>
+                            {formatPlanCallStatus(call.outcome, call.status)}
+                          </span>
+                        </td>
+                        <td>
+                          {score != null ? Math.round(score) : '—'}
+                          {analytics.planPercent != null && <div className="sa-meta" style={{ marginTop: 4 }}>Условия: {Math.round(analytics.planPercent)}%</div>}
+                        </td>
+                        <td>{formatPlanCallDuration(call.answerTimeSec)}</td>
+                        <td>{formatPlanCallDuration(call.talkDurationSec)}</td>
+                        <td>
+                          <div>{new Date(call.startedAt).toLocaleString('ru-RU')}</div>
+                          <button
+                            type="button"
+                            className="sa-link-button"
+                            onClick={() => void openCallAnalyticsDrawer(call)}
+                            disabled={!call.auditId}
+                            title={!call.auditId ? 'Аналитика появится после создания проверки по звонку' : undefined}
+                            style={{ padding: 0, border: 0, background: 'transparent', color: call.auditId ? 'var(--sa-accent)' : 'var(--sa-text-secondary)', fontWeight: 700, cursor: call.auditId ? 'pointer' : 'not-allowed', marginTop: 6 }}
+                          >
+                            Показать аналитику
+                          </button>
+                        </td>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -2036,223 +1975,278 @@ export function CallSettingsPage() {
             </div>
           )}
         </section>
+        <SlideOver open={analyticsDrawerOpen} title="Аналитика звонка" width="xl" onClose={closeAnalyticsDrawer}>
+          {analyticsDrawerLoading ? (
+            <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка аналитики...</div>
+          ) : analyticsDrawerError ? (
+            <div className="sa-card" style={{ padding: 20 }}>
+              <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть аналитику</div>
+              <div className="sa-meta" style={{ marginTop: 8 }}>{analyticsDrawerError}</div>
+            </div>
+          ) : analyticsDrawerDetail ? (
+            <AuditAnalyticsReport
+              detail={analyticsDrawerDetail}
+              onOpenEmployee={(employeeId) => navigate(`/users/${encodeURIComponent(employeeId)}`)}
+            />
+          ) : (
+            <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите звонок.</div>
+          )}
+        </SlideOver>
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'grid', gap: 18 }}>
-      <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <div>
-            <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Настройки обзвона</h1>
-            <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>Профили клиентов, скрипты и план прозвона.</div>
-          </div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <select
-              className="sa-select"
-              value={selectedHoldingId}
-              onChange={(event) => setSelectedHoldingId(event.target.value)}
-              disabled={holdingsLoading || holdings.length === 0}
-              style={{ minWidth: 220 }}
-            >
-              {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-              {holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
-            </select>
-            {activeTab === 'profiles' && (
-              <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={openCreate}>Создать профиль клиента</button>
-            )}
-            {activeTab === 'profiles' && canManageVoices && (
-              <button type="button" className="sa-btn-outline" onClick={() => setVoicesModalOpen(true)}>Голоса</button>
-            )}
-            {activeTab === 'scripts' && (
-              <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => openScriptEditor()}>Создать скрипт</button>
-            )}
-            {activeTab === 'plan' && (
-              <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => navigate('/call-settings/plans/new')}>Создать обзвон</button>
-            )}
-          </div>
-        </div>
+    <div>
+      <h1 className="sa-page-title">Настройки обзвона</h1>
 
-        <div className="sa-dialog-tabs" style={{ marginBottom: 0 }}>
-          <button type="button" className={`sa-dialog-tab ${activeTab === 'profiles' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.profiles)}>Профили клиентов</button>
-          <button type="button" className={`sa-dialog-tab ${activeTab === 'scripts' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.scripts)}>Скрипты</button>
-          <button type="button" className={`sa-dialog-tab ${activeTab === 'plan' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>План прозвона</button>
+      <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
+        <div className="sa-toolbar-filters">
+          <HoldingSelectPicker
+            holdings={holdings}
+            value={selectedHoldingId}
+            onChange={setSelectedHoldingId}
+            disabled={holdingsLoading || holdings.length === 0}
+            loading={holdingsLoading}
+          />
         </div>
-      </section>
+        <div className="sa-toolbar-actions">
+          {activeTab === 'profiles' && canManageVoices && (
+            <button type="button" className="sa-btn-brutal-3d" onClick={() => setVoicesModalOpen(true)}>
+              <LetsIcon name="sound-light" size={16} bold />
+              Голоса
+            </button>
+          )}
+          {activeTab === 'profiles' && (
+            <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={openCreate}>
+              <LetsIcon name="add-light" size={16} bold />
+              Создать профиль клиента
+            </button>
+          )}
+          {activeTab === 'scripts' && (
+            <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={() => openScriptEditor()}>
+              <LetsIcon name="add-light" size={16} bold />
+              Создать скрипт
+            </button>
+          )}
+          {activeTab === 'plan' && (
+            <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={() => navigate('/call-settings/plans/new')}>
+              <LetsIcon name="add-light" size={16} bold />
+              Создать обзвон
+            </button>
+          )}
+        </div>
+      </div>
 
-      {error && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>{error}</div>}
-      {notice && <div style={{ padding: 12, borderRadius: 14, background: '#eff6ff', color: '#1d4ed8', fontSize: 14 }}>{notice}</div>}
+      <div className="sa-dialog-tabs" style={{ marginBottom: 16 }}>
+        <button type="button" className={`sa-dialog-tab ${activeTab === 'profiles' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.profiles)}>Профили клиентов</button>
+        <button type="button" className={`sa-dialog-tab ${activeTab === 'scripts' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.scripts)}>Скрипты</button>
+        <button type="button" className={`sa-dialog-tab ${activeTab === 'plan' ? 'sa-dialog-tab-active' : ''}`} onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>План прозвона</button>
+      </div>
+
+      {error && <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{error}</div>}
+      {notice && <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>{notice}</div>}
 
       {activeTab === 'profiles' && (
-        <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
-          {loading ? (
-            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Загрузка...</div>
-          ) : sortedProfiles.length === 0 ? (
-            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Профилей клиентов пока нет.</div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-              {sortedProfiles.map((profile) => (
-                <article key={profile.id} className="sa-card" style={{ padding: 14, display: 'grid', gap: 12 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <h3 style={{ margin: 0, fontSize: 17, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{profile.name}</h3>
-                      <div className="sa-meta" style={{ marginTop: 4 }}>{ageRangeLabel(profile)} · {voiceLabel(profile.voiceId, voices)}</div>
-                    </div>
-                    <span className="sa-chip">{optionLabel(TEMPERAMENTS, profile.temperament)}</span>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <span className="sa-chip">Терпение: {optionLabel(PATIENCE, profile.patience).toLowerCase()}</span>
-                    <span className="sa-chip">Реплики: {optionLabel(REPLY_LENGTHS, profile.replyLength).toLowerCase()}</span>
-                  </div>
-
-                  {profile.communicationStyle && (
-                    <div style={{ borderTop: '1px solid var(--sa-divider)', paddingTop: 10, color: 'var(--sa-text-secondary)', fontSize: 13, lineHeight: 1.45, display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 3, overflow: 'hidden', whiteSpace: 'pre-line' }}>
-                      {profile.communicationStyle}
-                    </div>
-                  )}
-
-                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                    <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => openEdit(profile)}>Редактировать</button>
-                    <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => removeProfile(profile)}>Удалить</button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
+        <div className="sa-companies-table-wrap sa-desktop-only">
+          <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+            <thead>
+              <tr>
+                <th>Название</th>
+                <th style={{ width: 110 }}>Возраст</th>
+                <th style={{ width: 140 }}>Голос</th>
+                <th style={{ width: 140 }}>Темперамент</th>
+                <th style={{ width: 130 }}>Терпение</th>
+                <th style={{ width: 130 }}>Реплики</th>
+                <th>Стиль общения</th>
+                <th style={{ width: 90 }} />
+                <th style={{ width: 32 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={9} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
+              ) : sortedProfiles.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="sa-empty-state">
+                    Профилей клиентов пока нет
+                  </td>
+                </tr>
+              ) : (
+                sortedProfiles.map((profile) => (
+                  <tr
+                    key={profile.id}
+                    className="sa-row-clickable"
+                    onClick={() => openEdit(profile)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(event) => event.key === 'Enter' && openEdit(profile)}
+                  >
+                    <td>
+                      <div className="sa-cell-name">{profile.name}</div>
+                    </td>
+                    <td>{ageRangeLabel(profile)}</td>
+                    <td>{voiceLabel(profile.voiceId, voices)}</td>
+                    <td>{optionLabel(TEMPERAMENTS, profile.temperament)}</td>
+                    <td>{optionLabel(PATIENCE, profile.patience)}</td>
+                    <td>{optionLabel(REPLY_LENGTHS, profile.replyLength)}</td>
+                    <td>
+                      {profile.communicationStyle ? (
+                        <span className="sa-meta" style={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden' }} title={profile.communicationStyle}>
+                          {profile.communicationStyle}
+                        </span>
+                      ) : (
+                        <span className="sa-meta">—</span>
+                      )}
+                    </td>
+                    <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => removeProfile(profile)}>Удалить</button>
+                    </td>
+                    <td className="sa-row-chevron-cell">→</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {activeTab === 'scripts' && (
-        <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
-          {loading ? (
-            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Загрузка...</div>
-          ) : sortedScripts.length === 0 ? (
-            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Скриптов пока нет.</div>
-          ) : (
-            <div className="sa-table-wrap">
-              <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
-                <thead>
-                  <tr>
-                    <th>Название</th>
-                    <th style={{ width: 220 }}>Профили</th>
-                    <th style={{ width: 180 }}>Выборка</th>
-                    <th style={{ width: 120 }}>Вопросы</th>
-                    <th style={{ width: 140 }}>Возражения</th>
-                    <th style={{ width: 190 }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedScripts.map((script) => {
-                    const profileNames = script.profileIds
-                      .map((id) => profiles.find((profile) => profile.id === id)?.name)
-                      .filter(Boolean)
-                      .join(', ');
-                    return (
-                      <tr key={script.id}>
-                        <td>
-                          <strong>{script.name}</strong>
-                          {script.context && (
-                            <div className="sa-meta" style={{ marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{script.context}</div>
-                          )}
-                        </td>
-                        <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={profileNames}>{profileNames || '—'}</td>
-                        <td>{script.dataCondition.tags.length ? `${script.dataCondition.tags.length} тегов` : 'Без тегов'}</td>
-                        <td>{script.questions.length}</td>
-                        <td>{script.objections.length}</td>
-                        <td>
-                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                            <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => openScriptEditor(script)}>Открыть</button>
-                            <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => removeScript(script)}>Удалить</button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+        <div className="sa-companies-table-wrap sa-desktop-only">
+          <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+            <thead>
+              <tr>
+                <th>Название</th>
+                <th style={{ width: 220 }}>Профили</th>
+                <th style={{ width: 180 }}>Выборка</th>
+                <th style={{ width: 120 }}>Вопросы</th>
+                <th style={{ width: 140 }}>Возражения</th>
+                <th style={{ width: 90 }} />
+                <th style={{ width: 32 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={7} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
+              ) : sortedScripts.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="sa-empty-state">
+                    Скриптов пока нет
+                  </td>
+                </tr>
+              ) : (
+                sortedScripts.map((script) => {
+                  const profileNames = script.profileIds
+                    .map((id) => profiles.find((profile) => profile.id === id)?.name)
+                    .filter(Boolean)
+                    .join(', ');
+                  return (
+                    <tr
+                      key={script.id}
+                      className="sa-row-clickable"
+                      onClick={() => openScriptEditor(script)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => event.key === 'Enter' && openScriptEditor(script)}
+                    >
+                      <td>
+                        <div className="sa-cell-name">{script.name}</div>
+                        {script.context && (
+                          <div className="sa-meta" style={{ marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{script.context}</div>
+                        )}
+                      </td>
+                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={profileNames}>{profileNames || '—'}</td>
+                      <td>{script.dataCondition.tags.length ? `${script.dataCondition.tags.length} тегов` : 'Без тегов'}</td>
+                      <td>{script.questions.length}</td>
+                      <td>{script.objections.length}</td>
+                      <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
+                        <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => removeScript(script)}>Удалить</button>
+                      </td>
+                      <td className="sa-row-chevron-cell">→</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {activeTab === 'plan' && (
-        <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
-          {loading ? (
-            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Загрузка...</div>
-          ) : sortedPlans.length === 0 ? (
-            <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Планов прозвона пока нет.</div>
-          ) : (
-            <div className="sa-table-wrap">
-              <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
-                <thead>
-                  <tr>
-                    <th>План</th>
-                    <th style={{ width: 160 }}>Аудитория</th>
-                    <th style={{ width: 180 }}>Скрипт</th>
-                    <th style={{ width: 150 }}>Частотность</th>
-                    <th style={{ width: 140 }}>Время</th>
-                    <th style={{ width: 230 }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortedPlans.map((plan) => {
-                    const script = scripts.find((item) => item.id === plan.scriptId);
-                    const targetCount = plan.targetType === 'employees'
-                      ? plan.targetIds.length
-                      : planOptions.dealerships.filter((item) => plan.targetIds.includes(item.id)).reduce((sum, item) => sum + item.employeesCount, 0);
-                    return (
-                      <tr key={plan.id}>
-                        <td>
-                          <button type="button" className="sa-link-button" onClick={() => openPlanHistory(plan)} style={{ padding: 0, border: 0, background: 'transparent', color: 'var(--sa-accent)', fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>{plan.name}</button>
-                          {plan.lastInitiatedAt && (
-                            <div className="sa-meta" style={{ marginTop: 4 }}>Последний запуск: {new Date(plan.lastInitiatedAt).toLocaleString('ru-RU')}</div>
-                          )}
-                        </td>
-                        <td>{plan.targetType === 'employees' ? `Сотрудники: ${targetCount}` : `Точки: ${plan.targetIds.length} · сотрудников: ${targetCount}`}</td>
-                        <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
-                        <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
-                        <td>{plan.callTimeFrom} - {plan.callTimeTo}</td>
-                        <td>
-                          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                            <button
-                              type="button"
-                              className="sa-btn-outline sa-btn-icon"
-                              onClick={() => openPlanHistory(plan)}
-                              aria-label="Посмотреть план"
-                              title="Посмотреть план"
-                            >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                                <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
-                                <circle cx="12" cy="12" r="3" />
-                              </svg>
-                            </button>
-                            <button
-                              type="button"
-                              className="sa-btn-outline sa-btn-icon"
-                              onClick={() => openPromptPreview(plan)}
-                              aria-label="Тест промпта"
-                              title="Тест промпта"
-                              disabled={promptPreviewLoadingId === plan.id}
-                            >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                                <path d="M10 2v6L5 19a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3L14 8V2" />
-                                <path d="M8 2h8" />
-                                <path d="M7 16h10" />
-                              </svg>
-                            </button>
-                            <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => initiatePlan(plan)}>Заинициировать сейчас</button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+        <div className="sa-companies-table-wrap sa-desktop-only">
+          <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+            <thead>
+              <tr>
+                <th>План</th>
+                <th style={{ width: 160 }}>Аудитория</th>
+                <th style={{ width: 180 }}>Скрипт</th>
+                <th style={{ width: 150 }}>Частотность</th>
+                <th style={{ width: 140 }}>Время</th>
+                <th style={{ width: 200 }} />
+                <th style={{ width: 32 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={7} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
+              ) : sortedPlans.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="sa-empty-state">
+                    Планов прозвона пока нет
+                  </td>
+                </tr>
+              ) : (
+                sortedPlans.map((plan) => {
+                  const script = scripts.find((item) => item.id === plan.scriptId);
+                  const targetCount = plan.targetType === 'employees'
+                    ? plan.targetIds.length
+                    : planOptions.dealerships.filter((item) => plan.targetIds.includes(item.id)).reduce((sum, item) => sum + item.employeesCount, 0);
+                  return (
+                    <tr
+                      key={plan.id}
+                      className="sa-row-clickable"
+                      onClick={() => openPlanHistory(plan)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => event.key === 'Enter' && openPlanHistory(plan)}
+                    >
+                      <td>
+                        <div className="sa-cell-name">{plan.name}</div>
+                        {plan.lastInitiatedAt && (
+                          <div className="sa-meta" style={{ marginTop: 4 }}>Последний запуск: {new Date(plan.lastInitiatedAt).toLocaleString('ru-RU')}</div>
+                        )}
+                      </td>
+                      <td>{plan.targetType === 'employees' ? `Сотрудники: ${targetCount}` : `Точки: ${plan.targetIds.length} · сотрудников: ${targetCount}`}</td>
+                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
+                      <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
+                      <td>{plan.frequency === 'manual' ? '—' : `${plan.callTimeFrom} - ${plan.callTimeTo}`}</td>
+                      <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
+                        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            className="sa-btn-outline sa-btn-icon"
+                            onClick={() => openPromptPreview(plan)}
+                            aria-label="Тест промпта"
+                            title="Тест промпта"
+                            disabled={promptPreviewLoadingId === plan.id}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                              <path d="M10 2v6L5 19a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3L14 8V2" />
+                              <path d="M8 2h8" />
+                              <path d="M7 16h10" />
+                            </svg>
+                          </button>
+                          <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => initiatePlan(plan)}>Позвонить по аудитории</button>
+                        </div>
+                      </td>
+                      <td className="sa-row-chevron-cell">→</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <ProfileModal

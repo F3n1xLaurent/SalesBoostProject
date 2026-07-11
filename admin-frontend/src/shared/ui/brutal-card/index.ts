@@ -1,0 +1,1 @@
+export { BrutalCard } from './BrutalCard';

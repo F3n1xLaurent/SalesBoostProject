@@ -9,6 +9,9 @@ import {
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type DirectionFormState = {
   holdingId: string;
@@ -47,19 +50,21 @@ function overlayCardStyle(width = 560): React.CSSProperties {
 
 function DirectionModal(props: {
   open: boolean;
+  mode: 'create' | 'edit';
   initial: DirectionFormState;
   holdings: HoldingItem[];
-  title: string;
-  submitLabel: string;
+  itemName?: string;
   saving: boolean;
   error: string | null;
-  requireChanges?: boolean;
-  lockHolding?: boolean;
+  deleteConfirm?: boolean;
+  onDeleteConfirmChange?: (value: boolean) => void;
   onClose: () => void;
   onSubmit: (form: DirectionFormState) => void;
+  onDelete?: () => void;
 }) {
   const [form, setForm] = useState<DirectionFormState>(props.initial);
   const wasOpenRef = useRef(false);
+  const isCreate = props.mode === 'create';
   const isDirty = useMemo(
     () => JSON.stringify(normalizeForm(form)) !== JSON.stringify(normalizeForm(props.initial)),
     [form, props.initial],
@@ -72,7 +77,11 @@ function DirectionModal(props: {
 
   if (!props.open) return null;
 
+  const title = isCreate ? 'Создать направление' : 'Редактировать направление';
+  const submitLabel = isCreate ? 'Создать' : 'Сохранить изменения';
+
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -85,10 +94,10 @@ function DirectionModal(props: {
       }}
       onClick={props.onClose}
     >
-      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={props.title}>
+      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
           <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>{props.title}</h2>
+            <h2 style={{ margin: 0, fontSize: 24 }}>{title}</h2>
             <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
               Направление доступно только точкам выбранной компании.
             </div>
@@ -112,7 +121,7 @@ function DirectionModal(props: {
             <select
               className="sa-select"
               value={form.holdingId}
-              disabled={props.lockHolding}
+              disabled={!isCreate}
               onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}
               required
             >
@@ -133,10 +142,17 @@ function DirectionModal(props: {
             <input className="sa-input" value={form.code} onChange={(event) => setForm((current) => ({ ...current, code: event.target.value }))} placeholder="Сгенерируется автоматически" />
           </label>
 
-          <label className="sa-filter-check">
-            <input type="checkbox" checked={form.isActive} onChange={(event) => setForm((current) => ({ ...current, isActive: event.target.checked }))} />
-            <span>Направление активно</span>
-          </label>
+          <button
+            type="button"
+            className="sa-toggle-field"
+            aria-pressed={form.isActive}
+            onClick={() => setForm((current) => ({ ...current, isActive: !current.isActive }))}
+          >
+            <span className="sa-toggle-field__text">Направление активно</span>
+            <span className="sa-toggle-field__control" aria-hidden="true">
+              <span className="sa-toggle-field__thumb" />
+            </span>
+          </button>
 
           {props.error && (
             <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>
@@ -144,15 +160,43 @@ function DirectionModal(props: {
             </div>
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={props.saving || !form.holdingId || !form.name.trim() || (!!props.requireChanges && !isDirty)}>
-              {props.saving ? 'Сохраняем...' : props.submitLabel}
-            </button>
+          <div className={`sa-holdings-form-footer${isCreate ? ' sa-holdings-form-footer--create' : ''}`}>
+            {!isCreate && (
+              <div className="sa-holdings-form-footer-left">
+                {props.deleteConfirm ? (
+                  <>
+                    <span className="sa-holdings-form-delete-hint">
+                      Удалить <strong>{props.itemName}</strong>?
+                    </span>
+                    <button type="button" className="sa-btn-danger" onClick={props.onDelete} disabled={props.saving}>
+                      {props.saving ? 'Удаляем...' : 'Удалить'}
+                    </button>
+                    <button type="button" className="sa-btn-outline" onClick={() => props.onDeleteConfirmChange?.(false)} disabled={props.saving}>
+                      Нет
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="sa-btn-danger" onClick={() => props.onDeleteConfirmChange?.(true)}>
+                    Удалить направление
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="sa-holdings-form-footer-right">
+              <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
+              <button
+                type="submit"
+                className="sa-btn-primary"
+                disabled={props.saving || !form.holdingId || !form.name.trim() || (!isCreate && !isDirty)}
+              >
+                {props.saving ? 'Сохраняем...' : submitLabel}
+              </button>
+            </div>
           </div>
         </form>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -165,6 +209,8 @@ export function DealershipDirectionsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editItem, setEditItem] = useState<DealershipDirectionItem | null>(null);
+  const [editDeleteConfirm, setEditDeleteConfirm] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !loading);
 
   const filtered = useMemo(
@@ -224,6 +270,7 @@ export function DealershipDirectionsPage() {
         isActive: form.isActive,
       });
       setEditItem(null);
+      setEditDeleteConfirm(false);
       setNotice('Направление обновлено.');
       await loadData();
     } catch (updateError) {
@@ -233,13 +280,14 @@ export function DealershipDirectionsPage() {
     }
   }
 
-  async function handleDelete(item: DealershipDirectionItem) {
-    const confirmed = window.confirm(`Удалить направление "${item.name}"? Оно будет снято со всех точек этой компании.`);
-    if (!confirmed) return;
+  async function handleDeleteConfirm() {
+    if (!editItem) return;
     setSaving(true);
     setError(null);
     try {
-      await deleteDealershipDirection(item.id);
+      await deleteDealershipDirection(editItem.id);
+      setEditItem(null);
+      setEditDeleteConfirm(false);
       setNotice('Направление удалено.');
       await loadData();
     } catch (deleteError) {
@@ -249,92 +297,161 @@ export function DealershipDirectionsPage() {
     }
   }
 
+  async function handleToggleActive(item: DealershipDirectionItem) {
+    const nextActive = !item.isActive;
+    setTogglingId(item.id);
+    setError(null);
+    setItems((current) => current.map((row) => (
+      row.id === item.id ? { ...row, isActive: nextActive } : row
+    )));
+    if (editItem?.id === item.id) {
+      setEditItem((current) => (current ? { ...current, isActive: nextActive } : current));
+    }
+    try {
+      await updateDealershipDirection(item.id, { isActive: nextActive });
+    } catch (toggleError) {
+      setItems((current) => current.map((row) => (
+        row.id === item.id ? { ...row, isActive: item.isActive } : row
+      )));
+      if (editItem?.id === item.id) {
+        setEditItem((current) => (current ? { ...current, isActive: item.isActive } : current));
+      }
+      setError(toggleError instanceof Error ? toggleError.message : 'Не удалось изменить статус направления.');
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  function openCreate() {
+    setError(null);
+    setCreateOpen(true);
+  }
+
+  function openEdit(item: DealershipDirectionItem) {
+    setError(null);
+    setEditDeleteConfirm(false);
+    setEditItem(item);
+  }
+
+  function closeEdit() {
+    setEditItem(null);
+    setEditDeleteConfirm(false);
+  }
+
   const createInitial = useMemo<DirectionFormState>(() => ({
     ...EMPTY_FORM,
     holdingId: selectedHoldingId,
   }), [selectedHoldingId]);
 
+  const editInitial = useMemo<DirectionFormState>(() => (
+    editItem ? {
+      holdingId: editItem.holdingId,
+      name: editItem.name,
+      code: editItem.code || '',
+      isActive: editItem.isActive,
+    } : EMPTY_FORM
+  ), [editItem]);
+
   return (
-    <div style={{ display: 'grid', gap: 20 }}>
-      <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <div>
-            <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Направления точек</h1>
-            <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>
-              Управляйте направлениями, которые доступны точкам внутри каждой компании.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <select
-              className="sa-select"
-              value={selectedHoldingId}
-              onChange={(event) => {
-                setSelectedHoldingId(event.target.value);
-                setNotice(null);
-              }}
-              style={{ minWidth: 220 }}
-              disabled={loading || holdings.length === 0}
-              title="Глобальный фильтр по компаниям"
-            >
-              {holdings.length === 0 ? <option value="">Нет компаний</option> : null}
-              {holdings.map((holding) => (
-                <option key={holding.id} value={holding.id}>{holding.name}</option>
-              ))}
-            </select>
-            <button type="button" className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => { setError(null); setCreateOpen(true); }}>
-              Создать направление
-            </button>
-          </div>
+    <div>
+      <h1 className="sa-page-title">Направления точек</h1>
+
+      {notice && (
+        <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>{notice}</div>
+      )}
+      {error && !createOpen && (
+        <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{error}</div>
+      )}
+
+      <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
+        <div className="sa-toolbar-filters">
+          <HoldingSelectPicker
+            holdings={holdings}
+            value={selectedHoldingId}
+            onChange={(holdingId) => {
+              setSelectedHoldingId(holdingId);
+              setNotice(null);
+            }}
+            disabled={loading || holdings.length === 0}
+            loading={loading}
+          />
         </div>
+        <div className="sa-toolbar-actions">
+          <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={openCreate}>
+            <LetsIcon name="add-light" size={16} bold />
+            Создать направление
+          </button>
+        </div>
+      </div>
 
-        {notice && <div style={{ padding: 12, borderRadius: 14, background: '#ecfdf5', color: '#047857', fontSize: 14 }}>{notice}</div>}
-        {error && !createOpen && !editItem && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>{error}</div>}
-      </section>
-
-      <section className="sa-card" style={{ padding: 20 }}>
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Название</th>
-                <th>Статус</th>
-                <th />
+      <div className="sa-companies-table-wrap sa-holdings-table-wrap">
+        <table className="sa-table sa-holdings-table">
+          <colgroup>
+            <col className="sa-col-name" />
+            <col className="sa-col-status" />
+            <col className="sa-col-actions" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Название</th>
+              <th>Статус</th>
+              <th className="sa-text-right sa-holdings-actions-col">Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={3} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
+            ) : holdings.length === 0 ? (
+              <tr><td colSpan={3} className="sa-meta" style={{ padding: 32 }}>Перед тем, как создавать направления точек, пожалуйста, добавьте компанию.</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={3} className="sa-meta" style={{ padding: 32 }}>Направлений пока нет</td></tr>
+            ) : filtered.map((item) => (
+              <tr key={item.id}>
+                <td>
+                  <div className="sa-cell-name">{item.name}</div>
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="sa-table-status-toggle"
+                    aria-pressed={item.isActive}
+                    aria-label={`${item.isActive ? 'Выключить' : 'Включить'} направление «${item.name}»`}
+                    disabled={togglingId === item.id}
+                    onClick={() => void handleToggleActive(item)}
+                  >
+                    <span className="sa-toggle-field__control" aria-hidden="true">
+                      <span className="sa-toggle-field__thumb" />
+                    </span>
+                    <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                      {item.isActive ? 'Активно' : 'Неактивно'}
+                    </span>
+                  </button>
+                </td>
+                <td className="sa-holdings-actions-cell">
+                  <button
+                    type="button"
+                    className="sa-btn-icon sa-btn-brutal-3d-icon"
+                    onClick={() => openEdit(item)}
+                    aria-label={`Редактировать ${item.name}`}
+                    title="Редактировать"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
+                    </svg>
+                  </button>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={3} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
-              ) : holdings.length === 0 ? (
-                <tr><td colSpan={3} className="sa-meta" style={{ padding: 28 }}>Перед тем, как создавать направления точек, пожалуйста, добавьте компанию.</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={3} className="sa-meta" style={{ padding: 28 }}>Направлений пока нет</td></tr>
-              ) : filtered.map((item) => (
-                <tr key={item.id}>
-                  <td style={{ fontWeight: 700 }}>{item.name}</td>
-                  <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активно' : 'Неактивно'}</span></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                      <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditItem(item); }}>
-                        Редактировать
-                      </button>
-                      <button type="button" className="sa-btn-danger sa-btn-sm" disabled={saving} onClick={() => void handleDelete(item)}>
-                        Удалить
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <DirectionModal
         open={createOpen}
+        mode="create"
         initial={createInitial}
         holdings={holdings}
-        title="Создать направление"
-        submitLabel="Создать"
         saving={saving}
         error={createOpen ? error : null}
         onClose={() => setCreateOpen(false)}
@@ -343,21 +460,17 @@ export function DealershipDirectionsPage() {
 
       <DirectionModal
         open={!!editItem}
-        initial={editItem ? {
-          holdingId: editItem.holdingId,
-          name: editItem.name,
-          code: editItem.code || '',
-          isActive: editItem.isActive,
-        } : EMPTY_FORM}
+        mode="edit"
+        initial={editInitial}
         holdings={holdings}
-        title="Редактировать направление"
-        submitLabel="Сохранить изменения"
+        itemName={editItem?.name}
         saving={saving}
         error={editItem ? error : null}
-        requireChanges
-        lockHolding
-        onClose={() => setEditItem(null)}
+        deleteConfirm={editDeleteConfirm}
+        onDeleteConfirmChange={setEditDeleteConfirm}
+        onClose={closeEdit}
         onSubmit={handleEdit}
+        onDelete={() => void handleDeleteConfirm()}
       />
     </div>
   );

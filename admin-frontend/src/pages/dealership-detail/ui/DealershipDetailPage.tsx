@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { apiFetch } from '../../../entities/session';
 import {
   STATUS_LABELS,
   type DealershipDetail as Detail,
 } from '../../../shared/lib/admin-panel/mockData';
 import {
   excludeDealershipFromAnalyticsPlan,
+  fetchAuditDetail,
   fetchAnalyticsDealershipDetail,
   fetchAnalyticsDealershipPlans,
   type AnalyticsAISummary,
   type AnalyticsPlanParticipation,
+  type AuditDetailItem,
   type DealershipItem,
   type DealershipType,
 } from '../../../shared/api/adminPanel';
@@ -23,9 +24,10 @@ import {
   type CallBatchSnapshot,
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
-import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
+import { SlideOver } from '../../../shared/ui/slide-over';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 /* ────────────────────── Props ────────────────────── */
 
@@ -71,6 +73,7 @@ function dealershipTypeLabel(type?: DealershipType | null): string {
 }
 
 function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
+  if (value === 'manual') return 'Вручную';
   return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
 }
 
@@ -102,7 +105,8 @@ function PlanParticipationList({
           <div style={{ minWidth: 220 }}>
             <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
             <div className="sa-meta" style={{ marginTop: 4 }}>
-              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)} · {plan.callTimeFrom}-{plan.callTimeTo}
+              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)}
+              {plan.frequency !== 'manual' ? ` · ${plan.callTimeFrom}-${plan.callTimeTo}` : ''}
               {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
             </div>
           </div>
@@ -132,6 +136,7 @@ function buildFallbackDetail(dealership: DealershipItem): DealershipAnalyticsDet
     aiRating: 0,
     answerRate: null,
     avgAnswerTimeSec: null,
+    avgCallDurationSec: null,
     auditsCount: 0,
     employeesCount: dealership.managersCount,
     deltaRating: null,
@@ -299,7 +304,7 @@ function CommunicationBreakdown({ data }: { data?: { label: string; percent: num
 }
 
 function ScriptCompliance({ data }: { data?: { block: string; rate: number; hint?: string }[] }) {
-  if (!data || data.length === 0) return <div className="sa-chart-empty">Нет рассчитанных блоков скрипта</div>;
+  if (!data || data.length === 0) return <div className="sa-chart-empty">Нет рассчитанных категорий</div>;
   return (
     <div className="sa-hbar-list">
       {[...data].sort((a, b) => a.rate - b.rate).map((item) => (
@@ -338,6 +343,7 @@ function EmployeeComparisonModal({
   const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -377,12 +383,6 @@ function EmployeeComparisonModal({
                 ))}
               </tr>
               <tr>
-                <td>Типовая ошибка</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right">{row.typicalError}</td>
-                ))}
-              </tr>
-              <tr>
                 <td>Статус</td>
                 {rows.map((row) => (
                   <td key={row.id} className="sa-text-right">{row.status}</td>
@@ -404,6 +404,7 @@ function EmployeeComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -433,7 +434,6 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
               <th>Сотрудник</th>
               <th className="sa-text-right">AI-рейтинг</th>
               <th className="sa-text-right">Проверки</th>
-              <th>Типовая ошибка</th>
               <th>Статус</th>
             </tr>
           </thead>
@@ -459,10 +459,9 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
                 <td style={{ fontWeight: 600 }}>{e.name}</td>
                 <td className="sa-text-right"><span className={ratingClass(e.aiRating)}>{e.aiRating}</span></td>
                 <td className="sa-text-right">{e.auditsCount}</td>
-                <td>{e.typicalError}</td>
                 <td>
-                  <span className={`sa-emp-status ${e.status === 'Нуждается в обучении' ? 'sa-emp-warn' : e.status === 'Стажёр' ? 'sa-emp-trainee' : ''}`}>
-                    {e.status}
+                  <span className={statusBadgeClass(e.status)}>
+                    {STATUS_LABELS[e.status as keyof typeof STATUS_LABELS] ?? e.status}
                   </span>
                 </td>
               </tr>
@@ -488,7 +487,7 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
 
 /* ────────────────────── Top Issues ────────────────────── */
 
-function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
+function TopIssues({ detail, onOpenProblem }: { detail: DealershipAnalyticsDetail; onOpenProblem?: (issue: string) => void }) {
   return (
     <div className="sa-detail-insights">
       <div className="sa-card" style={{ flex: 1 }}>
@@ -512,7 +511,7 @@ function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
         </ol>
       </div>
       <div className="sa-card" style={{ flex: 1 }}>
-        <h3 className="sa-card-heading">Рекомендованные тренировки</h3>
+        <h3 className="sa-card-heading">Рекомендации</h3>
         <div className="sa-training-list">
           {detail.recommendedTrainings.map((t, i) => (
             <div key={i} className="sa-training-item">
@@ -520,7 +519,7 @@ function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
                 <div style={{ fontWeight: 600, marginBottom: 2 }}>{t.title}</div>
                 <div className="sa-meta">{t.description}</div>
               </div>
-              <button className="sa-btn-outline sa-btn-sm" disabled title="Скоро">Назначить</button>
+              {onOpenProblem && <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenProblem(t.title)}>Проверки →</button>}
             </div>
           ))}
         </div>
@@ -531,14 +530,12 @@ function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
 
 /* ────────────────────── Audit History ────────────────────── */
 
-function getCallIdFromAuditId(auditId: string): number | null {
+function isCallAuditId(auditId: string): boolean {
   const match = String(auditId || '').match(/^call-(\d+)$/);
-  if (!match) return null;
-  const id = Number(match[1]);
-  return Number.isFinite(id) ? id : null;
+  return !!match;
 }
 
-function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpenCall: (id: number) => void }) {
+function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpenCall: (id: string) => void }) {
   const pageSize = 10;
   const [page, setPage] = useState(1);
   const totalPages = Math.max(1, Math.ceil(audits.length / pageSize));
@@ -565,7 +562,7 @@ function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpen
           </thead>
           <tbody>
             {visibleAudits.map((a) => {
-              const callId = a.type === 'call' ? getCallIdFromAuditId(a.id) : null;
+              const canOpenCall = a.type === 'call' && isCallAuditId(a.id);
               return (
                 <tr key={a.id}>
                   <td>{new Date(a.date).toLocaleDateString('ru-RU')}</td>
@@ -575,9 +572,9 @@ function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpen
                   <td>
                     <button
                       className="sa-btn-text sa-btn-sm"
-                      disabled={!callId}
-                      title={callId ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
-                      onClick={() => callId && onOpenCall(callId)}
+                      disabled={!canOpenCall}
+                      title={canOpenCall ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
+                      onClick={() => canOpenCall && onOpenCall(a.id)}
                     >
                       Открыть разбор
                     </button>
@@ -628,9 +625,10 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const [batchSummary, setBatchSummary] = useState<DealershipBatchSummary | null>(null);
   const [editDealershipOpen, setEditDealershipOpen] = useState(false);
   const [phoneNumbersOpen, setPhoneNumbersOpen] = useState(false);
-  const [selectedCallDetail, setSelectedCallDetail] = useState<CallInsightDetail | null>(null);
-  const [selectedCallLoading, setSelectedCallLoading] = useState(false);
-  const [selectedCallError, setSelectedCallError] = useState<string | null>(null);
+  const [analyticsDrawerOpen, setAnalyticsDrawerOpen] = useState(false);
+  const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
+  const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
+  const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -681,19 +679,26 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
     }
   }
 
-  async function handleOpenCallDetail(callId: number) {
-    setSelectedCallDetail(null);
-    setSelectedCallError(null);
-    setSelectedCallLoading(true);
+  function closeAnalyticsDrawer() {
+    setAnalyticsDrawerOpen(false);
+    setAnalyticsDrawerLoading(false);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerDetail(null);
+  }
+
+  async function handleOpenCallDetail(auditId: string) {
+    setAnalyticsDrawerOpen(true);
+    setAnalyticsDrawerDetail(null);
+    setAnalyticsDrawerError(null);
+    setAnalyticsDrawerLoading(true);
     try {
-      const res = await apiFetch(`/api/admin/call-history/${callId}`);
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) throw new Error(data?.error || 'Не удалось загрузить разбор звонка');
-      setSelectedCallDetail(data as CallInsightDetail);
+      const detail = await fetchAuditDetail(auditId);
+      if (!detail) throw new Error('Аналитика звонка не найдена или ещё не готова.');
+      setAnalyticsDrawerDetail(detail);
     } catch (error) {
-      setSelectedCallError(error instanceof Error ? error.message : 'Не удалось загрузить разбор звонка');
+      setAnalyticsDrawerError(error instanceof Error ? error.message : 'Не удалось загрузить аналитику звонка.');
     } finally {
-      setSelectedCallLoading(false);
+      setAnalyticsDrawerLoading(false);
     }
   }
 
@@ -810,15 +815,6 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         </div>
       )}
 
-      <section className="sa-section" style={{ marginBottom: 24 }}>
-        <AISummaryBlock
-          title="AI-сводка по салону"
-          summary={detail.aiSummary}
-          loading={detailLoading}
-          error={detailError}
-        />
-      </section>
-
       {/* KPI */}
       <div className="sa-kpi-grid" style={{ marginBottom: 32 }}>
         <KPI label="AI-рейтинг" value={detail.aiRating} cls={ratingClass(detail.aiRating)} />
@@ -836,6 +832,11 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           value={detail.avgAnswerTimeSec !== null ? detail.avgAnswerTimeSec : '—'}
           cls={detail.avgAnswerTimeSec !== null ? answerTimeClass(detail.avgAnswerTimeSec) : ''}
           suffix={detail.avgAnswerTimeSec !== null ? 'с' : ''}
+        />
+        <KPI
+          label="Время звонка"
+          value={detail.avgCallDurationSec != null ? detail.avgCallDurationSec : '—'}
+          suffix={detail.avgCallDurationSec != null ? 'с' : ''}
         />
       </div>
 
@@ -868,8 +869,8 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           <OutcomeBreakdown data={detail.outcomeBreakdown} />
         </div>
         <div className="sa-card sa-grid-card">
-          <h3 className="sa-card-heading">Качество коммуникации</h3>
-          <CommunicationBreakdown data={detail.communicationBreakdown} />
+          <h3 className="sa-card-heading">Распределение по категориям</h3>
+          <ScriptCompliance data={detail.scriptCompliance} />
         </div>
       </div>
 
@@ -882,34 +883,12 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       {/* Insights */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Аналитика по ошибкам</h2>
-        <TopIssues detail={detail} />
-      </section>
-
-      <section className="sa-section" style={{ marginBottom: 32 }}>
-        <h2 className="sa-section-title">Соблюдение скрипта</h2>
-        <div className="sa-card">
-          <ScriptCompliance data={detail.scriptCompliance} />
-        </div>
+        <TopIssues detail={detail} onOpenProblem={(issue) => navigate(`/audits?problem=${encodeURIComponent(issue)}`)} />
       </section>
 
       {/* Audit history */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">История проверок</h2>
-        {(selectedCallLoading || selectedCallError || selectedCallDetail) && (
-          <div className="sa-card" style={{ padding: 16, marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
-              <h3 className="sa-card-heading" style={{ margin: 0 }}>Разбор звонка</h3>
-              <button className="sa-btn-text sa-btn-sm" onClick={() => { setSelectedCallDetail(null); setSelectedCallError(null); }}>Закрыть</button>
-            </div>
-            {selectedCallLoading ? (
-              <div className="sa-meta">Загружаем разбор...</div>
-            ) : selectedCallError ? (
-              <div className="sa-meta">{selectedCallError}</div>
-            ) : selectedCallDetail ? (
-              <CallInsightCard detail={selectedCallDetail} />
-            ) : null}
-          </div>
-        )}
         <AuditHistory audits={detail.audits} onOpenCall={handleOpenCallDetail} />
       </section>
 
@@ -925,6 +904,23 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         open={phoneNumbersOpen}
         onClose={() => setPhoneNumbersOpen(false)}
       />
+      <SlideOver open={analyticsDrawerOpen} title="Аналитика звонка" width="xl" onClose={closeAnalyticsDrawer}>
+        {analyticsDrawerLoading ? (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка аналитики...</div>
+        ) : analyticsDrawerError ? (
+          <div className="sa-card" style={{ padding: 20 }}>
+            <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть аналитику</div>
+            <div className="sa-meta" style={{ marginTop: 8 }}>{analyticsDrawerError}</div>
+          </div>
+        ) : analyticsDrawerDetail ? (
+          <AuditAnalyticsReport
+            detail={analyticsDrawerDetail}
+            onOpenEmployee={(employeeId) => onOpenEmployee?.(employeeId)}
+          />
+        ) : (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите звонок.</div>
+        )}
+      </SlideOver>
     </div>
   );
 }

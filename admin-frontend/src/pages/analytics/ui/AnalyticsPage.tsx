@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { PlatformSummary } from '../../../shared/model/adminPanel';
 import { fetchAnalyticsOverview, fetchHoldings, type AnalyticsOverview, type HoldingItem, type TimeSeriesPoint } from '../../../shared/api/adminPanel';
-import { ratingClass, exportPageToPdf } from '../../../shared/lib/admin-panel/utils';
+import { ratingClass } from '../../../shared/lib/admin-panel/utils';
 import type { AnalyticsImpact, AnalyticsPriority, AnalyticsSectionInsight } from '../../../shared/api/adminPanel';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type AnalyticsProps = {
   summary: PlatformSummary | null;
@@ -62,6 +62,159 @@ function InsightMini({ insight }: { insight: AnalyticsSectionInsight }) {
       {insight.action && !insight.stable && (
         <div className="sa-insight-mini-action">→ {insight.action}</div>
       )}
+    </div>
+  );
+}
+
+function NetworkTrendChart({ points }: { points: TimeSeriesPoint[] }) {
+  if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
+  const W = 760, H = 240;
+  const pad = { top: 18, right: 18, bottom: 34, left: 42 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+  const step = points.length <= 1 ? 0 : cw / (points.length - 1);
+  const xs = points.map((_, index) => pad.left + index * step);
+  const y = (score: number) => pad.top + ch - (Math.max(0, Math.min(score, 100)) / 100) * ch;
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(point.avgScore)}`).join(' ');
+  return (
+    <div className="sa-chart-wrap">
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+        {[0, 25, 50, 75, 100].map((value) => {
+          const gy = y(value);
+          return (
+            <g key={value}>
+              <line x1={pad.left} y1={gy} x2={pad.left + cw} y2={gy} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
+              <text x={pad.left - 8} y={gy + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{value}</text>
+            </g>
+          );
+        })}
+        <path d={path} fill="none" stroke="var(--tb-accent, #111827)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((point, index) => (
+          <g key={point.date}>
+            <circle cx={xs[index]} cy={y(point.avgScore)} r="4" fill="var(--tb-accent, #111827)" />
+            <text x={xs[index]} y={H - 10} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">{point.date.slice(5)}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function BestWorstCards({ rows, onOpen }: { rows: ComparableDealership[]; onOpen?: (id: string) => void }) {
+  const active = rows.filter((row) => row.calls > 0);
+  const best = [...active].sort((a, b) => b.score - a.score).slice(0, 3);
+  const worst = [...active].sort((a, b) => a.score - b.score).slice(0, 3);
+  const renderList = (items: ComparableDealership[]) => items.length === 0
+    ? <div className="sa-meta">Нет данных</div>
+    : items.map((row, index) => (
+      <button key={row.id} type="button" className="sa-btn-text" style={{ justifyContent: 'space-between', width: '100%', padding: '8px 0' }} onClick={() => onOpen?.(row.id)}>
+        <span>{index + 1}. {row.name}</span>
+        <span className={ratingClass(row.score)}>{row.score}</span>
+      </button>
+    ));
+  return (
+    <div className="sa-dashboard-grid" style={{ marginBottom: 28 }}>
+      <div className="sa-card sa-grid-card">
+        <h3 className="sa-card-heading">Лучшие точки</h3>
+        {renderList(best)}
+      </div>
+      <div className="sa-card sa-grid-card">
+        <h3 className="sa-card-heading">Худшие точки</h3>
+        {renderList(worst)}
+      </div>
+    </div>
+  );
+}
+
+function InlineComparisonChart({ rows }: { rows: ComparableDealership[] }) {
+  if (rows.length < 2) return <div className="sa-chart-empty">Выберите от 2 до 6 точек</div>;
+  const max = Math.max(100, ...rows.map((row) => row.score));
+  return (
+    <div className="sa-hbar-list">
+      {rows.map((row) => {
+        const previous = Math.max(0, Math.min(100, row.score - row.delta));
+        return (
+          <div key={row.id} className="sa-hbar-row">
+            <span className="sa-hbar-label" title={row.name}>{row.name}</span>
+            <div className="sa-hbar-track">
+              <div className="sa-hbar-fill" style={{ width: `${Math.round((previous / max) * 100)}%`, background: 'rgba(99,102,241,.25)' }} />
+              <div className="sa-hbar-fill" style={{ width: `${Math.round((row.score / max) * 100)}%`, background: row.score >= 80 ? '#34D399' : row.score >= 50 ? '#FBBF24' : '#F87171', marginTop: -8 }} />
+            </div>
+            <span className={`sa-hbar-score ${ratingClass(row.score)}`}>{row.score}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MultiDealershipTrendChart({ series }: { series: Array<{ id: string; name: string; points: TimeSeriesPoint[] }> }) {
+  if (series.length < 2) return <div className="sa-chart-empty">Выберите от 2 до 6 точек</div>;
+  const W = 760, H = 260;
+  const pad = { top: 18, right: 18, bottom: 38, left: 42 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+  const dates = [...new Set(series.flatMap((item) => item.points.map((point) => point.date)))].sort();
+  const step = dates.length <= 1 ? 0 : cw / (dates.length - 1);
+  const xs = dates.map((_, index) => pad.left + index * step);
+  const y = (score: number) => pad.top + ch - (Math.max(0, Math.min(score, 100)) / 100) * ch;
+  const colors = ['#111827', '#2563EB', '#D97706', '#059669', '#DC2626', '#7C3AED'];
+  const pathFor = (points: TimeSeriesPoint[]) => {
+    const byDate = new Map(points.map((point) => [point.date, point.avgScore]));
+    return dates
+      .map((date, index) => {
+        const score = byDate.get(date) ?? 0;
+        return `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(score)}`;
+      })
+      .join(' ');
+  };
+  return (
+    <div className="sa-chart-wrap">
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+        {series.map((item, index) => (
+          <span key={item.id} className="sa-meta" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 999, background: colors[index % colors.length], display: 'inline-block' }} />
+            {item.name}
+          </span>
+        ))}
+      </div>
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+        {[0, 25, 50, 75, 100].map((value) => {
+          const gy = y(value);
+          return (
+            <g key={value}>
+              <line x1={pad.left} y1={gy} x2={pad.left + cw} y2={gy} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
+              <text x={pad.left - 8} y={gy + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{value}</text>
+            </g>
+          );
+        })}
+        {dates.map((date, index) => (
+          <text key={date} x={xs[index]} y={H - 10} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">{date.slice(5)}</text>
+        ))}
+        {series.map((item, index) => (
+          <path key={item.id} d={pathFor(item.points)} fill="none" stroke={colors[index % colors.length]} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function IssueList({ items, labelKey = 'issue' }: { items: Array<{ issue?: string; question?: string; percent: number; count: number }>; labelKey?: 'issue' | 'question' }) {
+  if (!items.length) return <div className="sa-meta">Нет данных</div>;
+  return (
+    <div className="sa-hbar-list">
+      {items.slice(0, 5).map((item, index) => {
+        const label = labelKey === 'question' ? item.question : item.issue;
+        return (
+          <div key={`${label}-${index}`} className="sa-hbar-row">
+            <span className="sa-hbar-label" title={label}>{label}</span>
+            <div className="sa-hbar-track">
+              <div className="sa-hbar-fill" style={{ width: `${item.percent}%`, background: item.percent >= 30 ? '#F87171' : '#FBBF24' }} />
+            </div>
+            <span className="sa-hbar-score">{item.percent}%</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -282,6 +435,7 @@ function ComparisonModal({ rows, onClose, onOpenDealership }: { rows: Comparable
   ];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }}>
       <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -337,6 +491,7 @@ function ComparisonModal({ rows, onClose, onOpenDealership }: { rows: Comparable
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -349,7 +504,6 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [analyticsError, setAnalyticsError] = useState(false);
   const [selectedDealershipIds, setSelectedDealershipIds] = useState<string[]>([]);
-  const [comparisonOpen, setComparisonOpen] = useState(false);
   const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
 
   useEffect(() => {
@@ -405,6 +559,29 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
   const isLoading = loading || holdingsLoading || analyticsLoading;
   const dealershipRows = data.dealershipRows ?? [];
   const selectedRows = dealershipRows.filter((row) => selectedDealershipIds.includes(row.id));
+  const networkTrend = data.timeSeries ?? timeSeries;
+  const rankedRows = useMemo(
+    () => [...dealershipRows].sort((a, b) => b.score - a.score),
+    [dealershipRows],
+  );
+  const selectedSeries = useMemo(
+    () => (data.dealershipTimeSeries ?? []).filter((item) => selectedDealershipIds.includes(item.id)),
+    [data.dealershipTimeSeries, selectedDealershipIds],
+  );
+  const ownAvg = useMemo(() => {
+    const own = dealershipRows.filter((row) => row.type === 'own' && row.calls > 0);
+    return own.length ? Math.round(own.reduce((sum, row) => sum + row.score, 0) / own.length) : 0;
+  }, [dealershipRows]);
+  const franchiseAvg = useMemo(() => {
+    const franchise = dealershipRows.filter((row) => row.type === 'franchised' && row.calls > 0);
+    return franchise.length ? Math.round(franchise.reduce((sum, row) => sum + row.score, 0) / franchise.length) : 0;
+  }, [dealershipRows]);
+  const typeComparisonInsight = ownAvg || franchiseAvg
+    ? `${ownAvg >= franchiseAvg ? 'Собственные точки' : 'Франшиза'} выше на ${Math.abs(ownAvg - franchiseAvg)} балл(ов): ${ownAvg} против ${franchiseAvg}.`
+    : 'Недостаточно данных для сравнения собственных точек и франшизы.';
+  const topProblemInsight = data.leadersLaggards?.laggardsErrors[0]
+    ? `У отстающих чаще всего встречается «${data.leadersLaggards.laggardsErrors[0].issue}»: ${data.leadersLaggards.laggardsErrors[0].percent}% по текущей выборке.`
+    : 'Недостаточно данных для выделения системной топ-проблемы.';
   const toggleDealership = (id: string) => {
     setSelectedDealershipIds((current) => {
       if (current.includes(id)) return current.filter((item) => item !== id);
@@ -435,78 +612,24 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
         </select>
       </div>
 
-      {/* ═══════════════ 1) AI SUMMARY & ACTION PLAN ═══════════════ */}
-      <div className="sa-card sa-analytics-summary">
-        {/* ── Header ── */}
-        <div className="sa-analytics-summary-header">
-          <div className="sa-analytics-summary-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-            </svg>
+      <section className="sa-section" style={{ marginBottom: 28 }}>
+        <div className="sa-card">
+          <div className="sa-section-header-row" style={{ marginBottom: 12 }}>
+            <div>
+              <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Динамика среднего балла по сети</h2>
+              <div className="sa-meta">Одна линия по оценённым привязанным звонкам</div>
+            </div>
+            <div className={`sa-kpi-value ${ratingClass(data.avgScore)}`}>{data.avgScore}</div>
           </div>
-          <div>
-            <h2 className="sa-analytics-summary-title">AI Summary</h2>
-            <p className="sa-meta" style={{ marginTop: 0 }}>
-              Автоматический анализ на основе {data.totalAudits} привязанных звонков
-              {data.meta?.ignoredUnlinkedCalls ? ` · не учтено без привязок: ${data.meta.ignoredUnlinkedCalls}` : ''}
-            </p>
-          </div>
-          <div className="sa-analytics-summary-kpis">
-            <div className="sa-summary-kpi">
-              <span className="sa-summary-kpi-label">Средний балл</span>
-              <span className={`sa-summary-kpi-value ${ratingClass(data.avgScore)}`}>{data.avgScore}</span>
-            </div>
-            <div className="sa-summary-kpi">
-              <span className="sa-summary-kpi-label">Провалы</span>
-              <span className={`sa-summary-kpi-value ${data.failRate > 10 ? 'sa-score-red' : data.failRate > 5 ? 'sa-score-orange' : 'sa-score-green'}`}>{data.failRate}%</span>
-            </div>
-          </div>
+          <NetworkTrendChart points={networkTrend} />
         </div>
+      </section>
 
-        <div style={{ marginBottom: 22 }}>
-          <AISummaryBlock
-            title="AI-сводка по сети"
-            summary={data.aiSummary}
-            loading={isLoading}
-            error={analyticsError ? 'Не удалось сформировать AI-сводку. Проверьте доступность backend API.' : null}
-          />
-        </div>
+      <BestWorstCards rows={dealershipRows} onOpen={(id) => onDrill?.('dealership', id)} />
 
-        {/* ── B) Key insights ── */}
-        <div className="sa-key-insights">
-          {analyticsError && (
-            <div className="sa-key-insight">
-              <div className="sa-key-insight-body">
-                <div className="sa-key-insight-fact">Не удалось загрузить аналитику</div>
-                <div className="sa-key-insight-interp">Проверьте доступность backend API.</div>
-              </div>
-            </div>
-          )}
-          {!analyticsError && data.keyInsights.length === 0 && (
-            <div className="sa-key-insight">
-              <div className="sa-key-insight-body">
-                <div className="sa-key-insight-fact">Пока нет привязанных звонков</div>
-                <div className="sa-key-insight-interp">Звонки без салона/менеджера/плана не попадают в управленческую аналитику.</div>
-              </div>
-            </div>
-          )}
-          {data.keyInsights.map((ins, i) => (
-            <div key={i} className="sa-key-insight">
-              <span className={`sa-impact-dot ${IMPACT_ICON[ins.impact].cls}`} title={`Влияние: ${ins.impact}`}>{IMPACT_ICON[ins.impact].icon}</span>
-              <div className="sa-key-insight-body">
-                <div className="sa-key-insight-fact">
-                  {ins.fact}
-                  {ins.delta && <span className="sa-key-insight-delta">{ins.delta}</span>}
-                </div>
-                <div className="sa-key-insight-interp">{ins.interpretation}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* ── C) Action block ── */}
-        <div className="sa-action-block">
-          <h3 className="sa-action-block-title">Рекомендуемые действия</h3>
+      <section className="sa-section" style={{ marginBottom: 28 }}>
+        <div className="sa-card">
+          <h2 className="sa-section-title">Рекомендуемые действия</h2>
           <div className="sa-action-list">
             {data.actions.map((act, i) => (
               <div key={i} className="sa-action-card">
@@ -519,30 +642,21 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
                   <span className="sa-action-reason">Причина: {act.reason}</span>
                   <span className="sa-action-effect">Ожидаемый эффект: {act.expectedEffect}</span>
                 </div>
-                <div className="sa-action-buttons">
-                  {act.drillType === 'employees' && (
-                    <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.('employees', act.drillFilter)}>Открыть сотрудников →</button>
-                  )}
-                  {act.drillType === 'dealership' && (
-                    <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.('dealership', act.drillFilter)}>Открыть точку →</button>
-                  )}
-                  {act.drillType === 'audits' && (
-                    <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.('audits', act.drillFilter)}>Открыть проверки →</button>
-                  )}
-                  <button className="sa-btn-outline sa-btn-sm" onClick={() => exportPageToPdf('Аналитика_отчет')}>Экспорт отчёт</button>
-                </div>
+                {act.drillType && (
+                  <button className="sa-btn-text sa-btn-sm" onClick={() => onDrill?.(act.drillType, act.drillFilter)}>
+                    Перейти →
+                  </button>
+                )}
               </div>
             ))}
           </div>
         </div>
-      </div>
-
-      {/* ═══════════════ 2) ANALYTICAL SECTIONS ═══════════════ */}
+      </section>
 
       <section className="sa-section" style={{ marginTop: 28, marginBottom: 28 }}>
         <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Дилеры / компании</h2>
-          <div className="sa-meta">Агрегация по точкам компании</div>
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Рейтинг компаний</h2>
+          <div className="sa-meta">Позиция относительно среднего по сети: {data.avgScore}</div>
         </div>
         <div className="sa-card">
           <div className="sa-table-wrap">
@@ -553,6 +667,7 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
                   <th>Тип</th>
                   <th className="sa-text-right">Точек</th>
                   <th className="sa-text-right">Балл</th>
+                  <th className="sa-text-right">Отклонение</th>
                   <th className="sa-text-right">Звонков</th>
                   <th className="sa-text-right">Недозвоны</th>
                   <th className="sa-text-right">Ниже 50</th>
@@ -560,7 +675,7 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
               </thead>
               <tbody>
                 {(data.holdingRows ?? []).length === 0 ? (
-                  <tr><td colSpan={7} className="sa-meta" style={{ padding: 24 }}>Нет компаний с привязанными точками</td></tr>
+                  <tr><td colSpan={8} className="sa-meta" style={{ padding: 24 }}>Нет компаний с привязанными точками</td></tr>
                 ) : (
                   (data.holdingRows ?? []).map((row) => (
                     <tr key={row.id}>
@@ -568,6 +683,7 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
                       <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
                       <td className="sa-text-right">{row.dealershipsCount}</td>
                       <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                      <td className="sa-text-right">{row.score - data.avgScore > 0 ? '+' : ''}{row.score - data.avgScore}</td>
                       <td className="sa-text-right">{row.calls}</td>
                       <td className="sa-text-right">{row.noAnswers}</td>
                       <td className="sa-text-right">{row.lowDealerships}</td>
@@ -587,32 +703,69 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
         </div>
         <div className="sa-card">
           <WeeklyTypeTrendChart data={data.weeklyTypeTrend ?? []} />
+          {!!data.typeCategoryComparison?.length && (
+            <div className="sa-table-wrap" style={{ marginTop: 16 }}>
+              <table className="sa-table">
+                <thead>
+                  <tr>
+                    <th>Категория</th>
+                    <th className="sa-text-right">Собственные</th>
+                    <th className="sa-text-right">Франшиза</th>
+                    <th className="sa-text-right">Разница</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.typeCategoryComparison.map((row) => (
+                    <tr key={row.category}>
+                      <td>{row.category}</td>
+                      <td className="sa-text-right"><span className={ratingClass(row.ownScore)}>{row.ownScore}</span></td>
+                      <td className="sa-text-right"><span className={ratingClass(row.franchiseScore)}>{row.franchiseScore}</span></td>
+                      <td className="sa-text-right">{row.ownScore - row.franchiseScore > 0 ? '+' : ''}{row.ownScore - row.franchiseScore}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="sa-dashboard-grid" style={{ marginTop: 16 }}>
+            <div>
+              <h3 className="sa-card-heading">Топ-ошибки собственных</h3>
+              <IssueList items={data.typeTopErrors?.own ?? []} />
+            </div>
+            <div>
+              <h3 className="sa-card-heading">Топ-ошибки франшизы</h3>
+              <IssueList items={data.typeTopErrors?.franchise ?? []} />
+            </div>
+          </div>
+          <div className="sa-meta" style={{ marginTop: 12 }}>{typeComparisonInsight}</div>
         </div>
       </section>
 
       {/* ── Dealership comparison ── */}
       <section className="sa-section" style={{ marginBottom: 28 }}>
         <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Динамика по точкам</h2>
-          <InsightMini insight={data.trendInsight} />
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Сравнительная динамика</h2>
+          <div className="sa-meta">Выберите от 2 до 6 точек</div>
         </div>
         <div className="sa-card">
-          <DealershipBars data={data.dealershipComparison} onOpen={(id) => onDrill?.('dealership', id)} />
+          <MultiDealershipTrendChart series={selectedSeries} />
         </div>
         <div className="sa-card" style={{ marginTop: 16 }}>
           <div className="sa-section-header-row" style={{ marginBottom: 12 }}>
-            <h3 className="sa-card-heading" style={{ marginBottom: 0 }}>Таблица точек</h3>
-            <div className="sa-meta">Выберите 2-6 точек для сравнения</div>
+            <h3 className="sa-card-heading" style={{ marginBottom: 0 }}>Рейтинг точек</h3>
+            <div className="sa-meta">Позиция, отклонение от среднего сети и тренд</div>
           </div>
           <div className="sa-table-wrap">
             <table className="sa-table">
               <thead>
                 <tr>
                   <th style={{ width: 44 }} />
+                  <th className="sa-text-right">#</th>
                   <th>Точка</th>
                   <th>Дилер</th>
                   <th>Тип</th>
                   <th className="sa-text-right">Балл</th>
+                  <th className="sa-text-right">Отклонение</th>
                   <th className="sa-text-right">Динамика</th>
                   <th className="sa-text-right">Звонков</th>
                   <th className="sa-text-right">Недозвоны</th>
@@ -620,9 +773,9 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
               </thead>
               <tbody>
                 {dealershipRows.length === 0 ? (
-                  <tr><td colSpan={8} className="sa-meta" style={{ padding: 24 }}>Нет привязанных точек для аналитики</td></tr>
+                  <tr><td colSpan={10} className="sa-meta" style={{ padding: 24 }}>Нет привязанных точек для аналитики</td></tr>
                 ) : (
-                  dealershipRows.map((row) => (
+                  rankedRows.map((row, index) => (
                     <tr key={row.id} className="sa-row-clickable" onClick={() => onDrill?.('dealership', row.id)}>
                       <td onClick={(event) => event.stopPropagation()}>
                         <input
@@ -632,10 +785,12 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
                           onChange={() => toggleDealership(row.id)}
                         />
                       </td>
+                      <td className="sa-text-right">{index + 1}</td>
                       <td style={{ fontWeight: 600 }}>{row.name}</td>
                       <td>{row.dealer}</td>
                       <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
                       <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                      <td className="sa-text-right">{row.score - data.avgScore > 0 ? '+' : ''}{row.score - data.avgScore}</td>
                       <td className="sa-text-right">{row.delta > 0 ? '+' : ''}{row.delta}</td>
                       <td className="sa-text-right">{row.calls}</td>
                       <td className="sa-text-right">{row.noAnswers}</td>
@@ -651,54 +806,50 @@ export function Analytics({ summary, timeSeries = [], loading = false, onDrill }
       {/* ── Top errors ── */}
       <section className="sa-section" style={{ marginBottom: 28 }}>
         <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Частые ошибки — Топ 10</h2>
-          <InsightMini insight={data.errorsInsight} />
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Топ-проблема: лидеры vs отстающие</h2>
+          <div className="sa-meta">Проблемы из фиксированного справочника</div>
         </div>
         <div className="sa-card">
-          {isLoading ? (
-            <div className="sa-meta" style={{ padding: 24 }}>Загрузка…</div>
-          ) : (
-            <ErrorsChart data={data.topErrors} />
-          )}
+          <div className="sa-dashboard-grid">
+            <div>
+              <h3 className="sa-card-heading">Ошибки лидеров</h3>
+              <IssueList items={data.leadersLaggards?.leadersErrors ?? []} />
+            </div>
+            <div>
+              <h3 className="sa-card-heading">Ошибки отстающих</h3>
+              <IssueList items={data.leadersLaggards?.laggardsErrors ?? []} />
+            </div>
+          </div>
+          <div className="sa-dashboard-grid" style={{ marginTop: 16 }}>
+            <div>
+              <h3 className="sa-card-heading">Сложные вопросы лидеров</h3>
+              <IssueList items={data.leadersLaggards?.leadersQuestions ?? []} labelKey="question" />
+            </div>
+            <div>
+              <h3 className="sa-card-heading">Сложные вопросы отстающих</h3>
+              <IssueList items={data.leadersLaggards?.laggardsQuestions ?? []} labelKey="question" />
+            </div>
+          </div>
+          <div className="sa-meta" style={{ marginTop: 12 }}>{topProblemInsight}</div>
         </div>
       </section>
 
       {/* ── Script compliance ── */}
       <section className="sa-section" style={{ marginBottom: 28 }}>
         <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Соблюдение скрипта</h2>
-          <InsightMini insight={data.scriptInsight} />
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Распределение по категориям</h2>
+          <div className="sa-meta">Контакт / Диагностика / Продукт / Закрытие / Коммуникация</div>
         </div>
         <div className="sa-card">
           <ScriptChart data={data.scriptCompliance} />
         </div>
       </section>
 
-      {/* ── Communication quality ── */}
-      <section className="sa-section" style={{ marginBottom: 28 }}>
-        <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Качество коммуникации</h2>
-          <InsightMini insight={data.commInsight} />
-        </div>
-        <div className="sa-card">
-          <CommBreakdown data={data.commBreakdown} />
-        </div>
-      </section>
       {selectedDealershipIds.length > 0 && (
-        <div style={{ position: 'fixed', left: 24, right: 24, bottom: 24, zIndex: 60, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div className="sa-card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', pointerEvents: 'auto', boxShadow: '0 16px 40px rgba(15,23,42,.18)' }}>
-            <strong>Выбрано: {selectedDealershipIds.length}</strong>
-            <button className="sa-btn-outline" disabled={selectedDealershipIds.length < 2} onClick={() => setComparisonOpen(true)}>Сравнить</button>
-            <button className="sa-btn-text" onClick={() => setSelectedDealershipIds([])}>Сбросить</button>
-          </div>
+        <div className="sa-meta" style={{ marginTop: -12, marginBottom: 28 }}>
+          Выбрано точек: {selectedDealershipIds.length}.{' '}
+          <button className="sa-btn-text sa-btn-sm" onClick={() => setSelectedDealershipIds([])}>Сбросить выбор</button>
         </div>
-      )}
-      {comparisonOpen && (
-        <ComparisonModal
-          rows={selectedRows}
-          onClose={() => setComparisonOpen(false)}
-          onOpenDealership={(id) => onDrill?.('dealership', id)}
-        />
       )}
     </>
   );

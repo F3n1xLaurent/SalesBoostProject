@@ -20,6 +20,7 @@ export interface DealershipRow {
   aiRating: number;
   answerRate: number | null;
   avgAnswerTimeSec: number | null;
+  avgCallDurationSec?: number | null;
   auditsCount: number;
   employeesCount: number;
   deltaRating: number | null;
@@ -403,6 +404,7 @@ export interface EmployeeAuditRecord {
   type: 'training' | 'call';
   score: number;
   verdict: string;
+  outcome?: 'completed' | 'no_answer' | 'busy' | 'failed' | 'disconnected' | string | null;
 }
 
 export interface EmployeeDetailData extends EmployeeFullRow {

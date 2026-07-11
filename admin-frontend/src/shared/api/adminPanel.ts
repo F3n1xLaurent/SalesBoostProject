@@ -93,6 +93,7 @@ export interface AuditItem {
   type: 'attempt' | 'training' | 'trainer' | 'call';
   company: string;
   dealer: string;
+  holdingId?: string | null;
   dealershipId?: string | null;
   dealershipName?: string | null;
   city?: string | null;
@@ -104,9 +105,17 @@ export interface AuditItem {
   durationSec?: number | null;
   verdict?: string | null;
   communicationFlag?: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+  reportIssues?: string[];
   userName: string | null;
-  detailId: number;
+  detailId: number | string;
   detailType: 'attempt' | 'training' | 'trainer' | 'call';
+}
+
+export interface CallReportProblemItem {
+  code: string;
+  title: string;
+  category: string;
+  sortOrder: number;
 }
 
 export interface AuditDetailItem {
@@ -136,12 +145,45 @@ export interface AuditDetailItem {
   scenarioName: string | null;
   assignedBy: string | null;
   failReason: string | null;
+  unifiedReport: {
+    version: 'call-report-v1';
+    source: 'call' | 'trainer';
+    summary: string;
+    totalScore: number;
+    verdict: 'Хорошо' | 'Средне' | 'Плохо';
+    categories: Array<{ name: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация'; score: number; comment: string }>;
+    strengths: string[];
+    weaknesses: string[];
+    keyFindings: Array<{
+      problemTitle: string;
+      importance: 'Критично' | 'Важно' | 'Средне';
+      category: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация';
+      quote: string;
+      comment: string;
+      betterExample: string;
+    }>;
+    dialog: Array<{
+      role: 'client' | 'manager';
+      text: string;
+      mark: 'positive' | 'normal' | 'negative' | null;
+      comment: string | null;
+    }>;
+    recommendations: Array<{
+      text: string;
+      category: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация';
+      problemTitle: string | null;
+    }>;
+  } | null;
 }
 
 export interface TimeSeriesPoint {
   date: string;
   avgScore: number;
   count: number;
+  ownScore?: number;
+  franchiseScore?: number;
+  ownCount?: number;
+  franchiseCount?: number;
 }
 
 export type AnalyticsImpact = 'high' | 'medium' | 'low';
@@ -186,8 +228,21 @@ export interface AnalyticsOverview {
   failRate: number;
   commBreakdown: { label: string; percent: number; color: string }[];
   topErrors: { error: string; count: number; percent: number }[];
+  timeSeries?: TimeSeriesPoint[];
   weeklyTypeTrend?: { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[];
+  typeCategoryComparison?: { category: string; ownScore: number; franchiseScore: number }[];
+  typeTopErrors?: {
+    own: { issue: string; count: number; percent: number }[];
+    franchise: { issue: string; count: number; percent: number }[];
+  };
+  leadersLaggards?: {
+    leadersErrors: { issue: string; count: number; percent: number }[];
+    laggardsErrors: { issue: string; count: number; percent: number }[];
+    leadersQuestions: { question: string; count: number; percent: number }[];
+    laggardsQuestions: { question: string; count: number; percent: number }[];
+  };
   dealershipComparison: { id?: string; name: string; score: number; delta: number }[];
+  dealershipTimeSeries?: { id: string; name: string; points: TimeSeriesPoint[] }[];
   dealershipRows?: Array<{
     id: string;
     name: string;
@@ -228,6 +283,7 @@ export interface AnalyticsDealershipRow {
   aiRating: number;
   answerRate: number | null;
   avgAnswerTimeSec: number | null;
+  avgCallDurationSec?: number | null;
   auditsCount: number;
   employeesCount: number;
   deltaRating: number | null;
@@ -263,6 +319,7 @@ export interface AnalyticsHoldingDealershipRow {
 export interface AnalyticsHoldingDetail extends AnalyticsHoldingRow {
   aiSummary?: AnalyticsAISummary;
   dealershipRows: AnalyticsHoldingDealershipRow[];
+  timeSeries: { date: string; avgScore: number; count: number }[];
   topIssues: { issue: string; percent: number }[];
   scriptCompliance: { block: string; rate: number }[];
   meta?: {
@@ -341,7 +398,7 @@ export interface AnalyticsManagerDetail {
   topIssues: { issue: string; percent: number }[];
   topQuestions: string[];
   recommendedTrainings: { title: string; description: string }[];
-  audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string }>;
+  audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string; outcome?: string | null }>;
   noAnswerHistory?: Array<{ id: string; date: string; planName: string | null; verdict: string }>;
   trainer?: {
     totalPoints: number;
@@ -639,7 +696,7 @@ export interface CallScriptItem {
 }
 
 export type CallPlanTargetType = 'employees' | 'dealerships';
-export type CallPlanFrequency = 'daily' | 'weekly';
+export type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
 
 export interface CallPlanItem {
   id: string;
@@ -710,6 +767,7 @@ export interface CallPlanPromptPreview {
 
 export interface CallPlanCallItem {
   id: string;
+  auditId: string | null;
   planId: string;
   callId: string;
   employeeId: string | null;
@@ -725,6 +783,8 @@ export interface CallPlanCallItem {
   outcome: string | null;
   startedAt: string;
   endedAt: string | null;
+  answerTimeSec: number | null;
+  talkDurationSec: number | null;
   transcript: Array<{ role: 'manager' | 'client'; text: string }>;
   evaluation: unknown | null;
   totalScore: number | null;
@@ -827,6 +887,7 @@ export interface ImportSourceItem {
   createdAt: string;
   updatedAt: string;
   itemsCount: number;
+  activeRun: ImportRunItem | null;
 }
 
 export interface ImportedItem {
@@ -860,7 +921,7 @@ export interface ImportedItemsResult {
 export interface ImportRunItem {
   id: string;
   importSourceId: string;
-  status: 'success' | 'error' | 'running';
+  status: 'success' | 'error' | 'running' | 'cancelled';
   startedAt: string;
   finishedAt: string | null;
   totalItems: number;
@@ -968,6 +1029,7 @@ export async function fetchImportedItems(params?: {
   limit?: number;
   offset?: number;
   sourceId?: string | null;
+  sourceIds?: string[];
   holdingId?: string | null;
   search?: string;
   tags?: string[];
@@ -975,7 +1037,8 @@ export async function fetchImportedItems(params?: {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.offset != null) query.set('offset', String(params.offset));
-  if (params?.sourceId) query.set('sourceId', params.sourceId);
+  if (params?.sourceIds?.length) query.set('sourceIds', params.sourceIds.join(','));
+  else if (params?.sourceId) query.set('sourceId', params.sourceId);
   if (params?.holdingId) query.set('holdingId', params.holdingId);
   if (params?.search?.trim()) query.set('search', params.search.trim());
   if (params?.tags?.length) query.set('tags', params.tags.join(','));
@@ -1047,11 +1110,18 @@ export async function deleteImportSource(id: string): Promise<void> {
   if (!res.ok) throw new Error(data?.error || 'Не удалось удалить импорт.');
 }
 
-export async function runImportSource(id: string): Promise<ImportRunItem> {
-  const res = await apiFetch(`${API_BASE}/api/imports/${id}/run`, { method: 'POST' });
+export async function runImportSource(id: string, options?: { signal?: AbortSignal }): Promise<ImportRunItem> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}/run`, { method: 'POST', signal: options?.signal });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось запустить импорт.');
   return data.run as ImportRunItem;
+}
+
+export async function cancelImportSource(id: string): Promise<ImportRunItem | null> {
+  const res = await apiFetch(`${API_BASE}/api/imports/${id}/cancel`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось остановить загрузку.');
+  return (data.run ?? null) as ImportRunItem | null;
 }
 
 export async function fetchHoldings(filters?: {
@@ -1605,6 +1675,13 @@ export async function fetchTimeSeries(): Promise<TimeSeriesPoint[]> {
   if (!res.ok) return [];
   const data = await res.json();
   return data.series ?? [];
+}
+
+export async function fetchCallReportProblems(): Promise<CallReportProblemItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-report-problems`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить справочник проблем.');
+  return Array.isArray(data.items) ? data.items as CallReportProblemItem[] : [];
 }
 
 export async function fetchAnalyticsOverview(filters?: { holdingId?: string | null }): Promise<AnalyticsOverview | null> {

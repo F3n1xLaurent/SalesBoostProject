@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router';
 import {
+  abandonTrainerSession,
   fetchTrainerDialog,
   fetchTrainerHistory,
   fetchTrainerProfile,
@@ -17,7 +19,11 @@ import {
   type TrainerSessionSummary,
 } from '../../../shared/api/trainer';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+import { buildTrainerSessionPath, parseAdminPath } from '../../../shared/routing/adminRoutes';
+import { BrutalSelect } from '../../../shared/ui/BrutalSelect';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import '../../../shared/ui/styles/admin-panel.css';
+import '../../../shared/ui/styles/theme-brutal.css';
 import './train-page.css';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
@@ -85,98 +91,433 @@ function formatDateTime(value: string | null): string {
   });
 }
 
-function MetricTile(props: { label: string; value: React.ReactNode; hint?: string }) {
+function formatDateShort(value: string | null): string {
+  if (!value) return '—';
+  return new Date(value).toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+}
+
+function trainerQualityTag(score: number | null): string | null {
+  if (score == null) return null;
+  if (score >= 85) return 'Отлично';
+  if (score >= 76) return 'Хорошо';
+  if (score >= 50) return 'Средне';
+  return 'Нужно улучшить';
+}
+
+function trainerScoreClass(score: number): 'sa-score-green' | 'sa-score-orange' | 'sa-score-red' {
+  if (score >= 76) return 'sa-score-green';
+  if (score >= 50) return 'sa-score-orange';
+  return 'sa-score-red';
+}
+
+function planQuestLabel(status: string): string {
+  if (status === 'completed') return 'Выполнено';
+  if (status === 'in_progress') return 'В процессе';
+  if (status === 'failed') return 'Не пройдено';
+  return 'Доступно';
+}
+
+const VOICE_BAR_COUNT = 28;
+const RECORD_LEVEL_BARS = 16;
+
+function TrainerDoneCircle(props: { size: 'plan' | 'quest' }) {
+  const iconSize = props.size === 'plan' ? 20 : 22;
   return (
-    <div className="train-metric">
-      <div className="train-metric-label">{props.label}</div>
-      <div className="train-metric-value">{props.value}</div>
-      {props.hint && <div className="train-metric-hint">{props.hint}</div>}
+    <span className={`train-hub-status-circle train-hub-status-circle--done train-hub-status-circle--${props.size}`} aria-hidden>
+      <LetsIcon name="done-light" size={iconSize} strokeWidth={2} />
+    </span>
+  );
+}
+
+function TrainerFailedCircle(props: { size: 'plan' | 'quest' }) {
+  const iconSize = props.size === 'plan' ? 20 : 22;
+  return (
+    <span className={`train-hub-status-circle train-hub-status-circle--failed train-hub-status-circle--${props.size}`} aria-hidden>
+      <LetsIcon name="close-round-light" size={iconSize} strokeWidth={2} />
+    </span>
+  );
+}
+
+function buildSequentialPlanDotStates(items: TrainerPlanItem[], total: number): Array<'empty' | 'done' | 'failed'> {
+  const dots: Array<'empty' | 'done' | 'failed'> = Array.from({ length: total }, () => 'empty');
+  const resolved = items
+    .filter((item) => item.status === 'completed' || item.status === 'failed')
+    .sort((left, right) => {
+      const leftTime = left.completedAt ? Date.parse(left.completedAt) : Number.MAX_SAFE_INTEGER;
+      const rightTime = right.completedAt ? Date.parse(right.completedAt) : Number.MAX_SAFE_INTEGER;
+      if (leftTime !== rightTime) return leftTime - rightTime;
+      return 0;
+    });
+
+  let withoutTimestamp = 0;
+  resolved.forEach((item, index) => {
+    if (index >= total) return;
+    if (!item.completedAt) withoutTimestamp += 1;
+    dots[index] = item.status === 'completed' ? 'done' : 'failed';
+  });
+
+  if (withoutTimestamp === resolved.length && resolved.length > 0) {
+    const states: Array<'done' | 'failed'> = [];
+    items.forEach((item) => {
+      if (item.status === 'completed') states.push('done');
+    });
+    items.forEach((item) => {
+      if (item.status === 'failed') states.push('failed');
+    });
+    for (let index = 0; index < Math.min(total, states.length); index += 1) {
+      dots[index] = states[index];
+    }
+  }
+
+  return dots;
+}
+
+function TrainerProgressDots(props: {
+  items: TrainerPlanItem[];
+  fallbackTotal?: number;
+  size?: 'md' | 'lg';
+}) {
+  const sourceItems = props.items.length > 0
+    ? props.items
+    : Array.from({ length: props.fallbackTotal ?? 3 }, (_, index) => ({
+      id: `placeholder-${index}`,
+      scenarioId: null,
+      scenarioName: '',
+      status: 'not_started',
+      trainerSessionId: null,
+    }));
+  const completed = sourceItems.filter((item) => item.status === 'completed').length;
+  const total = sourceItems.length;
+  const dotStates = buildSequentialPlanDotStates(sourceItems, total);
+  const sizeClass = props.size === 'lg' ? 'train-hub-dots--lg' : 'train-hub-dots--md';
+
+  return (
+    <div className={`train-hub-dots ${sizeClass}`} role="img" aria-label={`${completed} из ${total} выполнено`}>
+      {dotStates.map((state, index) => {
+        if (state === 'done') {
+          return props.size === 'lg'
+            ? <TrainerDoneCircle key={sourceItems[index]?.id || index} size="plan" />
+            : <span key={sourceItems[index]?.id || index} className="train-hub-dot train-hub-dot--done" />;
+        }
+
+        if (state === 'failed') {
+          return props.size === 'lg'
+            ? <TrainerFailedCircle key={sourceItems[index]?.id || index} size="plan" />
+            : <span key={sourceItems[index]?.id || index} className="train-hub-dot train-hub-dot--failed" />;
+        }
+
+        return (
+          <span key={sourceItems[index]?.id || index} className="train-hub-dot train-hub-dot--empty" />
+        );
+      })}
     </div>
   );
 }
 
-function PlanCard(props: {
+function TrainerStatCard(props: { label: string; value: React.ReactNode; hint?: string; game?: boolean }) {
+  return (
+    <div className={`sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card train-hub-stat-card ${props.game ? 'train-hub-stat-card--game' : ''}`}>
+      <div className="sa-kpi-card-top">
+        <div className="sa-kpi-card-heading">{props.label}</div>
+      </div>
+      <div className="sa-kpi-card-spacer" aria-hidden />
+      <div className="sa-kpi-card-bottom">
+        <div className={props.game ? 'train-hub-stat-game-value' : 'sa-kpi-value sa-kpi-value-large'}>{props.value}</div>
+        {props.hint && <div className="sa-kpi-desc">{props.hint}</div>}
+      </div>
+    </div>
+  );
+}
+
+function TrainerQuestCard(props: {
   item: TrainerPlanItem;
   index: number;
   busy: boolean;
   onStart: (item: TrainerPlanItem) => void;
+  onContinue: (sessionId: string) => void;
 }) {
-  const status = sessionStatusLabel(props.item.status, null);
-  const canStart = props.item.status === 'not_started' || !props.item.status;
+  const { item, index } = props;
+  const isDone = item.status === 'completed';
+  const isFailed = item.status === 'failed';
+  const isActive = item.status === 'in_progress';
+  const canStart = !isDone && !isFailed && !isActive;
+
+  const handleClick = () => {
+    if (isActive && item.trainerSessionId) {
+      props.onContinue(item.trainerSessionId);
+      return;
+    }
+    if (canStart) props.onStart(item);
+  };
+
   return (
-    <article className={`train-plan-card train-plan-card-${canStart ? 'active' : 'done'}`}>
-      <div className="train-plan-index">{props.index + 1}</div>
-      <div className="train-plan-body">
-        <div className="train-plan-title">{props.item.scenarioName || 'Сценарий'}</div>
-        <div className="train-plan-status">{status}</div>
+    <article
+      className={`train-hub-quest train-hub-quest--${item.status || 'not_started'}`}
+      style={{ animationDelay: `${props.index * 60}ms` }}
+    >
+      <div className="train-hub-quest-index">
+        {isDone ? <TrainerDoneCircle size="quest" /> : isFailed ? <TrainerFailedCircle size="quest" /> : index + 1}
       </div>
-      <button className="train-icon-button" disabled={!canStart || props.busy} onClick={() => props.onStart(props.item)} title="Начать">
-        ▶
-      </button>
+      <div className="train-hub-quest-body">
+        <div className="train-hub-quest-title">{item.scenarioName || 'Сценарий'}</div>
+        <div className="train-hub-quest-meta">{planQuestLabel(item.status)}</div>
+      </div>
+      {!isDone && !isFailed && (
+        <button
+          type="button"
+          className="sa-btn-brutal-3d train-hub-quest-action"
+          disabled={props.busy}
+          onClick={handleClick}
+        >
+          {isActive ? 'Продолжить' : 'Начать'}
+        </button>
+      )}
+      {(isDone || isFailed) && (
+        <span className={`train-hub-quest-badge ${isDone ? 'sa-score-green' : 'sa-score-red'}`}>
+          {planQuestLabel(item.status)}
+        </span>
+      )}
     </article>
   );
 }
 
-function HistoryItem(props: { item: TrainerSessionSummary; onOpen: (id: string) => void }) {
-  const score = props.item.score;
-  return (
-    <button className="train-history-item" onClick={() => props.onOpen(props.item.id)}>
-      <span>
-        <strong>{props.item.scenarioName}</strong>
-        <small>
-          {formatDateTime(props.item.completedAt || props.item.startedAt)} · {props.item.type === 'plan' ? 'План' : 'Свободная'}
-          {props.item.finalPoints != null ? ` · ${props.item.finalPoints} очков` : ''}
-        </small>
-      </span>
-      <span className={`train-score-pill train-score-${score == null ? 'empty' : score >= 76 ? 'good' : score >= 50 ? 'mid' : 'bad'}`}>
-        {score == null ? '—' : score}
-      </span>
-    </button>
-  );
-}
-
-function ChatListButton(props: {
-  title: string;
-  subtitle: string;
-  badge?: string | number | null;
-  active?: boolean;
-  disabled?: boolean;
-  onClick: () => void;
+function TrainerHub(props: {
+  profile: TrainerProfile | null;
+  planItems: TrainerPlanItem[];
+  history: TrainerSessionSummary[];
+  completedPlanCount: number;
+  busy: boolean;
+  error: string | null;
+  canStartFree: boolean;
+  onNewSession: () => void;
+  onStartPlan: (item: TrainerPlanItem) => void;
+  onOpenSession: (sessionId: string) => void;
 }) {
-  return (
-    <button className={`train-chat-list-item ${props.active ? 'train-chat-list-item-active' : ''}`} disabled={props.disabled} onClick={props.onClick}>
-      <span className="train-chat-avatar">AI</span>
-      <span className="train-chat-list-copy">
-        <strong>{props.title}</strong>
-        <small>{props.subtitle}</small>
-      </span>
-      {props.badge != null && <span className="train-chat-badge">{props.badge}</span>}
-    </button>
-  );
-}
+  const planTotal = props.planItems.length || 3;
 
-function ProfileModal(props: { profile: TrainerProfile | null; onClose: () => void }) {
   return (
-    <div className="train-report-backdrop" onClick={props.onClose}>
-      <section className="train-profile-modal" onClick={(event) => event.stopPropagation()}>
-        <header className="train-report-header">
-          <div>
-            <div className="train-report-kicker">Профиль менеджера</div>
-            <h2>{props.profile?.fullName ?? 'Профиль'}</h2>
+    <div className="train-hub sa-page-enter">
+      <header className="train-hub-block train-hub-header">
+        <div>
+          <h1 className="sa-page-title train-hub-title">Тренажёр</h1>
+          <p className="train-hub-subtitle">
+            {props.profile
+              ? `${props.profile.branchName}${props.profile.city ? `, ${props.profile.city}` : ''} · ${props.profile.companyName}`
+              : 'Тренировка диалога с виртуальным клиентом'}
+          </p>
+        </div>
+        <button
+          type="button"
+          className="sa-btn-brutal-3d train-hub-new-btn"
+          disabled={props.busy || !props.canStartFree}
+          onClick={props.onNewSession}
+        >
+          <LetsIcon name="add-light" size={16} bold />
+          Новая тренировка
+        </button>
+      </header>
+
+      {props.error && (
+        <div className="train-hub-block train-hub-error" role="alert">{props.error}</div>
+      )}
+
+      <div className="train-hub-block sa-kpi-grid train-hub-stats">
+        <TrainerStatCard
+          label="Стрик"
+          value={props.profile?.currentStreak ?? 0}
+          hint={`Рекорд ${props.profile?.longestStreak ?? 0} дн.`}
+        />
+        <TrainerStatCard
+          label="AI-баллы"
+          value={props.profile?.totalPoints ?? 0}
+          hint="За всё время"
+        />
+        <TrainerStatCard
+          label="Сессии за 30 дней"
+          value={props.profile?.sessions30d ?? 0}
+          hint={`${props.profile?.sessionsTotal ?? 0} всего`}
+        />
+        <TrainerStatCard
+          label="План дня"
+          game
+          value={(
+            <TrainerProgressDots
+              items={props.planItems}
+              fallbackTotal={3}
+              size="lg"
+            />
+          )}
+          hint={`${props.completedPlanCount} из ${planTotal} выполнено`}
+        />
+      </div>
+
+      <section className="train-hub-block train-hub-section">
+        <div className="train-hub-section-head">
+          <h2 className="train-hub-section-title">Задачи на день</h2>
+        </div>
+        {props.planItems.length === 0 ? (
+          <p className="train-hub-empty">На сегодня задач пока нет. Запустите свободную тренировку.</p>
+        ) : (
+          <div className="train-hub-quests">
+            {props.planItems.map((item, index) => (
+              <TrainerQuestCard
+                key={item.id}
+                item={item}
+                index={index}
+                busy={props.busy}
+                onStart={props.onStartPlan}
+                onContinue={props.onOpenSession}
+              />
+            ))}
           </div>
-          <button className="train-close-button" onClick={props.onClose}>×</button>
-        </header>
-        <div className="train-profile-modal-meta">
-          <span>{props.profile?.companyName}</span>
-          <span>{props.profile?.branchName}{props.profile?.city ? ` · ${props.profile.city}` : ''}</span>
+        )}
+      </section>
+
+      <section className="train-hub-block train-hub-section">
+        <div className="train-hub-section-head">
+          <h2 className="train-hub-section-title">История тренировок</h2>
         </div>
-        <div className="train-profile-metrics">
-          <MetricTile label="Стрик" value={`${props.profile?.currentStreak ?? 0} дн.`} hint={`Рекорд ${props.profile?.longestStreak ?? 0}`} />
-          <MetricTile label="Очки" value={props.profile?.totalPoints ?? 0} hint="За всё время" />
-          <MetricTile label="Сессии 30 дней" value={props.profile?.sessions30d ?? 0} hint={`${props.profile?.sessionsTotal ?? 0} всего`} />
-        </div>
+        {props.history.length === 0 ? (
+          <p className="train-hub-empty">История появится после первой тренировки.</p>
+        ) : (
+          <div className="train-hub-panel sa-companies-table-wrap">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th>Сценарий</th>
+                  <th>Дата</th>
+                  <th>Тип</th>
+                  <th>Оценка</th>
+                  <th>Балл</th>
+                </tr>
+              </thead>
+              <tbody>
+                {props.history.map((item) => {
+                  const score = item.score;
+                  const qualityTag = trainerQualityTag(score);
+                  return (
+                    <tr
+                      key={item.id}
+                      className="sa-row-clickable"
+                      onClick={() => props.onOpenSession(item.id)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          props.onOpenSession(item.id);
+                        }
+                      }}
+                    >
+                      <td>{item.scenarioName || 'Тренировка'}</td>
+                      <td className="sa-meta">{formatDateShort(item.completedAt || item.startedAt)}</td>
+                      <td>{item.type === 'plan' ? 'План' : 'Свободная'}</td>
+                      <td>
+                        {qualityTag ? (
+                          <span className={trainerScoreClass(score ?? 0)}>{qualityTag}</span>
+                        ) : (
+                          <span className="sa-meta">—</span>
+                        )}
+                      </td>
+                      <td>
+                        {score != null ? (
+                          <span className={`sa-kpi-value ${trainerScoreClass(score)}`}>{score.toFixed(0)}</span>
+                        ) : (
+                          <span className="sa-meta">Н/Д</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </div>
+  );
+}
+
+function TrainerStreakCelebration(props: {
+  previousStreak: number;
+  newStreak: number;
+  scenarioName: string;
+  onClose: () => void;
+}) {
+  const [displayStreak, setDisplayStreak] = useState(props.previousStreak);
+  const [popped, setPopped] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let tick: ReturnType<typeof setInterval> | undefined;
+
+    setDisplayStreak(props.previousStreak);
+    setPopped(false);
+
+    const startDelay = window.setTimeout(() => {
+      if (cancelled) return;
+      const from = props.previousStreak;
+      const to = props.newStreak;
+      if (to <= from) {
+        setDisplayStreak(to);
+        setPopped(true);
+        return;
+      }
+
+      let current = from;
+      tick = window.setInterval(() => {
+        if (cancelled) return;
+        current += 1;
+        setDisplayStreak(current);
+        if (current >= to) {
+          if (tick) window.clearInterval(tick);
+          setPopped(true);
+        }
+      }, 380);
+    }, 700);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(startDelay);
+      if (tick) window.clearInterval(tick);
+    };
+  }, [props.previousStreak, props.newStreak]);
+
+  return (
+    <div className="train-streak-celebration-backdrop" role="dialog" aria-modal aria-labelledby="train-streak-title">
+      <section className="train-streak-celebration">
+        <div className="train-streak-celebration-confetti" aria-hidden>
+          {Array.from({ length: 12 }).map((_, index) => (
+            <span key={index} className="train-streak-confetti-piece" style={{ ['--i' as string]: index }} />
+          ))}
+        </div>
+        <div className="train-streak-celebration-kicker">Поздравляем!</div>
+        <h2 id="train-streak-title" className="train-streak-celebration-title">Диалог завершён</h2>
+        <p className="train-streak-celebration-scenario">{props.scenarioName}</p>
+        <div className={`train-streak-celebration-streak ${popped ? 'train-streak-celebration-streak--pop' : ''}`}>
+          <span className="train-streak-celebration-label">Стрик</span>
+          <span className="train-streak-celebration-value" key={displayStreak}>{displayStreak}</span>
+          <span className="train-streak-celebration-unit">дн.</span>
+        </div>
+        <p className="train-streak-celebration-hint">Продолжайте в том же духе — завтра стрик может вырасти ещё</p>
+        <button type="button" className="sa-btn-brutal-3d train-streak-celebration-btn" onClick={props.onClose}>
+          Отлично!
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function TrainModalBackdrop(props: { children: React.ReactNode; onClose: () => void }) {
+  return createPortal(
+    <div className="train-modal-backdrop" onClick={props.onClose} role="presentation">
+      {props.children}
+    </div>,
+    document.body,
   );
 }
 
@@ -193,42 +534,54 @@ function NewSessionModal(props: {
   onClose: () => void;
 }) {
   return (
-    <div className="train-report-backdrop" onClick={props.onClose}>
+    <TrainModalBackdrop onClose={props.onClose}>
       <section className="train-new-modal" onClick={(event) => event.stopPropagation()}>
         <header className="train-report-header">
           <div>
-            <div className="train-report-kicker">Новый чат</div>
+            <div className="train-report-kicker">Новая тренировка</div>
             <h2>Свободная тренировка</h2>
           </div>
-          <button className="train-close-button" onClick={props.onClose}>×</button>
+          <button type="button" className="sa-btn-brutal-3d train-close-button" onClick={props.onClose}>×</button>
         </header>
         <div className="train-controls train-controls-modal">
           <label>
             <span>Сценарий</span>
-            <select value={props.scenarioId} onChange={(event) => props.onScenarioChange(event.target.value)}>
-              {props.scenarios.map((scenario) => <option key={scenario.id} value={scenario.id}>{scenario.name}</option>)}
-            </select>
+            <BrutalSelect
+              value={props.scenarioId}
+              options={props.scenarios.map((scenario) => ({ value: scenario.id, label: scenario.name }))}
+              placeholder="Выберите сценарий"
+              disabled={props.busy}
+              onChange={props.onScenarioChange}
+            />
           </label>
           <label>
             <span>Сложность</span>
-            <select value={props.difficulty} onChange={(event) => props.onDifficultyChange(event.target.value as 'easy' | 'medium' | 'hard')}>
-              {Object.entries(difficultyLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            </select>
+            <BrutalSelect
+              value={props.difficulty}
+              options={Object.entries(difficultyLabels).map(([value, label]) => ({ value, label }))}
+              disabled={props.busy}
+              onChange={(value) => props.onDifficultyChange(value as 'easy' | 'medium' | 'hard')}
+            />
           </label>
           <label>
             <span>Тип клиента</span>
-            <select value={props.clientType} onChange={(event) => props.onClientTypeChange(event.target.value)}>
-              <option value="random">Случайный</option>
-              <option value="careful">Внимательный</option>
-              <option value="price_sensitive">Цена важна</option>
-            </select>
+            <BrutalSelect
+              value={props.clientType}
+              options={[
+                { value: 'random', label: 'Случайный' },
+                { value: 'careful', label: 'Внимательный' },
+                { value: 'price_sensitive', label: 'Цена важна' },
+              ]}
+              disabled={props.busy}
+              onChange={props.onClientTypeChange}
+            />
           </label>
         </div>
-        <button className="train-primary-button train-new-start" disabled={props.busy || !props.scenarioId} onClick={props.onStart}>
-          Создать чат
+        <button type="button" className="sa-btn-brutal-3d train-modal-submit" disabled={props.busy || !props.scenarioId} onClick={props.onStart}>
+          Начать тренировку
         </button>
       </section>
-    </div>
+    </TrainModalBackdrop>
   );
 }
 
@@ -239,14 +592,14 @@ function ReportPanel(props: { report: TrainerReport; onClose: () => void }) {
   });
   const checklist = props.report.checklist.slice(0, 6);
   return (
-    <div className="train-report-backdrop" onClick={props.onClose}>
-      <section className="train-report" onClick={(event) => event.stopPropagation()}>
+    <TrainModalBackdrop onClose={props.onClose}>
+      <section className="train-report train-report-modal" onClick={(event) => event.stopPropagation()}>
         <header className="train-report-header">
           <div>
             <div className="train-report-kicker">{props.report.type === 'plan' ? 'План дня' : 'Свободная тренировка'}</div>
             <h2>{props.report.scenarioName}</h2>
           </div>
-          <button className="train-close-button" onClick={props.onClose}>×</button>
+          <button type="button" className="sa-btn-brutal-3d train-close-button" onClick={props.onClose}>×</button>
         </header>
         <div className="train-report-score">
           <strong>{props.report.score ?? 0}</strong>
@@ -277,7 +630,7 @@ function ReportPanel(props: { report: TrainerReport; onClose: () => void }) {
           </div>
         </div>
       </section>
-    </div>
+    </TrainModalBackdrop>
   );
 }
 
@@ -362,8 +715,9 @@ function InlineSessionAnalytics(props: { report: TrainerReport }) {
     .filter((item) => item.title.trim())
   ).slice(0, 5);
   return (
-    <section className="train-inline-report train-audit-report">
-      <div className="sa-card sa-audit-summary">
+    <section className="train-inline-report train-audit-report train-audit-report-brutal sa-page-enter">
+      <div className="train-report-complete-banner">Сессия завершена</div>
+      <div className="sa-card sa-brutal-card sa-audit-summary train-report-summary-card">
         <div className="sa-audit-summary-score-wrap">
           <div className={`sa-audit-summary-score ${ratingClass(score)}`}>{score}</div>
           <div className="sa-audit-summary-score-label">Общий балл</div>
@@ -384,22 +738,22 @@ function InlineSessionAnalytics(props: { report: TrainerReport }) {
       </div>
 
       <div className="sa-kpi-grid sa-kpi-grid-audit">
-        <div className="sa-card sa-kpi-card">
+        <div className="sa-card sa-brutal-card sa-kpi-card train-report-kpi-card">
           <div className="sa-kpi-label">Общий балл</div>
           <div className={`sa-kpi-value ${ratingClass(score)}`}>{score}</div>
         </div>
-        <div className="sa-card sa-kpi-card">
+        <div className="sa-card sa-brutal-card sa-kpi-card train-report-kpi-card">
           <div className="sa-kpi-label">Очки</div>
           <div className="sa-kpi-value">{props.report.finalPoints ?? 0}</div>
         </div>
-        <div className="sa-card sa-kpi-card">
+        <div className="sa-card sa-brutal-card sa-kpi-card train-report-kpi-card">
           <div className="sa-kpi-label">Да / Частично / Нет</div>
           <div className="sa-kpi-value">{checklistStats.pass}/{checklistStats.warn}/{checklistStats.fail}</div>
         </div>
       </div>
 
       {dimensions.length > 0 && (
-        <div className="sa-card">
+        <div className="sa-card sa-brutal-card train-report-block-card">
           <div className="sa-chart-wrap">
             <h3 className="sa-chart-title">Оценка по блокам</h3>
             <div className="sa-hbar-list">
@@ -407,7 +761,7 @@ function InlineSessionAnalytics(props: { report: TrainerReport }) {
                 <div className="sa-hbar-row" key={item.label}>
                   <span className="sa-hbar-label">{item.label}</span>
                   <div className="sa-hbar-track">
-                    <div className="sa-hbar-fill" style={{ width: `${item.score}%`, background: item.score >= 80 ? '#34D399' : item.score >= 50 ? '#FBBF24' : '#F87171' }} />
+                    <div className="sa-hbar-fill" style={{ width: `${item.score}%`, background: item.score >= 80 ? 'var(--tb-status-green)' : item.score >= 50 ? 'var(--tb-status-orange)' : 'var(--tb-status-red)' }} />
                   </div>
                   <span className={`sa-hbar-score ${ratingClass(item.score)}`}>{item.score}</span>
                 </div>
@@ -417,8 +771,8 @@ function InlineSessionAnalytics(props: { report: TrainerReport }) {
         </div>
       )}
 
-      <div className="sa-card">
-        <h3 className="sa-card-heading">Чек-лист</h3>
+      <div className="sa-card sa-brutal-card train-report-block-card">
+        <h3 className="sa-card-heading train-report-section-title">Чек-лист</h3>
         {criteriaChecklist.length === 0 ? (
           <div className="sa-chart-empty">Нет данных чек-листа</div>
         ) : (
@@ -440,9 +794,9 @@ function InlineSessionAnalytics(props: { report: TrainerReport }) {
         )}
       </div>
 
-      <div className="sa-detail-insights">
-        <div className="sa-card" style={{ flex: 1 }}>
-          <h3 className="sa-card-heading">ТОП-ошибки</h3>
+      <div className="sa-detail-insights train-report-insights">
+        <div className="sa-card sa-brutal-card train-report-block-card" style={{ flex: 1 }}>
+          <h3 className="sa-card-heading train-report-section-title">ТОП-ошибки</h3>
           {issueItems.length === 0 ? (
             <div className="sa-chart-empty">Критичных ошибок не найдено</div>
           ) : (
@@ -458,8 +812,8 @@ function InlineSessionAnalytics(props: { report: TrainerReport }) {
             </ul>
           )}
         </div>
-        <div className="sa-card" style={{ flex: 1 }}>
-          <h3 className="sa-card-heading">Рекомендации</h3>
+        <div className="sa-card sa-brutal-card train-report-block-card" style={{ flex: 1 }}>
+          <h3 className="sa-card-heading train-report-section-title">Рекомендации</h3>
           {recommendations.length === 0 ? (
             <div className="sa-chart-empty">Нет рекомендаций</div>
           ) : (
@@ -575,10 +929,91 @@ function wavBlobFromPcm16(pcm: Uint8Array, sampleRate = 16000): Blob {
   return new Blob([header, pcm], { type: 'audio/wav' });
 }
 
+function seededFallbackWaveform(barCount: number, seed: string): number[] {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Array.from({ length: barCount }, (_, index) => {
+    hash = Math.imul(hash ^ (index + 1), 2246822519);
+    const value = ((hash >>> 0) % 1000) / 1000;
+    return 0.2 + value * 0.75;
+  });
+}
+
+const waveformCache = new Map<string, number[]>();
+
+async function analyzeAudioWaveform(audioUrl: string, barCount: number): Promise<number[]> {
+  const cached = waveformCache.get(audioUrl);
+  if (cached) return cached;
+
+  const response = await fetch(audioUrl);
+  const arrayBuffer = await response.arrayBuffer();
+  const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) throw new Error('AudioContext is not supported');
+
+  const ctx = new AudioContextCtor();
+  try {
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    const channel = audioBuffer.getChannelData(0);
+    const blockSize = Math.max(1, Math.floor(channel.length / barCount));
+    const bars: number[] = [];
+
+    for (let index = 0; index < barCount; index += 1) {
+      const start = index * blockSize;
+      const end = Math.min(channel.length, start + blockSize);
+      let peak = 0;
+      for (let sample = start; sample < end; sample += 1) {
+        peak = Math.max(peak, Math.abs(channel[sample]));
+      }
+      bars.push(peak);
+    }
+
+    const max = Math.max(...bars, 0.001);
+    const normalized = bars.map((value) => Math.max(0.16, Math.min(1, 0.16 + (value / max) * 0.84)));
+    waveformCache.set(audioUrl, normalized);
+    return normalized;
+  } finally {
+    await ctx.close().catch(() => {});
+  }
+}
+
+function useVoiceWaveform(audioUrl: string | null, barCount: number, seed: string): number[] {
+  const [levels, setLevels] = useState<number[]>(() => seededFallbackWaveform(barCount, seed));
+
+  useEffect(() => {
+    if (!audioUrl) {
+      setLevels(seededFallbackWaveform(barCount, seed));
+      return undefined;
+    }
+
+    let cancelled = false;
+    analyzeAudioWaveform(audioUrl, barCount)
+      .then((result) => {
+        if (!cancelled) setLevels(result);
+      })
+      .catch(() => {
+        if (!cancelled) setLevels(seededFallbackWaveform(barCount, seed));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [audioUrl, barCount, seed]);
+
+  return levels;
+}
+
 function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
+  const waveform = useVoiceWaveform(
+    props.message.audioUrl,
+    VOICE_BAR_COUNT,
+    `${props.message.id}:${props.message.audioUrl || props.message.textFallback || ''}`,
+  );
   useEffect(() => {
     if (!props.message.autoPlay || !audioRef.current) return;
     audioRef.current.play().catch(() => {});
@@ -586,6 +1021,7 @@ function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
   const durationLabel = props.message.durationSec
     ? `0:${String(Math.min(59, props.message.durationSec)).padStart(2, '0')}`
     : '0:00';
+  const filledBars = Math.round((progress / 100) * VOICE_BAR_COUNT);
   function toggleAudio() {
     const audio = audioRef.current;
     if (!audio) return;
@@ -600,8 +1036,14 @@ function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
             {playing ? 'Ⅱ' : '▶'}
           </button>
           <div className="train-voice-main">
-            <div className="train-voice-wave" style={{ '--voice-progress': `${progress}%` } as React.CSSProperties}>
-              {Array.from({ length: 28 }).map((_, index) => <span key={index} />)}
+            <div className={`train-voice-wave ${playing ? 'train-voice-wave--playing' : ''}`}>
+              {waveform.map((level, index) => (
+                <span
+                  key={index}
+                  className={index < filledBars ? 'train-voice-bar-filled' : ''}
+                  style={{ height: `${5 + level * 19}px` }}
+                />
+              ))}
             </div>
             <div className="train-voice-meta">
               <span>{durationLabel}</span>
@@ -668,6 +1110,7 @@ function SessionPreview(props: {
   const [messages, setMessages] = useState<ChatMessage[]>(buildInitialMessages);
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordLevels, setRecordLevels] = useState<number[]>(() => Array.from({ length: RECORD_LEVEL_BARS }, () => 0.12));
   const [ended, setEnded] = useState(props.session.status === 'completed' || props.session.status === 'failed');
   const [error, setError] = useState<string | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -691,6 +1134,7 @@ function SessionPreview(props: {
     setError(null);
     setSending(false);
     setRecording(false);
+    setRecordLevels(Array.from({ length: RECORD_LEVEL_BARS }, () => 0.12));
   }, [props.session.id]);
 
   useEffect(() => {
@@ -748,6 +1192,7 @@ function SessionPreview(props: {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setRecording(false);
+    setRecordLevels(Array.from({ length: RECORD_LEVEL_BARS }, () => 0.12));
 
     const durationSec = Math.max(1, Math.round((Date.now() - recordStartedAtRef.current) / 1000));
     const inputRate = audioContext?.sampleRate || 48000;
@@ -783,7 +1228,13 @@ function SessionPreview(props: {
       pcmChunksRef.current = [];
       recordStartedAtRef.current = Date.now();
       processor.onaudioprocess = (event) => {
-        pcmChunksRef.current.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+        const channel = event.inputBuffer.getChannelData(0);
+        pcmChunksRef.current.push(new Float32Array(channel));
+        let sum = 0;
+        for (let index = 0; index < channel.length; index += 1) sum += channel[index] * channel[index];
+        const rms = Math.sqrt(sum / Math.max(1, channel.length));
+        const level = Math.min(1, Math.max(0.1, rms * 11));
+        setRecordLevels((prev) => [...prev.slice(1), level]);
       };
       source.connect(processor);
       processor.connect(audioContext.destination);
@@ -800,7 +1251,7 @@ function SessionPreview(props: {
   return (
     <section className={`train-chat-shell ${props.embedded ? 'train-chat-shell-embedded' : ''}`}>
       <header className="train-chat-header">
-        <button className="train-back-button" onClick={props.onClose}>←</button>
+        <button type="button" className="sa-btn-brutal-3d train-back-button" onClick={props.onClose} title="К тренажёру" aria-label="К тренажёру">←</button>
         <div className="train-client-avatar">AI</div>
         <div>
           <strong>{props.clientTitle}</strong>
@@ -808,7 +1259,7 @@ function SessionPreview(props: {
         </div>
       </header>
       <div className="train-chat-body">
-        <div className="train-chat-thread">
+          <div className={`train-chat-thread ${ended ? 'train-chat-thread--ended' : ''}`}>
           {messages.length === 0 ? (
             <div className="train-chat-status">Клиент подключается...</div>
           ) : (
@@ -816,32 +1267,48 @@ function SessionPreview(props: {
           )}
           {sending && <div className="train-chat-status">Клиент отвечает...</div>}
           {error && <div className="train-chat-error">{error}</div>}
-          {ended && <div className="train-chat-status">Сессия завершена. Отчёт появится в истории.</div>}
+          {ended && !props.report && <div className="train-chat-status">Сессия завершена. Отчёт появится в истории.</div>}
           {ended && props.report && <InlineSessionAnalytics report={props.report} />}
           <div ref={messagesEndRef} />
         </div>
       </div>
-      <footer className="train-recorder-bar">
-        <button
-          className={`train-record-button ${recording ? 'train-record-button-active' : ''}`}
-          title="Записать голосовое сообщение"
-          disabled={sending || ended}
-          onClick={toggleRecording}
-        >
-          <span />
-        </button>
-      </footer>
+      {!ended && (
+        <footer className={`train-recorder-bar ${recording ? 'train-recorder-bar--active' : ''}`}>
+          <div className={`train-record-zone ${recording ? 'train-record-zone--live' : ''}`}>
+            {recording && (
+              <div className="train-record-visualizer" aria-hidden>
+                {recordLevels.map((level, index) => (
+                  <span
+                    key={index}
+                    className="train-record-visualizer-bar"
+                    style={{ ['--lvl' as string]: level }}
+                  />
+                ))}
+              </div>
+            )}
+            <button
+              className={`train-record-button ${recording ? 'train-record-button-active' : ''}`}
+              title="Записать голосовое сообщение"
+              disabled={sending}
+              onClick={toggleRecording}
+            >
+              <span className="train-record-button-core" />
+              {recording && <span className="train-record-button-pulse" aria-hidden />}
+            </button>
+            {recording && <div className="train-record-label">Идёт запись…</div>}
+          </div>
+        </footer>
+      )}
     </section>
   );
 }
 
-export function TrainPage() {
+export function TrainPage(props: { embedded?: boolean }) {
+  const embedded = props.embedded ?? false;
   const navigate = useNavigate();
   const location = useLocation();
-  const selectedSessionId = useMemo(() => {
-    const match = location.pathname.match(/^\/train\/([^/]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
-  }, [location.pathname]);
+  const route = parseAdminPath(location.pathname);
+  const selectedSessionId = route.trainerSessionId ?? null;
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<TrainerProfile | null>(null);
@@ -858,12 +1325,15 @@ export function TrainPage() {
   const [activeReport, setActiveReport] = useState<TrainerReport | null>(null);
   const [activeCaseContext, setActiveCaseContext] = useState<Record<string, unknown> | null>(null);
   const [report, setReport] = useState<TrainerReport | null>(null);
-  const [profileOpen, setProfileOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [streakCelebration, setStreakCelebration] = useState<{
+    previousStreak: number;
+    newStreak: number;
+    scenarioName: string;
+  } | null>(null);
 
   const completedPlanCount = useMemo(() => planItems.filter((item) => item.status === 'completed').length, [planItems]);
   const firstScenarioId = selectedScenarioId || scenarios[0]?.id || '';
-  const activePlanItems = useMemo(() => planItems.filter((item) => item.status === 'not_started' || item.status === 'in_progress'), [planItems]);
 
   const load = useCallback(async (options?: { silent?: boolean }) => {
     if (!options?.silent) {
@@ -900,6 +1370,7 @@ export function TrainPage() {
       setActiveTranscript([]);
       setActiveReport(null);
       setActiveCaseContext(null);
+      setError(null);
       return;
     }
     let cancelled = false;
@@ -948,7 +1419,7 @@ export function TrainPage() {
       setActiveReport(null);
       setActiveCaseContext(data.caseContext);
       setNewSessionOpen(false);
-      navigate(`/train/${encodeURIComponent(data.session.id)}`);
+      navigate(buildTrainerSessionPath(data.session.id));
       await load({ silent: true });
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : 'Не удалось начать тренировку.');
@@ -974,7 +1445,7 @@ export function TrainPage() {
       setActiveReport(null);
       setActiveCaseContext(data.caseContext);
       setNewSessionOpen(false);
-      navigate(`/train/${encodeURIComponent(data.session.id)}`);
+      navigate(buildTrainerSessionPath(data.session.id));
       await load({ silent: true });
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : 'Не удалось начать тренировку.');
@@ -995,111 +1466,95 @@ export function TrainPage() {
     }
   }
 
+  const rootClassName = `train-app theme-brutal${embedded ? ' train-app-embedded' : ''}`;
+
   return (
-    <main className="train-app">
+    <div className={rootClassName}>
       {loadState === 'loading' ? (
         <div className="train-loading">Загрузка...</div>
       ) : loadState === 'error' ? (
         <div className="train-error">
           <strong>{error}</strong>
-          <button onClick={load}>Повторить</button>
+          <button type="button" className="sa-btn-brutal-3d" onClick={load}>Повторить</button>
+        </div>
+      ) : selectedSessionId ? (
+        <div className="train-session-wrap">
+          {busy && !activeSession ? (
+            <div className="train-session-loading">Загрузка тренировки…</div>
+          ) : activeSession ? (
+            <SessionPreview
+              session={activeSession}
+              initialMessage={activeInitialMessage}
+              transcript={activeTranscript}
+              report={activeReport}
+              clientTitle={clientProfileTitle(activeCaseContext)}
+              embedded
+              onClose={async () => {
+                if (activeSession?.status === 'in_progress') {
+                  try {
+                    await abandonTrainerSession(activeSession.id);
+                    await load({ silent: true });
+                  } catch {
+                    // ignore — user is leaving anyway
+                  }
+                }
+                navigate(buildTrainerSessionPath());
+              }}
+              onSessionUpdate={async (session) => {
+                setActiveSession(session);
+                if (session.status === 'completed' || session.status === 'failed') {
+                  const previousStreak = profile?.currentStreak ?? 0;
+
+                  await load({ silent: true });
+                  if (session.status === 'failed') {
+                    setActiveReport(await fetchTrainerReport(session.id));
+                    return;
+                  }
+
+                  setActiveReport(await fetchTrainerReport(session.id));
+                  const freshProfile = await fetchTrainerProfile();
+                  setProfile(freshProfile);
+                  setStreakCelebration({
+                    previousStreak,
+                    newStreak: freshProfile.currentStreak,
+                    scenarioName: session.scenarioName || 'Тренировка',
+                  });
+                }
+              }}
+            />
+          ) : error ? (
+            <div className="train-session-loading">
+              <p>{error}</p>
+              <button type="button" className="sa-btn-brutal-3d" onClick={() => navigate(buildTrainerSessionPath())}>
+                К тренажёру
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : (
-        <div className={`train-telegram ${activeSession ? 'train-telegram-chat-open' : ''}`}>
-          <aside className="train-chat-sidebar">
-            <header className="train-chat-sidebar-head">
-              <button className="train-profile-back-button" onClick={() => navigate('/staff/profile')} title="Назад к профилю" aria-label="Назад к профилю">
-                ←
-              </button>
-              <button className="train-profile-button" onClick={() => setProfileOpen(true)}>
-                <span className="train-profile-avatar">{profile?.fullName.slice(0, 1).toUpperCase() || 'M'}</span>
-                <span>
-                  <strong>{profile?.fullName}</strong>
-                  <small>{profile?.branchName}{profile?.city ? ` · ${profile.city}` : ''}</small>
-                </span>
-              </button>
-              <button className="train-plus-button" onClick={() => setNewSessionOpen(true)} title="Новый чат">+</button>
-            </header>
-
-            <div className="train-search-fake">Поиск</div>
-            {error && <div className="train-inline-error">{error}</div>}
-
-            <div className="train-chat-list">
-              {activePlanItems.length > 0 && (
-                <div className="train-chat-list-group">
-                  <div className="train-chat-list-label">План дня · {completedPlanCount}/{planItems.length || 3}</div>
-                  {activePlanItems.map((item) => (
-                    <ChatListButton
-                      key={item.id}
-                      title={item.scenarioName || 'Плановая тренировка'}
-                      subtitle={item.status === 'in_progress' ? 'В процессе' : 'Нажмите, чтобы начать'}
-                      badge={item.status === 'in_progress' ? '…' : '▶'}
-                      active={Boolean(item.trainerSessionId && selectedSessionId === item.trainerSessionId)}
-                      disabled={busy}
-                      onClick={() => item.status === 'in_progress' && item.trainerSessionId
-                        ? navigate(`/train/${encodeURIComponent(item.trainerSessionId)}`)
-                        : startPlan(item)}
-                    />
-                  ))}
-                </div>
-              )}
-
-              <div className="train-chat-list-group">
-                <div className="train-chat-list-label">История сессий</div>
-                {history.length === 0 ? (
-                  <div className="train-empty train-empty-chat">История появится после первой тренировки.</div>
-                ) : (
-                  history.slice(0, 30).map((item) => (
-                    <ChatListButton
-                      key={item.id}
-                      title={item.scenarioName}
-                      subtitle={`${formatDateTime(item.completedAt || item.startedAt)} · ${item.type === 'plan' ? 'План' : 'Свободная'}`}
-                      badge={item.score ?? '—'}
-                      active={selectedSessionId === item.id}
-                      onClick={() => navigate(`/train/${encodeURIComponent(item.id)}`)}
-                    />
-                  ))
-                )}
-              </div>
-            </div>
-          </aside>
-
-          <section className="train-chat-pane">
-            {activeSession ? (
-              <SessionPreview
-                session={activeSession}
-                initialMessage={activeInitialMessage}
-                transcript={activeTranscript}
-                report={activeReport}
-                clientTitle={clientProfileTitle(activeCaseContext)}
-                embedded
-                onClose={() => {
-                  navigate('/train');
-                }}
-                onSessionUpdate={async (session) => {
-                  setActiveSession(session);
-                  if (session.status === 'completed' || session.status === 'failed') {
-                    await load({ silent: true });
-                    setActiveReport(await fetchTrainerReport(session.id));
-                  }
-                }}
-              />
-            ) : (
-              <div className="train-chat-empty-pane">
-                <div className="train-empty-hero">
-                  <div className="train-empty-hero-avatar">AI</div>
-                  <h1>AI Тренажёр</h1>
-                  <p>Выберите чат слева или создайте новую тренировку через плюс.</p>
-                  <button className="train-primary-button" disabled={busy || !firstScenarioId} onClick={() => setNewSessionOpen(true)}>Новый чат</button>
-                </div>
-              </div>
-            )}
-          </section>
-        </div>
+        <TrainerHub
+          profile={profile}
+          planItems={planItems}
+          history={history}
+          completedPlanCount={completedPlanCount}
+          busy={busy}
+          error={error}
+          canStartFree={Boolean(firstScenarioId)}
+          onNewSession={() => setNewSessionOpen(true)}
+          onStartPlan={startPlan}
+          onOpenSession={(sessionId) => navigate(buildTrainerSessionPath(sessionId))}
+        />
       )}
 
+      {streakCelebration && (
+        <TrainerStreakCelebration
+          previousStreak={streakCelebration.previousStreak}
+          newStreak={streakCelebration.newStreak}
+          scenarioName={streakCelebration.scenarioName}
+          onClose={() => setStreakCelebration(null)}
+        />
+      )}
       {report && <ReportPanel report={report} onClose={() => setReport(null)} />}
-      {profileOpen && <ProfileModal profile={profile} onClose={() => setProfileOpen(false)} />}
       {newSessionOpen && (
         <NewSessionModal
           scenarios={scenarios}
@@ -1114,6 +1569,6 @@ export function TrainPage() {
           onClose={() => setNewSessionOpen(false)}
         />
       )}
-    </main>
+    </div>
   );
 }

@@ -14,10 +14,13 @@ import {
   type HoldingItem,
   type HoldingType,
 } from '../../../shared/api/adminPanel';
-import { ratingClass } from '../../../shared/lib/admin-panel/utils';
-import { AISummaryBlock } from '../../../shared/ui/ai-summary-block/AISummaryBlock';
+import { ratingClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
+import { STATUS_LABELS } from '../../../shared/lib/admin-panel/mockData';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
+import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type HoldingFormState = {
   name: string;
@@ -41,6 +44,118 @@ const EMPTY_HOLDING_FORM: HoldingFormState = {
   isActive: true,
   dealershipIds: [],
 };
+
+const HOLDING_TYPE_FILTER_OPTIONS = [
+  { value: 'all' as const, label: 'Тип: все' },
+  { value: 'own' as const, label: 'Собственный' },
+  { value: 'franchised' as const, label: 'Франчайзинговый' },
+];
+
+const HOLDING_STATUS_FILTER_OPTIONS = [
+  { value: 'all' as const, label: 'Статус: все' },
+  { value: 'active' as const, label: 'Активный' },
+  { value: 'inactive' as const, label: 'Деактивированный' },
+];
+
+type HoldingSortKey =
+  | 'name'
+  | 'type'
+  | 'dealershipsCount'
+  | 'avgScore'
+  | 'calls'
+  | 'noAnswers'
+  | 'lowDealerships'
+  | 'status';
+
+type SortDir = 'asc' | 'desc';
+
+function HoldingTrendChart({ points }: { points: { date: string; avgScore: number; count: number }[] }) {
+  if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
+  const W = 760, H = 220;
+  const pad = { top: 18, right: 18, bottom: 34, left: 42 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+  const step = points.length <= 1 ? 0 : cw / (points.length - 1);
+  const xs = points.map((_, index) => pad.left + index * step);
+  const y = (score: number) => pad.top + ch - (Math.max(0, Math.min(score, 100)) / 100) * ch;
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(point.avgScore)}`).join(' ');
+  return (
+    <div className="sa-chart-wrap">
+      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+        {[0, 25, 50, 75, 100].map((value) => {
+          const gy = y(value);
+          return (
+            <g key={value}>
+              <line x1={pad.left} y1={gy} x2={pad.left + cw} y2={gy} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
+              <text x={pad.left - 8} y={gy + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{value}</text>
+            </g>
+          );
+        })}
+        <path d={path} fill="none" stroke="var(--tb-accent, #111827)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((point, index) => (
+          <g key={point.date}>
+            <circle cx={xs[index]} cy={y(point.avgScore)} r="4" fill="var(--tb-accent, #111827)" />
+            <text x={xs[index]} y={H - 10} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">{point.date.slice(5)}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+const HOLDING_COLUMN_DEFS: { key: HoldingSortKey; label: string; align?: 'right' }[] = [
+  { key: 'name', label: 'Компания' },
+  { key: 'type', label: 'Тип' },
+  { key: 'dealershipsCount', label: 'Точки', align: 'right' },
+  { key: 'avgScore', label: 'Балл', align: 'right' },
+  { key: 'calls', label: 'Звонки', align: 'right' },
+  { key: 'noAnswers', label: 'Недозвоны', align: 'right' },
+  { key: 'lowDealerships', label: 'Ниже 50', align: 'right' },
+  { key: 'status', label: 'Статус' },
+];
+
+function getHoldingSortValue(
+  item: HoldingItem,
+  key: HoldingSortKey,
+  analytics: AnalyticsHoldingRow | undefined,
+): string | number {
+  switch (key) {
+    case 'name':
+      return item.name;
+    case 'type':
+      return item.type;
+    case 'dealershipsCount':
+      return item.dealershipsCount;
+    case 'avgScore':
+      return analytics?.avgScore ?? -1;
+    case 'calls':
+      return analytics?.calls ?? -1;
+    case 'noAnswers':
+      return analytics?.noAnswers ?? -1;
+    case 'lowDealerships':
+      return analytics?.lowDealerships ?? -1;
+    case 'status':
+      return item.isActive ? 1 : 0;
+  }
+}
+
+function holdingComparator(
+  key: HoldingSortKey,
+  dir: SortDir,
+  analyticsByHoldingId: Map<string, AnalyticsHoldingRow>,
+) {
+  return (a: HoldingItem, b: HoldingItem): number => {
+    const av = getHoldingSortValue(a, key, analyticsByHoldingId.get(a.id));
+    const bv = getHoldingSortValue(b, key, analyticsByHoldingId.get(b.id));
+    let cmp = 0;
+    if (typeof av === 'string' && typeof bv === 'string') {
+      cmp = av.localeCompare(bv, 'ru');
+    } else {
+      cmp = (av as number) - (bv as number);
+    }
+    return dir === 'asc' ? cmp : -cmp;
+  };
+}
 
 function buildHoldingForm(item: HoldingItem): HoldingFormState {
   return {
@@ -84,6 +199,7 @@ function ModalFrame(props: {
 }) {
   if (!props.open) return null;
   return (
+    <FixedOverlayPortal>
     <div
       style={{
         position: 'fixed',
@@ -113,14 +229,28 @@ function ModalFrame(props: {
         {props.children}
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
-function KpiCard({ label, value, suffix, cls }: { label: string; value: React.ReactNode; suffix?: string; cls?: string }) {
+function HoldingMetricCard({
+  label,
+  value,
+  valueClass,
+}: {
+  label: string;
+  value: React.ReactNode;
+  valueClass?: string;
+}) {
   return (
-    <div className="sa-card sa-kpi-card">
-      <div className="sa-kpi-label">{label}</div>
-      <div className={`sa-kpi-value sa-kpi-value-large ${cls ?? ''}`}>{value}{suffix ?? ''}</div>
+    <div className="sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card">
+      <div className="sa-kpi-card-top">
+        <div className="sa-kpi-card-heading">{label}</div>
+      </div>
+      <div className="sa-kpi-card-spacer" aria-hidden />
+      <div className="sa-kpi-card-bottom">
+        <div className={`sa-kpi-value sa-kpi-value-large ${valueClass ?? ''}`}>{value}</div>
+      </div>
     </div>
   );
 }
@@ -141,6 +271,7 @@ function HoldingComparisonModal({
   const worstNoAnswers = Math.max(...rows.map((row) => row.noAnswers));
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -152,10 +283,10 @@ function HoldingComparisonModal({
         </div>
 
         <div className="sa-kpi-grid" style={{ marginBottom: 18 }}>
-          <KpiCard label="Лидер" value={leader.name} cls={ratingClass(leader.score)} />
-          <KpiCard label="Нужна фокусировка" value={lagger.name} cls={ratingClass(lagger.score)} />
-          <KpiCard label="Макс. звонков" value={bestCalls} />
-          <KpiCard label="Макс. недозвонов" value={worstNoAnswers} />
+          <HoldingMetricCard label="Лидер" value={leader.name} valueClass={ratingClass(leader.score)} />
+          <HoldingMetricCard label="Нужна фокусировка" value={lagger.name} valueClass={ratingClass(lagger.score)} />
+          <HoldingMetricCard label="Макс. звонков" value={bestCalls} />
+          <HoldingMetricCard label="Макс. недозвонов" value={worstNoAnswers} />
         </div>
 
         <div className="sa-companies-table-wrap">
@@ -171,7 +302,9 @@ function HoldingComparisonModal({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {rows.map((row) => {
+                const delta = deltaDisplay(row.delta);
+                return (
                 <tr
                   key={row.id}
                   className={onOpenDealership ? 'sa-row-clickable' : undefined}
@@ -182,12 +315,13 @@ function HoldingComparisonModal({
                     <div className="sa-cell-city">{row.type === 'own' ? 'Собственный' : 'Франчайзинговый'}</div>
                   </td>
                   <td>{row.city}</td>
-                  <td className={`sa-text-right ${ratingClass(row.score)}`}>{row.score}</td>
-                  <td className={`sa-text-right ${row.delta >= 0 ? 'sa-score-green' : 'sa-score-red'}`}>{row.delta > 0 ? '+' : ''}{row.delta}</td>
+                  <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                  <td className="sa-text-right"><span className={delta.cls}>{delta.text}</span></td>
                   <td className="sa-text-right">{row.calls}</td>
                   <td className="sa-text-right">{row.noAnswers}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -196,6 +330,7 @@ function HoldingComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -232,6 +367,7 @@ function HoldingListComparisonModal({
   const lagger = [...rows].sort((a, b) => a.avgScore - b.avgScore)[0];
 
   return (
+    <FixedOverlayPortal>
     <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
       <div className="sa-card" style={{ width: 'min(1040px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
         <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
@@ -296,6 +432,7 @@ function HoldingListComparisonModal({
         </div>
       </div>
     </div>
+    </FixedOverlayPortal>
   );
 }
 
@@ -366,68 +503,78 @@ function HoldingAnalyticsDetail({
   }
 
   return (
-    <div className="sa-detail-root">
+    <div className="sa-detail-root sa-holding-detail">
+      <div className="sa-breadcrumb">
+        <button type="button" className="sa-btn-text" onClick={onBack}>Компании</button>
+        <span className="sa-breadcrumb-sep">→</span>
+        <span>{detail.name}</span>
+      </div>
+
       <div className="sa-detail-header">
-        <div>
-          <button type="button" className="sa-btn-outline" onClick={onBack}>← Назад к компаниям</button>
-          <h1 className="sa-page-title" style={{ marginTop: 16 }}>{detail.name}</h1>
-          <p className="sa-page-subtitle">
-            Аналитика дилера по привязанным салонам и звонкам. Непривязанные звонки в расчёт не входят.
-          </p>
+        <div className="sa-detail-header-intro">
+          <h1 className="sa-page-title">{detail.name}</h1>
         </div>
         <div className="sa-detail-header-right">
           <span className="sa-chip">{detail.type === 'own' ? 'Собственный дилер' : 'Франчайзинговый дилер'}</span>
-          <span className="sa-chip">Оценённых: {detail.meta?.scoredCalls ?? 0}</span>
         </div>
       </div>
 
-      <div style={{ marginBottom: 24 }}>
-        <AISummaryBlock title="AI-сводка по дилеру" summary={detail.aiSummary} loading={loading} />
+      <div className="sa-kpi-grid sa-holding-detail-kpis">
+        <HoldingMetricCard label="Средний балл" value={detail.avgScore} valueClass={ratingClass(detail.avgScore)} />
+        <HoldingMetricCard label="Салоны" value={detail.dealershipsCount} />
+        <HoldingMetricCard label="Звонки" value={detail.calls} />
+        <HoldingMetricCard label="Недозвоны" value={detail.noAnswers} />
+        <HoldingMetricCard label="Салонов ниже 50" value={detail.lowDealerships} valueClass={detail.lowDealerships > 0 ? 'sa-score-red' : 'sa-score-green'} />
       </div>
 
-      <div className="sa-kpi-grid" style={{ marginBottom: 28 }}>
-        <KpiCard label="Средний балл" value={detail.avgScore} cls={ratingClass(detail.avgScore)} />
-        <KpiCard label="Салоны" value={detail.dealershipsCount} />
-        <KpiCard label="Звонки" value={detail.calls} />
-        <KpiCard label="Недозвоны" value={detail.noAnswers} />
-        <KpiCard label="Салонов ниже 50" value={detail.lowDealerships} cls={detail.lowDealerships > 0 ? 'sa-score-red' : 'sa-score-green'} />
+      <div className="sa-card" style={{ padding: 18, marginBottom: 20 }}>
+        <h2 className="sa-section-title">Динамика среднего балла</h2>
+        <HoldingTrendChart points={detail.timeSeries ?? []} />
       </div>
 
-      <div className="sa-detail-insights" style={{ marginBottom: 28 }}>
-        <div className="sa-card" style={{ flex: 1 }}>
-          <h3 style={{ marginTop: 0 }}>Проблемные блоки</h3>
+      <div className="sa-detail-insights sa-holding-detail-insights">
+        <div className="sa-card">
+          <h2 className="sa-section-title">Проблемные блоки</h2>
           {detail.topIssues.length === 0 ? (
             <div className="sa-meta">Нет выраженных проблем.</div>
-          ) : detail.topIssues.slice(0, 5).map((issue) => (
-            <div key={issue.issue} className="sa-hbar-row">
-              <span className="sa-hbar-label">{issue.issue}</span>
-              <div className="sa-hbar-track">
-                <div className="sa-hbar-fill" style={{ width: `${issue.percent}%`, background: issue.percent >= 30 ? '#F87171' : '#FBBF24' }} />
-              </div>
-              <span className="sa-hbar-score">{issue.percent}%</span>
+          ) : (
+            <div className="sa-hbar-list">
+              {detail.topIssues.slice(0, 5).map((issue) => (
+                <div key={issue.issue} className="sa-hbar-row">
+                  <span className="sa-hbar-label" title={issue.issue}>{issue.issue}</span>
+                  <div className="sa-hbar-track">
+                    <div className="sa-hbar-fill" style={{ width: `${issue.percent}%`, background: issue.percent >= 30 ? 'var(--tb-status-red, #B91C1C)' : 'var(--tb-status-orange, #92400E)' }} />
+                  </div>
+                  <span className="sa-hbar-score">{issue.percent}%</span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
-        <div className="sa-card" style={{ flex: 1 }}>
-          <h3 style={{ marginTop: 0 }}>Соблюдение скрипта</h3>
+        <div className="sa-card">
+          <h2 className="sa-section-title">Распределение по категориям</h2>
           {detail.scriptCompliance.length === 0 ? (
-            <div className="sa-meta">Нет рассчитанных блоков скрипта.</div>
-          ) : detail.scriptCompliance.slice(0, 5).map((block) => (
-            <div key={block.block} className="sa-hbar-row">
-              <span className="sa-hbar-label">{block.block}</span>
-              <div className="sa-hbar-track">
-                <div className="sa-hbar-fill" style={{ width: `${block.rate}%`, background: block.rate >= 80 ? '#34D399' : block.rate >= 60 ? '#FBBF24' : '#F87171' }} />
-              </div>
-              <span className={`sa-hbar-score ${ratingClass(block.rate)}`}>{block.rate}%</span>
+            <div className="sa-meta">Нет рассчитанных категорий.</div>
+          ) : (
+            <div className="sa-hbar-list">
+              {detail.scriptCompliance.slice(0, 5).map((block) => (
+                <div key={block.block} className="sa-hbar-row">
+                  <span className="sa-hbar-label" title={block.block}>{block.block}</span>
+                  <div className="sa-hbar-track">
+                    <div className="sa-hbar-fill" style={{ width: `${block.rate}%`, background: block.rate >= 80 ? 'var(--tb-status-green, #166534)' : block.rate >= 60 ? 'var(--tb-status-orange, #92400E)' : 'var(--tb-status-red, #B91C1C)' }} />
+                  </div>
+                  <span className={`sa-hbar-score ${ratingClass(block.rate)}`}>{block.rate}%</span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       </div>
 
-      <div className="sa-card" style={{ marginBottom: selectedRows.length >= 2 ? 92 : 0 }}>
-        <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
+      <div className={`sa-card sa-holding-detail-table-card${selectedRows.length >= 2 ? ' sa-holding-detail-table-card--compare' : ''}`}>
+        <div className="sa-section-header-row">
           <div>
-            <h3 style={{ margin: 0 }}>Салоны дилера</h3>
+            <h2 className="sa-section-title">Салоны дилера</h2>
             <div className="sa-meta">Выберите от 2 до 6 салонов для сравнения.</div>
           </div>
           <button
@@ -439,7 +586,7 @@ function HoldingAnalyticsDetail({
             Сравнить
           </button>
         </div>
-        <div className="sa-companies-table-wrap">
+        <div className="sa-companies-table-wrap sa-holding-detail-table">
           <table className="sa-table">
             <thead>
               <tr>
@@ -447,7 +594,7 @@ function HoldingAnalyticsDetail({
                 <th>Салон</th>
                 <th>Город</th>
                 <th className="sa-text-right">Балл</th>
-                <th className="sa-text-right">Динамика</th>
+                <th>Статус</th>
                 <th className="sa-text-right">Звонки</th>
                 <th className="sa-text-right">Недозвоны</th>
                 <th className="sa-text-right">Менеджеры</th>
@@ -479,8 +626,8 @@ function HoldingAnalyticsDetail({
                     <div className="sa-cell-city">{row.type === 'own' ? 'Собственный' : 'Франчайзинговый'}</div>
                   </td>
                   <td>{row.city}</td>
-                  <td className={`sa-text-right ${ratingClass(row.score)}`}>{row.score}</td>
-                  <td className={`sa-text-right ${row.delta >= 0 ? 'sa-score-green' : 'sa-score-red'}`}>{row.delta > 0 ? '+' : ''}{row.delta}</td>
+                  <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                  <td><span className={statusBadgeClass(row.status)}>{STATUS_LABELS[row.status]}</span></td>
                   <td className="sa-text-right">{row.calls}</td>
                   <td className="sa-text-right">{row.noAnswers}</td>
                   <td className="sa-text-right">{row.employeesCount}</td>
@@ -492,8 +639,8 @@ function HoldingAnalyticsDetail({
       </div>
 
       {selectedRows.length >= 2 && (
-        <div style={{ position: 'fixed', left: 280, right: 24, bottom: 24, zIndex: 40, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div className="sa-card" style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', boxShadow: '0 18px 45px rgba(15,23,42,.22)', pointerEvents: 'auto' }}>
+        <div className="sa-holding-detail-compare-bar">
+          <div className="sa-card sa-holding-detail-compare-bar-inner">
             <strong>{selectedRows.length} салона выбрано</strong>
             <button type="button" className="sa-btn-outline" onClick={() => setSelectedIds([])}>Сбросить</button>
             <button type="button" className="sa-btn-primary" onClick={() => setComparisonOpen(true)}>Сравнить</button>
@@ -523,7 +670,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
 
   const [createHoldingOpen, setCreateHoldingOpen] = useState(false);
   const [editHoldingOpen, setEditHoldingOpen] = useState(false);
-  const [deleteHoldingOpen, setDeleteHoldingOpen] = useState(false);
+  const [editDeleteConfirm, setEditDeleteConfirm] = useState(false);
   const [holdingDealershipsOpen, setHoldingDealershipsOpen] = useState(false);
   const [attachDealershipOpen, setAttachDealershipOpen] = useState(false);
   const [selectedHoldingIds, setSelectedHoldingIds] = useState<string[]>([]);
@@ -534,6 +681,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
   const [savingHolding, setSavingHolding] = useState(false);
   const [activeHolding, setActiveHolding] = useState<HoldingItem | null>(null);
   const [attachDealershipSearch, setAttachDealershipSearch] = useState('');
+  const [sortKey, setSortKey] = useState<HoldingSortKey>('name');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
 
   async function loadData() {
     setLoading(true);
@@ -588,6 +737,14 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     () => new Map(analyticsRows.map((item) => [item.id, item])),
     [analyticsRows],
   );
+  const hasActiveFilters =
+    searchInput.trim() !== '' ||
+    holdingTypeFilter !== 'all' ||
+    holdingStatusFilter !== 'all';
+  const sortedHoldings = useMemo(
+    () => [...holdings].sort(holdingComparator(sortKey, sortDir, analyticsByHoldingId)),
+    [analyticsByHoldingId, holdings, sortDir, sortKey],
+  );
   const selectedHoldingRows = useMemo<HoldingListComparisonRow[]>(
     () => holdings
       .filter((item) => selectedHoldingIds.includes(item.id))
@@ -607,6 +764,15 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
       }),
     [analyticsByHoldingId, holdings, selectedHoldingIds],
   );
+
+  function handleSort(key: HoldingSortKey) {
+    if (sortKey === key) {
+      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(key);
+    setSortDir(key === 'name' || key === 'type' || key === 'status' ? 'asc' : 'desc');
+  }
 
   function toggleHoldingCompare(id: string) {
     setSelectedHoldingIds((current) => {
@@ -628,6 +794,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     setActiveHolding(item);
     setHoldingForm(nextForm);
     setInitialHoldingForm(nextForm);
+    setEditDeleteConfirm(false);
     setEditHoldingOpen(true);
   }
 
@@ -719,7 +886,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     setSavingHolding(true);
     try {
       await deleteHolding(activeHolding.id);
-      setDeleteHoldingOpen(false);
+      setEditDeleteConfirm(false);
+      setEditHoldingOpen(false);
       setActiveHolding(null);
       showToast({ type: 'success', title: 'Компания удалена', description: 'Точки отвязаны.' });
       await loadData();
@@ -815,11 +983,34 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
             </span>
           </button>
         )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-          <button type="button" className="sa-btn-outline" onClick={() => { setCreateHoldingOpen(false); setEditHoldingOpen(false); }}>Отмена</button>
-          <button type="submit" className="sa-btn-primary" disabled={isSubmitDisabled}>
-            {savingHolding ? 'Сохраняем...' : submitLabel}
-          </button>
+        <div className={`sa-holdings-form-footer${isCreate ? ' sa-holdings-form-footer--create' : ''}`}>
+          {!isCreate && (
+            <div className="sa-holdings-form-footer-left">
+              {editDeleteConfirm ? (
+                <>
+                  <span className="sa-holdings-form-delete-hint">
+                    Удалить <strong>{activeHolding?.name}</strong>?
+                  </span>
+                  <button type="button" className="sa-btn-danger" onClick={() => void handleDeleteHoldingConfirm()} disabled={savingHolding}>
+                    {savingHolding ? 'Удаляем...' : 'Удалить'}
+                  </button>
+                  <button type="button" className="sa-btn-outline" onClick={() => setEditDeleteConfirm(false)} disabled={savingHolding}>
+                    Нет
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="sa-btn-danger" onClick={() => setEditDeleteConfirm(true)}>
+                  Удалить компанию
+                </button>
+              )}
+            </div>
+          )}
+          <div className="sa-holdings-form-footer-right">
+            <button type="button" className="sa-btn-outline" onClick={() => { setCreateHoldingOpen(false); setEditHoldingOpen(false); setEditDeleteConfirm(false); }}>Отмена</button>
+            <button type="submit" className="sa-btn-primary" disabled={isSubmitDisabled}>
+              {savingHolding ? 'Сохраняем...' : submitLabel}
+            </button>
+          </div>
         </div>
       </form>
     );
@@ -835,12 +1026,14 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     );
   }
 
+  const SortIcon = ({ col }: { col: HoldingSortKey }) => {
+    if (sortKey !== col) return <span className="sa-sort-icon sa-sort-icon-inactive">⇅</span>;
+    return <span className="sa-sort-icon">{sortDir === 'asc' ? '↑' : '↓'}</span>;
+  };
+
   return (
     <div>
       <h1 className="sa-page-title">Компании</h1>
-      <p className="sa-page-subtitle">
-        Отдельный административный контур для управления оргструктурой и связями точек.
-      </p>
       {analyticsLoading && !loading && (
         <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>
           Загружаем аналитику компаний...
@@ -852,8 +1045,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         </div>
       )}
 
-      <div className="sa-toolbar">
-        <div className="sa-toolbar-row">
+      <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
+        <div className="sa-toolbar-filters">
           <div className="sa-search-wrap">
             <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
@@ -865,61 +1058,81 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
               placeholder="Поиск по компании или точке…"
             />
           </div>
-          <select className="sa-select" value={holdingTypeFilter} onChange={(event) => setHoldingTypeFilter(event.target.value as 'all' | HoldingType)}>
-            <option value="all">Тип компании: все</option>
-            <option value="own">Собственный</option>
-            <option value="franchised">Франчайзинговый</option>
-          </select>
-          <select className="sa-select" value={holdingStatusFilter} onChange={(event) => setHoldingStatusFilter(event.target.value as 'all' | 'active' | 'inactive')}>
-            <option value="all">Статус: все</option>
-            <option value="active">Активный</option>
-            <option value="inactive">Деактивированный</option>
-          </select>
-          <button type="button" className="sa-btn-primary" onClick={openCreateHolding}>Новая компания</button>
-          <button
-            type="button"
-            className="sa-btn-outline"
-            onClick={() => {
-              setSearchInput('');
-              setDebouncedSearch('');
-              setHoldingTypeFilter('all');
-              setHoldingStatusFilter('all');
-            }}
-          >
-            Сбросить
-          </button>
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={HOLDING_TYPE_FILTER_OPTIONS}
+              value={holdingTypeFilter}
+              onChange={setHoldingTypeFilter}
+            />
+          </div>
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={HOLDING_STATUS_FILTER_OPTIONS}
+              value={holdingStatusFilter}
+              onChange={setHoldingStatusFilter}
+            />
+          </div>
+          {hasActiveFilters && (
+            <button
+              type="button"
+              className="sa-btn-border-only"
+              onClick={() => {
+                setSearchInput('');
+                setDebouncedSearch('');
+                setHoldingTypeFilter('all');
+                setHoldingStatusFilter('all');
+              }}
+            >
+              Сбросить
+            </button>
+          )}
         </div>
-        <div className="sa-toolbar-chips">
-          <span className="sa-chip">Компаний: {holdings.length}</span>
-          <span className="sa-chip">Точек: {dealerships.length}</span>
-          <span className="sa-chip">Без компании: {unassignedDealerships.length}</span>
+        <div className="sa-toolbar-actions">
+          <button type="button" className="sa-btn-brutal-3d" onClick={openCreateHolding}>
+            <LetsIcon name="add-light" size={16} bold />
+            Новая компания
+          </button>
         </div>
       </div>
 
-      <div className="sa-companies-table-wrap sa-desktop-only">
-        <table className="sa-table sa-table-sortable">
+      <div className="sa-companies-table-wrap sa-holdings-table-wrap sa-desktop-only">
+        <table className="sa-table sa-table-sortable sa-holdings-table">
+          <colgroup>
+            <col className="sa-col-check" />
+            <col className="sa-col-name" />
+            <col className="sa-col-type" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-status" />
+            <col className="sa-col-actions" />
+          </colgroup>
           <thead>
             <tr>
-              <th style={{ width: 44 }} />
-              <th>Компания</th>
-              <th>Тип</th>
-              <th className="sa-text-right">Точки</th>
-              <th className="sa-text-right">Балл</th>
-              <th className="sa-text-right">Звонки</th>
-              <th className="sa-text-right">Недозвоны</th>
-              <th className="sa-text-right">Ниже 50</th>
-              <th>Статус</th>
-              <th style={{ width: 148 }}>Действия</th>
-              <th style={{ width: 32 }} />
+              <th />
+              {HOLDING_COLUMN_DEFS.map((col) => (
+                <th
+                  key={col.key}
+                  className={`sa-th-sortable ${col.align === 'right' ? 'sa-text-right' : ''}`}
+                  onClick={() => handleSort(col.key)}
+                >
+                  {col.label}
+                  {' '}
+                  <SortIcon col={col.key} />
+                </th>
+              ))}
+              <th className="sa-text-right sa-holdings-actions-col">Действия</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>Загрузка структуры...</td></tr>
-            ) : holdings.length === 0 ? (
-              <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>По текущим фильтрам компании не найдены.</td></tr>
+              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Загрузка структуры...</td></tr>
+            ) : sortedHoldings.length === 0 ? (
+              <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>По текущим фильтрам компании не найдены.</td></tr>
             ) : (
-              holdings.map((item) => {
+              sortedHoldings.map((item) => {
                 const analytics = analyticsByHoldingId.get(item.id);
                 return (
                   <tr
@@ -954,28 +1167,15 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                         {item.isActive ? 'Активен' : 'Выключен'}
                       </span>
                     </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 8 }} onClick={(event) => event.stopPropagation()}>
-                        <button type="button" className="sa-btn-outline sa-btn-icon" onClick={() => openEditHolding(item)} aria-label="Редактировать компанию" title="Редактировать">
+                    <td className="sa-holdings-actions-cell">
+                      <div onClick={(event) => event.stopPropagation()}>
+                        <button type="button" className="sa-btn-icon sa-btn-brutal-3d-icon" onClick={() => openEditHolding(item)} aria-label="Редактировать компанию" title="Редактировать">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                             <path d="M12 20h9" />
                             <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
                           </svg>
                         </button>
-                        <button type="button" className="sa-btn-danger sa-btn-icon" onClick={() => { setActiveHolding(item); setDeleteHoldingOpen(true); }} aria-label="Удалить компанию" title="Удалить">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                            <path d="M3 6h18" />
-                            <path d="M8 6V4h8v2" />
-                            <path d="M19 6l-1 14H6L5 6" />
-                            <path d="M10 11v6M14 11v6" />
-                          </svg>
-                        </button>
                       </div>
-                    </td>
-                    <td className="sa-row-chevron-cell">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <polyline points="9 18 15 12 9 6" />
-                      </svg>
                     </td>
                   </tr>
                 );
@@ -991,7 +1191,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         ) : holdings.length === 0 ? (
           <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>По текущим фильтрам компании не найдены.</div>
         ) : (
-          holdings.map((item) => {
+          sortedHoldings.map((item) => {
             const analytics = analyticsByHoldingId.get(item.id);
             return (
               <div
@@ -1032,7 +1232,6 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 12 }} onClick={(event) => event.stopPropagation()}>
                   <button type="button" className="sa-btn-outline" onClick={() => openEditHolding(item)}>Редактировать</button>
-                  <button type="button" className="sa-btn-danger" onClick={() => { setActiveHolding(item); setDeleteHoldingOpen(true); }}>Удалить</button>
                 </div>
               </div>
             );
@@ -1044,7 +1243,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         {renderHoldingForm(handleCreateHoldingSubmit, 'Создать компанию', { mode: 'create' })}
       </ModalFrame>
 
-      <ModalFrame title="Редактировать компанию" subtitle="Можно поменять состав точек внутри компании." open={editHoldingOpen && !!activeHolding} onClose={() => setEditHoldingOpen(false)}>
+      <ModalFrame title="Редактировать компанию" subtitle="Можно поменять состав точек внутри компании." open={editHoldingOpen && !!activeHolding} onClose={() => { setEditHoldingOpen(false); setEditDeleteConfirm(false); }}>
         {renderHoldingForm(handleEditHoldingSubmit, 'Сохранить компанию', { mode: 'edit' })}
       </ModalFrame>
 
@@ -1101,22 +1300,6 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                 </button>
               </div>
             ))}
-          </div>
-        )}
-      </ModalFrame>
-
-      <ModalFrame title="Удалить компанию" subtitle="Точки сохранятся и станут независимыми." open={deleteHoldingOpen && !!activeHolding} onClose={() => setDeleteHoldingOpen(false)} width={520}>
-        {activeHolding && (
-          <div style={{ display: 'grid', gap: 16 }}>
-            <p style={{ margin: 0 }}>
-              Удалить компанию <strong>{activeHolding.name}</strong>?
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button type="button" className="sa-btn-outline" onClick={() => setDeleteHoldingOpen(false)}>Отмена</button>
-              <button type="button" className="sa-btn-danger" onClick={handleDeleteHoldingConfirm} disabled={savingHolding}>
-                {savingHolding ? 'Удаляем...' : 'Удалить'}
-              </button>
-            </div>
           </div>
         )}
       </ModalFrame>

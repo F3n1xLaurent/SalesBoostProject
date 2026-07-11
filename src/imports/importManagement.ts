@@ -7,7 +7,7 @@ import { config } from '../config';
 
 type ImportFormat = 'json' | 'xml' | 'csv';
 type ImportStatus = 'active' | 'paused' | 'error';
-type ImportRunStatus = 'success' | 'error' | 'running';
+type ImportRunStatus = 'success' | 'error' | 'running' | 'cancelled';
 type TagOperator =
   | 'equals'
   | 'notEquals'
@@ -44,7 +44,7 @@ type TagRule = {
 };
 
 type ImportSourceWithCount = Prisma.ImportSourceGetPayload<{
-  include: { _count: { select: { items: true } }; holding: { select: { name: true } } };
+  include: { _count: { select: { items: true } }; holding: { select: { name: true } }; runs?: true };
 }>;
 
 type ImportedItemWithSource = Prisma.ImportedItemGetPayload<{
@@ -75,10 +75,27 @@ const AI_TAG_RULES_TIMEOUT_MS = 15_000;
 const AI_AUTOTAG_TIMEOUT_MS = 15_000;
 const MAX_AI_AUTOTAG_ITEMS = 5;
 const MAX_GENERATED_TAG_RULES = 15;
+const IMPORT_SCHEDULER_INTERVAL_MS = 60_000;
+const IMPORT_SCHEDULE_INTERVALS_MS: Record<string, number> = {
+  hourly: 60 * 60 * 1000,
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+};
+let importSchedulerStarted = false;
+let importSchedulerTickRunning = false;
 
 function parseString(value: unknown): string | null {
   const parsed = String(value ?? '').trim();
   return parsed ? parsed : null;
+}
+
+function parseSchedule(value: unknown): string | null {
+  const schedule = parseString(value);
+  if (!schedule) return null;
+  if (!Object.prototype.hasOwnProperty.call(IMPORT_SCHEDULE_INTERVALS_MS, schedule)) {
+    throw new Error('Некорректная периодичность импорта.');
+  }
+  return schedule;
 }
 
 function normalizeText(value: string): string {
@@ -171,6 +188,14 @@ async function assertCanAccessImportSource(req: Request, importSourceId: string)
 
 function parseTagFilters(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(parseTagFilters);
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function parseSourceIds(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap(parseSourceIds);
   return String(value || '')
     .split(',')
     .map((item) => item.trim())
@@ -870,7 +895,8 @@ async function analyzeSourceUrl(url: string) {
   };
 }
 
-function normalizeImportSource(source: ImportSourceWithCount | (Prisma.ImportSourceGetPayload<{ include?: never }> & { _count?: { items: number }; holding?: { name: string } | null })) {
+function normalizeImportSource(source: ImportSourceWithCount | (Prisma.ImportSourceGetPayload<{ include?: never }> & { _count?: { items: number }; holding?: { name: string } | null; runs?: Prisma.ImportRunGetPayload<{}>[] })) {
+  const activeRun = source.runs?.find((run) => run.status === 'running' && !run.finishedAt) ?? null;
   return {
     id: source.id,
     holdingId: source.holdingId ?? null,
@@ -889,6 +915,7 @@ function normalizeImportSource(source: ImportSourceWithCount | (Prisma.ImportSou
     createdAt: source.createdAt,
     updatedAt: source.updatedAt,
     itemsCount: source._count?.items ?? 0,
+    activeRun: activeRun ? normalizeImportRun(activeRun) : null,
   };
 }
 
@@ -1145,7 +1172,11 @@ export async function handleListImports(req: Request, res: Response): Promise<vo
   const where = await buildImportSourceWhereForRequest(req);
   const items = await prisma.importSource.findMany({
     where,
-    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
+    include: {
+      _count: { select: { items: true } },
+      holding: { select: { name: true } },
+      runs: { where: { status: 'running', finishedAt: null }, orderBy: { startedAt: 'desc' }, take: 1 },
+    },
     orderBy: { updatedAt: 'desc' },
   });
   res.json({ items: items.map(normalizeImportSource) });
@@ -1155,11 +1186,16 @@ export async function handleListImportedItems(req: Request, res: Response): Prom
   const limit = Math.min(Math.max(Number(req.query.limit || 25), 1), 100);
   const offset = Math.max(Number(req.query.offset || 0), 0);
   const sourceId = parseString(req.query.sourceId);
+  const sourceIds = parseSourceIds(req.query.sourceIds);
   const sourceWhere = await buildImportSourceWhereForRequest(req);
   const search = parseString(req.query.search);
   const tagFilters = parseTagFilters(req.query.tags);
   const where: Prisma.ImportedItemWhereInput = {};
-  if (sourceId) where.importSourceId = sourceId;
+  if (sourceIds.length > 0) {
+    where.importSourceId = { in: sourceIds };
+  } else if (sourceId) {
+    where.importSourceId = sourceId;
+  }
   where.importSource = sourceWhere;
   if (search) {
     where.OR = [
@@ -1227,7 +1263,11 @@ export async function handleGetImport(req: Request, res: Response): Promise<void
   }
   const source = await prisma.importSource.findUnique({
     where: { id },
-    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
+    include: {
+      _count: { select: { items: true } },
+      holding: { select: { name: true } },
+      runs: { where: { status: 'running', finishedAt: null }, orderBy: { startedAt: 'desc' }, take: 1 },
+    },
   });
   if (!source) {
     res.status(404).json({ error: 'Импорт не найден.' });
@@ -1253,6 +1293,13 @@ export async function handleCreateImport(req: Request, res: Response): Promise<v
   const holdingId = parseString(body.holdingId);
   const aiConfig = normalizeConfig(body.aiConfig, []);
   const tagRules = normalizeTagRules(body.tagRules);
+  let schedule: string | null = null;
+  try {
+    schedule = parseSchedule(body.schedule);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Некорректная периодичность импорта.' });
+    return;
+  }
   if (!name || !format || !itemsPath || !holdingId) {
     res.status(400).json({ error: 'Название, компания, формат и путь элементов обязательны.' });
     return;
@@ -1274,7 +1321,7 @@ export async function handleCreateImport(req: Request, res: Response): Promise<v
       url,
       format,
       status: 'active',
-      schedule: parseString(body.schedule),
+      schedule,
       itemsPath,
       entityType: aiConfig.entityType,
       aiConfigJson: JSON.stringify(aiConfig),
@@ -1310,7 +1357,14 @@ export async function handleUpdateImport(req: Request, res: Response): Promise<v
     }
     data.status = status;
   }
-  if (body.schedule !== undefined) data.schedule = parseString(body.schedule);
+  if (body.schedule !== undefined) {
+    try {
+      data.schedule = parseSchedule(body.schedule);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'Некорректная периодичность импорта.' });
+      return;
+    }
+  }
   if (body.holdingId !== undefined) {
     const holdingId = parseString(body.holdingId);
     if (holdingId) {
@@ -1355,8 +1409,18 @@ export async function runImport(importSourceId: string) {
   const source = await prisma.importSource.findUnique({ where: { id: importSourceId } });
   if (!source) throw new Error('Импорт не найден.');
   const run = await prisma.importRun.create({ data: { importSourceId, status: 'running' } });
+  const assertNotCancelled = async () => {
+    const current = await prisma.importRun.findUnique({
+      where: { id: run.id },
+      select: { status: true },
+    });
+    if (current?.status === 'cancelled') {
+      throw new Error('IMPORT_RUN_CANCELLED');
+    }
+  };
   try {
     const text = await fetchSourceText(source.url);
+    await assertNotCancelled();
     const format = source.format as ImportFormat;
     const xmlItems = format === 'xml' ? extractXmlItemsByPath(text, source.itemsPath, MAX_RUN_ITEMS) : null;
     const parsed = xmlItems ? null : parseSource(text, format);
@@ -1369,6 +1433,7 @@ export async function runImport(importSourceId: string) {
     let updatedItems = 0;
     const processedItemIds: string[] = [];
     for (const item of items) {
+      await assertNotCancelled();
       const normalizedData = flattenObject(item);
       const externalId = config.externalIdField ? valueToText(normalizedData[config.externalIdField]) || null : null;
       const title = buildTitle(item, config);
@@ -1413,7 +1478,9 @@ export async function runImport(importSourceId: string) {
         createdItems += 1;
       }
     }
+    await assertNotCancelled();
     await applyAiAutotagsToImportedItems(importSourceId, processedItemIds, rules);
+    await assertNotCancelled();
     const finished = await prisma.importRun.update({
       where: { id: run.id },
       data: {
@@ -1431,6 +1498,17 @@ export async function runImport(importSourceId: string) {
     });
     return normalizeImportRun(finished);
   } catch (error) {
+    if (error instanceof Error && error.message === 'IMPORT_RUN_CANCELLED') {
+      const cancelled = await prisma.importRun.update({
+        where: { id: run.id },
+        data: { status: 'cancelled', finishedAt: new Date(), errorMessage: null },
+      });
+      await prisma.importSource.update({
+        where: { id: importSourceId },
+        data: { status: 'paused' },
+      }).catch(() => {});
+      return normalizeImportRun(cancelled);
+    }
     const message = error instanceof Error ? error.message : 'Ошибка запуска импорта.';
     const finished = await prisma.importRun.update({
       where: { id: run.id },
@@ -1442,6 +1520,77 @@ export async function runImport(importSourceId: string) {
     }).catch(() => {});
     return normalizeImportRun(finished);
   }
+}
+
+export async function handleCancelImport(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id || '').trim();
+  try {
+    await assertCanAccessImportSource(req, id);
+  } catch (error) {
+    res.status(error instanceof Error && error.message === 'Импорт не найден.' ? 404 : 403).json({ error: error instanceof Error ? error.message : 'Нет доступа к импорту.' });
+    return;
+  }
+  const run = await prisma.importRun.findFirst({
+    where: { importSourceId: id, status: 'running', finishedAt: null },
+    orderBy: { startedAt: 'desc' },
+  });
+  if (!run) {
+    await prisma.importSource.update({ where: { id }, data: { status: 'paused' } }).catch(() => {});
+    res.json({ success: true, run: null });
+    return;
+  }
+  const cancelled = await prisma.importRun.update({
+    where: { id: run.id },
+    data: { status: 'cancelled', finishedAt: new Date() },
+  });
+  await prisma.importSource.update({ where: { id }, data: { status: 'paused' } }).catch(() => {});
+  res.json({ success: true, run: normalizeImportRun(cancelled) });
+}
+
+async function runDueScheduledImports(): Promise<void> {
+  if (importSchedulerTickRunning) return;
+  importSchedulerTickRunning = true;
+  try {
+    const sources = await prisma.importSource.findMany({
+      where: {
+        status: 'active',
+        schedule: { not: null },
+      },
+      include: {
+        runs: { where: { status: 'running', finishedAt: null }, take: 1 },
+      },
+    });
+    const now = Date.now();
+    for (const source of sources) {
+      const schedule = source.schedule || '';
+      const intervalMs = IMPORT_SCHEDULE_INTERVALS_MS[schedule];
+      if (!intervalMs) continue;
+      if (source.runs.length > 0) continue;
+      const lastRunMs = source.lastRunAt?.getTime() ?? 0;
+      if (lastRunMs && now - lastRunMs < intervalMs) continue;
+      runImport(source.id).catch((error) => {
+        console.error('[imports/scheduler] scheduled import failed:', {
+          importSourceId: source.id,
+          schedule,
+          error: error instanceof Error ? error.message : error,
+        });
+      });
+    }
+  } catch (error) {
+    console.error('[imports/scheduler] tick failed:', error instanceof Error ? error.message : error);
+  } finally {
+    importSchedulerTickRunning = false;
+  }
+}
+
+export function startImportScheduler(): void {
+  if (importSchedulerStarted) return;
+  importSchedulerStarted = true;
+  void runDueScheduledImports();
+  setInterval(() => {
+    void runDueScheduledImports();
+  }, IMPORT_SCHEDULER_INTERVAL_MS);
+  console.log('[imports/scheduler] started');
 }
 
 export async function handleRunImport(req: Request, res: Response): Promise<void> {
