@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { PlatformSummary } from '../../../shared/model/adminPanel';
 import { fetchAnalyticsOverview, fetchHoldings, type AnalyticsOverview, type HoldingItem, type TimeSeriesPoint } from '../../../shared/api/adminPanel';
-import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+import { ratingClass, scoreBarColor } from '../../../shared/lib/admin-panel/utils';
 import type { AnalyticsImpact, AnalyticsPriority, AnalyticsSectionInsight } from '../../../shared/api/adminPanel';
-import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
+import { MetricComparisonModal } from '../../../shared/ui/metric-comparison-modal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
-import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
 
 type AnalyticsProps = {
   summary: PlatformSummary | null;
@@ -67,6 +66,7 @@ function InsightMini({ insight }: { insight: AnalyticsSectionInsight }) {
 }
 
 function NetworkTrendChart({ points }: { points: TimeSeriesPoint[] }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
   const W = 760, H = 240;
   const pad = { top: 18, right: 18, bottom: 34, left: 42 };
@@ -78,7 +78,13 @@ function NetworkTrendChart({ points }: { points: TimeSeriesPoint[] }) {
   const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(point.avgScore)}`).join(' ');
   return (
     <div className="sa-chart-wrap">
-      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+      <svg
+        width="100%"
+        height={H}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="xMidYMid meet"
+        onMouseLeave={() => setHoverIdx(null)}
+      >
         {[0, 25, 50, 75, 100].map((value) => {
           const gy = y(value);
           return (
@@ -88,14 +94,51 @@ function NetworkTrendChart({ points }: { points: TimeSeriesPoint[] }) {
             </g>
           );
         })}
-        <path d={path} fill="none" stroke="var(--tb-accent, #111827)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={path} fill="none" stroke="var(--tb-ink)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((_, index) => (
+          <rect
+            key={`hit-${index}`}
+            x={xs[index] - (step || 40) / 2}
+            y={pad.top}
+            width={step || 40}
+            height={ch}
+            fill="transparent"
+            onMouseEnter={() => setHoverIdx(index)}
+          />
+        ))}
+        {hoverIdx !== null && (
+          <line x1={xs[hoverIdx]} y1={pad.top} x2={xs[hoverIdx]} y2={pad.top + ch} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.4" />
+        )}
         {points.map((point, index) => (
           <g key={point.date}>
-            <circle cx={xs[index]} cy={y(point.avgScore)} r="4" fill="var(--tb-accent, #111827)" />
+            <circle
+              cx={xs[index]}
+              cy={y(point.avgScore)}
+              r={hoverIdx === index ? 5.5 : 4}
+              fill={hoverIdx === index ? '#fff' : 'var(--tb-ink)'}
+              stroke="var(--tb-ink)"
+              strokeWidth={hoverIdx === index ? 2.5 : 0}
+            />
             <text x={xs[index]} y={H - 10} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">{point.date.slice(5)}</text>
           </g>
         ))}
       </svg>
+      {hoverIdx !== null && (() => {
+        const point = points[hoverIdx];
+        const leftPct = (xs[hoverIdx] / W) * 100;
+        const topPct = (y(point.avgScore) / H) * 100;
+        const placeBelow = topPct < 28;
+        return (
+          <div
+            className={`sa-chart-hover-tooltip${placeBelow ? ' sa-chart-hover-tooltip-below' : ''}`}
+            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+          >
+            <div className="sa-chart-hover-tooltip-row">Дата: {point.date}</div>
+            <div className="sa-chart-hover-tooltip-row is-strong">Средний балл: {point.avgScore.toFixed(1)}</div>
+            <div className="sa-chart-hover-tooltip-row">Проверок: {point.count}</div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -138,7 +181,7 @@ function InlineComparisonChart({ rows }: { rows: ComparableDealership[] }) {
             <span className="sa-hbar-label" title={row.name}>{row.name}</span>
             <div className="sa-hbar-track">
               <div className="sa-hbar-fill" style={{ width: `${Math.round((previous / max) * 100)}%`, background: 'rgba(99,102,241,.25)' }} />
-              <div className="sa-hbar-fill" style={{ width: `${Math.round((row.score / max) * 100)}%`, background: row.score >= 80 ? '#34D399' : row.score >= 50 ? '#FBBF24' : '#F87171', marginTop: -8 }} />
+              <div className="sa-hbar-fill" style={{ width: `${Math.round((row.score / max) * 100)}%`, background: scoreBarColor(row.score), marginTop: -8 }} />
             </div>
             <span className={`sa-hbar-score ${ratingClass(row.score)}`}>{row.score}</span>
           </div>
@@ -149,6 +192,7 @@ function InlineComparisonChart({ rows }: { rows: ComparableDealership[] }) {
 }
 
 function MultiDealershipTrendChart({ series }: { series: Array<{ id: string; name: string; points: TimeSeriesPoint[] }> }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (series.length < 2) return <div className="sa-chart-empty">Выберите от 2 до 6 точек</div>;
   const W = 760, H = 260;
   const pad = { top: 18, right: 18, bottom: 38, left: 42 };
@@ -159,15 +203,13 @@ function MultiDealershipTrendChart({ series }: { series: Array<{ id: string; nam
   const xs = dates.map((_, index) => pad.left + index * step);
   const y = (score: number) => pad.top + ch - (Math.max(0, Math.min(score, 100)) / 100) * ch;
   const colors = ['#111827', '#2563EB', '#D97706', '#059669', '#DC2626', '#7C3AED'];
-  const pathFor = (points: TimeSeriesPoint[]) => {
-    const byDate = new Map(points.map((point) => [point.date, point.avgScore]));
-    return dates
-      .map((date, index) => {
-        const score = byDate.get(date) ?? 0;
-        return `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(score)}`;
-      })
-      .join(' ');
+  const scoreAt = (points: TimeSeriesPoint[], date: string) => {
+    const found = points.find((point) => point.date === date);
+    return found?.avgScore ?? 0;
   };
+  const pathFor = (points: TimeSeriesPoint[]) => dates
+    .map((date, index) => `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(scoreAt(points, date))}`)
+    .join(' ');
   return (
     <div className="sa-chart-wrap">
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -178,7 +220,14 @@ function MultiDealershipTrendChart({ series }: { series: Array<{ id: string; nam
           </span>
         ))}
       </div>
-      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
+      <div className="sa-chart-plot">
+      <svg
+        width="100%"
+        height={H}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="xMidYMid meet"
+        onMouseLeave={() => setHoverIdx(null)}
+      >
         {[0, 25, 50, 75, 100].map((value) => {
           const gy = y(value);
           return (
@@ -194,24 +243,66 @@ function MultiDealershipTrendChart({ series }: { series: Array<{ id: string; nam
         {series.map((item, index) => (
           <path key={item.id} d={pathFor(item.points)} fill="none" stroke={colors[index % colors.length]} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
         ))}
+        {dates.map((_, index) => (
+          <rect
+            key={`hit-${index}`}
+            x={xs[index] - (step || 40) / 2}
+            y={pad.top}
+            width={step || 40}
+            height={ch}
+            fill="transparent"
+            onMouseEnter={() => setHoverIdx(index)}
+          />
+        ))}
+        {hoverIdx !== null && (
+          <line x1={xs[hoverIdx]} y1={pad.top} x2={xs[hoverIdx]} y2={pad.top + ch} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.4" />
+        )}
       </svg>
+      {hoverIdx !== null && (() => {
+        const date = dates[hoverIdx];
+        const leftPct = (xs[hoverIdx] / W) * 100;
+        const topPct = ((pad.top + 8) / H) * 100;
+        return (
+          <div
+            className="sa-chart-hover-tooltip sa-chart-hover-tooltip-below"
+            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+          >
+            <div className="sa-chart-hover-tooltip-row">Дата: {date}</div>
+            {series.map((item) => (
+              <div key={item.id} className="sa-chart-hover-tooltip-row is-strong">
+                {item.name}: {scoreAt(item.points, date).toFixed(1)}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+      </div>
     </div>
   );
 }
 
 function IssueList({ items, labelKey = 'issue' }: { items: Array<{ issue?: string; question?: string; percent: number; count: number }>; labelKey?: 'issue' | 'question' }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (!items.length) return <div className="sa-meta">Нет данных</div>;
   return (
-    <div className="sa-hbar-list">
+    <div className="sa-hbar-list sa-hbar-list-thin sa-hbar-list-mono">
       {items.slice(0, 5).map((item, index) => {
         const label = labelKey === 'question' ? item.question : item.issue;
         return (
-          <div key={`${label}-${index}`} className="sa-hbar-row">
-            <span className="sa-hbar-label" title={label}>{label}</span>
+          <div
+            key={`${label}-${index}`}
+            className={`sa-hbar-row ${hoverIdx === index ? 'sa-hbar-row-hover' : ''}`}
+            onMouseEnter={() => setHoverIdx(index)}
+            onMouseLeave={() => setHoverIdx(null)}
+          >
+            <span className="sa-hbar-label">{label}</span>
             <div className="sa-hbar-track">
-              <div className="sa-hbar-fill" style={{ width: `${item.percent}%`, background: item.percent >= 30 ? '#F87171' : '#FBBF24' }} />
+              <div className="sa-hbar-fill" style={{ width: `${item.percent}%` }} />
             </div>
             <span className="sa-hbar-score">{item.percent}%</span>
+            {hoverIdx === index && label && (
+              <div className="sa-hbar-tooltip sa-hbar-tooltip-name">{label}</div>
+            )}
           </div>
         );
       })}
@@ -225,14 +316,8 @@ function ErrorsChart({ data }: { data: { error: string; count: number; percent: 
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (data.length === 0) return <div className="sa-chart-empty">Нет данных</div>;
 
-  function barColor(pct: number) {
-    if (pct >= 30) return '#F87171';
-    if (pct >= 15) return '#FBBF24';
-    return '#6366F1';
-  }
-
   return (
-    <div className="sa-hbar-list">
+    <div className="sa-hbar-list sa-hbar-list-thin sa-hbar-list-mono">
       {data.map((d, i) => (
         <div
           key={d.error}
@@ -242,11 +327,11 @@ function ErrorsChart({ data }: { data: { error: string; count: number; percent: 
         >
           <span className="sa-hbar-label">{d.error}</span>
           <div className="sa-hbar-track">
-            <div className="sa-hbar-fill" style={{ width: `${d.percent}%`, background: barColor(d.percent) }} />
+            <div className="sa-hbar-fill" style={{ width: `${d.percent}%` }} />
           </div>
-          <span className="sa-hbar-score" style={{ color: 'var(--sa-text)' }}>{d.percent}%</span>
+          <span className="sa-hbar-score">{d.percent}%</span>
           {hoverIdx === i && (
-            <div className="sa-hbar-tooltip">{d.count} сотрудников</div>
+            <div className="sa-hbar-tooltip sa-hbar-tooltip-name">{d.error} · {d.count} сотрудников</div>
           )}
         </div>
       ))}
@@ -259,14 +344,8 @@ function ErrorsChart({ data }: { data: { error: string; count: number; percent: 
 function ScriptChart({ data }: { data: { block: string; rate: number }[] }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  function barColor(rate: number) {
-    if (rate >= 80) return '#34D399';
-    if (rate >= 60) return '#FBBF24';
-    return '#F87171';
-  }
-
   return (
-    <div className="sa-hbar-list">
+    <div className="sa-hbar-list sa-hbar-list-thin">
       {data.map((d, i) => (
         <div
           key={d.block}
@@ -276,7 +355,7 @@ function ScriptChart({ data }: { data: { block: string; rate: number }[] }) {
         >
           <span className="sa-hbar-label">{d.block}</span>
           <div className="sa-hbar-track">
-            <div className="sa-hbar-fill" style={{ width: `${d.rate}%`, background: barColor(d.rate) }} />
+            <div className="sa-hbar-fill" style={{ width: `${d.rate}%`, background: scoreBarColor(d.rate) }} />
           </div>
           <span className={`sa-hbar-score ${ratingClass(d.rate)}`}>{d.rate}%</span>
         </div>
@@ -355,12 +434,6 @@ function WeeklyTypeTrendChart({ data }: { data: NonNullable<AnalyticsOverview['w
 function DealershipBars({ data, onOpen }: { data: { id?: string; name: string; score: number; delta: number }[]; onOpen?: (id: string) => void }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
-  function barColor(s: number) {
-    if (s >= 80) return '#34D399';
-    if (s >= 50) return '#FBBF24';
-    return '#F87171';
-  }
-
   return (
     <div className="sa-hbar-list">
       {data.map((d, i) => (
@@ -383,7 +456,7 @@ function DealershipBars({ data, onOpen }: { data: { id?: string; name: string; s
         >
           <span className="sa-hbar-label">{d.name}</span>
           <div className="sa-hbar-track">
-            <div className="sa-hbar-fill" style={{ width: `${d.score}%`, background: barColor(d.score) }} />
+            <div className="sa-hbar-fill" style={{ width: `${d.score}%`, background: scoreBarColor(d.score) }} />
           </div>
           <span className={`sa-hbar-score ${ratingClass(d.score)}`}>{d.score}</span>
           {hoverIdx === i && (
@@ -416,82 +489,49 @@ function CommBreakdown({ data }: { data: { label: string; percent: number; color
 }
 
 function ComparisonModal({ rows, onClose, onOpenDealership }: { rows: ComparableDealership[]; onClose: () => void; onOpenDealership: (id: string) => void }) {
-  if (rows.length < 2) return null;
-  const bestScore = Math.max(...rows.map((row) => row.score));
-  const worstScore = Math.min(...rows.map((row) => row.score));
-  const bestDelta = Math.max(...rows.map((row) => row.delta));
-  const worstDelta = Math.min(...rows.map((row) => row.delta));
-  const bestCalls = Math.max(...rows.map((row) => row.calls));
-  const worstCalls = Math.min(...rows.map((row) => row.calls));
-  const bestNoAnswers = Math.min(...rows.map((row) => row.noAnswers));
-  const worstNoAnswers = Math.max(...rows.map((row) => row.noAnswers));
-  const leader = [...rows].sort((a, b) => b.score - a.score)[0];
-  const lagger = [...rows].sort((a, b) => a.score - b.score)[0];
-  const metrics = [
-    { key: 'score' as const, label: 'Балл', best: bestScore, worst: worstScore },
-    { key: 'delta' as const, label: 'Динамика', best: bestDelta, worst: worstDelta },
-    { key: 'calls' as const, label: 'Звонков', best: bestCalls, worst: worstCalls },
-    { key: 'noAnswers' as const, label: 'Недозвоны', best: bestNoAnswers, worst: worstNoAnswers },
-  ];
-
   return (
-    <FixedOverlayPortal>
-    <div style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }}>
-      <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }}>
-        <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
-          <div>
-            <h2 className="sa-section-title" style={{ marginBottom: 4 }}>Сравнение точек</h2>
-            <div className="sa-meta">Выбрано: {rows.length}</div>
-          </div>
-          <button className="sa-btn-outline" onClick={onClose}>Закрыть</button>
-        </div>
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Метрика</th>
-                {rows.map((row) => (
-                  <th key={row.id} className="sa-text-right">
-                    <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenDealership(row.id)}>{row.name}</button>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {metrics.map((metric) => (
-                <tr key={metric.key}>
-                  <td>{metric.label}</td>
-                  {rows.map((row) => {
-                    const value = Number(row[metric.key] ?? 0);
-                    const best = value === metric.best;
-                    const worst = value === metric.worst && metric.best !== metric.worst;
-                    return (
-                      <td key={row.id} className="sa-text-right">
-                        <span className={best ? 'sa-score-green' : worst ? 'sa-score-red' : ''}>
-                          {metric.key === 'delta' && value > 0 ? '+' : ''}{value}
-                        </span>
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ marginTop: 16 }}>
-          <ComparisonAISummary level="dealerships" items={rows.map((row) => ({ ...row }))} />
-        </div>
-        <div className="sa-card" style={{ marginTop: 16 }}>
-          <h3 className="sa-card-heading">Анализ различий</h3>
-          <p className="sa-meta" style={{ lineHeight: 1.6 }}>
-            Лидер сравнения — <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenDealership(leader.id)}>{leader.name}</button> с баллом {leader.score}.
-            {' '}Самая слабая точка — <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenDealership(lagger.id)}>{lagger.name}</button> с баллом {lagger.score}.
-            {' '}Разницу стоит разбирать через историю звонков и частые NO-блоки: слабым точкам нужны точечные тренировки по провальным этапам.
-          </p>
-        </div>
-      </div>
-    </div>
-    </FixedOverlayPortal>
+    <MetricComparisonModal
+      open={rows.length >= 2}
+      onClose={onClose}
+      title="Сравнение точек"
+      columns={rows.map((row) => ({
+        id: row.id,
+        label: row.name,
+        onOpen: () => onOpenDealership(row.id),
+      }))}
+      metrics={[
+        {
+          key: 'score',
+          label: 'Балл',
+          higherBetter: true,
+          values: rows.map((row) => row.score),
+        },
+        {
+          key: 'delta',
+          label: 'Динамика',
+          higherBetter: true,
+          values: rows.map((row) => row.delta),
+          format: (value) => {
+            if (value === null) return '—';
+            return value > 0 ? `+${value}` : value;
+          },
+        },
+        {
+          key: 'calls',
+          label: 'Звонков',
+          higherBetter: true,
+          values: rows.map((row) => row.calls),
+        },
+        {
+          key: 'noAnswers',
+          label: 'Недозвоны',
+          higherBetter: false,
+          values: rows.map((row) => row.noAnswers),
+        },
+      ]}
+      aiLevel="dealerships"
+      aiItems={rows.map((row) => ({ ...row }))}
+    />
   );
 }
 

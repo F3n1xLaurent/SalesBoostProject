@@ -20,7 +20,11 @@ import { deltaDisplay, ratingClass, statusBadgeClass } from '../../../shared/lib
 import { UserPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
-import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
+import { EditIcon, PhoneIcon } from '../../../shared/ui/icons/ActionIcons';
+import { BrutalModal } from '../../../shared/ui/brutal-modal';
+import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
+import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
+import { FiltersPanel, FilterGroup, FiltersToggleButton } from '../../../shared/ui/filters-panel';
 
 type Props = {
   role: AdminRole;
@@ -29,6 +33,7 @@ type Props = {
   onBackToUsers?: () => void;
   onOpenDealership?: (id: string) => void;
   onOpenCompanies?: () => void;
+  sourceDealership?: { id: string; name: string } | null;
 };
 
 type PageTab = 'users' | 'templates';
@@ -121,6 +126,24 @@ const EMPTY_USER_FORM: UserFormState = {
   managerStatus: 'active',
   templateIds: [],
 };
+
+const CREATE_USER_FORM_ID = 'create-user-modal-form';
+const EDIT_USER_FORM_ID = 'edit-user-modal-form';
+
+function normalizeUserForm(form: UserFormState) {
+  return {
+    email: form.email.trim(),
+    password: form.password,
+    managerFullName: (form.managerFullName || form.displayName).trim(),
+    status: form.status,
+    memberships: form.memberships.map((membership) => ({
+      role: membership.role,
+      holdingId: membership.holdingId,
+      dealershipId: membership.dealershipId,
+    })),
+    templateIds: [...form.templateIds].sort(),
+  };
+}
 
 const EMPTY_TEMPLATE_FORM: TemplateFormState = {
   name: '',
@@ -369,23 +392,6 @@ function matchesUserQuickFilter(user: UserAccountItem, filter: UserQuickFilter):
   }
 }
 
-function EditIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5z" />
-    </svg>
-  );
-}
-
-function PhoneIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
-    </svg>
-  );
-}
-
 function SearchableSelect(props: {
   label?: string;
   value: string;
@@ -549,57 +555,28 @@ function SearchableSelect(props: {
   );
 }
 
-function overlayCardStyle(width = 720): React.CSSProperties {
-  return {
-    width: `min(100%, ${width}px)`,
-    maxHeight: '88vh',
-    overflowY: 'auto',
-    background: '#fff',
-    borderRadius: 24,
-    boxShadow: '0 28px 80px rgba(15,23,42,0.28)',
-    padding: 22,
-  };
-}
-
 function ModalFrame(props: {
   title: string;
   subtitle?: string;
   open: boolean;
   onClose: () => void;
   width?: number;
+  headerActions?: React.ReactNode;
+  footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  if (!props.open) return null;
   return (
-    <FixedOverlayPortal>
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.48)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 20,
-        zIndex: 120,
-      }}
-      onClick={props.onClose}
+    <BrutalModal
+      open={props.open}
+      onClose={props.onClose}
+      title={props.title}
+      subtitle={props.subtitle}
+      width={props.width ?? 'medium'}
+      headerActions={props.headerActions}
+      footer={props.footer}
     >
-      <div style={overlayCardStyle(props.width)} onClick={(event) => event.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>{props.title}</h2>
-            {props.subtitle && (
-              <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>{props.subtitle}</div>
-            )}
-          </div>
-          <button type="button" className="sa-btn-text" onClick={props.onClose}>
-            Закрыть
-          </button>
-        </div>
-        {props.children}
-      </div>
-    </div>
-    </FixedOverlayPortal>
+      {props.children}
+    </BrutalModal>
   );
 }
 
@@ -614,10 +591,15 @@ function CreateUserModal(props: {
   saving: boolean;
 }) {
   const [form, setForm] = useState<UserFormState>(EMPTY_USER_FORM);
+  const [attempted, setAttempted] = useState(false);
   const dealershipMap = useMemo(() => new Map((props.meta?.dealerships || []).map((item) => [item.id, item])), [props.meta]);
+  const emailInvalid = attempted && !form.email.trim();
+  const passwordInvalid = attempted && !form.password.trim();
+  const nameInvalid = attempted && !form.managerFullName.trim();
 
   useEffect(() => {
     if (!props.open) return;
+    setAttempted(false);
     setForm({
       ...EMPTY_USER_FORM,
       memberships: [{ role: 'manager', holdingId: '', dealershipId: '' }],
@@ -670,6 +652,8 @@ function CreateUserModal(props: {
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
+    setAttempted(true);
+    if (!form.email.trim() || !form.password.trim() || !form.managerFullName.trim()) return;
     await props.onSubmit(form);
   }
 
@@ -679,19 +663,47 @@ function CreateUserModal(props: {
       subtitle="Создание аккаунта вынесено в отдельное модальное окно."
       open={props.open}
       onClose={props.onClose}
+      footer={(
+        <div className="sa-modal-footer-row">
+          <div className="sa-modal-footer-row__right">
+            <button type="button" className="sa-btn-outline" onClick={props.onClose} disabled={props.saving}>
+              Отмена
+            </button>
+            <button type="submit" form={CREATE_USER_FORM_ID} className="sa-btn-primary" disabled={props.saving}>
+              {props.saving ? 'Сохраняем...' : 'Создать пользователя'}
+            </button>
+          </div>
+        </div>
+      )}
     >
-      <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
+      <form id={CREATE_USER_FORM_ID} onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
         <label className="sa-form-field">
           <span>Email</span>
-          <input className="sa-search-input" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} />
+          <input
+            className={`sa-search-input${emailInvalid ? ' sa-field-invalid' : ''}`}
+            value={form.email}
+            onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
+            aria-invalid={emailInvalid || undefined}
+          />
         </label>
         <label className="sa-form-field">
           <span>Пароль</span>
-          <input type="password" className="sa-search-input" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} />
+          <input
+            type="password"
+            className={`sa-search-input${passwordInvalid ? ' sa-field-invalid' : ''}`}
+            value={form.password}
+            onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))}
+            aria-invalid={passwordInvalid || undefined}
+          />
         </label>
         <label className="sa-form-field">
           <span>ФИО</span>
-          <input className="sa-search-input" value={form.managerFullName} onChange={(event) => setForm((current) => ({ ...current, managerFullName: event.target.value, displayName: event.target.value }))} />
+          <input
+            className={`sa-search-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+            value={form.managerFullName}
+            onChange={(event) => setForm((current) => ({ ...current, managerFullName: event.target.value, displayName: event.target.value }))}
+            aria-invalid={nameInvalid || undefined}
+          />
         </label>
         <div>
           <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ пользователя</div>
@@ -763,9 +775,6 @@ function CreateUserModal(props: {
             })}
           </div>
         </div>
-        <button type="submit" className="sa-btn-primary" disabled={props.saving}>
-          {props.saving ? 'Сохраняем...' : 'Создать пользователя'}
-        </button>
       </form>
     </ModalFrame>
   );
@@ -784,7 +793,7 @@ function KeyValueList(props: { items: Array<{ label: string; value: React.ReactN
   );
 }
 
-export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, onOpenDealership, onOpenCompanies }: Props) {
+export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, onOpenDealership, onOpenCompanies, sourceDealership }: Props) {
   const [tab, setTab] = useState<PageTab>('users');
   const [meta, setMeta] = useState<RbacMeta | null>(null);
   const [users, setUsers] = useState<UserAccountItem[]>([]);
@@ -813,6 +822,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [viewUserOpen, setViewUserOpen] = useState(false);
   const [editUserOpen, setEditUserOpen] = useState(false);
   const [editDeleteConfirm, setEditDeleteConfirm] = useState(false);
+  const [userUnsavedOpen, setUserUnsavedOpen] = useState(false);
   const [phoneNumbersUserId, setPhoneNumbersUserId] = useState<string | null>(null);
 
   const [createTemplateOpen, setCreateTemplateOpen] = useState(false);
@@ -821,6 +831,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [deleteTemplateOpen, setDeleteTemplateOpen] = useState(false);
 
   const [userForm, setUserForm] = useState<UserFormState>(EMPTY_USER_FORM);
+  const [initialUserForm, setInitialUserForm] = useState<UserFormState>(EMPTY_USER_FORM);
   const [templateForm, setTemplateForm] = useState<TemplateFormState>(EMPTY_TEMPLATE_FORM);
   const [permissionSearch, setPermissionSearch] = useState('');
   const [openTemplatePermissionGroups, setOpenTemplatePermissionGroups] = useState<string[]>([]);
@@ -834,7 +845,8 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const detailUserIndex = employeeId ? users.findIndex((item) => item.id === employeeId) : -1;
   const detailActionUser = detailUserIndex >= 0 ? users[detailUserIndex] : null;
   const detailManagerProfile = detailActionUser?.managerProfiles[0] ?? null;
-  const detailEmployeeProfileId = detailManagerProfile?.id ?? (detailActionUser ? null : employeeId ?? null);
+  const detailEmployeeProfileId = detailManagerProfile?.id
+    ?? (!loading && employeeId && !detailActionUser ? employeeId : null);
   const dealershipMap = useMemo(() => new Map((meta?.dealerships || []).map((item) => [item.id, item])), [meta]);
   const holdingFilterOptions = useMemo<SelectOption[]>(
     () => (meta?.holdings || []).map((holding) => ({
@@ -937,6 +949,16 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       return userSortDir === 'asc' ? cmp : -cmp;
     });
   }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, selectedGlobalHoldingId, userQuickFilter, userSortDir, userSortKey, users]);
+
+  const activeUserFiltersCount = [
+    fullNameFilter.trim(),
+    emailFilter.trim(),
+    phoneFilter.trim(),
+    roleFilter,
+    holdingFilter,
+    dealershipFilter,
+    ownershipFilter !== 'all' ? ownershipFilter : '',
+  ].filter(Boolean).length;
 
   const filteredTemplates = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1054,14 +1076,17 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
 
   function openEditUser(user: UserAccountItem) {
     setActiveUserId(user.id);
-    fillUserForm(user);
+    const nextForm = buildUserForm(user);
+    setUserForm(nextForm);
+    setInitialUserForm(nextForm);
     setEditDeleteConfirm(false);
+    setUserUnsavedOpen(false);
     setEditUserOpen(true);
   }
 
-  function fillUserForm(user: UserAccountItem) {
+  function buildUserForm(user: UserAccountItem): UserFormState {
     const firstProfile = user.managerProfiles[0];
-    setUserForm({
+    return {
       email: user.email,
       password: '',
       displayName: firstProfile?.fullName || user.displayName || '',
@@ -1078,7 +1103,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       managerPhone: firstProfile?.phone || '',
       managerStatus: firstProfile?.status || 'active',
       templateIds: user.permissionTemplates.map((template) => template.id),
-    });
+    };
   }
 
   function resetTemplateForm() {
@@ -1187,8 +1212,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     }
   }
 
-  async function handleEditUser(event: React.FormEvent) {
-    event.preventDefault();
+  async function persistUserEdit(): Promise<boolean> {
     setSavingUser(true);
     setError(null);
     setNotice(null);
@@ -1197,12 +1221,33 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       await reloadUsers();
       setEditUserOpen(false);
       setEditDeleteConfirm(false);
+      setUserUnsavedOpen(false);
       setNotice('Пользователь обновлён.');
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось обновить пользователя.');
+      return false;
     } finally {
       setSavingUser(false);
     }
+  }
+
+  async function handleEditUser(event: React.FormEvent) {
+    event.preventDefault();
+    const isDirty = JSON.stringify(normalizeUserForm(userForm)) !== JSON.stringify(normalizeUserForm(initialUserForm));
+    if (!isDirty) return;
+    await persistUserEdit();
+  }
+
+  function requestCloseEditUserModal() {
+    const isDirty = JSON.stringify(normalizeUserForm(userForm)) !== JSON.stringify(normalizeUserForm(initialUserForm));
+    if (isDirty) {
+      setUserUnsavedOpen(true);
+      return;
+    }
+    setEditUserOpen(false);
+    setEditDeleteConfirm(false);
+    setUserUnsavedOpen(false);
   }
 
   async function handleDeleteUserConfirm() {
@@ -1216,6 +1261,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       setEditDeleteConfirm(false);
       setViewUserOpen(false);
       setEditUserOpen(false);
+      setUserUnsavedOpen(false);
       setActiveUserId(null);
       setNotice('Пользователь удалён.');
     } catch (err) {
@@ -1291,10 +1337,10 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     setUserSortDir(key === 'fullName' || key === 'dealershipName' || key === 'status' ? 'asc' : 'desc');
   }
 
-  function renderUserForm(onSubmit: (event: React.FormEvent) => void, submitLabel: string, options?: { showStatus?: boolean }) {
+  function renderUserForm(onSubmit: (event: React.FormEvent) => void, options?: { showStatus?: boolean }) {
     const showStatus = options?.showStatus ?? true;
     return (
-      <form onSubmit={onSubmit} style={{ display: 'grid', gap: 14 }}>
+      <form id={EDIT_USER_FORM_ID} onSubmit={onSubmit} style={{ display: 'grid', gap: 14 }}>
         <label className="sa-form-field">
           <span>Email</span>
           <input className="sa-search-input" value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} />
@@ -1394,34 +1440,27 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
             })}
           </div>
         </div>
-        <div className="sa-holdings-form-footer">
-          <div className="sa-holdings-form-footer-left">
-            {editDeleteConfirm ? (
-              <>
-                <span className="sa-holdings-form-delete-hint">
-                  Удалить <strong>{activeUser?.displayName || activeUser?.email}</strong>?
-                </span>
-                <button type="button" className="sa-btn-danger" onClick={() => void handleDeleteUserConfirm()} disabled={savingUser}>
-                  {savingUser ? 'Удаляем...' : 'Удалить'}
-                </button>
-                <button type="button" className="sa-btn-outline" onClick={() => setEditDeleteConfirm(false)} disabled={savingUser}>
-                  Нет
-                </button>
-              </>
-            ) : (
-              <button type="button" className="sa-btn-danger" onClick={() => setEditDeleteConfirm(true)}>
-                Удалить пользователя
-              </button>
-            )}
-          </div>
-          <div className="sa-holdings-form-footer-right">
-            <button type="button" className="sa-btn-outline" onClick={() => { setEditUserOpen(false); setEditDeleteConfirm(false); }}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={savingUser}>
-              {savingUser ? 'Сохраняем...' : submitLabel}
-            </button>
-          </div>
-        </div>
       </form>
+    );
+  }
+
+  function renderEditUserFormFooter() {
+    const isDirty = JSON.stringify(normalizeUserForm(userForm)) !== JSON.stringify(normalizeUserForm(initialUserForm));
+    const isSubmitDisabled = savingUser || !isDirty;
+    return (
+      <div className="sa-modal-footer-row">
+        <button type="button" className="sa-btn-danger" onClick={() => setEditDeleteConfirm(true)}>
+          Удалить пользователя
+        </button>
+        <div className="sa-modal-footer-row__right">
+          <button type="button" className="sa-btn-outline" onClick={requestCloseEditUserModal} disabled={savingUser}>
+            Отмена
+          </button>
+          <button type="submit" form={EDIT_USER_FORM_ID} className="sa-btn-primary" disabled={isSubmitDisabled}>
+            {savingUser ? 'Сохраняем...' : 'Сохранить'}
+          </button>
+        </div>
+      </div>
     );
   }
 
@@ -1593,46 +1632,40 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       {notice && <div className="sa-card" style={{ marginBottom: 16, color: '#166534', background: '#F0FDF4' }}>{notice}</div>}
 
       {employeeId && loading ? (
-        <div className="sa-card" style={{ padding: 24 }}>
-          <div className="sa-meta">Загрузка сотрудника...</div>
-        </div>
+        null
       ) : employeeId && detailEmployeeProfileId ? (
         <EmployeeDetail
           employeeId={detailEmployeeProfileId}
           onBack={() => onBackToUsers?.()}
           onOpenDealership={onOpenDealership}
           onOpenCompanies={onOpenCompanies}
+          sourceDealership={sourceDealership}
           detailOverride={detailActionUser ? {
             fullName: userFullName(detailActionUser),
-            dealershipName: userScopeLabel(detailActionUser),
-            city: detailActionUser.managerProfiles[0]?.holdingName || detailActionUser.memberships[0]?.holdingName || '',
+            dealershipName: detailActionUser.managerProfiles[0]?.dealershipName
+              || userDealershipNames(detailActionUser)[0]
+              || '',
+            city: (() => {
+              const dealership = detailActionUser.managerProfiles[0]?.dealershipName
+                || userDealershipNames(detailActionUser)[0]
+                || '';
+              const holding = detailActionUser.managerProfiles[0]?.holdingName
+                || detailActionUser.memberships[0]?.holdingName
+                || '';
+              return holding && holding.toLowerCase() !== dealership.toLowerCase() ? holding : '';
+            })(),
           } : undefined}
-          headerRight={(
-            <select
-              className="sa-select"
-              value={selectedGlobalHoldingId}
-              onChange={(event) => setSelectedGlobalHoldingId(event.target.value)}
-              disabled={loading || (meta?.holdings || []).length === 0}
-              style={{ minWidth: 220 }}
-              title="Глобальный фильтр по компаниям"
-            >
-              {(meta?.holdings || []).length === 0 ? <option value="">Нет компаний</option> : null}
-              {(meta?.holdings || []).map((holding) => (
-                <option key={holding.id} value={holding.id}>{holding.name}</option>
-              ))}
-            </select>
-          )}
           actionButtons={detailActionUser && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-              <button type="button" className="sa-btn-outline" onClick={() => openEditUser(detailActionUser)}>
+            <>
+              <button type="button" className="sa-btn-brutal-3d" onClick={() => openEditUser(detailActionUser)}>
                 <EditIcon />
                 Редактировать
               </button>
-              <button type="button" className="sa-btn-outline" onClick={() => setPhoneNumbersUserId(detailActionUser.id)}>
+              <button type="button" className="sa-btn-brutal-3d" onClick={() => setPhoneNumbersUserId(detailActionUser.id)}>
                 <PhoneIcon />
                 Номера телефонов
               </button>
-            </div>
+            </>
           )}
         />
       ) : employeeId ? (
@@ -1682,12 +1715,12 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                     onChange={(event) => setSearch(event.target.value)}
                   />
                 </div>
-                <button type="button" className="sa-btn-border-only" onClick={() => setShowUserFilters((current) => !current)}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-                  </svg>
-                  Фильтры
-                </button>
+                <FiltersToggleButton
+                  active={showUserFilters}
+                  count={activeUserFiltersCount}
+                  onClick={() => setShowUserFilters((current) => !current)}
+                  className="sa-btn-border-only"
+                />
               </div>
               <div className="sa-toolbar-actions">
                 <button
@@ -1717,96 +1750,75 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           </div>
 
           {showUserFilters && (
-            <div className="sa-filters-panel">
-              <div className="sa-filter-group">
-                <span className="sa-filter-label">Данные пользователя:</span>
-                <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
-                  <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={fullNameFilter} onChange={(event) => setFullNameFilter(event.target.value)} placeholder="ФИО" />
-                  <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={emailFilter} onChange={(event) => setEmailFilter(event.target.value)} placeholder="Электронная почта" />
-                  <input className="sa-input" style={{ minWidth: 0, flex: '1 1 160px' }} value={phoneFilter} onChange={(event) => setPhoneFilter(event.target.value)} placeholder="Телефон" />
-                </div>
-              </div>
+            <FiltersPanel
+              onReset={() => {
+                setFullNameFilter('');
+                setEmailFilter('');
+                setPhoneFilter('');
+                setRoleFilter('');
+                setHoldingFilter('');
+                setDealershipFilter('');
+                setOwnershipFilter('all');
+                setUserQuickFilter(null);
+              }}
+            >
+              <FilterGroup label="Данные пользователя">
+                <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={fullNameFilter} onChange={(event) => setFullNameFilter(event.target.value)} placeholder="ФИО" />
+                <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={emailFilter} onChange={(event) => setEmailFilter(event.target.value)} placeholder="Электронная почта" />
+                <input className="sa-input" style={{ minWidth: 0, flex: '1 1 160px' }} value={phoneFilter} onChange={(event) => setPhoneFilter(event.target.value)} placeholder="Телефон" />
+              </FilterGroup>
 
-              <div className="sa-filter-group">
-                <span className="sa-filter-label">Роль:</span>
-                <div className="sa-filter-options">
-                  {(meta?.roles || []).map((item) => (
-                    <label key={item} className="sa-filter-check">
-                      <input
-                        type="checkbox"
-                        checked={roleFilter === item}
-                        onChange={() => setRoleFilter((current) => (current === item ? '' : item))}
-                      />
-                      {roleLabel(item)}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="sa-filter-group">
-                <span className="sa-filter-label">Компания:</span>
-                <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
-                  <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
-                    <SearchableSelect
-                      value={holdingFilter}
-                      options={holdingFilterOptions}
-                      placeholder="Все компании"
-                      onChange={setHoldingFilter}
+              <FilterGroup label="Роль">
+                {(meta?.roles || []).map((item) => (
+                  <label key={item} className="sa-filter-check">
+                    <input
+                      type="checkbox"
+                      checked={roleFilter === item}
+                      onChange={() => setRoleFilter((current) => (current === item ? '' : item))}
                     />
-                  </div>
-                </div>
-              </div>
+                    {roleLabel(item)}
+                  </label>
+                ))}
+              </FilterGroup>
 
-              <div className="sa-filter-group">
-                <span className="sa-filter-label">Точка:</span>
-                <div className="sa-filter-options" style={{ alignItems: 'stretch' }}>
-                  <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
-                    <SearchableSelect
-                      value={dealershipFilter}
-                      options={dealershipFilterOptions}
-                      placeholder="Все точки"
-                      onChange={setDealershipFilter}
+              <FilterGroup label="Компания">
+                <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
+                  <SearchableSelect
+                    value={holdingFilter}
+                    options={holdingFilterOptions}
+                    placeholder="Все компании"
+                    onChange={setHoldingFilter}
+                  />
+                </div>
+              </FilterGroup>
+
+              <FilterGroup label="Точка">
+                <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
+                  <SearchableSelect
+                    value={dealershipFilter}
+                    options={dealershipFilterOptions}
+                    placeholder="Все точки"
+                    onChange={setDealershipFilter}
+                  />
+                </div>
+              </FilterGroup>
+
+              <FilterGroup label="Франшиза / Свои">
+                {[
+                  { value: 'own' as UserOwnershipFilter, label: 'Свои' },
+                  { value: 'franchised' as UserOwnershipFilter, label: 'Франшиза' },
+                ].map((option) => (
+                  <label key={option.value} className="sa-filter-check">
+                    <input
+                      type="checkbox"
+                      checked={ownershipFilter === option.value}
+                      onChange={() => setOwnershipFilter((current) => (current === option.value ? 'all' : option.value))}
                     />
-                  </div>
-                </div>
-              </div>
-
-              <div className="sa-filter-group">
-                <span className="sa-filter-label">Франшиза / Свои:</span>
-                <div className="sa-filter-options">
-                  {[
-                    { value: 'own' as UserOwnershipFilter, label: 'Свои' },
-                    { value: 'franchised' as UserOwnershipFilter, label: 'Франшиза' },
-                  ].map((option) => (
-                    <label key={option.value} className="sa-filter-check">
-                      <input
-                        type="checkbox"
-                        checked={ownershipFilter === option.value}
-                        onChange={() => setOwnershipFilter((current) => (current === option.value ? 'all' : option.value))}
-                      />
-                      {option.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="sa-filter-reset"
-                onClick={() => {
-                  setFullNameFilter('');
-                  setEmailFilter('');
-                  setPhoneFilter('');
-                  setRoleFilter('');
-                  setHoldingFilter('');
-                  setDealershipFilter('');
-                  setOwnershipFilter('all');
-                  setUserQuickFilter(null);
-                }}
-              >
-                Сбросить фильтры
-              </button>
-            </div>
+                    {option.label}
+                  </label>
+                ))}
+              </FilterGroup>
+            </FiltersPanel>
           )}
 
           <div className="sa-companies-table-wrap sa-holdings-table-wrap sa-desktop-only">
@@ -1906,9 +1918,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                               aria-label="Номера телефонов"
                               title="Номера телефонов"
                             >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                                <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
-                              </svg>
+                              <PhoneIcon />
                             </button>
                             <button
                               type="button"
@@ -1917,10 +1927,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                               aria-label="Редактировать"
                               title="Редактировать"
                             >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                                <path d="M12 20h9" />
-                                <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                              </svg>
+                              <EditIcon />
                             </button>
                           </div>
                         </td>
@@ -1972,9 +1979,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                         aria-label="Номера телефонов"
                         title="Номера телефонов"
                       >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                          <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z" />
-                        </svg>
+                        <PhoneIcon />
                       </button>
                       <button
                         type="button"
@@ -1983,10 +1988,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                         aria-label="Редактировать"
                         title="Редактировать"
                       >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                          <path d="M12 20h9" />
-                          <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                        </svg>
+                        <EditIcon />
                       </button>
                     </div>
                   </div>
@@ -2131,10 +2133,31 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         title="Редактировать пользователя"
         subtitle="Изменение пользователя выполняется через отдельное модальное окно."
         open={editUserOpen}
-        onClose={() => { setEditUserOpen(false); setEditDeleteConfirm(false); }}
+        onClose={requestCloseEditUserModal}
+        footer={renderEditUserFormFooter()}
       >
-        {renderUserForm(handleEditUser, 'Сохранить пользователя')}
+        {renderUserForm(handleEditUser)}
       </ModalFrame>
+
+      <UnsavedChangesModal
+        open={userUnsavedOpen && editUserOpen}
+        saving={savingUser}
+        onCancel={() => setUserUnsavedOpen(false)}
+        onDiscard={() => {
+          setUserUnsavedOpen(false);
+          setEditUserOpen(false);
+          setEditDeleteConfirm(false);
+        }}
+        onSave={() => { void persistUserEdit(); }}
+      />
+
+      <DeleteConfirmModal
+        open={editDeleteConfirm && editUserOpen}
+        title="Удалить пользователя?"
+        saving={savingUser}
+        onCancel={() => setEditDeleteConfirm(false)}
+        onConfirm={() => { void handleDeleteUserConfirm(); }}
+      />
 
       <ModalFrame
         title="Новый шаблон прав"
@@ -2237,27 +2260,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         {renderTemplateForm(handleEditTemplate, 'Сохранить шаблон')}
       </ModalFrame>
 
-      <ModalFrame
-        title="Удалить шаблон прав"
-        subtitle="Шаблон будет удалён вместе с его назначениями."
+      <DeleteConfirmModal
         open={deleteTemplateOpen && !!activeTemplate}
-        onClose={() => setDeleteTemplateOpen(false)}
-        width={520}
-      >
-        {activeTemplate && (
-          <div style={{ display: 'grid', gap: 16 }}>
-            <p style={{ margin: 0 }}>
-              Удалить шаблон <strong>{activeTemplate.name}</strong>?
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button type="button" className="sa-btn-outline" onClick={() => setDeleteTemplateOpen(false)}>Отмена</button>
-              <button type="button" className="sa-btn-danger" onClick={handleDeleteTemplateConfirm} disabled={savingTemplate}>
-                {savingTemplate ? 'Удаляем...' : 'Удалить'}
-              </button>
-            </div>
-          </div>
-        )}
-      </ModalFrame>
+        title="Удалить шаблон?"
+        saving={savingTemplate}
+        onCancel={() => setDeleteTemplateOpen(false)}
+        onConfirm={() => { void handleDeleteTemplateConfirm(); }}
+      />
 
       {phoneNumbersUserId && (
         <UserPhoneNumbersModal

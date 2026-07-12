@@ -13,6 +13,7 @@ import { ratingClass } from '../../../shared/lib/admin-panel/utils';
 import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { FiltersPanel, FilterGroup, FiltersToggleButton } from '../../../shared/ui/filters-panel';
 
 type AuditType = 'trainer' | 'call';
 type AuditStatus = 'completed' | 'failed' | 'interrupted';
@@ -260,15 +261,39 @@ export function Audits({
   }, [allReportIssues]);
 
   useEffect(() => {
-    const problem = new URLSearchParams(location.search).get('problem');
-    if (!problem || problemCatalogLoading) return;
-    const decoded = problem.trim();
-    const match = allReportIssues.find((issue) => issue === decoded) ?? null;
-    if (!match) return;
+    const params = new URLSearchParams(location.search);
+    const problem = params.get('problem');
+    const dealership = params.get('dealership');
+    if ((!problem && !dealership) || problemCatalogLoading || dealershipsLoading || holdingsLoading) return;
+
     setShowFilters(true);
-    setFilterProblems(new Set([match]));
     setPage(1);
-  }, [allReportIssues, location.search, problemCatalogLoading]);
+
+    if (problem) {
+      const decoded = problem.trim();
+      const match = allReportIssues.find((issue) => issue === decoded)
+        ?? allReportIssues.find((issue) => issue.toLowerCase() === decoded.toLowerCase())
+        ?? decoded;
+      setFilterProblems(new Set([match]));
+    }
+
+    if (dealership) {
+      const target = dealerships.find((item) => item.id === dealership);
+      if (target?.holdingId && target.holdingId !== selectedHoldingId) {
+        setSelectedHoldingId(target.holdingId);
+      }
+      setFilterDealership(new Set([dealership]));
+    }
+  }, [
+    allReportIssues,
+    dealerships,
+    dealershipsLoading,
+    holdingsLoading,
+    location.search,
+    problemCatalogLoading,
+    selectedHoldingId,
+    setSelectedHoldingId,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -316,6 +341,8 @@ export function Audits({
     next.has(issue) ? next.delete(issue) : next.add(issue);
     return next;
   });
+
+  const activeFiltersCount = filterCity.size + filterDealership.size + filterScoreBands.size + filterProblems.size;
 
   const filtered = useMemo(() => {
     let list = [...rows];
@@ -411,77 +438,70 @@ export function Audits({
               />
             </div>
 
-            <button
-              type="button"
-              className={`sa-btn-outline ${showFilters ? 'sa-chip-active' : ''}`}
+            <FiltersToggleButton
+              active={showFilters}
+              count={activeFiltersCount}
               onClick={() => setShowFilters(!showFilters)}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-              </svg>
-              Фильтры
-            </button>
+              className="sa-btn-outline"
+            />
           </div>
         </div>
       </div>
 
       {showFilters && (
-        <div className="sa-filters-panel">
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Балл</span>
-            <div className="sa-filter-options">
-              {SCORE_BAND_OPTIONS.map((option) => (
-                <label key={option.id} className="sa-filter-check">
-                  <input type="checkbox" checked={filterScoreBands.has(option.id)} onChange={() => toggleScoreBand(option.id)} />
-                  {option.label}
+        <FiltersPanel
+          onReset={() => {
+            setFilterCity(new Set());
+            setFilterDealership(new Set());
+            setFilterScoreBands(new Set());
+            setFilterProblems(new Set());
+          }}
+        >
+          <FilterGroup label="Балл">
+            {SCORE_BAND_OPTIONS.map((option) => (
+              <label key={option.id} className="sa-filter-check">
+                <input type="checkbox" checked={filterScoreBands.has(option.id)} onChange={() => toggleScoreBand(option.id)} />
+                {option.label}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Проблемы">
+            {problemCatalogLoading ? (
+              <span className="sa-meta">Загружаем справочник проблем...</span>
+            ) : allReportIssues.length === 0 ? (
+              <span className="sa-meta">Справочник проблем пуст</span>
+            ) : (
+              allReportIssues.map((issue) => (
+                <label key={issue} className="sa-filter-check">
+                  <input type="checkbox" checked={filterProblems.has(issue)} onChange={() => toggleProblem(issue)} />
+                  {issue}
                 </label>
-              ))}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Проблемы</span>
-            <div className="sa-filter-options">
-              {problemCatalogLoading ? (
-                <span className="sa-meta">Загружаем справочник проблем...</span>
-              ) : allReportIssues.length === 0 ? (
-                <span className="sa-meta">Справочник проблем пуст</span>
-              ) : (
-                allReportIssues.map((issue) => (
-                  <label key={issue} className="sa-filter-check">
-                    <input type="checkbox" checked={filterProblems.has(issue)} onChange={() => toggleProblem(issue)} />
-                    {issue}
-                  </label>
-                ))
-              )}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Город</span>
-            <div className="sa-filter-options">
-              {allCities.map((c) => (
-                <label key={c} className="sa-filter-check">
-                  <input type="checkbox" checked={filterCity.has(c)} onChange={() => toggleCity(c)} />
-                  {c}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Точка</span>
-            <div className="sa-filter-options">
-              {dealershipsLoading ? (
-                <span className="sa-meta">Загружаем точки...</span>
-              ) : allDealerships.length === 0 ? (
-                <span className="sa-meta">У выбранной компании нет точек</span>
-              ) : allDealerships.map((d) => (
+              ))
+            )}
+          </FilterGroup>
+          <FilterGroup label="Город">
+            {allCities.map((c) => (
+              <label key={c} className="sa-filter-check">
+                <input type="checkbox" checked={filterCity.has(c)} onChange={() => toggleCity(c)} />
+                {c}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Точка">
+            {dealershipsLoading ? (
+              <span className="sa-meta">Загружаем точки...</span>
+            ) : allDealerships.length === 0 ? (
+              <span className="sa-meta">У выбранной компании нет точек</span>
+            ) : (
+              allDealerships.map((d) => (
                 <label key={d.id} className="sa-filter-check">
                   <input type="checkbox" checked={filterDealership.has(d.id)} onChange={() => toggleDealership(d.id)} />
                   {d.name}
                 </label>
-              ))}
-            </div>
-          </div>
-        </div>
+              ))
+            )}
+          </FilterGroup>
+        </FiltersPanel>
       )}
 
       <div className="sa-companies-table-wrap sa-desktop-only">

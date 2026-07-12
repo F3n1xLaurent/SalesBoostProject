@@ -11,7 +11,8 @@ import {
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
-import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
+import { BrutalModal } from '../../../shared/ui/brutal-modal';
+import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
 
 type TypeFormState = {
   name: string;
@@ -25,101 +26,126 @@ const EMPTY_FORM: TypeFormState = {
   isActive: true,
 };
 
+const TYPE_FORM_ID = 'phone-type-modal-form';
+
 const OWNERSHIP_LABELS: Record<PhoneNumberOwnership, string> = {
   dealership: 'Для точек',
   user: 'Для пользователей',
 };
 
-function overlayCardStyle(width = 520): React.CSSProperties {
+function normalizeTypeForm(form: TypeFormState): TypeFormState {
   return {
-    width: `min(100%, ${width}px)`,
-    maxHeight: '88vh',
-    overflowY: 'auto',
-    background: '#fff',
-    borderRadius: 24,
-    boxShadow: '0 28px 80px rgba(15,23,42,0.28)',
-    padding: 22,
+    name: form.name.trim(),
+    ownership: form.ownership,
+    isActive: form.isActive,
   };
 }
 
 function TypeModal(props: {
   open: boolean;
+  mode: 'create' | 'edit';
   initial: TypeFormState;
   holdingName?: string | null;
   title: string;
   submitLabel: string;
   saving: boolean;
   error: string | null;
-  requireChanges?: boolean;
   onClose: () => void;
   onSubmit: (form: TypeFormState) => void;
 }) {
   const [form, setForm] = useState<TypeFormState>(props.initial);
+  const [attempted, setAttempted] = useState(false);
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
   const wasOpenRef = useRef(false);
   const isDirty = useMemo(
     () => JSON.stringify(normalizeTypeForm(form)) !== JSON.stringify(normalizeTypeForm(props.initial)),
     [form, props.initial],
   );
+  const nameInvalid = attempted && !form.name.trim();
 
   useEffect(() => {
     if (props.open && !wasOpenRef.current) {
       setForm(props.initial);
+      setAttempted(false);
+      setUnsavedOpen(false);
     }
     wasOpenRef.current = props.open;
   }, [props.open, props.initial]);
 
+  function requestClose() {
+    if (props.mode === 'edit' && isDirty) {
+      setUnsavedOpen(true);
+      return;
+    }
+    props.onClose();
+  }
+
+  function persist(): boolean {
+    if (!form.name.trim()) {
+      setAttempted(true);
+      return false;
+    }
+    if (props.mode === 'edit' && !isDirty) return false;
+    props.onSubmit(form);
+    return true;
+  }
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setAttempted(true);
+    persist();
+  }
+
   if (!props.open) return null;
 
   return (
-    <FixedOverlayPortal>
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.48)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 20,
-        zIndex: 120,
-      }}
-      onClick={props.onClose}
-    >
-      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={props.title}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>{props.title}</h2>
-            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Тип задаёт назначение номера и доступен при добавлении телефонов.
+    <>
+      <BrutalModal
+        open={props.open}
+        onClose={requestClose}
+        title={props.title}
+        subtitle="Тип задаёт назначение номера и доступен при добавлении телефонов."
+        width="medium"
+        footer={(
+          <div className="sa-modal-footer-row">
+            <div className="sa-modal-footer-row__right">
+              <button type="button" className="sa-btn-outline" onClick={requestClose} disabled={props.saving}>Отмена</button>
+              <button
+                type="submit"
+                form={TYPE_FORM_ID}
+                className="sa-btn-primary"
+                disabled={props.saving || (props.mode === 'edit' && !isDirty)}
+              >
+                {props.saving ? 'Сохраняем...' : props.submitLabel}
+              </button>
             </div>
           </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M6 6l12 12M18 6L6 18" />
-            </svg>
-          </button>
-        </div>
-
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            props.onSubmit(form);
-          }}
-          style={{ display: 'grid', gap: 14 }}
-        >
+        )}
+      >
+        <form id={TYPE_FORM_ID} onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
           {props.holdingName && (
-            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: '#F8FAFC' }}>
+            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--tb-cream)' }}>
               Компания: {props.holdingName}
             </div>
           )}
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
-            <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+            <input
+              className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+              value={form.name}
+              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              aria-invalid={nameInvalid || undefined}
+            />
           </label>
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Принадлежность</span>
-            <select className="sa-select" value={form.ownership} onChange={(event) => setForm((current) => ({ ...current, ownership: event.target.value as PhoneNumberOwnership }))}>
+            <select
+              className="sa-select"
+              value={form.ownership}
+              onChange={(event) => setForm((current) => ({ ...current, ownership: event.target.value as PhoneNumberOwnership }))}
+            >
               <option value="dealership">Для точек</option>
               <option value="user">Для пользователей</option>
             </select>
@@ -135,26 +161,21 @@ function TypeModal(props: {
               {props.error}
             </div>
           )}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={props.saving || !form.name.trim() || (!!props.requireChanges && !isDirty)}>
-              {props.saving ? 'Сохраняем...' : props.submitLabel}
-            </button>
-          </div>
         </form>
-      </div>
-    </div>
-    </FixedOverlayPortal>
-  );
-}
+      </BrutalModal>
 
-function normalizeTypeForm(form: TypeFormState): TypeFormState {
-  return {
-    name: form.name.trim(),
-    ownership: form.ownership,
-    isActive: form.isActive,
-  };
+      <UnsavedChangesModal
+        open={unsavedOpen}
+        saving={props.saving}
+        onCancel={() => setUnsavedOpen(false)}
+        onDiscard={() => {
+          setUnsavedOpen(false);
+          props.onClose();
+        }}
+        onSave={() => { persist(); }}
+      />
+    </>
+  );
 }
 
 export function TypesNumbersPage() {
@@ -337,6 +358,7 @@ export function TypesNumbersPage() {
 
       <TypeModal
         open={createOpen}
+        mode="create"
         initial={{ ...EMPTY_FORM, ownership: activeOwnership }}
         holdingName={selectedHolding?.name || null}
         title="Создать тип номера"
@@ -349,13 +371,13 @@ export function TypesNumbersPage() {
 
       <TypeModal
         open={!!editType}
+        mode="edit"
         initial={editType ? { name: editType.name, ownership: editType.ownership, isActive: editType.isActive } : EMPTY_FORM}
         holdingName={selectedHolding?.name || null}
         title="Редактировать тип номера"
-        submitLabel="Сохранить изменения"
+        submitLabel="Сохранить"
         saving={saving}
         error={editType ? error : null}
-        requireChanges
         onClose={() => setEditType(null)}
         onSubmit={handleEdit}
       />

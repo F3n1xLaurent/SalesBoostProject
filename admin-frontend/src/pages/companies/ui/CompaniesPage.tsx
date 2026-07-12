@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { apiFetch } from '../../../entities/session';
 import {
   STATUS_LABELS,
@@ -15,11 +16,13 @@ import {
   type CallBatchSnapshot,
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
-import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
-import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
+import { MetricComparisonModal } from '../../../shared/ui/metric-comparison-modal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { EditIcon } from '../../../shared/ui/icons/ActionIcons';
+import { FiltersPanel, FilterGroup, FiltersToggleButton } from '../../../shared/ui/filters-panel';
 
 const API_BASE = '';
 
@@ -31,6 +34,7 @@ type CompaniesProps = {
   onSelectDealership?: (id: string) => void;
   onOpenBatchInAudits?: (batchId: string) => void;
   onDealershipSaved?: (dealership: DealershipItem) => void;
+  onDealershipDeleted?: (dealershipId: string) => void;
 };
 
 /* ────────────────────── Sort config ────────────────────── */
@@ -95,7 +99,6 @@ function DealershipComparisonModal({
   onClose: () => void;
   onOpenDealership?: (id: string) => void;
 }) {
-  if (rows.length < 2) return null;
   const metricDefs = [
     { key: 'aiRating' as const, label: 'AI-рейтинг', higherBetter: true },
     { key: 'answerRate' as const, label: 'Дозвон, %', higherBetter: true },
@@ -104,85 +107,49 @@ function DealershipComparisonModal({
     { key: 'employeesCount' as const, label: 'Сотрудники', higherBetter: true },
     { key: 'deltaRating' as const, label: 'Динамика', higherBetter: true },
   ];
-  const leader = [...rows].sort((a, b) => b.aiRating - a.aiRating)[0];
-  const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
 
   return (
-    <FixedOverlayPortal>
-    <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
-      <div className="sa-card" style={{ width: 'min(1040px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
-        <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
-          <div>
-            <h2 className="sa-section-title" style={{ marginBottom: 4 }}>Сравнение точек</h2>
-            <div className="sa-meta">Выбрано: {rows.length}</div>
-          </div>
-          <button type="button" className="sa-btn-outline" onClick={onClose}>Закрыть</button>
-        </div>
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Метрика</th>
-                {rows.map((row) => (
-                  <th key={row.id} className="sa-text-right">
-                    <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenDealership?.(row.id)}>{row.name}</button>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {metricDefs.map((metric) => {
-                const values = rows.map((row) => Number(row[metric.key] ?? (metric.higherBetter ? 0 : Number.POSITIVE_INFINITY)));
-                const best = metric.higherBetter ? Math.max(...values) : Math.min(...values);
-                const worst = metric.higherBetter ? Math.min(...values) : Math.max(...values);
-                return (
-                  <tr key={metric.key}>
-                    <td>{metric.label}</td>
-                    {rows.map((row) => {
-                      const raw = row[metric.key];
-                      const value = raw === null ? null : Number(raw);
-                      const isBest = value !== null && value === best;
-                      const isWorst = value !== null && value === worst && best !== worst;
-                      return (
-                        <td key={row.id} className="sa-text-right">
-                          <span className={isBest ? 'sa-score-green' : isWorst ? 'sa-score-red' : ''}>
-                            {value === null ? '—' : metric.key === 'deltaRating' && value > 0 ? `+${value}` : value}
-                          </span>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-              <tr>
-                <td>Статус</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right"><span className={statusBadgeClass(row.status)}>{STATUS_LABELS[row.status]}</span></td>
-                ))}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div style={{ marginTop: 16 }}>
-          <ComparisonAISummary level="dealerships-directory" items={rows.map((row) => ({ ...row }))} />
-        </div>
-        <div className="sa-card" style={{ marginTop: 16 }}>
-          <h3 className="sa-card-heading">Вывод</h3>
-          <p className="sa-meta" style={{ lineHeight: 1.6 }}>
-            Лидер по рейтингу — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenDealership?.(leader.id)}>{leader.name}</button>.
-            {' '}Самая слабая точка — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenDealership?.(lagger.id)}>{lagger.name}</button>.
-            {' '}Разницу стоит смотреть через звонки, недозвоны и динамику за выбранный период.
-          </p>
-        </div>
-      </div>
-    </div>
-    </FixedOverlayPortal>
+    <MetricComparisonModal
+      open={rows.length >= 2}
+      onClose={onClose}
+      title="Сравнение точек"
+      columns={rows.map((row) => ({
+        id: row.id,
+        label: row.name,
+        onOpen: onOpenDealership ? () => onOpenDealership(row.id) : undefined,
+      }))}
+      metrics={metricDefs.map((metric) => ({
+        key: metric.key,
+        label: metric.label,
+        higherBetter: metric.higherBetter,
+        values: rows.map((row) => {
+          const raw = row[metric.key];
+          return raw === null || raw === undefined ? null : Number(raw);
+        }),
+        format: (value) => {
+          if (value === null) return '—';
+          if (metric.key === 'deltaRating' && value > 0) return `+${value}`;
+          return value;
+        },
+      }))}
+      extraRows={[
+        {
+          key: 'status',
+          label: 'Статус',
+          cells: rows.map((row) => (
+            <span key={row.id} className={statusBadgeClass(row.status)}>{STATUS_LABELS[row.status]}</span>
+          )),
+        },
+      ]}
+      aiLevel="dealerships-directory"
+      aiItems={rows.map((row) => ({ ...row }))}
+    />
   );
 }
 
 /* ────────────────────── Component ────────────────────── */
 
-export function Companies({ dealerships, loading = false, onSelectDealership, onOpenBatchInAudits, onDealershipSaved }: CompaniesProps) {
+export function Companies({ dealerships, loading = false, onSelectDealership, onOpenBatchInAudits, onDealershipSaved, onDealershipDeleted }: CompaniesProps) {
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [holdingsError, setHoldingsError] = useState<string | null>(null);
@@ -233,8 +200,6 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   const [period, setPeriod] = useState<Period>('30d');
   const [sortKey, setSortKey] = useState<SortKey>('aiRating');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [onlyProblematic, setOnlyProblematic] = useState(false);
-  const [onlyNoData, setOnlyNoData] = useState(false);
   const [cityFilter, setCityFilter] = useState<string[]>([]);
   const [typeFilter, setTypeFilter] = useState<DealershipType[]>([]);
   const [directionFilter, setDirectionFilter] = useState<DealershipDirection[]>([]);
@@ -248,6 +213,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   const [activeBatch, setActiveBatch] = useState<CallBatchSnapshot | null>(null);
   const [dealershipSummary, setDealershipSummary] = useState<Record<string, DealershipBatchSummary>>({});
   const [createDealershipOpen, setCreateDealershipOpen] = useState(false);
+  const [editDealership, setEditDealership] = useState<DealershipItem | null>(null);
   const [selectedComparisonIds, setSelectedComparisonIds] = useState<string[]>([]);
   const [comparisonOpen, setComparisonOpen] = useState(false);
 
@@ -318,12 +284,6 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
       const q = search.toLowerCase();
       list = list.filter((r) => r.name.toLowerCase().includes(q) || r.city.toLowerCase().includes(q));
     }
-    if (onlyProblematic) {
-      list = list.filter((r) => r.status === 'critical' || r.status === 'risk');
-    }
-    if (onlyNoData) {
-      list = list.filter((r) => r.status === 'no-data');
-    }
     if (cityFilter.length > 0) {
       list = list.filter((r) => cityFilter.includes(r.city));
     }
@@ -337,7 +297,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
       list = list.filter((r) => statusFilter.includes(r.status));
     }
     return [...list].sort(comparator(sortKey, sortDir));
-  }, [rows, search, onlyProblematic, onlyNoData, cityFilter, typeFilter, directionFilter, statusFilter, sortKey, sortDir]);
+  }, [rows, search, cityFilter, typeFilter, directionFilter, statusFilter, sortKey, sortDir]);
   const selectedComparisonRows = useMemo(
     () => filtered.filter((row) => selectedComparisonIds.includes(row.id)),
     [filtered, selectedComparisonIds],
@@ -366,6 +326,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   const toggleStatusFilter = (s: DealershipStatus) => {
     setStatusFilter((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
   };
+
+  const activeFiltersCount = cityFilter.length + typeFilter.length + directionFilter.length + statusFilter.length;
 
   const SortIcon = ({ col }: { col: SortKey }) => {
     if (sortKey !== col) return <span className="sa-sort-icon sa-sort-icon-inactive">⇅</span>;
@@ -586,10 +548,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
-        <div>
-          <h1 className="sa-page-title">Точки</h1>
-          <p className="sa-page-subtitle">Управление точками компании и их эффективностью</p>
-        </div>
+        <h1 className="sa-page-title">Точки</h1>
         <HoldingSelectPicker
           holdings={holdings}
           value={selectedHoldingId}
@@ -618,8 +577,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
       )}
 
       {/* ─── Toolbar ─── */}
-      <div className="sa-toolbar">
-        <div className="sa-toolbar-row">
+      <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
+        <div className="sa-toolbar-filters">
           <div className="sa-search-wrap">
             <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
@@ -638,28 +597,21 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
               onChange={(value) => setPeriod(value as Period)}
             />
           </div>
-          <button className="sa-btn-outline" onClick={() => setShowFilters((v) => !v)}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-            </svg>
-            Фильтры
-          </button>
-          <button className="sa-btn-primary" disabled={!selectedHoldingId} onClick={() => setCreateDealershipOpen(true)}>
-            Создать точку
-          </button>
+          <FiltersToggleButton
+            active={showFilters}
+            count={activeFiltersCount}
+            onClick={() => setShowFilters((v) => !v)}
+          />
         </div>
-        <div className="sa-toolbar-chips">
+        <div className="sa-toolbar-actions">
           <button
-            className={`sa-chip ${onlyProblematic ? 'sa-chip-active' : ''}`}
-            onClick={() => { setOnlyProblematic((v) => !v); setOnlyNoData(false); }}
+            type="button"
+            className="sa-btn-brutal-3d"
+            disabled={!selectedHoldingId}
+            onClick={() => setCreateDealershipOpen(true)}
           >
-            Только проблемные
-          </button>
-          <button
-            className={`sa-chip ${onlyNoData ? 'sa-chip-active' : ''}`}
-            onClick={() => { setOnlyNoData((v) => !v); setOnlyProblematic(false); }}
-          >
-            Без данных
+            <LetsIcon name="add-light" size={16} bold />
+            Создать точку
           </button>
         </div>
       </div>
@@ -677,83 +629,94 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
 
       {/* ─── Filters panel (collapsible) ─── */}
       {showFilters && (
-        <div className="sa-filters-panel">
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Город:</span>
-            <div className="sa-filter-options">
-              {allCities.map((city) => (
-                <label key={city} className="sa-filter-check">
-                  <input type="checkbox" checked={cityFilter.includes(city)} onChange={() => toggleCityFilter(city)} />
-                  {city}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Статус:</span>
-            <div className="sa-filter-options">
-              {(['critical', 'risk', 'norm', 'no-data'] as DealershipStatus[]).map((s) => (
-                <label key={s} className="sa-filter-check">
-                  <input type="checkbox" checked={statusFilter.includes(s)} onChange={() => toggleStatusFilter(s)} />
-                  {STATUS_LABELS[s]}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Тип точки:</span>
-            <div className="sa-filter-options">
-              {(['own', 'franchised'] as DealershipType[]).map((type) => (
-                <label key={type} className="sa-filter-check">
-                  <input type="checkbox" checked={typeFilter.includes(type)} onChange={() => toggleTypeFilter(type)} />
-                  {dealershipTypeLabel(type)}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Направления:</span>
-            <div className="sa-filter-options">
-              {availableDirectionFilters.map((direction) => (
-                <label key={direction.value} className="sa-filter-check">
-                  <input type="checkbox" checked={directionFilter.includes(direction.value)} onChange={() => toggleDirectionFilter(direction.value)} />
-                  {direction.label}
-                </label>
-              ))}
-            </div>
-          </div>
-          <button className="sa-filter-reset" onClick={() => { setCityFilter([]); setTypeFilter([]); setDirectionFilter([]); setStatusFilter([]); }}>Сбросить фильтры</button>
-        </div>
+        <FiltersPanel
+          onReset={() => {
+            setCityFilter([]);
+            setTypeFilter([]);
+            setDirectionFilter([]);
+            setStatusFilter([]);
+          }}
+        >
+          <FilterGroup label="Город">
+            {allCities.map((city) => (
+              <label key={city} className="sa-filter-check">
+                <input type="checkbox" checked={cityFilter.includes(city)} onChange={() => toggleCityFilter(city)} />
+                {city}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Статус">
+            {(['critical', 'risk', 'norm', 'no-data'] as DealershipStatus[]).map((s) => (
+              <label key={s} className="sa-filter-check">
+                <input type="checkbox" checked={statusFilter.includes(s)} onChange={() => toggleStatusFilter(s)} />
+                {STATUS_LABELS[s]}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Тип точки">
+            {(['own', 'franchised'] as DealershipType[]).map((type) => (
+              <label key={type} className="sa-filter-check">
+                <input type="checkbox" checked={typeFilter.includes(type)} onChange={() => toggleTypeFilter(type)} />
+                {dealershipTypeLabel(type)}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Направления">
+            {availableDirectionFilters.map((direction) => (
+              <label key={direction.value} className="sa-filter-check">
+                <input type="checkbox" checked={directionFilter.includes(direction.value)} onChange={() => toggleDirectionFilter(direction.value)} />
+                {direction.label}
+              </label>
+            ))}
+          </FilterGroup>
+        </FiltersPanel>
       )}
 
       {/* ─── Desktop table ─── */}
-      <div className="sa-companies-table-wrap sa-desktop-only">
-        <table className="sa-table sa-table-sortable">
+      <div className="sa-companies-table-wrap sa-holdings-table-wrap sa-desktop-only">
+        <table className="sa-table sa-table-sortable sa-holdings-table sa-points-table">
+          <colgroup>
+            <col className="sa-col-check" />
+            <col className="sa-col-name" />
+            <col className="sa-col-dealer" />
+            <col className="sa-col-city" />
+            <col className="sa-col-type" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-num" />
+            <col className="sa-col-hours" />
+            <col className="sa-col-status" />
+            <col className="sa-col-actions" />
+          </colgroup>
           <thead>
             <tr>
-              <th style={{ width: 44 }} />
+              <th />
               {COLUMN_DEFS.map((col) => (
                 <th
                   key={col.key}
                   className={`sa-th-sortable ${col.align === 'right' ? 'sa-text-right' : ''}`}
                   onClick={() => handleSort(col.key)}
                 >
-                  {col.label} <SortIcon col={col.key} />
+                  {col.label}
+                  {' '}
+                  <SortIcon col={col.key} />
                 </th>
               ))}
-              <th style={{ width: 32 }} />
+              <th>Статус</th>
+              <th className="sa-text-right sa-holdings-actions-col">Действия</th>
             </tr>
           </thead>
           <tbody>
               {loading || holdingsLoading ? (
-                <tr><td colSpan={9} className="sa-meta" style={{ padding: 32 }}>Загрузка…</td></tr>
+                <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>Загрузка…</td></tr>
               ) : holdings.length === 0 ? (
-                <tr><td colSpan={9} className="sa-meta" style={{ padding: 32 }}>Перед тем, как создавать точки, пожалуйста, добавьте компанию.</td></tr>
+                <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>Перед тем, как создавать точки, пожалуйста, добавьте компанию.</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={9} className="sa-meta" style={{ padding: 32 }}>Нет точек по заданным фильтрам</td></tr>
+                <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>Нет точек по заданным фильтрам</td></tr>
             ) : (
               filtered.map((r) => {
                 const delta = deltaDisplay(r.deltaRating);
+                const sourceDealership = dealerships.find((item) => item.id === r.id) ?? null;
                 return (
                   <tr
                     key={r.id}
@@ -774,7 +737,6 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                     </td>
                     <td>
                       <div className="sa-cell-name">{r.name}</div>
-                      <div className="sa-cell-city">{r.isActive ? 'Активен' : 'Не активен'}</div>
                       {dealershipSummary[r.id] && (
                         <div className="sa-inline-batch-status">
                           {dealershipSummary[r.id].completed}/{dealershipSummary[r.id].total} · {dealershipSummary[r.id].status === 'in_progress' ? 'в работе' : dealershipSummary[r.id].status === 'completed' ? 'готово' : dealershipSummary[r.id].status === 'failed' ? 'ошибка' : dealershipSummary[r.id].status === 'partial' ? 'частично' : dealershipSummary[r.id].status === 'cancelled' ? 'отменено' : 'в очереди'}
@@ -788,10 +750,24 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                     <td className="sa-text-right"><span className={delta.cls}>{delta.text}</span></td>
                     <td className="sa-text-right">{r.auditsCount}</td>
                     <td>{r.workingHours}</td>
-                    <td className="sa-row-chevron-cell">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="9 18 15 12 9 6" />
-                      </svg>
+                    <td>
+                      <span className={`sa-status-badge ${r.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                        {r.isActive ? 'Активен' : 'Выключен'}
+                      </span>
+                    </td>
+                    <td className="sa-holdings-actions-cell">
+                      <div onClick={(event) => event.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="sa-btn-icon sa-btn-brutal-3d-icon"
+                          disabled={!sourceDealership}
+                          onClick={() => setEditDealership(sourceDealership)}
+                          aria-label="Редактировать точку"
+                          title="Редактировать"
+                        >
+                          <EditIcon />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -835,9 +811,11 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                 <div className="sa-mobile-row-header">
                   <div>
                     <div className="sa-cell-name">{r.name}</div>
-                    <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)} · {r.isActive ? 'Активен' : 'Не активен'}</div>
+                    <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)}</div>
                   </div>
-                  <span className={`sa-mobile-rating ${ratingClass(r.aiRating)}`}>{r.aiRating}</span>
+                  <span className={`sa-status-badge ${r.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                    {r.isActive ? 'Активен' : 'Выключен'}
+                  </span>
                 </div>
                 <div className="sa-mobile-chips">
                   <span className="sa-metric-chip">
@@ -852,7 +830,18 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                   <span className="sa-metric-chip">Проверки: {r.auditsCount}</span>
                   <span className="sa-metric-chip">Сотрудники: {r.employeesCount}</span>
                   <span className="sa-metric-chip"><span className={delta.cls}>{delta.text}</span></span>
-                  <span className={statusBadgeClass(r.status)}>{STATUS_LABELS[r.status]}</span>
+                </div>
+                <div onClick={(event) => event.stopPropagation()} style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button
+                    type="button"
+                    className="sa-btn-icon sa-btn-brutal-3d-icon"
+                    disabled={!dealerships.some((item) => item.id === r.id)}
+                    onClick={() => setEditDealership(dealerships.find((item) => item.id === r.id) ?? null)}
+                    aria-label="Редактировать точку"
+                    title="Редактировать"
+                  >
+                    <EditIcon />
+                  </button>
                 </div>
               </div>
             );
@@ -868,14 +857,29 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
         onClose={() => setCreateDealershipOpen(false)}
         onSaved={(saved) => onDealershipSaved?.(saved)}
       />
-      {selectedComparisonRows.length > 0 && (
-        <div style={{ position: 'fixed', left: 24, right: 24, bottom: 24, zIndex: 60, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div className="sa-card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', pointerEvents: 'auto', boxShadow: '0 16px 40px rgba(15,23,42,.18)' }}>
+      <DealershipModal
+        mode="edit"
+        open={!!editDealership}
+        dealership={editDealership}
+        onClose={() => setEditDealership(null)}
+        onSaved={(saved) => {
+          setEditDealership(null);
+          onDealershipSaved?.(saved);
+        }}
+        onDeleted={(id) => {
+          setEditDealership(null);
+          onDealershipDeleted?.(id);
+        }}
+      />
+      {selectedComparisonRows.length > 0 && createPortal(
+        <div className="theme-brutal sa-selection-tray">
+          <div className="sa-selection-tray__card">
             <strong>Выбрано: {selectedComparisonRows.length}</strong>
             <button type="button" className="sa-btn-outline" disabled={selectedComparisonRows.length < 2} onClick={() => setComparisonOpen(true)}>Сравнить</button>
             <button type="button" className="sa-btn-text" onClick={() => setSelectedComparisonIds([])}>Сбросить</button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       {comparisonOpen && (
         <DealershipComparisonModal

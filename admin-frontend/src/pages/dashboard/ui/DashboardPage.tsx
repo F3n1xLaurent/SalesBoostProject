@@ -137,6 +137,7 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
         <span><i style={{ background: ownColor }} /> Свои салоны</span>
         <span><i style={{ background: franchiseColor }} /> Салоны франчайзи</span>
       </div>
+      <div className="sa-chart-plot">
       <svg
         width="100%"
         height={height}
@@ -212,26 +213,28 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
             </React.Fragment>
           );
         })}
-        {hoverIdx !== null && (() => {
-          const p = points[hoverIdx];
-          const tx = xs[hoverIdx];
-          const ownScore = p.ownScore ?? p.avgScore;
-          const franchiseScore = p.franchiseScore ?? p.avgScore;
-          const ty = Math.min(y(ownScore), y(franchiseScore));
-          const tooltipW = 178;
-          const tooltipH = 76;
-          const tooltipX = Math.min(Math.max(tx - tooltipW / 2, 4), width - tooltipW - 4);
-          const tooltipY = ty - tooltipH - 14;
-          return (
-            <g>
-              <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="8" fill="#1F2937" opacity="0.92" />
-              <text x={tooltipX + 12} y={tooltipY + 18} fontSize="11" fill="#D1D5DB">Дата: {p.date}</text>
-              <text x={tooltipX + 12} y={tooltipY + 38} fontSize="11" fill="#F9FAFB" fontWeight="600">Свои: {ownScore.toFixed(1)} ({p.ownCount ?? p.count})</text>
-              <text x={tooltipX + 12} y={tooltipY + 58} fontSize="11" fill="#F9FAFB" fontWeight="600">Франчайзи: {franchiseScore.toFixed(1)} ({p.franchiseCount ?? p.count})</text>
-            </g>
-          );
-        })()}
       </svg>
+      {hoverIdx !== null && (() => {
+        const p = points[hoverIdx];
+        const tx = xs[hoverIdx];
+        const ownScore = p.ownScore ?? p.avgScore;
+        const franchiseScore = p.franchiseScore ?? p.avgScore;
+        const ty = Math.min(y(ownScore), y(franchiseScore));
+        const leftPct = (tx / width) * 100;
+        const topPct = (ty / height) * 100;
+        const placeBelow = topPct < 28;
+        return (
+          <div
+            className={`sa-chart-hover-tooltip${placeBelow ? ' sa-chart-hover-tooltip-below' : ''}`}
+            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+          >
+            <div className="sa-chart-hover-tooltip-row">Дата: {p.date}</div>
+            <div className="sa-chart-hover-tooltip-row is-strong">Свои: {ownScore.toFixed(1)} ({p.ownCount ?? p.count})</div>
+            <div className="sa-chart-hover-tooltip-row is-strong">Франчайзи: {franchiseScore.toFixed(1)} ({p.franchiseCount ?? p.count})</div>
+          </div>
+        );
+      })()}
+      </div>
     </div>
   );
 }

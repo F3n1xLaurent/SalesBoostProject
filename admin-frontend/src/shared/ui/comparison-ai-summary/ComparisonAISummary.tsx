@@ -40,6 +40,7 @@ export function ComparisonAISummary({ level, items }: Props) {
       summary={summary ?? undefined}
       loading={loading}
       error={error}
+      variant="outlined"
     />
   );
 }

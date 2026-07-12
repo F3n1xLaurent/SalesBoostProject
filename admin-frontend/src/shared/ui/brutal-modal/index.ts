@@ -1,0 +1,1 @@
+export { BrutalModal } from './BrutalModal';

@@ -670,8 +670,9 @@ function deltaFromSessions(sessions: AnalyticsSession[]): number | null {
   previousStart.setDate(previousStart.getDate() - 60);
   const current = sessions.filter((session) => typeof scoreFromAnalyticsSession(session) === 'number' && session.startedAt >= currentStart);
   const previous = sessions.filter((session) => typeof scoreFromAnalyticsSession(session) === 'number' && session.startedAt >= previousStart && session.startedAt < currentStart);
-  if (!current.length) return null;
-  return Math.round(scoreFromSessions(current) - (previous.length ? scoreFromSessions(previous) : 0));
+  // Need both windows — otherwise "delta" collapses to absolute score (looks random).
+  if (!current.length || !previous.length) return null;
+  return Math.round(scoreFromSessions(current) - scoreFromSessions(previous));
 }
 
 const CHECKLIST_PROBLEM_CODE_MAP: Record<string, string> = {
@@ -5812,9 +5813,9 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
       totalAudits: totalCalls,
       failRate: percent(failedCount, scored.length),
       commBreakdown: [
-        { label: 'Сильная коммуникация', percent: percent(communicationOk, commTotal), color: '#34D399' },
-        { label: 'Средняя коммуникация', percent: percent(communicationMedium, commTotal), color: '#FBBF24' },
-        { label: 'Слабая коммуникация', percent: percent(communicationWeak, commTotal), color: '#F87171' },
+        { label: 'Сильная коммуникация', percent: percent(communicationOk, commTotal), color: '#2D9B5E' },
+        { label: 'Средняя коммуникация', percent: percent(communicationMedium, commTotal), color: '#D4842A' },
+        { label: 'Слабая коммуникация', percent: percent(communicationWeak, commTotal), color: '#E05252' },
       ],
       topErrors,
       timeSeries: timeSeriesFromSessions(sessions, 14),
@@ -6007,11 +6008,37 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
             checklistResultsJson: true,
             dealershipId: true,
             managerId: true,
+            manager: { select: { id: true, fullName: true } },
           },
           orderBy: { startedAt: 'desc' },
         })
       : [];
+    const trainerSessions = dealershipIds.length > 0
+      ? await prisma.trainerSession.findMany({
+          where: {
+            OR: [
+              { branchId: { in: dealershipIds } },
+              { employee: { dealershipId: { in: dealershipIds } } },
+            ],
+          },
+          select: {
+            id: true,
+            startedAt: true,
+            completedAt: true,
+            score: true,
+            status: true,
+            failureReason: true,
+            evaluationJson: true,
+            branchId: true,
+            employee: { select: { fullName: true, dealershipId: true } },
+            branch: { select: { name: true } },
+          },
+          orderBy: { startedAt: 'desc' },
+          take: 200,
+        })
+      : [];
     const catalog = await getCallReportProblemCatalog(prisma);
+    const dealershipNameById = new Map(holding.dealerships.map((dealership) => [dealership.id, dealership.name]));
 
     const score = scoreFromSessions(sessions);
     const noAnswers = sessions.filter((session) => session.outcome === 'no_answer').length;
@@ -6065,6 +6092,43 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
       timeSeries: timeSeriesFromSessions(sessions, 14),
       topIssues: topIssues.map((issue) => ({ issue: issue.issue, percent: issue.percent })),
       scriptCompliance,
+      audits: [
+        ...sessions.map((session) => ({
+          id: `call-${session.id}`,
+          date: session.startedAt.toISOString(),
+          type: 'call' as const,
+          employeeName: session.manager?.fullName ?? 'Неизвестно',
+          dealershipName: (session.dealershipId && dealershipNameById.get(session.dealershipId)) || '—',
+          score: Math.round(session.totalScore ?? 0),
+          verdict: session.outcome === 'no_answer'
+            ? 'Недозвон'
+            : (session.totalScore ?? 0) < 50
+              ? 'Нуждается в доработке'
+              : 'Оценено',
+        })),
+        ...trainerSessions.map((session) => {
+          const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+          const score = Math.round(scoreFromEvaluation(evaluation, session.score));
+          const dealershipId = session.branchId || session.employee?.dealershipId || null;
+          return {
+            id: `trainer-${session.id}`,
+            date: (session.completedAt ?? session.startedAt).toISOString(),
+            type: 'trainer' as const,
+            employeeName: session.employee?.fullName ?? 'Неизвестно',
+            dealershipName: session.branch?.name
+              || (dealershipId ? dealershipNameById.get(dealershipId) : null)
+              || '—',
+            score,
+            verdict: session.status === 'failed' || !!session.failureReason
+              ? 'Провал'
+              : session.status === 'abandoned'
+                ? 'Прервано'
+                : session.status === 'completed'
+                  ? 'Пройдено'
+                  : 'В процессе',
+          };
+        }),
+      ].sort((a, b) => +new Date(b.date) - +new Date(a.date)).slice(0, 200),
       meta: {
         linkedCalls: sessions.length,
         scoredCalls: sessions.filter((session) => session.totalScore !== null).length,
@@ -6223,6 +6287,27 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
       include: { manager: true, plan: { select: { scriptId: true, name: true } } },
       orderBy: { startedAt: 'desc' },
     });
+    const managerIds = dealership.managerProfiles.map((manager) => manager.id);
+    const trainerSessions = await prisma.trainerSession.findMany({
+      where: {
+        OR: [
+          { branchId: id },
+          ...(managerIds.length ? [{ employeeId: { in: managerIds } }] : []),
+        ],
+      },
+      select: {
+        id: true,
+        startedAt: true,
+        completedAt: true,
+        score: true,
+        status: true,
+        failureReason: true,
+        evaluationJson: true,
+        employee: { select: { fullName: true } },
+      },
+      orderBy: { startedAt: 'desc' },
+      take: 200,
+    });
     const scriptIds = [...new Set(sessions.map((session) => session.plan?.scriptId).filter((scriptId): scriptId is string => Boolean(scriptId)))];
     const scripts = scriptIds.length
       ? await prisma.callScript.findMany({
@@ -6264,6 +6349,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
       const managerTopIssue = topIssuesFromSessions(managerSessions, 1)[0];
       return {
         id: manager.id,
+        accountId: manager.accountId ?? null,
         name: manager.fullName,
         aiRating: managerScore,
         auditsCount: managerSessions.length,
@@ -6286,9 +6372,9 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
       noAnswers,
       outcomeBreakdown,
       communicationBreakdown: [
-        { label: 'Сильная коммуникация', percent: percent(communicationStrong, communicationTotal), color: '#34D399' },
-        { label: 'Средняя коммуникация', percent: percent(communicationMedium, communicationTotal), color: '#FBBF24' },
-        { label: 'Слабая коммуникация', percent: percent(communicationWeak, communicationTotal), color: '#F87171' },
+        { label: 'Сильная коммуникация', percent: percent(communicationStrong, communicationTotal), color: '#2D9B5E' },
+        { label: 'Средняя коммуникация', percent: percent(communicationMedium, communicationTotal), color: '#D4842A' },
+        { label: 'Слабая коммуникация', percent: percent(communicationWeak, communicationTotal), color: '#E05252' },
       ],
       scriptCompliance: blockBreakdown.map((item) => ({ block: item.block, rate: item.score, hint: item.hint })),
       aiSummary: await generateAnalyticsAISummary({
@@ -6303,13 +6389,38 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
         trend: delta,
       }),
       employees,
-      audits: sessions.map((session) => ({
-        id: `call-${session.id}`,
-        date: session.startedAt.toISOString(),
-        type: 'call' as const,
-        employeeName: session.manager?.fullName ?? 'Неизвестно',
-        score: Math.round(session.totalScore ?? 0),
-      })),
+      audits: [
+        ...sessions.map((session) => ({
+          id: `call-${session.id}`,
+          date: session.startedAt.toISOString(),
+          type: 'call' as const,
+          employeeName: session.manager?.fullName ?? 'Неизвестно',
+          score: Math.round(session.totalScore ?? 0),
+          verdict: session.outcome === 'no_answer'
+            ? 'Недозвон'
+            : (session.totalScore ?? 0) < 50
+              ? 'Нуждается в доработке'
+              : 'Оценено',
+        })),
+        ...trainerSessions.map((session) => {
+          const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+          const score = Math.round(scoreFromEvaluation(evaluation, session.score));
+          return {
+            id: `trainer-${session.id}`,
+            date: (session.completedAt ?? session.startedAt).toISOString(),
+            type: 'trainer' as const,
+            employeeName: session.employee?.fullName ?? 'Неизвестно',
+            score,
+            verdict: session.status === 'failed' || !!session.failureReason
+              ? 'Провал'
+              : session.status === 'abandoned'
+                ? 'Прервано'
+                : session.status === 'completed'
+                  ? 'Пройдено'
+                  : 'В процессе',
+          };
+        }),
+      ].sort((a, b) => +new Date(b.date) - +new Date(a.date)).slice(0, 200),
       timeSeries: timeSeriesFromSessions(sessions),
       hourlyAnswerRate: Array.from({ length: 24 }, (_, hour) => {
         const hourly = sessions.filter((session) => session.startedAt.getHours() === hour);
@@ -6318,7 +6429,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
       }),
       topIssues: topIssues.map((item) => ({ issue: item.issue, percent: item.percent })),
       topQuestions: topScriptQuestionsFromSessions(sessions, scriptsById, 5).map((item) => item.question),
-      recommendedTrainings: topIssues.slice(0, 3).map((item) => ({
+      recommendedTrainings: topIssues.slice(0, 5).map((item) => ({
         title: item.issue,
         description: `Встречается в ${item.percent}% проверок точки. Разберите звонки с этой проблемой и обновите короткий чек-лист менеджеров.`,
       })),
@@ -6438,6 +6549,7 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
     const scriptsById = new Map(scripts.map((script) => [script.id, script]));
     const score = scoreFromSessions(sessions);
     const delta = deltaFromSessions(sessions);
+    const answerRate = answerRateFromSessions(sessions);
     const failsCount = sessions.filter((session) => typeof session.totalScore === 'number' && (session.totalScore ?? 0) < 50).length;
     const commFlag = communicationFlagFromSessions(sessions);
     const topIssues = topIssuesFromSessions(sessions);
@@ -6521,12 +6633,14 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
       : 'norm';
     const item = {
       id: manager.id,
+      accountId: manager.accountId ?? null,
       fullName: manager.fullName,
       dealershipId: manager.dealershipId,
       dealershipName: manager.dealership.name,
       city: manager.dealership.city || '—',
       aiRating: score,
       deltaRating: delta,
+      answerRate,
       auditsCount: sessions.length,
       failsCount,
       noAnswers,
@@ -6539,9 +6653,9 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
       communicationFlag: commFlag,
       outcomeBreakdown,
       communicationBreakdown: [
-        { label: 'Сильная коммуникация', percent: percent(communicationStrong, communicationTotal), color: '#34D399' },
-        { label: 'Средняя коммуникация', percent: percent(communicationMedium, communicationTotal), color: '#FBBF24' },
-        { label: 'Слабая коммуникация', percent: percent(communicationWeak, communicationTotal), color: '#F87171' },
+        { label: 'Сильная коммуникация', percent: percent(communicationStrong, communicationTotal), color: '#2D9B5E' },
+        { label: 'Средняя коммуникация', percent: percent(communicationMedium, communicationTotal), color: '#D4842A' },
+        { label: 'Слабая коммуникация', percent: percent(communicationWeak, communicationTotal), color: '#E05252' },
       ],
       topMistakeLabel: topIssues[0]?.issue ?? 'Нет данных',
       status,
@@ -6570,18 +6684,38 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
       blockBreakdown,
       topIssues: topIssues.map((item) => ({ issue: item.issue, percent: item.percent })),
       topQuestions: topScriptQuestionsFromSessions(sessions, scriptsById, 5).map((item) => item.question),
-      recommendedTrainings: topIssues.slice(0, 3).map((item) => ({
+      recommendedTrainings: topIssues.slice(0, 5).map((item) => ({
         title: item.issue,
         description: `Встречается в ${item.percent}% проверок сотрудника. Начните разбор с цитат в отчётах и сравните с лучшими примерами по категории.`,
       })),
-      audits: sessions.map((session) => ({
-        id: `call-${session.id}`,
-        date: session.startedAt.toISOString(),
-        type: 'call' as const,
-        score: Math.round(session.totalScore ?? 0),
-        outcome: session.outcome,
-        verdict: session.outcome === 'no_answer' ? 'Недозвон' : (session.totalScore ?? 0) < 50 ? 'Нуждается в доработке' : 'Оценено',
-      })),
+      audits: [
+        ...sessions.map((session) => ({
+          id: `call-${session.id}`,
+          date: session.startedAt.toISOString(),
+          type: 'call' as const,
+          score: Math.round(session.totalScore ?? 0),
+          outcome: session.outcome,
+          verdict: session.outcome === 'no_answer' ? 'Недозвон' : (session.totalScore ?? 0) < 50 ? 'Нуждается в доработке' : 'Оценено',
+        })),
+        ...trainerSessions.map((session) => {
+          const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+          const score = Math.round(scoreFromEvaluation(evaluation, session.score));
+          return {
+            id: `trainer-${session.id}`,
+            date: (session.completedAt ?? session.startedAt).toISOString(),
+            type: 'trainer' as const,
+            score,
+            outcome: null as string | null,
+            verdict: session.status === 'failed' || !!session.failureReason
+              ? 'Провал'
+              : session.status === 'abandoned'
+                ? 'Прервано'
+                : session.status === 'completed'
+                  ? 'Пройдено'
+                  : 'В процессе',
+          };
+        }),
+      ].sort((a, b) => +new Date(b.date) - +new Date(a.date)),
       noAnswerHistory: sessions
         .filter((session) => session.outcome === 'no_answer')
         .map((session) => ({
@@ -6663,6 +6797,7 @@ app.get('/api/admin/analytics/managers', async (_req, res) => {
         : 'norm';
       return {
         id: manager.id,
+        accountId: manager.accountId ?? null,
         fullName: manager.fullName,
         dealershipId: manager.dealershipId,
         dealershipName: manager.dealership.name,

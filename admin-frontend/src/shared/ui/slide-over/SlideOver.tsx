@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { lockBodyScroll, unlockBodyScroll } from '../../lib/body-scroll-lock';
 
 type SlideOverProps = {
   open: boolean;
@@ -35,11 +36,10 @@ export function SlideOver({ open, title, children, width = 'xl', onClose }: Slid
       if (event.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKeyDown);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    lockBodyScroll();
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      document.body.style.overflow = previousOverflow;
+      unlockBodyScroll();
     };
   }, [onClose, rendered]);
 
@@ -56,14 +56,14 @@ export function SlideOver({ open, title, children, width = 'xl', onClose }: Slid
     >
       <button type="button" className="sa-slide-over-backdrop" aria-label="Закрыть" onClick={onClose} />
       <aside className={`sa-slide-over-panel sa-slide-over-panel-${width}`}>
-        <button type="button" className="sa-slide-over-close" aria-label="Закрыть" onClick={onClose}>
-          x
-        </button>
-        {visibleTitle && (
-          <div className="sa-slide-over-header">
-            <h2>{visibleTitle}</h2>
-          </div>
-        )}
+        <div className="sa-slide-over-header">
+          <button type="button" className="sa-btn-outline sa-btn-icon sa-slide-over-close" aria-label="Закрыть" onClick={onClose}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+          {visibleTitle && <h2>{visibleTitle}</h2>}
+        </div>
         <div className="sa-slide-over-body">{visibleChildren}</div>
       </aside>
     </div>,

@@ -322,6 +322,15 @@ export interface AnalyticsHoldingDetail extends AnalyticsHoldingRow {
   timeSeries: { date: string; avgScore: number; count: number }[];
   topIssues: { issue: string; percent: number }[];
   scriptCompliance: { block: string; rate: number }[];
+  audits: Array<{
+    id: string;
+    date: string;
+    type: 'training' | 'trainer' | 'call';
+    employeeName: string;
+    dealershipName: string;
+    score: number;
+    verdict?: string;
+  }>;
   meta?: {
     linkedCalls: number;
     scoredCalls: number;
@@ -351,9 +360,10 @@ export interface AnalyticsDealershipDetail extends AnalyticsDealershipRow {
   audits: Array<{
     id: string;
     date: string;
-    type: 'training' | 'call';
+    type: 'training' | 'trainer' | 'call';
     employeeName: string;
     score: number;
+    verdict?: string;
   }>;
   timeSeries: { date: string; avgScore: number; count: number }[];
   hourlyAnswerRate: number[];
@@ -364,12 +374,14 @@ export interface AnalyticsDealershipDetail extends AnalyticsDealershipRow {
 
 export interface AnalyticsManagerDetail {
   id: string;
+  accountId?: string | null;
   fullName: string;
   dealershipId: string;
   dealershipName: string;
   city: string;
   aiRating: number;
   deltaRating: number | null;
+  answerRate?: number | null;
   auditsCount: number;
   failsCount: number;
   noAnswers?: number;
@@ -398,7 +410,7 @@ export interface AnalyticsManagerDetail {
   topIssues: { issue: string; percent: number }[];
   topQuestions: string[];
   recommendedTrainings: { title: string; description: string }[];
-  audits: Array<{ id: string; date: string; type: 'training' | 'call'; score: number; verdict: string; outcome?: string | null }>;
+  audits: Array<{ id: string; date: string; type: 'training' | 'trainer' | 'call'; score: number; verdict: string; outcome?: string | null }>;
   noAnswerHistory?: Array<{ id: string; date: string; planName: string | null; verdict: string }>;
   trainer?: {
     totalPoints: number;
@@ -415,6 +427,7 @@ export interface AnalyticsManagerDetail {
 
 export interface AnalyticsManagerRow {
   id: string;
+  accountId?: string | null;
   fullName: string;
   dealershipId: string;
   dealershipName: string;

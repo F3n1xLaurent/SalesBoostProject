@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { lockBodyScroll, unlockBodyScroll } from '../../lib/body-scroll-lock';
 
 type Props = {
   children: React.ReactNode;
@@ -7,10 +8,9 @@ type Props = {
 
 export function FixedOverlayPortal({ children }: Props) {
   useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    lockBodyScroll();
     return () => {
-      document.body.style.overflow = previousOverflow;
+      unlockBodyScroll();
     };
   }, []);
 

@@ -97,16 +97,23 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
     navigate(buildBatchPath(batchId));
   };
 
-  const navigateToEmployee = (employeeId: string, sourceDealership?: { id: string; name: string } | null) => {
-    if (!sourceDealership?.id) {
-      navigate(buildEmployeePath(employeeId));
+  const navigateToEmployee = (
+    employeeId: string,
+    sourceDealership?: { id: string; name: string } | null,
+    options?: { accountId?: string | null },
+  ) => {
+    const accountId = options?.accountId?.trim() || null;
+    const params = new URLSearchParams();
+    if (sourceDealership?.id) {
+      params.set('source_dealership', sourceDealership.id);
+      params.set('source_dealership_name', sourceDealership.name || sourceDealership.id);
+    }
+    const qs = params.toString();
+    if (accountId) {
+      navigate(`${buildUserEmployeePath(accountId)}${qs ? `?${qs}` : ''}`);
       return;
     }
-    const params = new URLSearchParams({
-      source_dealership: sourceDealership.id,
-      source_dealership_name: sourceDealership.name || sourceDealership.id,
-    });
-    navigate(`${buildEmployeePath(employeeId)}?${params.toString()}`);
+    navigate(`${buildEmployeePath(employeeId)}${qs ? `?${qs}` : ''}`);
   };
 
   const handleTabChange = (tab: AdminTab) => {
@@ -143,6 +150,13 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
         : [...current, dealership];
       return [...next].sort((a, b) => (a.city || '').localeCompare(b.city || '', 'ru') || a.name.localeCompare(b.name, 'ru'));
     });
+  };
+
+  const handleDealershipDeleted = (dealershipId: string) => {
+    setRealDealerships((current) => current.filter((item) => item.id !== dealershipId));
+    if (selectedDealershipId === dealershipId) {
+      navigate('/companies');
+    }
   };
 
   useEffect(() => {
@@ -343,6 +357,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                   onSelectDealership={(id) => navigate(buildDealershipPath(id))}
                   onOpenBatchInAudits={navigateToBatch}
                   onDealershipSaved={handleDealershipSaved}
+                  onDealershipDeleted={handleDealershipDeleted}
                 />
               )}
               {activeTab === 'companies' && selectedDealershipId && (
@@ -351,16 +366,13 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                   dealership={realDealerships.find((item) => item.id === selectedDealershipId) ?? null}
                   onBack={() => navigate('/companies')}
                   onDealershipSaved={handleDealershipSaved}
-                  onOpenEmployee={(empId) => {
+                  onDealershipDeleted={handleDealershipDeleted}
+                  onOpenEmployee={(empId, options) => {
                     const sourceId = selectedDealershipId;
                     const sourceName = sourceId
-                      ? (
-                        realDealerships.find((item) => item.id === sourceId)?.name
-                        ?? companies.find((c) => c.id === sourceId)?.name
-                        ?? sourceId
-                      )
+                      ? (realDealerships.find((item) => item.id === sourceId)?.name ?? sourceId)
                       : 'Точка';
-                    navigateToEmployee(empId, sourceId ? { id: sourceId, name: sourceName } : null);
+                    navigateToEmployee(empId, sourceId ? { id: sourceId, name: sourceName } : null, options);
                   }}
                   onOpenBatchDetail={navigateToBatch}
                 />
@@ -376,9 +388,16 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                   role={role}
                   employeeId={selectedEmployeeId}
                   onSelectEmployee={(id) => navigate(buildUserEmployeePath(id))}
-                  onBackToUsers={() => navigate('/users')}
+                  onBackToUsers={() => {
+                    if (employeeSourceDealership) {
+                      navigate(buildDealershipPath(employeeSourceDealership.id));
+                      return;
+                    }
+                    navigate('/users');
+                  }}
                   onOpenDealership={(dealershipId) => navigate(buildDealershipPath(dealershipId))}
                   onOpenCompanies={() => navigate('/companies')}
+                  sourceDealership={employeeSourceDealership}
                 />
               )}
               {activeTab === 'typesNumbers' && role === 'super' && (
@@ -387,7 +406,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
               {activeTab === 'autodealers' && !selectedEmployeeId && (
                 <Autodealers
                   loading={dataLoading}
-                  onSelectEmployee={(id) => navigate(buildEmployeePath(id))}
+                  onSelectEmployee={(id, options) => navigateToEmployee(id, null, options)}
                 />
               )}
               {activeTab === 'autodealers' && selectedEmployeeId && (
@@ -461,7 +480,11 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
               dealership={null}
               mode="dealerDashboard"
               onBack={() => navigate(buildDealershipPath(selectedDealershipId))}
-              onOpenEmployee={(empId) => navigate(buildUserEmployeePath(empId))}
+              onOpenEmployee={(empId, options) => navigateToEmployee(
+                empId,
+                { id: selectedDealershipId, name: 'Точка' },
+                options,
+              )}
             />
           )}
           {role === 'dealer' && activeTab === 'users' && (

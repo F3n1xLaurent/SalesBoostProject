@@ -18,7 +18,7 @@ import {
   type TrainerScenario,
   type TrainerSessionSummary,
 } from '../../../shared/api/trainer';
-import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+import { ratingClass, scoreBarColor } from '../../../shared/lib/admin-panel/utils';
 import { buildTrainerSessionPath, parseAdminPath } from '../../../shared/routing/adminRoutes';
 import { BrutalSelect } from '../../../shared/ui/BrutalSelect';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
@@ -761,7 +761,7 @@ function InlineSessionAnalytics(props: { report: TrainerReport }) {
                 <div className="sa-hbar-row" key={item.label}>
                   <span className="sa-hbar-label">{item.label}</span>
                   <div className="sa-hbar-track">
-                    <div className="sa-hbar-fill" style={{ width: `${item.score}%`, background: item.score >= 80 ? 'var(--tb-status-green)' : item.score >= 50 ? 'var(--tb-status-orange)' : 'var(--tb-status-red)' }} />
+                    <div className="sa-hbar-fill" style={{ width: `${item.score}%`, background: scoreBarColor(item.score) }} />
                   </div>
                   <span className={`sa-hbar-score ${ratingClass(item.score)}`}>{item.score}</span>
                 </div>

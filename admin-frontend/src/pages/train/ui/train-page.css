@@ -1642,7 +1642,7 @@
    ============================================================ */
 .theme-brutal.train-app {
   --tb-ink: #161613;
-  --tb-cream: #F1F0EC;
+  --tb-cream: #F3F2ED;
   --tb-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --sa-bg: var(--tb-cream);
   --sa-text: var(--tb-ink);

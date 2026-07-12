@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createDealership,
+  deleteDealership,
   fetchCities,
   fetchDealershipDirections,
   fetchHoldings,
@@ -12,7 +13,95 @@ import {
   type HoldingItem,
 } from '../../api/adminPanel';
 import { useToast } from '../toast/ToastProvider';
-import { FixedOverlayPortal } from '../fixed-overlay-portal/FixedOverlayPortal';
+import { BrutalModal } from '../brutal-modal';
+import { BrutalSegmented } from '../brutal-segmented';
+import { UnsavedChangesModal } from '../unsaved-changes-modal';
+import { DeleteConfirmModal } from '../delete-confirm-modal';
+
+function normalizeTimeValue(value: string): string {
+  const match = /^(\d{1,2}):(\d{1,2})$/.exec((value || '').trim());
+  if (!match) return '09:00';
+  const hours = Math.min(23, Math.max(0, Number(match[1])));
+  const minutes = Math.min(59, Math.max(0, Number(match[2])));
+  return `${String(Number.isFinite(hours) ? hours : 9).padStart(2, '0')}:${String(Number.isFinite(minutes) ? minutes : 0).padStart(2, '0')}`;
+}
+
+function TimeInput(props: {
+  id: string;
+  value: string;
+  invalid?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const pickerRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState(normalizeTimeValue(props.value));
+
+  useEffect(() => {
+    setDraft(normalizeTimeValue(props.value));
+  }, [props.value]);
+
+  function commit(raw: string) {
+    const next = normalizeTimeValue(raw);
+    setDraft(next);
+    props.onChange(next);
+  }
+
+  function openPicker() {
+    const picker = pickerRef.current;
+    if (!picker) return;
+    picker.value = normalizeTimeValue(draft);
+    if (typeof picker.showPicker === 'function') {
+      try {
+        picker.showPicker();
+        return;
+      } catch {
+        // fall through to focus
+      }
+    }
+    picker.focus();
+    picker.click();
+  }
+
+  return (
+    <div className={`sa-time-input${props.invalid ? ' sa-field-invalid' : ''}`}>
+      <input
+        id={props.id}
+        className="sa-input sa-time-input__field"
+        inputMode="numeric"
+        autoComplete="off"
+        placeholder="09:00"
+        value={draft}
+        onChange={(event) => {
+          const next = event.target.value.replace(/[^\d:]/g, '').slice(0, 5);
+          setDraft(next);
+          if (/^\d{2}:\d{2}$/.test(next)) props.onChange(normalizeTimeValue(next));
+        }}
+        onBlur={() => commit(draft)}
+      />
+      <input
+        ref={pickerRef}
+        type="time"
+        step={60}
+        className="sa-time-input__native"
+        tabIndex={-1}
+        value={normalizeTimeValue(draft)}
+        onChange={(event) => commit(event.target.value.slice(0, 5))}
+        aria-hidden="true"
+      />
+      <button
+        type="button"
+        className="sa-time-input__trigger"
+        onClick={openPicker}
+        aria-label="Выбрать время"
+        title="Выбрать время"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </svg>
+      </button>
+    </div>
+  );
+}
 
 type DealershipFormState = {
   name: string;
@@ -35,6 +124,7 @@ type Props = {
   fixedHoldingName?: string | null;
   onClose: () => void;
   onSaved: (dealership: DealershipItem) => void;
+  onDeleted?: (dealershipId: string) => void;
 };
 
 const EMPTY_FORM: DealershipFormState = {
@@ -50,6 +140,8 @@ const EMPTY_FORM: DealershipFormState = {
   isActive: true,
 };
 
+const FORM_ID = 'dealership-modal-form';
+
 function fillForm(dealership?: DealershipItem | null): DealershipFormState {
   if (!dealership) return EMPTY_FORM;
   return {
@@ -59,22 +151,10 @@ function fillForm(dealership?: DealershipItem | null): DealershipFormState {
     directions: dealership.directions || [],
     city: dealership.city || '',
     address: dealership.address || '',
-    workingHoursFrom: dealership.workingHoursFrom || '09:00',
-    workingHoursTo: dealership.workingHoursTo || '21:00',
+    workingHoursFrom: (dealership.workingHoursFrom || '09:00').slice(0, 5),
+    workingHoursTo: (dealership.workingHoursTo || '21:00').slice(0, 5),
     holdingId: dealership.holdingId || '',
     isActive: dealership.isActive,
-  };
-}
-
-function overlayCardStyle(width = 640): React.CSSProperties {
-  return {
-    width: `min(100%, ${width}px)`,
-    maxHeight: '88vh',
-    overflowY: 'auto',
-    background: '#fff',
-    borderRadius: 24,
-    boxShadow: '0 28px 80px rgba(15,23,42,0.28)',
-    padding: 22,
   };
 }
 
@@ -105,6 +185,7 @@ function CitySelect(props: {
   value: string;
   onChange: (value: string) => void;
   onError: (message: string) => void;
+  invalid?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [searchValue, setSearchValue] = useState(props.value);
@@ -167,13 +248,13 @@ function CitySelect(props: {
 
   return (
     <div
-      className="sa-city-select"
+      className={`sa-city-select${props.invalid ? ' sa-field-invalid' : ''}`}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
       }}
     >
       <input
-        className="sa-input"
+        className={`sa-input${props.invalid ? ' sa-field-invalid' : ''}`}
         value={searchValue}
         placeholder="Начните вводить город"
         onFocus={() => setOpen(true)}
@@ -185,6 +266,7 @@ function CitySelect(props: {
         }}
         aria-autocomplete="list"
         aria-expanded={open}
+        aria-invalid={props.invalid || undefined}
       />
       {open && (
         <div className="sa-city-select__menu" onScroll={handleScroll}>
@@ -209,29 +291,37 @@ function CitySelect(props: {
   );
 }
 
-export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedHoldingName, onClose, onSaved }: Props) {
+export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedHoldingName, onClose, onSaved, onDeleted }: Props) {
   const [form, setForm] = useState<DealershipFormState>(EMPTY_FORM);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [directions, setDirections] = useState<DealershipDirectionItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const wasOpenRef = useRef(false);
   const initialForm = useMemo(() => fillForm(dealership), [dealership]);
   const { showToast } = useToast();
 
   const title = mode === 'create' ? 'Создать точку' : 'Редактировать точку';
-  const submitLabel = mode === 'create' ? 'Создать точку' : 'Сохранить изменения';
+  const submitLabel = mode === 'create' ? 'Создать точку' : 'Сохранить';
   const lockedHoldingId = mode === 'create' ? fixedHoldingId || '' : '';
   const isDirty = useMemo(
     () => JSON.stringify(normalizePayload(form)) !== JSON.stringify(normalizePayload(initialForm)),
     [form, initialForm],
   );
-  const canSubmit = useMemo(() => {
-    return form.name.trim().length > 0 && form.workingHoursFrom <= form.workingHoursTo && (mode !== 'create' || !!form.holdingId) && (mode === 'create' || isDirty);
-  }, [form.holdingId, form.name, form.workingHoursFrom, form.workingHoursTo, isDirty, mode]);
+
+  const nameInvalid = attempted && !form.name.trim();
+  const cityInvalid = attempted && !form.city.trim();
+  const holdingInvalid = attempted && mode === 'create' && !lockedHoldingId && !form.holdingId;
+  const hoursInvalid = attempted && form.workingHoursTo < form.workingHoursFrom;
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
       setForm(lockedHoldingId ? { ...initialForm, holdingId: lockedHoldingId } : initialForm);
+      setAttempted(false);
+      setUnsavedOpen(false);
+      setDeleteConfirmOpen(false);
       if (!lockedHoldingId) {
         fetchHoldings()
           .then(setHoldings)
@@ -269,21 +359,34 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
     return () => { cancelled = true; };
   }, [form.holdingId, open]);
 
-  if (!open) return null;
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!form.name.trim()) {
-      showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Название точки обязательно.' });
+  function requestClose() {
+    if (mode === 'edit' && isDirty) {
+      setUnsavedOpen(true);
       return;
+    }
+    onClose();
+  }
+
+  async function persist(): Promise<boolean> {
+    if (!form.name.trim()) {
+      setAttempted(true);
+      showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Название точки обязательно.' });
+      return false;
+    }
+    if (!form.city.trim()) {
+      setAttempted(true);
+      showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Город обязателен.' });
+      return false;
     }
     if (form.workingHoursTo < form.workingHoursFrom) {
+      setAttempted(true);
       showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Время окончания работы не может быть меньше времени начала.' });
-      return;
+      return false;
     }
     if (mode === 'create' && !form.holdingId) {
+      setAttempted(true);
       showToast({ type: 'error', title: 'Не удалось создать точку', description: 'Перед созданием точки выберите компанию.' });
-      return;
+      return false;
     }
     setSaving(true);
     try {
@@ -292,21 +395,56 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
         ? await createDealership(payload)
         : await updateDealership(dealership?.id || '', payload);
       onSaved(saved);
+      setUnsavedOpen(false);
       onClose();
       showToast({
         type: 'success',
         title: mode === 'create' ? 'Точка создана' : 'Точка сохранена',
         description: saved.name,
       });
+      return true;
     } catch (saveError) {
       showToast({
         type: 'error',
         title: 'Не удалось сохранить точку',
         description: saveError instanceof Error ? saveError.message : 'Попробуйте повторить действие.',
       });
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleDeleteConfirm() {
+    if (!dealership?.id) return;
+    setSaving(true);
+    try {
+      await deleteDealership(dealership.id);
+      setDeleteConfirmOpen(false);
+      setUnsavedOpen(false);
+      onDeleted?.(dealership.id);
+      onClose();
+      showToast({
+        type: 'success',
+        title: 'Точка удалена',
+        description: dealership.name,
+      });
+    } catch (deleteError) {
+      showToast({
+        type: 'error',
+        title: 'Не удалось удалить точку',
+        description: deleteError instanceof Error ? deleteError.message : 'Попробуйте повторить действие.',
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setAttempted(true);
+    if (mode === 'edit' && !isDirty) return;
+    await persist();
   }
 
   function toggleDirection(direction: DealershipDirection) {
@@ -318,44 +456,51 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
     }));
   }
 
+  if (!open) return null;
+
   return (
-    <FixedOverlayPortal>
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.48)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 20,
-        zIndex: 120,
-      }}
-      onClick={onClose}
-    >
-      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>{title}</h2>
-            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Основные параметры точки и график работы.
+    <>
+      <BrutalModal
+        open={open}
+        onClose={requestClose}
+        title={title}
+        subtitle="Основные параметры точки и график работы."
+        width="medium"
+        footer={(
+          <div className="sa-modal-footer-row">
+            {mode === 'edit' ? (
+              <button type="button" className="sa-btn-danger" onClick={() => setDeleteConfirmOpen(true)} disabled={saving}>
+                Удалить точку
+              </button>
+            ) : null}
+            <div className="sa-modal-footer-row__right">
+              <button type="button" className="sa-btn-outline" onClick={requestClose} disabled={saving}>Отмена</button>
+              <button
+                type="submit"
+                form={FORM_ID}
+                className="sa-btn-primary"
+                disabled={saving || (mode === 'edit' && !isDirty)}
+              >
+                {saving ? 'Сохраняем...' : submitLabel}
+              </button>
             </div>
           </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M6 6l12 12M18 6L6 18" />
-            </svg>
-          </button>
-        </div>
-
-        <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
+        )}
+      >
+        <form id={FORM_ID} onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
           {lockedHoldingId ? (
-            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: '#F8FAFC' }}>
+            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--tb-cream)' }}>
               Компания: {fixedHoldingName || 'выбранная компания'}
             </div>
           ) : (
             <label style={{ display: 'grid', gap: 6 }}>
               <span>Компания</span>
-              <select className="sa-select" value={form.holdingId} onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}>
+              <select
+                className={`sa-select${holdingInvalid ? ' sa-field-invalid' : ''}`}
+                value={form.holdingId}
+                onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}
+                aria-invalid={holdingInvalid || undefined}
+              >
                 <option value="">Без компании</option>
                 {holdings.map((holding) => (
                   <option key={holding.id} value={holding.id}>{holding.name}</option>
@@ -366,7 +511,12 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
-            <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+            <input
+              className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+              value={form.name}
+              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              aria-invalid={nameInvalid || undefined}
+            />
           </label>
 
           <label style={{ display: 'grid', gap: 6 }}>
@@ -382,26 +532,15 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
 
           <div style={{ display: 'grid', gap: 6 }}>
             <span>Тип точки</span>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
-              {[
+            <BrutalSegmented
+              ariaLabel="Тип точки"
+              value={form.type}
+              options={[
                 { value: 'own' as DealershipType, label: 'Собственный' },
                 { value: 'franchised' as DealershipType, label: 'Франчайзинговый' },
-              ].map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={form.type === option.value ? 'sa-btn-primary' : 'sa-btn-outline'}
-                  onClick={() => setForm((current) => ({ ...current, type: option.value }))}
-                  style={{
-                    justifyContent: 'center',
-                    textAlign: 'center',
-                    width: '100%',
-                  }}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
+              ]}
+              onChange={(type) => setForm((current) => ({ ...current, type }))}
+            />
           </div>
 
           <div style={{ display: 'grid', gap: 8 }}>
@@ -420,15 +559,16 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
               {directions.map((option) => {
                 const value = option.code || option.id;
                 return (
-                <label key={option.id} className="sa-filter-check">
-                  <input
-                    type="checkbox"
-                    checked={form.directions.includes(value)}
-                    onChange={() => toggleDirection(value)}
-                  />
-                  <span>{option.name}</span>
-                </label>
-              );})}
+                  <label key={option.id} className="sa-filter-check">
+                    <input
+                      type="checkbox"
+                      checked={form.directions.includes(value)}
+                      onChange={() => toggleDirection(value)}
+                    />
+                    <span>{option.name}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 
@@ -438,6 +578,7 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
               value={form.city}
               onChange={(city) => setForm((current) => ({ ...current, city }))}
               onError={(message) => showToast({ type: 'error', title: 'Не удалось загрузить города', description: message })}
+              invalid={cityInvalid}
             />
           </label>
 
@@ -447,25 +588,22 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
           </label>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
+            <label style={{ display: 'grid', gap: 6 }} htmlFor="dealership-hours-from">
               <span>Время работы с</span>
-              <input
-                className="sa-input"
-                type="time"
+              <TimeInput
+                id="dealership-hours-from"
                 value={form.workingHoursFrom}
-                onChange={(event) => setForm((current) => ({ ...current, workingHoursFrom: event.target.value }))}
-                required
+                invalid={hoursInvalid}
+                onChange={(workingHoursFrom) => setForm((current) => ({ ...current, workingHoursFrom }))}
               />
             </label>
-            <label style={{ display: 'grid', gap: 6 }}>
+            <label style={{ display: 'grid', gap: 6 }} htmlFor="dealership-hours-to">
               <span>Время работы до</span>
-              <input
-                className="sa-input"
-                type="time"
+              <TimeInput
+                id="dealership-hours-to"
                 value={form.workingHoursTo}
-                min={form.workingHoursFrom}
-                onChange={(event) => setForm((current) => ({ ...current, workingHoursTo: event.target.value }))}
-                required
+                invalid={hoursInvalid}
+                onChange={(workingHoursTo) => setForm((current) => ({ ...current, workingHoursTo }))}
               />
             </label>
           </div>
@@ -483,16 +621,27 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
               </span>
             </button>
           )}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <button type="button" className="sa-btn-outline" onClick={onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={saving || !canSubmit}>
-              {saving ? 'Сохраняем...' : submitLabel}
-            </button>
-          </div>
         </form>
-      </div>
-    </div>
-    </FixedOverlayPortal>
+      </BrutalModal>
+
+      <UnsavedChangesModal
+        open={unsavedOpen}
+        saving={saving}
+        onCancel={() => setUnsavedOpen(false)}
+        onDiscard={() => {
+          setUnsavedOpen(false);
+          onClose();
+        }}
+        onSave={() => { void persist(); }}
+      />
+
+      <DeleteConfirmModal
+        open={deleteConfirmOpen && mode === 'edit'}
+        title="Удалить точку?"
+        saving={saving}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => { void handleDeleteConfirm(); }}
+      />
+    </>
   );
 }

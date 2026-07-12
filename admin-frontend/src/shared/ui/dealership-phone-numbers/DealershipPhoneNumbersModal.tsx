@@ -16,7 +16,8 @@ import {
 } from '../../api/adminPanel';
 import { useGlobalHoldingFilter } from '../../lib/global-holding-filter/useGlobalHoldingFilter';
 import { formatPhoneInput, formatPhoneInputLive } from '../phone-number-utils';
-import { FixedOverlayPortal } from '../fixed-overlay-portal/FixedOverlayPortal';
+import { BrutalModal } from '../brutal-modal';
+import { UnsavedChangesModal } from '../unsaved-changes-modal';
 
 type PhoneFormState = {
   typeId: string;
@@ -30,17 +31,7 @@ const EMPTY_FORM: PhoneFormState = {
   isActive: true,
 };
 
-function overlayCardStyle(width = 760): React.CSSProperties {
-  return {
-    width: `min(100%, ${width}px)`,
-    maxHeight: '88vh',
-    overflowY: 'auto',
-    background: '#fff',
-    borderRadius: 24,
-    boxShadow: '0 28px 80px rgba(15,23,42,0.28)',
-    padding: 22,
-  };
-}
+const PHONE_FORM_ID = 'phone-number-form';
 
 function PhoneNumberFormModal(props: {
   open: boolean;
@@ -56,66 +47,87 @@ function PhoneNumberFormModal(props: {
   onSubmit: (form: PhoneFormState) => void;
 }) {
   const [form, setForm] = useState<PhoneFormState>(props.initial);
+  const [attempted, setAttempted] = useState(false);
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
   const wasOpenRef = useRef(false);
   const isDirty = useMemo(
     () => JSON.stringify(normalizePhoneForm(form)) !== JSON.stringify(normalizePhoneForm(props.initial)),
     [form, props.initial],
   );
+  const typeInvalid = attempted && !form.typeId;
+  const phoneInvalid = attempted && !form.phone.trim();
 
   useEffect(() => {
     if (props.open && !wasOpenRef.current) {
       setForm(props.initial);
+      setAttempted(false);
+      setUnsavedOpen(false);
     }
     wasOpenRef.current = props.open;
   }, [props.open, props.initial]);
 
-  if (!props.open) return null;
+  function requestClose() {
+    if (props.requireChanges && isDirty) {
+      setUnsavedOpen(true);
+      return;
+    }
+    props.onClose();
+  }
+
+  function submitCurrent() {
+    setAttempted(true);
+    if (!form.typeId || !form.phone.trim()) return;
+    if (props.requireChanges && !isDirty) return;
+    props.onSubmit({ ...form, phone: formatPhoneInput(form.phone) });
+  }
 
   return (
-    <FixedOverlayPortal>
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.48)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 20,
-        zIndex: 130,
-      }}
-      onClick={props.onClose}
-    >
-      <div style={overlayCardStyle(560)} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={props.title}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>{props.title}</h2>
-            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Выберите тип номера и укажите телефон.
+    <>
+      <BrutalModal
+        open={props.open}
+        onClose={requestClose}
+        title={props.title}
+        subtitle="Выберите тип номера и укажите телефон."
+        width="medium"
+        nested
+        footer={(
+          <div className="sa-modal-footer-row">
+            <div className="sa-modal-footer-row__right">
+              <button type="button" className="sa-btn-outline" onClick={requestClose} disabled={props.saving}>Отмена</button>
+              <button
+                type="submit"
+                form={PHONE_FORM_ID}
+                className="sa-btn-primary"
+                disabled={props.saving || (!!props.requireChanges && !isDirty)}
+              >
+                {props.saving ? 'Сохраняем...' : props.submitLabel}
+              </button>
             </div>
           </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M6 6l12 12M18 6L6 18" />
-            </svg>
-          </button>
-        </div>
-
+        )}
+      >
         <form
+          id={PHONE_FORM_ID}
           onSubmit={(event) => {
             event.preventDefault();
-            props.onSubmit({ ...form, phone: formatPhoneInput(form.phone) });
+            submitCurrent();
           }}
           style={{ display: 'grid', gap: 14 }}
         >
           {props.contextLabel && (
-            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: '#F8FAFC' }}>
+            <div className="sa-meta" style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--tb-cream)' }}>
               {props.contextLabel}
             </div>
           )}
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Тип номера</span>
-            <select className="sa-select" value={form.typeId} onChange={(event) => setForm((current) => ({ ...current, typeId: event.target.value }))} required>
+            <select
+              className={`sa-select${typeInvalid ? ' sa-field-invalid' : ''}`}
+              value={form.typeId}
+              onChange={(event) => setForm((current) => ({ ...current, typeId: event.target.value }))}
+              aria-invalid={typeInvalid || undefined}
+            >
               <option value="">Выберите тип</option>
               {props.types.map((type) => (
                 <option key={type.id} value={type.id}>{type.name}</option>
@@ -126,12 +138,12 @@ function PhoneNumberFormModal(props: {
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Номер телефона</span>
             <input
-              className="sa-input"
+              className={`sa-input${phoneInvalid ? ' sa-field-invalid' : ''}`}
               value={form.phone}
               onChange={(event) => setForm((current) => ({ ...current, phone: formatPhoneInputLive(event.target.value) }))}
               onBlur={() => setForm((current) => ({ ...current, phone: formatPhoneInput(current.phone) }))}
               placeholder="+7 999 999 99 99"
-              required
+              aria-invalid={phoneInvalid || undefined}
             />
           </label>
 
@@ -141,21 +153,27 @@ function PhoneNumberFormModal(props: {
           </label>
 
           {props.error && (
-            <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>
+            <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14 }}>
               {props.error}
             </div>
           )}
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={props.saving || !form.typeId || !form.phone.trim() || (!!props.requireChanges && !isDirty)}>
-              {props.saving ? 'Сохраняем...' : props.submitLabel}
-            </button>
-          </div>
         </form>
-      </div>
-    </div>
-    </FixedOverlayPortal>
+      </BrutalModal>
+
+      <UnsavedChangesModal
+        open={unsavedOpen}
+        saving={props.saving}
+        onCancel={() => setUnsavedOpen(false)}
+        onDiscard={() => {
+          setUnsavedOpen(false);
+          props.onClose();
+        }}
+        onSave={() => {
+          setUnsavedOpen(false);
+          submitCurrent();
+        }}
+      />
+    </>
   );
 }
 
@@ -207,8 +225,6 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
     if (open) loadData();
   }, [open, dealershipId]);
 
-  if (!open) return null;
-
   async function handleCreate(form: PhoneFormState) {
     setSaving(true);
     setError(null);
@@ -252,113 +268,90 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
   }
 
   return (
-    <FixedOverlayPortal>
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.48)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 20,
-        zIndex: 120,
-      }}
-      onClick={onClose}
+    <BrutalModal
+      open={open}
+      onClose={onClose}
+      title="Номера телефонов"
+      subtitle="Номера, привязанные к этой точке."
+      width="wide"
+      headerActions={(
+        <button type="button" className="sa-btn-brutal-3d" onClick={() => { setError(null); setAddOpen(true); }} disabled={types.length === 0}>
+          Добавить
+        </button>
+      )}
     >
-      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Номера телефонов">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>Номера телефонов</h2>
-            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Номера, привязанные к этой точке.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="sa-btn-primary" onClick={() => { setError(null); setAddOpen(true); }} disabled={types.length === 0}>
-              Добавить
-            </button>
-            <button type="button" className="sa-btn-outline sa-btn-icon" onClick={onClose} aria-label="Закрыть">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
-          </div>
+      {types.length === 0 && !loading && (
+        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
+          Сначала создайте активный тип номера с принадлежностью “Для точек”.
         </div>
+      )}
+      {error && !addOpen && !editItem && (
+        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14, marginBottom: 12 }}>
+          {error}
+        </div>
+      )}
 
-        {types.length === 0 && !loading && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#fffbeb', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-            Сначала создайте активный тип номера с принадлежностью “Для точек”.
-          </div>
-        )}
-        {error && !addOpen && !editItem && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14, marginBottom: 12 }}>
-            {error}
-          </div>
-        )}
-
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Тип</th>
-                <th>Номер</th>
-                <th>Статус</th>
-                <th />
+      <div className="sa-table-wrap sa-table-wrap-plain">
+        <table className="sa-table">
+          <thead>
+            <tr>
+              <th>Тип</th>
+              <th>Номер</th>
+              <th>Статус</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
+            ) : items.map((item) => (
+              <tr key={item.id}>
+                <td style={{ fontWeight: 700 }}>{item.typeName}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
+                <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активен' : 'Неактивен'}</span></td>
+                <td style={{ textAlign: 'right' }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditItem(item); }}>
+                      Редактировать
+                    </button>
+                    <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => handleDelete(item)} disabled={saving}>
+                      Удалить
+                    </button>
+                  </div>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
-              ) : items.length === 0 ? (
-                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
-              ) : items.map((item) => (
-                <tr key={item.id}>
-                  <td style={{ fontWeight: 700 }}>{item.typeName}</td>
-                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
-                  <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активен' : 'Неактивен'}</span></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                      <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditItem(item); }}>
-                        Редактировать
-                      </button>
-                      <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => handleDelete(item)} disabled={saving}>
-                        Удалить
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <PhoneNumberFormModal
-          open={addOpen}
-          title="Добавить номер"
-          submitLabel="Добавить"
-          initial={defaultForm}
-          types={types}
-          saving={saving}
-          error={addOpen ? error : null}
-          onClose={() => setAddOpen(false)}
-          onSubmit={handleCreate}
-        />
-
-        <PhoneNumberFormModal
-          open={!!editItem}
-          title="Редактировать номер"
-          submitLabel="Сохранить изменения"
-          initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
-          types={types}
-          saving={saving}
-          error={editItem ? error : null}
-          requireChanges
-          onClose={() => setEditItem(null)}
-          onSubmit={handleEdit}
-        />
+            ))}
+          </tbody>
+        </table>
       </div>
-    </div>
-    </FixedOverlayPortal>
+
+      <PhoneNumberFormModal
+        open={addOpen}
+        title="Добавить номер"
+        submitLabel="Добавить"
+        initial={defaultForm}
+        types={types}
+        saving={saving}
+        error={addOpen ? error : null}
+        onClose={() => setAddOpen(false)}
+        onSubmit={handleCreate}
+      />
+
+      <PhoneNumberFormModal
+        open={!!editItem}
+        title="Редактировать номер"
+        submitLabel="Сохранить изменения"
+        initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
+        types={types}
+        saving={saving}
+        error={editItem ? error : null}
+        requireChanges
+        onClose={() => setEditItem(null)}
+        onSubmit={handleEdit}
+      />
+    </BrutalModal>
   );
 }
 
@@ -424,8 +417,6 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
     if (open) void loadData();
   }, [open, accountId, selectedHoldingId]);
 
-  if (!open) return null;
-
   async function handleCreate(form: PhoneFormState) {
     setSaving(true);
     setError(null);
@@ -469,117 +460,99 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
   }
 
   return (
-    <FixedOverlayPortal>
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.48)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 20,
-        zIndex: 120,
-      }}
-      onClick={onClose}
+    <BrutalModal
+      open={open}
+      onClose={onClose}
+      title="Номера телефонов"
+      subtitle="Номера, привязанные к этому пользователю."
+      width="wide"
+      headerActions={(
+        <button
+          type="button"
+          className="sa-btn-brutal-3d"
+          onClick={() => { setError(null); setAddOpen(true); }}
+          disabled={!selectedHoldingId || types.length === 0}
+        >
+          Добавить
+        </button>
+      )}
     >
-      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Номера телефонов">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>Номера телефонов</h2>
-            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Номера, привязанные к этому пользователю.
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="sa-btn-primary" onClick={() => { setError(null); setAddOpen(true); }} disabled={!selectedHoldingId || types.length === 0}>
-              Добавить
-            </button>
-            <button type="button" className="sa-btn-outline sa-btn-icon" onClick={onClose} aria-label="Закрыть">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M6 6l12 12M18 6L6 18" />
-              </svg>
-            </button>
-          </div>
+      {holdings.length === 0 && !holdingsLoading && (
+        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
+          Перед добавлением номера пользователя добавьте компанию.
         </div>
+      )}
+      {selectedHoldingId && types.length === 0 && !loading && (
+        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
+          Сначала создайте активный тип номера с принадлежностью “Для пользователей” в выбранной компании.
+        </div>
+      )}
+      {error && !addOpen && !editItem && (
+        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14, marginBottom: 12 }}>
+          {error}
+        </div>
+      )}
 
-        {holdings.length === 0 && !holdingsLoading && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#fffbeb', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-            Перед добавлением номера пользователя добавьте компанию.
-          </div>
-        )}
-        {selectedHoldingId && types.length === 0 && !loading && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#fffbeb', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-            Сначала создайте активный тип номера с принадлежностью “Для пользователей” в выбранной компании.
-          </div>
-        )}
-        {error && !addOpen && !editItem && (
-          <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14, marginBottom: 12 }}>
-            {error}
-          </div>
-        )}
-
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Тип</th>
-                <th>Номер</th>
-                <th>Статус</th>
-                <th />
+      <div className="sa-table-wrap sa-table-wrap-plain">
+        <table className="sa-table">
+          <thead>
+            <tr>
+              <th>Тип</th>
+              <th>Номер</th>
+              <th>Статус</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
+            ) : items.map((item) => (
+              <tr key={item.id}>
+                <td style={{ fontWeight: 700 }}>{item.typeName}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
+                <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активен' : 'Неактивен'}</span></td>
+                <td style={{ textAlign: 'right' }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditItem(item); }}>
+                      Редактировать
+                    </button>
+                    <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => handleDelete(item)} disabled={saving}>
+                      Удалить
+                    </button>
+                  </div>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
-              ) : items.length === 0 ? (
-                <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
-              ) : items.map((item) => (
-                <tr key={item.id}>
-                  <td style={{ fontWeight: 700 }}>{item.typeName}</td>
-                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
-                  <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активен' : 'Неактивен'}</span></td>
-                  <td style={{ textAlign: 'right' }}>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                      <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditItem(item); }}>
-                        Редактировать
-                      </button>
-                      <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => handleDelete(item)} disabled={saving}>
-                        Удалить
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <PhoneNumberFormModal
-          open={addOpen}
-          title="Добавить номер"
-          submitLabel="Добавить"
-          initial={defaultForm}
-          types={types}
-          saving={saving}
-          error={addOpen ? error : null}
-          onClose={() => setAddOpen(false)}
-          onSubmit={handleCreate}
-        />
-
-        <PhoneNumberFormModal
-          open={!!editItem}
-          title="Редактировать номер"
-          submitLabel="Сохранить изменения"
-          initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
-          types={types}
-          saving={saving}
-          error={editItem ? error : null}
-          requireChanges
-          onClose={() => setEditItem(null)}
-          onSubmit={handleEdit}
-        />
+            ))}
+          </tbody>
+        </table>
       </div>
-    </div>
-    </FixedOverlayPortal>
+
+      <PhoneNumberFormModal
+        open={addOpen}
+        title="Добавить номер"
+        submitLabel="Добавить"
+        initial={defaultForm}
+        types={types}
+        saving={saving}
+        error={addOpen ? error : null}
+        onClose={() => setAddOpen(false)}
+        onSubmit={handleCreate}
+      />
+
+      <PhoneNumberFormModal
+        open={!!editItem}
+        title="Редактировать номер"
+        submitLabel="Сохранить изменения"
+        initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
+        types={types}
+        saving={saving}
+        error={editItem ? error : null}
+        requireChanges
+        onClose={() => setEditItem(null)}
+        onSubmit={handleEdit}
+      />
+    </BrutalModal>
   );
 }

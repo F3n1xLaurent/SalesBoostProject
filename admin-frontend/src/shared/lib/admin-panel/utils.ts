@@ -11,6 +11,26 @@ export function ratingClass(v: number): string {
   return 'sa-score-red';
 }
 
+/** Higher is better — scores, script compliance, category rates */
+export function scoreBarColor(v: number): string {
+  if (v >= 80) return 'var(--tb-status-green)';
+  if (v >= 50) return 'var(--tb-status-orange)';
+  return 'var(--tb-status-red)';
+}
+
+/** Higher is worse — problem frequency / issue share */
+export function issueBarColor(v: number): string {
+  if (v >= 70) return 'var(--tb-status-red)';
+  if (v >= 40) return 'var(--tb-status-orange)';
+  return 'var(--tb-status-green)';
+}
+
+export function issueRatingClass(v: number): string {
+  if (v >= 70) return 'sa-score-red';
+  if (v >= 40) return 'sa-score-orange';
+  return 'sa-score-green';
+}
+
 export function answerRateClass(v: number | null): string {
   if (v === null) return '';
   if (v >= 80) return 'sa-score-green';

@@ -11,7 +11,10 @@ import {
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
-import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
+import { BrutalModal } from '../../../shared/ui/brutal-modal';
+import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
+import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
+import { useToast } from '../../../shared/ui/toast/ToastProvider';
 
 type DirectionFormState = {
   holdingId: string;
@@ -27,24 +30,14 @@ const EMPTY_FORM: DirectionFormState = {
   isActive: true,
 };
 
+const DIRECTION_FORM_ID = 'direction-modal-form';
+
 function normalizeForm(form: DirectionFormState): DirectionFormState {
   return {
     holdingId: form.holdingId,
     name: form.name.trim(),
     code: form.code.trim(),
     isActive: form.isActive,
-  };
-}
-
-function overlayCardStyle(width = 560): React.CSSProperties {
-  return {
-    width: `min(100%, ${width}px)`,
-    maxHeight: '88vh',
-    overflowY: 'auto',
-    background: '#fff',
-    borderRadius: 24,
-    boxShadow: '0 28px 80px rgba(15,23,42,0.28)',
-    padding: 22,
   };
 }
 
@@ -63,67 +56,93 @@ function DirectionModal(props: {
   onDelete?: () => void;
 }) {
   const [form, setForm] = useState<DirectionFormState>(props.initial);
+  const [attempted, setAttempted] = useState(false);
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
   const wasOpenRef = useRef(false);
   const isCreate = props.mode === 'create';
   const isDirty = useMemo(
     () => JSON.stringify(normalizeForm(form)) !== JSON.stringify(normalizeForm(props.initial)),
     [form, props.initial],
   );
+  const holdingInvalid = attempted && !form.holdingId;
+  const nameInvalid = attempted && !form.name.trim();
 
   useEffect(() => {
-    if (props.open && !wasOpenRef.current) setForm(props.initial);
+    if (props.open && !wasOpenRef.current) {
+      setForm(props.initial);
+      setAttempted(false);
+      setUnsavedOpen(false);
+    }
     wasOpenRef.current = props.open;
   }, [props.open, props.initial]);
+
+  function requestClose() {
+    if (!isCreate && isDirty) {
+      setUnsavedOpen(true);
+      return;
+    }
+    props.onClose();
+  }
+
+  function persist(): boolean {
+    if (!form.holdingId || !form.name.trim()) {
+      setAttempted(true);
+      return false;
+    }
+    if (!isCreate && !isDirty) return false;
+    props.onSubmit(form);
+    return true;
+  }
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    setAttempted(true);
+    persist();
+  }
 
   if (!props.open) return null;
 
   const title = isCreate ? 'Создать направление' : 'Редактировать направление';
-  const submitLabel = isCreate ? 'Создать' : 'Сохранить изменения';
+  const submitLabel = isCreate ? 'Создать' : 'Сохранить';
 
   return (
-    <FixedOverlayPortal>
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.48)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 20,
-        zIndex: 120,
-      }}
-      onClick={props.onClose}
-    >
-      <div style={overlayCardStyle()} onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>{title}</h2>
-            <div style={{ marginTop: 6, fontSize: 13, color: 'var(--sa-text-secondary)' }}>
-              Направление доступно только точкам выбранной компании.
+    <>
+      <BrutalModal
+        open={props.open}
+        onClose={requestClose}
+        title={title}
+        subtitle="Направление доступно только точкам выбранной компании."
+        width="medium"
+        footer={(
+          <div className="sa-modal-footer-row">
+            {!isCreate && (
+              <button type="button" className="sa-btn-danger" onClick={() => props.onDeleteConfirmChange?.(true)} disabled={props.saving}>
+                Удалить направление
+              </button>
+            )}
+            <div className="sa-modal-footer-row__right">
+              <button type="button" className="sa-btn-outline" onClick={requestClose} disabled={props.saving}>Отмена</button>
+              <button
+                type="submit"
+                form={DIRECTION_FORM_ID}
+                className="sa-btn-primary"
+                disabled={props.saving || (!isCreate && !isDirty)}
+              >
+                {props.saving ? 'Сохраняем...' : submitLabel}
+              </button>
             </div>
           </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M6 6l12 12M18 6L6 18" />
-            </svg>
-          </button>
-        </div>
-
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            props.onSubmit(form);
-          }}
-          style={{ display: 'grid', gap: 14 }}
-        >
+        )}
+      >
+        <form id={DIRECTION_FORM_ID} onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Компания</span>
             <select
-              className="sa-select"
+              className={`sa-select${holdingInvalid ? ' sa-field-invalid' : ''}`}
               value={form.holdingId}
               disabled={!isCreate}
               onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}
-              required
+              aria-invalid={holdingInvalid || undefined}
             >
               <option value="">Выберите компанию</option>
               {props.holdings.map((holding) => (
@@ -134,7 +153,12 @@ function DirectionModal(props: {
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
-            <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+            <input
+              className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+              value={form.name}
+              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              aria-invalid={nameInvalid || undefined}
+            />
           </label>
 
           <label style={{ display: 'grid', gap: 6 }}>
@@ -159,54 +183,38 @@ function DirectionModal(props: {
               {props.error}
             </div>
           )}
-
-          <div className={`sa-holdings-form-footer${isCreate ? ' sa-holdings-form-footer--create' : ''}`}>
-            {!isCreate && (
-              <div className="sa-holdings-form-footer-left">
-                {props.deleteConfirm ? (
-                  <>
-                    <span className="sa-holdings-form-delete-hint">
-                      Удалить <strong>{props.itemName}</strong>?
-                    </span>
-                    <button type="button" className="sa-btn-danger" onClick={props.onDelete} disabled={props.saving}>
-                      {props.saving ? 'Удаляем...' : 'Удалить'}
-                    </button>
-                    <button type="button" className="sa-btn-outline" onClick={() => props.onDeleteConfirmChange?.(false)} disabled={props.saving}>
-                      Нет
-                    </button>
-                  </>
-                ) : (
-                  <button type="button" className="sa-btn-danger" onClick={() => props.onDeleteConfirmChange?.(true)}>
-                    Удалить направление
-                  </button>
-                )}
-              </div>
-            )}
-            <div className="sa-holdings-form-footer-right">
-              <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-              <button
-                type="submit"
-                className="sa-btn-primary"
-                disabled={props.saving || !form.holdingId || !form.name.trim() || (!isCreate && !isDirty)}
-              >
-                {props.saving ? 'Сохраняем...' : submitLabel}
-              </button>
-            </div>
-          </div>
         </form>
-      </div>
-    </div>
-    </FixedOverlayPortal>
+      </BrutalModal>
+
+      <UnsavedChangesModal
+        open={unsavedOpen}
+        saving={props.saving}
+        onCancel={() => setUnsavedOpen(false)}
+        onDiscard={() => {
+          setUnsavedOpen(false);
+          props.onClose();
+        }}
+        onSave={() => { persist(); }}
+      />
+
+      <DeleteConfirmModal
+        open={!!props.deleteConfirm}
+        title="Удалить направление?"
+        saving={props.saving}
+        onCancel={() => props.onDeleteConfirmChange?.(false)}
+        onConfirm={() => props.onDelete()}
+      />
+    </>
   );
 }
 
 export function DealershipDirectionsPage() {
+  const { showToast } = useToast();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [items, setItems] = useState<DealershipDirectionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editItem, setEditItem] = useState<DealershipDirectionItem | null>(null);
   const [editDeleteConfirm, setEditDeleteConfirm] = useState(false);
@@ -250,7 +258,7 @@ export function DealershipDirectionsPage() {
         isActive: form.isActive,
       });
       setCreateOpen(false);
-      setNotice('Направление создано.');
+      showToast({ type: 'success', title: 'Направление создано' });
       await loadData();
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : 'Не удалось создать направление точки.');
@@ -271,7 +279,7 @@ export function DealershipDirectionsPage() {
       });
       setEditItem(null);
       setEditDeleteConfirm(false);
-      setNotice('Направление обновлено.');
+      showToast({ type: 'success', title: 'Направление обновлено' });
       await loadData();
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : 'Не удалось обновить направление точки.');
@@ -288,7 +296,7 @@ export function DealershipDirectionsPage() {
       await deleteDealershipDirection(editItem.id);
       setEditItem(null);
       setEditDeleteConfirm(false);
-      setNotice('Направление удалено.');
+      showToast({ type: 'success', title: 'Направление удалено' });
       await loadData();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить направление точки.');
@@ -356,9 +364,6 @@ export function DealershipDirectionsPage() {
     <div>
       <h1 className="sa-page-title">Направления точек</h1>
 
-      {notice && (
-        <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>{notice}</div>
-      )}
       {error && !createOpen && (
         <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{error}</div>
       )}
@@ -370,7 +375,6 @@ export function DealershipDirectionsPage() {
             value={selectedHoldingId}
             onChange={(holdingId) => {
               setSelectedHoldingId(holdingId);
-              setNotice(null);
             }}
             disabled={loading || holdings.length === 0}
             loading={loading}

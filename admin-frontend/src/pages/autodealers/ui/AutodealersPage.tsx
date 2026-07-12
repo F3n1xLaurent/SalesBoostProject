@@ -10,14 +10,14 @@ import {
   type CommunicationFlag,
 } from '../../../shared/lib/admin-panel/mockData';
 import { ratingClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
-import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
-import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
+import { MetricComparisonModal } from '../../../shared/ui/metric-comparison-modal';
+import { FiltersPanel, FilterGroup, FiltersToggleButton } from '../../../shared/ui/filters-panel';
 
 /* ────────────────────── Props ────────────────────── */
 
 type Props = {
   loading?: boolean;
-  onSelectEmployee?: (id: string) => void;
+  onSelectEmployee?: (id: string, options?: { accountId?: string | null }) => void;
 };
 
 /* ────────────────────── Sort config ────────────────────── */
@@ -85,7 +85,6 @@ function ManagerComparisonModal({
   onClose: () => void;
   onOpenEmployee: (row: ManagerRow) => void;
 }) {
-  if (rows.length < 2) return null;
   const metricDefs = [
     { key: 'aiRating' as const, label: 'AI-рейтинг', higherBetter: true },
     { key: 'deltaRating' as const, label: 'Динамика', higherBetter: true },
@@ -94,87 +93,52 @@ function ManagerComparisonModal({
     { key: 'directCalls' as const, label: 'Прямые звонки', higherBetter: true },
     { key: 'dealershipCalls' as const, label: 'Звонки точки', higherBetter: true },
   ];
-  const leader = [...rows].sort((a, b) => b.aiRating - a.aiRating)[0];
-  const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
 
   return (
-    <FixedOverlayPortal>
-    <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
-      <div className="sa-card" style={{ width: 'min(1040px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
-        <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
-          <div>
-            <h2 className="sa-section-title" style={{ marginBottom: 4 }}>Сравнение сотрудников</h2>
-            <div className="sa-meta">Выбрано: {rows.length}</div>
-          </div>
-          <button type="button" className="sa-btn-outline" onClick={onClose}>Закрыть</button>
-        </div>
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Метрика</th>
-                {rows.map((row) => (
-                  <th key={row.id} className="sa-text-right">
-                    <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee(row)}>{row.fullName}</button>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {metricDefs.map((metric) => {
-                const values = rows.map((row) => Number(row[metric.key] ?? (metric.higherBetter ? 0 : Number.POSITIVE_INFINITY)));
-                const best = metric.higherBetter ? Math.max(...values) : Math.min(...values);
-                const worst = metric.higherBetter ? Math.min(...values) : Math.max(...values);
-                return (
-                  <tr key={metric.key}>
-                    <td>{metric.label}</td>
-                    {rows.map((row) => {
-                      const raw = row[metric.key];
-                      const value = raw === null || raw === undefined ? null : Number(raw);
-                      const isBest = value !== null && value === best;
-                      const isWorst = value !== null && value === worst && best !== worst;
-                      return (
-                        <td key={row.id} className="sa-text-right">
-                          <span className={isBest ? 'sa-score-green' : isWorst ? 'sa-score-red' : ''}>
-                            {value === null ? '—' : metric.key === 'deltaRating' && value > 0 ? `+${value}` : value}
-                          </span>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-              <tr>
-                <td>Коммуникация</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right">
-                    <span className={`sa-comm-badge ${COMM_BADGE_CLASS[row.communicationFlag]}`}>{COMM_LABELS[row.communicationFlag]}</span>
-                  </td>
-                ))}
-              </tr>
-              <tr>
-                <td>Статус</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right"><span className={statusBadgeClass(row.status)}>{STATUS_LABELS[row.status]}</span></td>
-                ))}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div style={{ marginTop: 16 }}>
-          <ComparisonAISummary level="managers-directory" items={rows.map((row) => ({ ...row }))} />
-        </div>
-        <div className="sa-card" style={{ marginTop: 16 }}>
-          <h3 className="sa-card-heading">Вывод</h3>
-          <p className="sa-meta" style={{ lineHeight: 1.6 }}>
-            Лидер по рейтингу — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee(leader)}>{leader.fullName}</button>.
-            {' '}Самый слабый показатель — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee(lagger)}>{lagger.fullName}</button>.
-            {' '}Для разбора смотрите провалы, коммуникацию и наличие прямых звонков менеджера.
-          </p>
-        </div>
-      </div>
-    </div>
-    </FixedOverlayPortal>
+    <MetricComparisonModal
+      open={rows.length >= 2}
+      onClose={onClose}
+      title="Сравнение сотрудников"
+      columns={rows.map((row) => ({
+        id: row.id,
+        label: row.fullName,
+        onOpen: () => onOpenEmployee(row),
+      }))}
+      metrics={metricDefs.map((metric) => ({
+        key: metric.key,
+        label: metric.label,
+        higherBetter: metric.higherBetter,
+        values: rows.map((row) => {
+          const raw = row[metric.key];
+          return raw === null || raw === undefined ? null : Number(raw);
+        }),
+        format: (value) => {
+          if (value === null) return '—';
+          if (metric.key === 'deltaRating' && value > 0) return `+${value}`;
+          return value;
+        },
+      }))}
+      extraRows={[
+        {
+          key: 'communication',
+          label: 'Коммуникация',
+          cells: rows.map((row) => (
+            <span key={row.id} className={`sa-comm-badge ${COMM_BADGE_CLASS[row.communicationFlag]}`}>
+              {COMM_LABELS[row.communicationFlag]}
+            </span>
+          )),
+        },
+        {
+          key: 'status',
+          label: 'Статус',
+          cells: rows.map((row) => (
+            <span key={row.id} className={statusBadgeClass(row.status)}>{STATUS_LABELS[row.status]}</span>
+          )),
+        },
+      ]}
+      aiLevel="managers-directory"
+      aiItems={rows.map((row) => ({ ...row }))}
+    />
   );
 }
 
@@ -254,6 +218,7 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
   const toggleCity = (c: string) => setCityFilter((p) => p.includes(c) ? p.filter((x) => x !== c) : [...p, c]);
   const toggleDealer = (d: string) => setDealershipFilter((p) => p.includes(d) ? p.filter((x) => x !== d) : [...p, d]);
   const toggleStatus = (s: DealershipStatus) => setStatusFilter((p) => p.includes(s) ? p.filter((x) => x !== s) : [...p, s]);
+  const activeFiltersCount = cityFilter.length + dealershipFilter.length + statusFilter.length;
   const toggleComparisonRow = (id: string) => {
     const row = rows.find((item) => item.id === id);
     if (row && row.dataState !== 'full') return;
@@ -273,7 +238,7 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
       setNoticeRow(row);
       return;
     }
-    onSelectEmployee?.(row.id);
+    onSelectEmployee?.(row.id, { accountId: row.accountId });
   };
   const isLoading = loading || analyticsLoading;
 
@@ -301,12 +266,12 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
             <option value="30d">30 дней</option>
             {/* <option value="custom">Произвольно</option> */}
           </select>
-          <button className="sa-btn-outline" onClick={() => setShowFilters((v) => !v)}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
-            </svg>
-            Фильтры
-          </button>
+          <FiltersToggleButton
+            active={showFilters}
+            count={activeFiltersCount}
+            onClick={() => setShowFilters((v) => !v)}
+            className="sa-btn-outline"
+          />
         </div>
         <div className="sa-toolbar-chips">
           {QUICK_FILTERS.map((f) => (
@@ -319,41 +284,46 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
 
       {/* ─── Filters panel ─── */}
       {showFilters && (
-        <div className="sa-filters-panel">
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Город:</span>
-            <div className="sa-filter-options">
-              {allCities.map((c) => (
-                <label key={c} className="sa-filter-check"><input type="checkbox" checked={cityFilter.includes(c)} onChange={() => toggleCity(c)} />{c}</label>
-              ))}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Точка:</span>
-            <div className="sa-filter-options">
-              {allDealerships.map((d) => (
-                <label key={d} className="sa-filter-check"><input type="checkbox" checked={dealershipFilter.includes(d)} onChange={() => toggleDealer(d)} />{d}</label>
-              ))}
-            </div>
-          </div>
-          <div className="sa-filter-group">
-            <span className="sa-filter-label">Статус:</span>
-            <div className="sa-filter-options">
-              {(['critical', 'risk', 'norm', 'no-data'] as DealershipStatus[]).map((s) => (
-                <label key={s} className="sa-filter-check"><input type="checkbox" checked={statusFilter.includes(s)} onChange={() => toggleStatus(s)} />{STATUS_LABELS[s]}</label>
-              ))}
-            </div>
-          </div>
-          <button className="sa-btn-text" onClick={() => { setCityFilter([]); setDealershipFilter([]); setStatusFilter([]); }}>Сбросить фильтры</button>
-        </div>
+        <FiltersPanel
+          onReset={() => {
+            setCityFilter([]);
+            setDealershipFilter([]);
+            setStatusFilter([]);
+          }}
+        >
+          <FilterGroup label="Город">
+            {allCities.map((c) => (
+              <label key={c} className="sa-filter-check">
+                <input type="checkbox" checked={cityFilter.includes(c)} onChange={() => toggleCity(c)} />
+                {c}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Точка">
+            {allDealerships.map((d) => (
+              <label key={d} className="sa-filter-check">
+                <input type="checkbox" checked={dealershipFilter.includes(d)} onChange={() => toggleDealer(d)} />
+                {d}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Статус">
+            {(['critical', 'risk', 'norm', 'no-data'] as DealershipStatus[]).map((s) => (
+              <label key={s} className="sa-filter-check">
+                <input type="checkbox" checked={statusFilter.includes(s)} onChange={() => toggleStatus(s)} />
+                {STATUS_LABELS[s]}
+              </label>
+            ))}
+          </FilterGroup>
+        </FiltersPanel>
       )}
 
       {/* ─── Desktop table ─── */}
       <div className="sa-companies-table-wrap sa-desktop-only">
-        <table className="sa-table sa-table-sortable">
+        <table className="sa-table sa-table-sortable sa-table-selectable">
           <thead>
             <tr>
-              <th style={{ width: 44 }} />
+              <th />
               {COLUMN_DEFS.map((col) => (
                 <th key={col.key} className={`sa-th-sortable ${col.align === 'right' ? 'sa-text-right' : ''}`} onClick={() => handleSort(col.key)}>
                   {col.label} <SortIcon col={col.key} />
@@ -515,6 +485,7 @@ export function Autodealers({ loading = false, onSelectEmployee }: Props) {
 function managerAnalyticsToRow(item: AnalyticsManagerRow): ManagerRow {
   return {
     id: item.id,
+    accountId: item.accountId ?? null,
     fullName: item.fullName,
     dealershipId: item.dealershipId,
     dealershipName: item.dealershipName,

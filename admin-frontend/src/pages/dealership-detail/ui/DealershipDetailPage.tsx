@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 import {
   STATUS_LABELS,
@@ -17,27 +18,32 @@ import {
 } from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { DealershipPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
-import { ratingClass, answerRateClass, answerTimeClass, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
+import { EditIcon, PhoneIcon } from '../../../shared/ui/icons/ActionIcons';
+import { ratingClass, answerRateClass, answerTimeClass, statusBadgeClass, scoreBarColor } from '../../../shared/lib/admin-panel/utils';
 import {
   ACTIVE_BATCH_STORAGE_KEY,
   fetchBatchWithSummary,
   type CallBatchSnapshot,
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
-import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
+import { MetricComparisonModal } from '../../../shared/ui/metric-comparison-modal';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
-import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/FixedOverlayPortal';
+import { CallOutcomeBreakdown } from '../../../shared/ui/call-outcome-breakdown';
+import { AuditHistoryBlock } from '../../../shared/ui/audit-history-block';
 
 /* ────────────────────── Props ────────────────────── */
+
+type OpenEmployeeHandler = (id: string, options?: { accountId?: string | null }) => void;
 
 type Props = {
   dealershipId: string;
   dealership?: DealershipItem | null;
   onBack: () => void;
-  onOpenEmployee?: (id: string) => void;
+  onOpenEmployee?: OpenEmployeeHandler;
   onOpenBatchDetail?: (batchId: string) => void;
   onDealershipSaved?: (dealership: DealershipItem) => void;
+  onDealershipDeleted?: (dealershipId: string) => void;
   mode?: 'default' | 'dealerDashboard';
 };
 
@@ -59,11 +65,36 @@ type DealershipAnalyticsDetail = Detail & {
 
 /* ────────────────────── KPI Card ────────────────────── */
 
-function KPI({ label, value, cls, suffix }: { label: string; value: string | number; cls?: string; suffix?: string }) {
+function DealershipMetricCard({
+  label,
+  value,
+  description,
+  valueClass,
+  valueSuffix,
+}: {
+  label: string;
+  value: React.ReactNode;
+  description?: React.ReactNode;
+  valueClass?: string;
+  valueSuffix?: string;
+}) {
   return (
-    <div className="sa-card sa-kpi-card">
-      <div className="sa-kpi-label">{label}</div>
-      <div className={`sa-kpi-value sa-kpi-value-large ${cls ?? ''}`}>{value}{suffix ?? ''}</div>
+    <div className="sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card">
+      <div className="sa-kpi-card-top">
+        <div className="sa-kpi-card-heading">{label}</div>
+      </div>
+      <div className="sa-kpi-card-spacer" aria-hidden />
+      <div className="sa-kpi-card-bottom">
+        {valueSuffix ? (
+          <div className="sa-kpi-value-row">
+            <span className={`sa-kpi-value sa-kpi-value-large ${valueClass ?? ''}`}>{value}</span>
+            <span className="sa-kpi-value-suffix">{valueSuffix}</span>
+          </div>
+        ) : (
+          <div className={`sa-kpi-value sa-kpi-value-large ${valueClass ?? ''}`}>{value}</div>
+        )}
+        {description && <div className="sa-kpi-desc">{description}</div>}
+      </div>
     </div>
   );
 }
@@ -170,15 +201,16 @@ function TrendChart({ points }: { points: { date: string; avgScore: number; coun
   const xs = points.map((_, i) => pad.left + i * step);
   const ys = points.map((p) => pad.top + ch - (p.avgScore / 100) * ch);
   const pathD = points.map((_, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${ys[i]}`).join(' ');
+  const stroke = 'var(--tb-ink)';
 
   return (
     <div className="sa-chart-wrap">
-      <h3 className="sa-chart-title">Динамика эффективности</h3>
+      <div className="sa-chart-plot">
       <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" onMouseLeave={() => setHoverIdx(null)}>
         <defs>
           <linearGradient id="dtFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#6366F1" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="#6366F1" stopOpacity="0.02" />
+            <stop offset="0%" stopColor={stroke} stopOpacity="0.14" />
+            <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
           </linearGradient>
         </defs>
         {[0, 25, 50, 75, 100].map((v) => {
@@ -196,35 +228,40 @@ function TrendChart({ points }: { points: { date: string; avgScore: number; coun
           </text>
         ))}
         <path d={`${pathD} L ${xs[xs.length - 1]} ${pad.top + ch} L ${xs[0]} ${pad.top + ch} Z`} fill="url(#dtFill)" />
-        <path d={pathD} fill="none" stroke="#6366F1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={pathD} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
         {points.map((_, i) => (
           <rect key={`hit-${i}`} x={xs[i] - step / 2} y={pad.top} width={step || 40} height={ch} fill="transparent" onMouseEnter={() => setHoverIdx(i)} />
         ))}
         {hoverIdx !== null && <line x1={xs[hoverIdx]} y1={pad.top} x2={xs[hoverIdx]} y2={pad.top + ch} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.4" />}
         {points.map((p, i) => (
-          <circle key={p.date} cx={xs[i]} cy={ys[i]} r={hoverIdx === i ? 6 : 4} fill={hoverIdx === i ? '#fff' : '#6366F1'} stroke={hoverIdx === i ? '#6366F1' : 'none'} strokeWidth={hoverIdx === i ? 2.5 : 0} style={{ transition: 'r .15s, fill .15s', cursor: 'pointer' }} />
+          <circle key={p.date} cx={xs[i]} cy={ys[i]} r={hoverIdx === i ? 5.5 : 4} fill={hoverIdx === i ? '#fff' : stroke} stroke={stroke} strokeWidth={hoverIdx === i ? 2.5 : 0} style={{ transition: 'r .15s, fill .15s', cursor: 'pointer' }} />
         ))}
-        {hoverIdx !== null && (() => {
-          const p = points[hoverIdx];
-          const tw = 150, th = 62;
-          const tx = Math.min(Math.max(xs[hoverIdx] - tw / 2, 4), W - tw - 4);
-          const ty = ys[hoverIdx] - th - 14;
-          return (
-            <g>
-              <rect x={tx} y={ty} width={tw} height={th} rx="8" fill="#1F2937" opacity="0.92" />
-              <text x={tx + 12} y={ty + 18} fontSize="11" fill="#D1D5DB">Дата: {p.date}</text>
-              <text x={tx + 12} y={ty + 34} fontSize="11" fill="#F9FAFB" fontWeight="600">Балл: {p.avgScore}</text>
-              <text x={tx + 12} y={ty + 50} fontSize="11" fill="#D1D5DB">Проверок: {p.count}</text>
-            </g>
-          );
-        })()}
       </svg>
+      {hoverIdx !== null && (() => {
+        const p = points[hoverIdx];
+        const leftPct = (xs[hoverIdx] / W) * 100;
+        const topPct = (ys[hoverIdx] / H) * 100;
+        const placeBelow = topPct < 28;
+        return (
+          <div
+            className={`sa-chart-hover-tooltip${placeBelow ? ' sa-chart-hover-tooltip-below' : ''}`}
+            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+          >
+            <div className="sa-chart-hover-tooltip-row">Дата: {p.date}</div>
+            <div className="sa-chart-hover-tooltip-row is-strong">Балл: {p.avgScore.toFixed(1)}</div>
+            <div className="sa-chart-hover-tooltip-row">Проверок: {p.count}</div>
+          </div>
+        );
+      })()}
+      </div>
     </div>
   );
 }
 
 /* ────────────────────── Heatmap ────────────────────── */
 
+/** Matches --tb-status-green (#2D9B5E) — same as dashboard «Дозвон по часам» */
+const TB_STATUS_GREEN_RGB = '45, 155, 94';
 const CLOSED_HOURS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 21, 22, 23]);
 
 function Heatmap({ hourly }: { hourly: number[] }) {
@@ -238,49 +275,28 @@ function Heatmap({ hourly }: { hourly: number[] }) {
       <div className="sa-heatmap-grid-12" onMouseLeave={() => setHover(null)}>
         {hourly.slice(0, 24).map((pct, h) => {
           const closed = CLOSED_HOURS.has(h);
-          const bg = closed ? 'rgba(17,24,39,0.05)' : `rgba(34,197,94,${0.15 + (pct / mx) * 0.85})`;
+          const hasData = !closed && pct > 0;
+          const opacity = hasData ? 0.15 + (pct / mx) * 0.85 : 0;
+          const bg = hasData ? `rgba(${TB_STATUS_GREEN_RGB}, ${opacity})` : 'rgba(22, 22, 19, 0.05)';
+          const fillStrength = !hasData ? 'none' : opacity >= 0.42 ? 'strong' : 'light';
           return (
-            <div key={h} className={`sa-heatmap-cell ${hover === h ? 'sa-heatmap-cell-hover' : ''} ${closed ? 'sa-heatmap-closed' : ''}`} style={{ backgroundColor: bg }} onMouseEnter={() => setHover(h)}>
+            <div
+              key={h}
+              className={`sa-heatmap-cell sa-heatmap-cell-${fillStrength} ${hover === h ? 'sa-heatmap-cell-hover' : ''} ${!hasData ? 'sa-heatmap-closed' : ''}`}
+              style={{ backgroundColor: bg }}
+              onMouseEnter={() => setHover(h)}
+            >
               <span className="sa-heatmap-label">{h}</span>
               {hover === h && (
                 <div className="sa-heatmap-tooltip">
                   <div>Час: {h}:00</div>
-                  {closed ? <div>Точка закрыта</div> : <><div>Дозвон: {pct.toFixed(0)}%</div></>}
+                  {closed ? <div>Точка закрыта</div> : hasData ? <div>Дозвон: {pct.toFixed(0)}%</div> : <div>Нет звонков</div>}
                 </div>
               )}
             </div>
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function OutcomeBreakdown({ data }: { data?: DealershipOutcomeBreakdown }) {
-  const rows = [
-    { key: 'completed' as const, label: 'Завершённые', color: '#34D399' },
-    { key: 'no_answer' as const, label: 'Недозвоны', color: '#F87171' },
-    { key: 'busy' as const, label: 'Занято', color: '#FBBF24' },
-    { key: 'failed' as const, label: 'Ошибки', color: '#FB7185' },
-    { key: 'disconnected' as const, label: 'Сброшены', color: '#94A3B8' },
-  ];
-  const total = data ? Object.values(data).reduce((sum, value) => sum + value, 0) : 0;
-  if (!data || total === 0) return <div className="sa-chart-empty">Нет звонков для разбора</div>;
-  return (
-    <div className="sa-hbar-list">
-      {rows.map((row) => {
-        const count = data[row.key] ?? 0;
-        const pct = Math.round((count / total) * 100);
-        return (
-          <div key={row.key} className="sa-hbar-row">
-            <span className="sa-hbar-label">{row.label}</span>
-            <div className="sa-hbar-track">
-              <div className="sa-hbar-fill" style={{ width: `${pct}%`, background: row.color }} />
-            </div>
-            <span className="sa-hbar-score">{count}</span>
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -306,14 +322,14 @@ function CommunicationBreakdown({ data }: { data?: { label: string; percent: num
 function ScriptCompliance({ data }: { data?: { block: string; rate: number; hint?: string }[] }) {
   if (!data || data.length === 0) return <div className="sa-chart-empty">Нет рассчитанных категорий</div>;
   return (
-    <div className="sa-hbar-list">
+    <div className="sa-hbar-list sa-hbar-list-thin">
       {[...data].sort((a, b) => a.rate - b.rate).map((item) => (
         <div key={item.block} className="sa-hbar-row" title={item.hint}>
           <span className="sa-hbar-label">{item.block}</span>
           <div className="sa-hbar-track">
             <div
               className="sa-hbar-fill"
-              style={{ width: `${item.rate}%`, background: item.rate >= 80 ? '#34D399' : item.rate >= 60 ? '#FBBF24' : '#F87171' }}
+              style={{ width: `${item.rate}%`, background: scoreBarColor(item.rate) }}
             />
           </div>
           <span className={`sa-hbar-score ${ratingClass(item.rate)}`}>{item.rate}%</span>
@@ -332,83 +348,48 @@ function EmployeeComparisonModal({
 }: {
   rows: Detail['employees'];
   onClose: () => void;
-  onOpenEmployee?: (id: string) => void;
+  onOpenEmployee?: OpenEmployeeHandler;
 }) {
-  if (rows.length < 2) return null;
-  const bestScore = Math.max(...rows.map((row) => row.aiRating));
-  const worstScore = Math.min(...rows.map((row) => row.aiRating));
-  const bestAudits = Math.max(...rows.map((row) => row.auditsCount));
-  const worstAudits = Math.min(...rows.map((row) => row.auditsCount));
-  const leader = [...rows].sort((a, b) => b.aiRating - a.aiRating)[0];
-  const lagger = [...rows].sort((a, b) => a.aiRating - b.aiRating)[0];
-
   return (
-    <FixedOverlayPortal>
-    <div style={{ position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(15,23,42,.42)', display: 'grid', placeItems: 'center', padding: 20 }} onClick={onClose}>
-      <div className="sa-card" style={{ width: 'min(980px, 100%)', maxHeight: '86vh', overflow: 'auto' }} onClick={(event) => event.stopPropagation()}>
-        <div className="sa-section-header-row" style={{ marginBottom: 16 }}>
-          <div>
-            <h2 className="sa-section-title" style={{ marginBottom: 4 }}>Сравнение менеджеров салона</h2>
-            <div className="sa-meta">Выбрано: {rows.length}</div>
-          </div>
-          <button type="button" className="sa-btn-outline" onClick={onClose}>Закрыть</button>
-        </div>
-        <div className="sa-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Метрика</th>
-                {rows.map((row) => (
-                  <th key={row.id} className="sa-text-right">
-                    <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee?.(row.id)}>{row.name}</button>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>AI-рейтинг</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right">
-                    <span className={row.aiRating === bestScore ? 'sa-score-green' : row.aiRating === worstScore && bestScore !== worstScore ? 'sa-score-red' : ''}>{row.aiRating}</span>
-                  </td>
-                ))}
-              </tr>
-              <tr>
-                <td>Проверки</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right">
-                    <span className={row.auditsCount === bestAudits ? 'sa-score-green' : row.auditsCount === worstAudits && bestAudits !== worstAudits ? 'sa-score-red' : ''}>{row.auditsCount}</span>
-                  </td>
-                ))}
-              </tr>
-              <tr>
-                <td>Статус</td>
-                {rows.map((row) => (
-                  <td key={row.id} className="sa-text-right">{row.status}</td>
-                ))}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div style={{ marginTop: 16 }}>
-          <ComparisonAISummary level="dealership-managers" items={rows.map((row) => ({ ...row, fullName: row.name }))} />
-        </div>
-        <div className="sa-card" style={{ marginTop: 16 }}>
-          <h3 className="sa-card-heading">Анализ различий</h3>
-          <p className="sa-meta" style={{ lineHeight: 1.6 }}>
-            Лидер по рейтингу — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee?.(leader.id)}>{leader.name}</button>.
-            {' '}Самый слабый показатель — <button type="button" className="sa-btn-text sa-btn-sm" onClick={() => onOpenEmployee?.(lagger.id)}>{lagger.name}</button>.
-            {' '}Разницу стоит разбирать через типовые ошибки и историю звонков каждого менеджера.
-          </p>
-        </div>
-      </div>
-    </div>
-    </FixedOverlayPortal>
+    <MetricComparisonModal
+      open={rows.length >= 2}
+      onClose={onClose}
+      title="Сравнение менеджеров салона"
+      columns={rows.map((row) => ({
+        id: row.id,
+        label: row.name,
+        onOpen: onOpenEmployee
+          ? () => onOpenEmployee(row.id, { accountId: row.accountId })
+          : undefined,
+      }))}
+      metrics={[
+        {
+          key: 'aiRating',
+          label: 'AI-рейтинг',
+          higherBetter: true,
+          values: rows.map((row) => row.aiRating),
+        },
+        {
+          key: 'auditsCount',
+          label: 'Проверки',
+          higherBetter: true,
+          values: rows.map((row) => row.auditsCount),
+        },
+      ]}
+      extraRows={[
+        {
+          key: 'status',
+          label: 'Статус',
+          cells: rows.map((row) => row.status),
+        },
+      ]}
+      aiLevel="dealership-managers"
+      aiItems={rows.map((row) => ({ ...row, fullName: row.name }))}
+    />
   );
 }
 
-function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['employees']; onOpenEmployee?: (id: string) => void }) {
+function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['employees']; onOpenEmployee?: OpenEmployeeHandler }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [comparisonOpen, setComparisonOpen] = useState(false);
   const selectedRows = employees.filter((employee) => selectedIds.includes(employee.id));
@@ -421,6 +402,10 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
       if (current.length >= 6) return current;
       return [...current, id];
     });
+  }
+
+  function openEmployee(employee: Detail['employees'][number]) {
+    onOpenEmployee?.(employee.id, { accountId: employee.accountId });
   }
 
   if (employees.length === 0) return <div className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Нет данных о сотрудниках</div>;
@@ -442,10 +427,10 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
               <tr
                 key={e.id}
                 className="sa-row-clickable"
-                onClick={() => onOpenEmployee?.(e.id)}
+                onClick={() => openEmployee(e)}
                 role="button"
                 tabIndex={0}
-                onKeyDown={(ev) => ev.key === 'Enter' && onOpenEmployee?.(e.id)}
+                onKeyDown={(ev) => ev.key === 'Enter' && openEmployee(e)}
               >
                 <td onClick={(event) => event.stopPropagation()}>
                   <input
@@ -469,14 +454,15 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
           </tbody>
         </table>
       </div>
-      {selectedRows.length > 0 && (
-        <div style={{ position: 'fixed', left: 24, right: 24, bottom: 24, zIndex: 60, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+      {selectedRows.length > 0 && createPortal(
+        <div className="theme-brutal" style={{ position: 'fixed', left: 24, right: 24, bottom: 24, zIndex: 60, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
           <div className="sa-card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', pointerEvents: 'auto', boxShadow: '0 16px 40px rgba(15,23,42,.18)' }}>
             <strong>Выбрано: {selectedRows.length}</strong>
             <button type="button" className="sa-btn-outline" disabled={selectedRows.length < 2} onClick={() => setComparisonOpen(true)}>Сравнить</button>
             <button type="button" className="sa-btn-text" onClick={() => setSelectedIds([])}>Сбросить</button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       {comparisonOpen && (
         <EmployeeComparisonModal rows={selectedRows} onClose={() => setComparisonOpen(false)} onOpenEmployee={onOpenEmployee} />
@@ -487,127 +473,77 @@ function EmployeesTable({ employees, onOpenEmployee }: { employees: Detail['empl
 
 /* ────────────────────── Top Issues ────────────────────── */
 
-function TopIssues({ detail, onOpenProblem }: { detail: DealershipAnalyticsDetail; onOpenProblem?: (issue: string) => void }) {
+function TopIssues({ detail }: { detail: DealershipAnalyticsDetail }) {
   return (
     <div className="sa-detail-insights">
-      <div className="sa-card" style={{ flex: 1 }}>
+      <div className="sa-card">
         <h3 className="sa-card-heading">ТОП-5 типовых ошибок</h3>
         <ul className="sa-issue-list">
           {detail.topIssues.map((item, i) => (
             <li key={i} className="sa-issue-item">
-              <span className="sa-issue-name">{item.issue}</span>
+              <span className="sa-issue-index">{i + 1}</span>
+              <span className="sa-issue-name" title={item.issue}>{item.issue}</span>
               <span className="sa-issue-pct">{item.percent}%</span>
               <div className="sa-issue-bar"><div className="sa-issue-bar-fill" style={{ width: `${item.percent}%` }} /></div>
             </li>
           ))}
         </ul>
       </div>
-      <div className="sa-card" style={{ flex: 1 }}>
+      <div className="sa-card">
         <h3 className="sa-card-heading">ТОП-5 сложных вопросов</h3>
-        <ol className="sa-question-list">
+        <ul className="sa-issue-list">
           {detail.topQuestions.map((q, i) => (
-            <li key={i}>{q}</li>
+            <li key={i} className="sa-issue-item sa-question-item">
+              <span className="sa-issue-index">{i + 1}</span>
+              <span className="sa-issue-name">{q}</span>
+              <span className="sa-issue-pct sa-issue-pct-ghost" aria-hidden>00%</span>
+              <div className="sa-question-rule" aria-hidden />
+            </li>
           ))}
-        </ol>
-      </div>
-      <div className="sa-card" style={{ flex: 1 }}>
-        <h3 className="sa-card-heading">Рекомендации</h3>
-        <div className="sa-training-list">
-          {detail.recommendedTrainings.map((t, i) => (
-            <div key={i} className="sa-training-item">
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 2 }}>{t.title}</div>
-                <div className="sa-meta">{t.description}</div>
-              </div>
-              {onOpenProblem && <button className="sa-btn-text sa-btn-sm" onClick={() => onOpenProblem(t.title)}>Проверки →</button>}
-            </div>
-          ))}
-        </div>
+        </ul>
       </div>
     </div>
   );
 }
 
-/* ────────────────────── Audit History ────────────────────── */
-
-function isCallAuditId(auditId: string): boolean {
-  const match = String(auditId || '').match(/^call-(\d+)$/);
-  return !!match;
-}
-
-function AuditHistory({ audits, onOpenCall }: { audits: Detail['audits']; onOpenCall: (id: string) => void }) {
-  const pageSize = 10;
-  const [page, setPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(audits.length / pageSize));
-  const startIndex = (page - 1) * pageSize;
-  const visibleAudits = audits.slice(startIndex, startIndex + pageSize);
-
-  useEffect(() => {
-    setPage((current) => Math.min(current, totalPages));
-  }, [totalPages]);
-
-  if (audits.length === 0) return <div className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Нет проверок за период</div>;
-  return (
-    <div>
-      <div className="sa-table-wrap">
-        <table className="sa-table">
-          <thead>
-            <tr>
-              <th>Дата</th>
-              <th>Тип</th>
-              <th>Сотрудник</th>
-              <th className="sa-text-right">Балл</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {visibleAudits.map((a) => {
-              const canOpenCall = a.type === 'call' && isCallAuditId(a.id);
-              return (
-                <tr key={a.id}>
-                  <td>{new Date(a.date).toLocaleDateString('ru-RU')}</td>
-                  <td>{a.type === 'training' ? 'Тренажёр' : 'Звонок'}</td>
-                  <td>{a.employeeName}</td>
-                  <td className="sa-text-right"><span className={ratingClass(a.score)}>{a.score}</span></td>
-                  <td>
-                    <button
-                      className="sa-btn-text sa-btn-sm"
-                      disabled={!canOpenCall}
-                      title={canOpenCall ? 'Открыть разбор звонка' : 'Разбор тренировки открывается в разделе проверок'}
-                      onClick={() => canOpenCall && onOpenCall(a.id)}
-                    >
-                      Открыть разбор
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+function Recommendations({
+  items,
+  onOpenProblem,
+}: {
+  items: DealershipAnalyticsDetail['recommendedTrainings'];
+  onOpenProblem?: (issue: string) => void;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="sa-card sa-recommendations-empty">
+        <div className="sa-recommendations-empty-title">Пока нет рекомендаций</div>
+        <div className="sa-training-item-desc">Когда появятся повторяющиеся ошибки, здесь будут конкретные шаги по улучшению.</div>
       </div>
-      {audits.length > pageSize && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 12, flexWrap: 'wrap' }}>
-          <span className="sa-meta">
-            Показаны {startIndex + 1}-{Math.min(startIndex + pageSize, audits.length)} из {audits.length}
-          </span>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={page === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
-              Назад
-            </button>
-            <span className="sa-metric-chip">Стр. {page} из {totalPages}</span>
-            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={page === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
-              Вперёд
-            </button>
+    );
+  }
+  return (
+    <div className="sa-recommendations-grid">
+      {items.map((t, i) => (
+        <article key={i} className="sa-recommendation-card">
+          <div className="sa-recommendation-card-index" aria-hidden>{i + 1}</div>
+          <div className="sa-recommendation-card-body">
+            <h3 className="sa-recommendation-card-title">{t.title}</h3>
+            <p className="sa-recommendation-card-desc">{t.description}</p>
           </div>
-        </div>
-      )}
+          {onOpenProblem && (
+            <button type="button" className="sa-btn-text sa-recommendation-card-action" onClick={() => onOpenProblem(t.title)}>
+              Открыть проверки →
+            </button>
+          )}
+        </article>
+      ))}
     </div>
   );
 }
 
 /* ────────────────────── Main Component ────────────────────── */
 
-export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmployee, onOpenBatchDetail, onDealershipSaved, mode = 'default' }: Props) {
+export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmployee, onOpenBatchDetail, onDealershipSaved, onDealershipDeleted, mode = 'default' }: Props) {
   const navigate = useNavigate();
   const isDealerDashboard = mode === 'dealerDashboard';
   const [realDetail, setRealDetail] = useState<DealershipAnalyticsDetail | null>(null);
@@ -773,14 +709,11 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
 
   const deltaSign = detail.deltaRating !== null ? (detail.deltaRating > 0 ? '+' : '') : '';
   const deltaText = detail.deltaRating !== null ? `${deltaSign}${detail.deltaRating}` : '—';
-  const deltaCls = detail.deltaRating !== null
-    ? detail.deltaRating > 0 ? 'sa-score-green' : detail.deltaRating < -5 ? 'sa-score-red' : 'sa-score-orange'
-    : '';
   const dealershipNoAnswers = detail.noAnswers ?? detail.outcomeBreakdown?.no_answer ?? 0;
   const dealershipCalls = detail.auditsCount || Object.values(detail.outcomeBreakdown ?? {}).reduce((sum, value) => sum + value, 0);
 
   return (
-    <div className="sa-detail-root">
+    <div className="sa-detail-root sa-dealership-detail">
       {/* Breadcrumb */}
       {!isDealerDashboard && (
         <div className="sa-breadcrumb">
@@ -793,15 +726,29 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       {/* Header */}
       <div className="sa-detail-header">
         <div>
-          <h1 className="sa-page-title" style={{ marginBottom: 4 }}>{detail.name}</h1>
+          <div className="sa-holding-title-row" style={{ marginBottom: 4 }}>
+            <h1 className="sa-page-title">{detail.name}</h1>
+            {!isDealerDashboard && (
+              <span className={statusBadgeClass(detail.status)}>{STATUS_LABELS[detail.status]}</span>
+            )}
+          </div>
           <p className="sa-page-subtitle" style={{ marginBottom: 0 }}>
             {dealership?.city || detail.city} · {dealershipTypeLabel(dealership?.type)} · {formatWorkingHours(dealership)}
           </p>
         </div>
         <div className="sa-detail-header-right">
-          {!isDealerDashboard && <span className={statusBadgeClass(detail.status)}>{STATUS_LABELS[detail.status]}</span>}
-          {!isDealerDashboard && <button className="sa-btn-outline" onClick={() => setPhoneNumbersOpen(true)}>Номера телефонов</button>}
-          {!isDealerDashboard && <button className="sa-btn-outline" onClick={() => setEditDealershipOpen(true)}>Редактировать</button>}
+          {!isDealerDashboard && (
+            <button className="sa-btn-brutal-3d" onClick={() => setPhoneNumbersOpen(true)}>
+              <PhoneIcon />
+              Номера телефонов
+            </button>
+          )}
+          {!isDealerDashboard && (
+            <button className="sa-btn-brutal-3d" onClick={() => setEditDealershipOpen(true)}>
+              <EditIcon />
+              Редактировать
+            </button>
+          )}
         </div>
       </div>
       {activeBatch && batchSummary && (
@@ -815,34 +762,59 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         </div>
       )}
 
-      {/* KPI */}
-      <div className="sa-kpi-grid" style={{ marginBottom: 32 }}>
-        <KPI label="AI-рейтинг" value={detail.aiRating} cls={ratingClass(detail.aiRating)} />
-        <KPI label="Динамика" value={deltaText} cls={deltaCls} />
-        <KPI label="Проверки" value={detail.auditsCount} />
-        <KPI label="Недозвоны" value={dealershipNoAnswers} cls={dealershipNoAnswers > 0 ? 'sa-score-orange' : 'sa-score-green'} />
-        <KPI label="Сотрудники" value={detail.employeesCount} />
-        <KPI
-          label="Дозвон"
-          value={detail.answerRate !== null ? `${detail.answerRate}%` : '—'}
-          cls={detail.answerRate !== null ? answerRateClass(detail.answerRate) : ''}
-        />
-        <KPI
-          label="Время ответа"
-          value={detail.avgAnswerTimeSec !== null ? detail.avgAnswerTimeSec : '—'}
-          cls={detail.avgAnswerTimeSec !== null ? answerTimeClass(detail.avgAnswerTimeSec) : ''}
-          suffix={detail.avgAnswerTimeSec !== null ? 'с' : ''}
-        />
-        <KPI
-          label="Время звонка"
-          value={detail.avgCallDurationSec != null ? detail.avgCallDurationSec : '—'}
-          suffix={detail.avgCallDurationSec != null ? 'с' : ''}
-        />
-      </div>
+      <section className="sa-section sa-section-metrics" style={{ marginBottom: 32 }}>
+        <h2 className="sa-section-title">Ключевые метрики</h2>
+        <div className="sa-kpi-grid">
+          <DealershipMetricCard
+            label="AI рейтинг"
+            value={detail.aiRating}
+            valueSuffix="из 100"
+            valueClass={ratingClass(detail.aiRating)}
+            description={(
+              <>
+                Динамика за 30 дней{' '}
+                <span className={`sa-kpi-delta${detail.deltaRating !== null ? (detail.deltaRating > 0 ? ' is-up' : detail.deltaRating < 0 ? ' is-down' : '') : ''}`}>
+                  {deltaText}
+                </span>
+              </>
+            )}
+          />
+          <DealershipMetricCard
+            label="Проверки"
+            value={detail.auditsCount}
+            description="За выбранный период"
+          />
+          <DealershipMetricCard
+            label="Сотрудники"
+            value={detail.employeesCount}
+            description="На точке"
+          />
+          <DealershipMetricCard
+            label="Дозвон"
+            value={detail.answerRate !== null ? `${detail.answerRate}%` : '—'}
+            valueClass={detail.answerRate !== null ? answerRateClass(detail.answerRate) : undefined}
+            description="Процент принятых звонков"
+          />
+          <DealershipMetricCard
+            label="Время ответа"
+            value={detail.avgAnswerTimeSec !== null ? detail.avgAnswerTimeSec : '—'}
+            valueSuffix={detail.avgAnswerTimeSec !== null ? 'с' : undefined}
+            valueClass={detail.avgAnswerTimeSec !== null ? answerTimeClass(detail.avgAnswerTimeSec) : undefined}
+            description={`Время звонка: ${detail.avgCallDurationSec != null ? `${detail.avgCallDurationSec}с` : '—'}`}
+          />
+        </div>
+      </section>
 
       {/* Schedules */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
-        <h2 className="sa-section-title">Участвует в расписаниях</h2>
+        <div className="sa-section-header-row" style={{ marginBottom: 12 }}>
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Участвует в расписаниях</h2>
+          {!isDealerDashboard && (
+            <button type="button" className="sa-btn-text" onClick={() => navigate('/call-settings/plans')}>
+              Настроить расписания →
+            </button>
+          )}
+        </div>
         {planActionStatus && <div className="sa-meta" style={{ marginBottom: 10 }}>{planActionStatus}</div>}
         <PlanParticipationList
           plans={planParticipation}
@@ -854,25 +826,31 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       </section>
 
       {/* Charts row */}
-      <div className="sa-dashboard-grid" style={{ marginBottom: 32 }}>
-        <div className="sa-card sa-grid-card sa-chart-equal">
-          <TrendChart points={detail.timeSeries} />
+      <section className="sa-section" style={{ marginBottom: 32 }}>
+        <h2 className="sa-section-title">Динамика эффективности</h2>
+        <div className="sa-dashboard-grid">
+          <div className="sa-card sa-grid-card sa-chart-equal">
+            <TrendChart points={detail.timeSeries} />
+          </div>
+          <div className="sa-card sa-grid-card sa-chart-equal">
+            <Heatmap hourly={detail.hourlyAnswerRate} />
+          </div>
         </div>
-        <div className="sa-card sa-grid-card sa-chart-equal">
-          <Heatmap hourly={detail.hourlyAnswerRate} />
-        </div>
-      </div>
+      </section>
 
-      <div className="sa-dashboard-grid" style={{ marginBottom: 32 }}>
-        <div className="sa-card sa-grid-card">
-          <h3 className="sa-card-heading">Исходы звонков</h3>
-          <OutcomeBreakdown data={detail.outcomeBreakdown} />
+      <section className="sa-section" style={{ marginBottom: 32 }}>
+        <h2 className="sa-section-title">Исходы и категории</h2>
+        <div className="sa-dashboard-grid">
+          <div className="sa-card sa-grid-card">
+            <h3 className="sa-card-heading">Исходы звонков</h3>
+            <CallOutcomeBreakdown data={detail.outcomeBreakdown} />
+          </div>
+          <div className="sa-card sa-grid-card">
+            <h3 className="sa-card-heading">Распределение по категориям</h3>
+            <ScriptCompliance data={detail.scriptCompliance} />
+          </div>
         </div>
-        <div className="sa-card sa-grid-card">
-          <h3 className="sa-card-heading">Распределение по категориям</h3>
-          <ScriptCompliance data={detail.scriptCompliance} />
-        </div>
-      </div>
+      </section>
 
       {/* Employees */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
@@ -883,13 +861,30 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       {/* Insights */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Аналитика по ошибкам</h2>
-        <TopIssues detail={detail} onOpenProblem={(issue) => navigate(`/audits?problem=${encodeURIComponent(issue)}`)} />
+        <TopIssues detail={detail} />
+      </section>
+
+      <section className="sa-section" style={{ marginBottom: 32 }}>
+        <h2 className="sa-section-title">Рекомендации</h2>
+        <Recommendations
+          items={detail.recommendedTrainings}
+          onOpenProblem={(issue) => {
+            const params = new URLSearchParams();
+            params.set('problem', issue);
+            params.set('dealership', dealershipId);
+            navigate(`/audits?${params.toString()}`);
+          }}
+        />
       </section>
 
       {/* Audit history */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">История проверок</h2>
-        <AuditHistory audits={detail.audits} onOpenCall={handleOpenCallDetail} />
+        <AuditHistoryBlock
+          variant="dealership"
+          items={detail.audits}
+          onOpenAudit={handleOpenCallDetail}
+        />
       </section>
 
       <DealershipModal
@@ -898,18 +893,27 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         dealership={dealership}
         onClose={() => setEditDealershipOpen(false)}
         onSaved={(saved) => onDealershipSaved?.(saved)}
+        onDeleted={(id) => {
+          setEditDealershipOpen(false);
+          onDealershipDeleted?.(id);
+        }}
       />
       <DealershipPhoneNumbersModal
         dealershipId={dealershipId}
         open={phoneNumbersOpen}
         onClose={() => setPhoneNumbersOpen(false)}
       />
-      <SlideOver open={analyticsDrawerOpen} title="Аналитика звонка" width="xl" onClose={closeAnalyticsDrawer}>
+      <SlideOver
+        open={analyticsDrawerOpen}
+        title={analyticsDrawerDetail?.type === 'trainer' ? 'Отчёт тренировки' : 'Аналитика звонка'}
+        width="xl"
+        onClose={closeAnalyticsDrawer}
+      >
         {analyticsDrawerLoading ? (
           <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка аналитики...</div>
         ) : analyticsDrawerError ? (
           <div className="sa-card" style={{ padding: 20 }}>
-            <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть аналитику</div>
+            <div style={{ color: 'var(--tb-status-red)', fontWeight: 700 }}>Не удалось открыть аналитику</div>
             <div className="sa-meta" style={{ marginTop: 8 }}>{analyticsDrawerError}</div>
           </div>
         ) : analyticsDrawerDetail ? (

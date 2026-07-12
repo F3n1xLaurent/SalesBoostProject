@@ -75,7 +75,7 @@ export function AuditAnalyticsReport({
               </>
             ) : (
               <>
-                <span>{detail.employeeName}</span>
+                <span>{detail.dealershipName}</span>
                 <span>Сценарий: {detail.scenarioName || '—'}</span>
                 <span>{dateStr}, {timeStr}</span>
               </>

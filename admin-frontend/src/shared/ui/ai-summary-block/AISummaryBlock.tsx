@@ -12,7 +12,7 @@ type Props = {
   badgePrimaryValue?: string;
   badgeSecondaryLabel?: string;
   badgeSecondaryValue?: string;
-  variant?: 'default' | 'brutal';
+  variant?: 'default' | 'brutal' | 'outlined';
   /** Legacy compat */
   badgePrimary?: string;
   badgeSecondary?: string;
@@ -47,13 +47,34 @@ export function AISummaryBlock({
         <p className="sa-ai-summary-text sa-ai-summary-error">{error}</p>
       ) : (
         <>
-          <p className="sa-ai-summary-text">{text || 'Нет данных для AI-сводки.'}</p>
+          {variant === 'outlined' ? (
+            <div className="sa-ai-summary-section">
+              <div className="sa-ai-summary-section-label">Вывод</div>
+              <p className="sa-ai-summary-text">{text || 'Нет данных для AI-сводки.'}</p>
+            </div>
+          ) : (
+            <p className="sa-ai-summary-text">{text || 'Нет данных для AI-сводки.'}</p>
+          )}
           {recommendations.length > 0 && (
-            <ol className="sa-ai-summary-recommendations">
-              {recommendations.map((item, index) => (
-                <li key={`${index}-${item}`}>{item}</li>
-              ))}
-            </ol>
+            variant === 'outlined' ? (
+              <div className="sa-ai-summary-section">
+                <div className="sa-ai-summary-section-label">Рекомендации</div>
+                <ol className="sa-ai-summary-recommendations sa-ai-summary-recommendations--cards">
+                  {recommendations.map((item, index) => (
+                    <li key={`${index}-${item}`}>
+                      <span className="sa-ai-summary-rec-index" aria-hidden="true">{index + 1}</span>
+                      <span className="sa-ai-summary-rec-text">{item}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : (
+              <ol className="sa-ai-summary-recommendations">
+                {recommendations.map((item, index) => (
+                  <li key={`${index}-${item}`}>{item}</li>
+                ))}
+              </ol>
+            )
           )}
         </>
       )}
@@ -90,6 +111,17 @@ export function AISummaryBlock({
           <h2 className="sa-section-title">{title}</h2>
         </div>
         <div className="sa-brutal-card-body sa-ai-summary-content">{content}</div>
+      </div>
+    );
+  }
+
+  if (variant === 'outlined') {
+    return (
+      <div className="sa-ai-summary-card sa-ai-summary-card--outlined">
+        <div className="sa-ai-summary-header">
+          <h3 className="sa-ai-summary-title">{title}</h3>
+        </div>
+        <div className="sa-ai-summary-content">{content}</div>
       </div>
     );
   }

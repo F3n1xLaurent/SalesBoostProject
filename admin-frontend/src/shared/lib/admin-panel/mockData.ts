@@ -29,6 +29,7 @@ export interface DealershipRow {
 
 export interface EmployeeRow {
   id: string;
+  accountId?: string | null;
   name: string;
   aiRating: number;
   auditsCount: number;
@@ -39,9 +40,10 @@ export interface EmployeeRow {
 export interface DealershipAudit {
   id: string;
   date: string;
-  type: 'training' | 'call';
+  type: 'training' | 'trainer' | 'call';
   employeeName: string;
   score: number;
+  verdict?: string;
 }
 
 export interface DealershipDetail extends DealershipRow {
@@ -385,6 +387,7 @@ export const COMM_BADGE_CLASS: Record<CommunicationFlag, string> = {
 
 export interface EmployeeFullRow {
   id: string;
+  accountId?: string | null;
   fullName: string;
   dealershipId: string;
   dealershipName: string;
@@ -401,7 +404,7 @@ export interface EmployeeFullRow {
 export interface EmployeeAuditRecord {
   id: string;
   date: string;
-  type: 'training' | 'call';
+  type: 'training' | 'trainer' | 'call';
   score: number;
   verdict: string;
   outcome?: 'completed' | 'no_answer' | 'busy' | 'failed' | 'disconnected' | string | null;
