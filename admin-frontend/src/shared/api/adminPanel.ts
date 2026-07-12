@@ -1648,6 +1648,12 @@ export async function updateCallPlan(id: string, payload: Omit<CallPlanItem, 'id
   return data.item as CallPlanItem;
 }
 
+export async function deleteCallPlan(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить план прозвона.');
+}
+
 export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; callId: string; batchId: string; totalJobs: number }> {
   const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/initiate`, { method: 'POST' });
   const data = await res.json().catch(() => ({}));

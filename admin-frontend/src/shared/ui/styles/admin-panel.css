@@ -1547,8 +1547,8 @@
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
 .sa-filter-check:hover {
-  border-color: rgba(99, 102, 241, 0.35);
-  box-shadow: 0 4px 12px rgba(17, 24, 39, 0.06);
+  border-color: rgba(22, 22, 19, 0.18);
+  box-shadow: none;
 }
 .sa-filter-check input[type="checkbox"],
 .sa-filter-check input[type="radio"] {
@@ -1559,9 +1559,9 @@
 }
 .sa-filter-check:has(input[type="checkbox"]:checked),
 .sa-filter-check:has(input[type="radio"]:checked) {
-  border-color: rgba(99, 102, 241, 0.45);
-  background: rgba(99, 102, 241, 0.08);
-  color: var(--primary, #6366F1);
+  border-color: rgba(22, 22, 19, 0.22);
+  background: #FFFFFF;
+  color: var(--sa-text, #161613);
   font-weight: 650;
 }
 .sa-filter-count {
@@ -4055,8 +4055,8 @@
   color: #D97706;
 }
 .sa-priority-p2 {
-  background: rgba(99, 102, 241, 0.1);
-  color: #6366F1;
+  background: rgba(22, 22, 19, 0.08);
+  color: #161613;
 }
 .sa-action-target {
   font-size: 12px;
@@ -4409,7 +4409,7 @@
   width: 18px;
   height: 18px;
   border-radius: 999px;
-  border: 3px solid #6366f1;
+  border: 3px solid var(--tb-ink, #161613);
   background: #fff;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
   cursor: pointer;
@@ -4426,7 +4426,7 @@
   width: 18px;
   height: 18px;
   border-radius: 999px;
-  border: 3px solid #6366f1;
+  border: 3px solid var(--tb-ink, #161613);
   background: #fff;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
   cursor: pointer;

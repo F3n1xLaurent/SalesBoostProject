@@ -457,6 +457,8 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                       navigate('/autodealers');
                     } else if (type === 'dealership' && filter) {
                       navigate(buildDealershipPath(filter));
+                    } else if (type === 'holding' && filter) {
+                      navigate(buildHoldingPath(filter));
                     } else if (type === 'audits') {
                       navigate('/audits');
                     }

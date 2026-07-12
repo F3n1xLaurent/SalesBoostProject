@@ -57,6 +57,7 @@ import {
   handleCreateCallScript,
   handleDeleteCallCustomerProfile,
   handleDeleteCallCustomerVoice,
+  handleDeleteCallPlan,
   handleDeleteCallScript,
   handleGetCallPlanOptions,
   handleInitiateCallPlan,
@@ -814,8 +815,7 @@ function topScriptQuestionsFromSessions(
 function categoryComparisonFromSessions(ownSessions: AnalyticsSession[], franchiseSessions: AnalyticsSession[]) {
   const own = new Map(dimensionBreakdownFromSessions(ownSessions).map((item) => [item.block, item.score]));
   const franchise = new Map(dimensionBreakdownFromSessions(franchiseSessions).map((item) => [item.block, item.score]));
-  const names = [...new Set([...own.keys(), ...franchise.keys()])];
-  return names.map((category) => ({
+  return ANALYTICS_CATEGORIES.map((category) => ({
     category,
     ownScore: own.get(category) ?? 0,
     franchiseScore: franchise.get(category) ?? 0,
@@ -3487,6 +3487,13 @@ app.patch('/api/admin/call-settings/plans/:id', (req, res) => {
   });
 });
 
+app.delete('/api/admin/call-settings/plans/:id', (req, res) => {
+  handleDeleteCallPlan(req, res).catch((error) => {
+    console.error('Delete call plan error:', error);
+    res.status(500).json({ error: 'Не удалось удалить план прозвона.' });
+  });
+});
+
 app.post('/api/admin/call-settings/plans/:id/initiate', (req, res) => {
   handleInitiateCallPlan(req, res).catch((error) => {
     console.error('Initiate call plan error:', error);
@@ -5637,9 +5644,10 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
       .slice(0, 10)
       .map(([error, value]) => ({ error, count: value.count, percent: percent(value.count, value.total) }));
 
-    const scriptCompliance = [...dimensionSums.entries()]
-      .map(([block, value]) => ({ block: dimensionLabel(block), rate: value.count ? Math.round(value.sum / value.count) : 0 }))
-      .sort((a, b) => a.rate - b.rate);
+    const scriptCompliance = dimensionBreakdownFromSessions(sessions).map((item) => ({
+      block: item.block,
+      rate: item.score,
+    }));
 
     const dealershipStats = dealerships.map((dealership) => {
       const dealershipSessions = sessions.filter((session) => session.dealershipId === dealership.id);

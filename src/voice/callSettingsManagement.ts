@@ -630,6 +630,18 @@ export async function handleUpdateCallPlan(req: Request, res: Response): Promise
   }
 }
 
+export async function handleDeleteCallPlan(req: Request, res: Response): Promise<void> {
+  try {
+    const id = String(req.params.id || '').trim();
+    await assertCanAccessPlan(req, id);
+    await prisma.callPlan.delete({ where: { id } });
+    res.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось удалить план прозвона.';
+    res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
+  }
+}
+
 async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
   const targetIds = safeJsonParse<string[]>(plan.targetIdsJson, []);
   const where: Prisma.ManagerProfileWhereInput = plan.targetType === 'employees'
