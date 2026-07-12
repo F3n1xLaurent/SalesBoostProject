@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createPhoneNumberType,
+  deletePhoneNumberType,
   fetchPhoneNumberTypes,
   fetchHoldings,
   updatePhoneNumberType,
@@ -9,10 +10,14 @@ import {
   type PhoneNumberTypeItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { BrutalSelect } from '../../../shared/ui/BrutalSelect';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { EditIcon } from '../../../shared/ui/icons/ActionIcons';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { BrutalModal } from '../../../shared/ui/brutal-modal';
+import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
 import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
+import { useToast } from '../../../shared/ui/toast/ToastProvider';
 
 type TypeFormState = {
   name: string;
@@ -33,6 +38,11 @@ const OWNERSHIP_LABELS: Record<PhoneNumberOwnership, string> = {
   user: 'Для пользователей',
 };
 
+const OWNERSHIP_OPTIONS = [
+  { value: 'dealership', label: OWNERSHIP_LABELS.dealership },
+  { value: 'user', label: OWNERSHIP_LABELS.user },
+];
+
 function normalizeTypeForm(form: TypeFormState): TypeFormState {
   return {
     name: form.name.trim(),
@@ -50,6 +60,9 @@ function TypeModal(props: {
   submitLabel: string;
   saving: boolean;
   error: string | null;
+  deleteConfirm?: boolean;
+  onDeleteConfirmChange?: (open: boolean) => void;
+  onDelete?: () => void;
   onClose: () => void;
   onSubmit: (form: TypeFormState) => void;
 }) {
@@ -57,6 +70,7 @@ function TypeModal(props: {
   const [attempted, setAttempted] = useState(false);
   const [unsavedOpen, setUnsavedOpen] = useState(false);
   const wasOpenRef = useRef(false);
+  const isCreate = props.mode === 'create';
   const isDirty = useMemo(
     () => JSON.stringify(normalizeTypeForm(form)) !== JSON.stringify(normalizeTypeForm(props.initial)),
     [form, props.initial],
@@ -73,7 +87,7 @@ function TypeModal(props: {
   }, [props.open, props.initial]);
 
   function requestClose() {
-    if (props.mode === 'edit' && isDirty) {
+    if (!isCreate && isDirty) {
       setUnsavedOpen(true);
       return;
     }
@@ -85,7 +99,7 @@ function TypeModal(props: {
       setAttempted(true);
       return false;
     }
-    if (props.mode === 'edit' && !isDirty) return false;
+    if (!isCreate && !isDirty) return false;
     props.onSubmit(form);
     return true;
   }
@@ -108,13 +122,23 @@ function TypeModal(props: {
         width="medium"
         footer={(
           <div className="sa-modal-footer-row">
+            {!isCreate && (
+              <button
+                type="button"
+                className="sa-btn-danger"
+                onClick={() => props.onDeleteConfirmChange?.(true)}
+                disabled={props.saving}
+              >
+                Удалить тип
+              </button>
+            )}
             <div className="sa-modal-footer-row__right">
               <button type="button" className="sa-btn-outline" onClick={requestClose} disabled={props.saving}>Отмена</button>
               <button
                 type="submit"
                 form={TYPE_FORM_ID}
                 className="sa-btn-primary"
-                disabled={props.saving || (props.mode === 'edit' && !isDirty)}
+                disabled={props.saving || (!isCreate && !isDirty)}
               >
                 {props.saving ? 'Сохраняем...' : props.submitLabel}
               </button>
@@ -139,22 +163,27 @@ function TypeModal(props: {
             />
           </label>
 
-          <label style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
             <span>Принадлежность</span>
-            <select
-              className="sa-select"
+            <BrutalSelect
               value={form.ownership}
-              onChange={(event) => setForm((current) => ({ ...current, ownership: event.target.value as PhoneNumberOwnership }))}
-            >
-              <option value="dealership">Для точек</option>
-              <option value="user">Для пользователей</option>
-            </select>
-          </label>
+              options={OWNERSHIP_OPTIONS}
+              aria-label="Принадлежность"
+              onChange={(value) => setForm((current) => ({ ...current, ownership: value as PhoneNumberOwnership }))}
+            />
+          </div>
 
-          <label className="sa-filter-check">
-            <input type="checkbox" checked={form.isActive} onChange={(event) => setForm((current) => ({ ...current, isActive: event.target.checked }))} />
-            <span>Тип активен</span>
-          </label>
+          <button
+            type="button"
+            className="sa-toggle-field"
+            aria-pressed={form.isActive}
+            onClick={() => setForm((current) => ({ ...current, isActive: !current.isActive }))}
+          >
+            <span className="sa-toggle-field__text">Тип активен</span>
+            <span className="sa-toggle-field__control" aria-hidden="true">
+              <span className="sa-toggle-field__thumb" />
+            </span>
+          </button>
 
           {props.error && (
             <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14 }}>
@@ -174,11 +203,20 @@ function TypeModal(props: {
         }}
         onSave={() => { persist(); }}
       />
+
+      <DeleteConfirmModal
+        open={!!props.deleteConfirm}
+        title="Удалить тип номера?"
+        saving={props.saving}
+        onCancel={() => props.onDeleteConfirmChange?.(false)}
+        onConfirm={() => props.onDelete?.()}
+      />
     </>
   );
 }
 
 export function TypesNumbersPage() {
+  const { showToast } = useToast();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
@@ -187,9 +225,9 @@ export function TypesNumbersPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editType, setEditType] = useState<PhoneNumberTypeItem | null>(null);
+  const [editDeleteConfirm, setEditDeleteConfirm] = useState(false);
   const selectedHolding = useMemo(
     () => holdings.find((holding) => holding.id === selectedHoldingId) ?? null,
     [holdings, selectedHoldingId],
@@ -199,6 +237,7 @@ export function TypesNumbersPage() {
     () => items.filter((item) => item.ownership === activeOwnership),
     [items, activeOwnership],
   );
+
   async function loadHoldings() {
     setHoldingsLoading(true);
     setError(null);
@@ -239,18 +278,29 @@ export function TypesNumbersPage() {
 
   async function handleCreate(form: TypeFormState) {
     if (!selectedHoldingId) {
-      setError('Перед тем, как создавать типы номеров, пожалуйста, добавьте компанию.');
+      showToast({
+        type: 'error',
+        title: 'Не удалось создать тип',
+        description: 'Перед тем, как создавать типы номеров, пожалуйста, добавьте компанию.',
+      });
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      await createPhoneNumberType({ holdingId: selectedHoldingId, name: form.name.trim(), ownership: form.ownership, isActive: form.isActive });
+      const created = await createPhoneNumberType({
+        holdingId: selectedHoldingId,
+        name: form.name.trim(),
+        ownership: form.ownership,
+        isActive: form.isActive,
+      });
       setCreateOpen(false);
-      setNotice('Тип номера создан.');
+      showToast({ type: 'success', title: 'Тип номера создан', description: created.name });
       await loadData(selectedHoldingId);
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : 'Не удалось создать тип номера.');
+      const message = createError instanceof Error ? createError.message : 'Не удалось создать тип номера.';
+      setError(message);
+      showToast({ type: 'error', title: 'Не удалось создать тип', description: message });
     } finally {
       setSaving(false);
     }
@@ -261,12 +311,40 @@ export function TypesNumbersPage() {
     setSaving(true);
     setError(null);
     try {
-      await updatePhoneNumberType(editType.id, { name: form.name.trim(), ownership: form.ownership, isActive: form.isActive });
+      const updated = await updatePhoneNumberType(editType.id, {
+        name: form.name.trim(),
+        ownership: form.ownership,
+        isActive: form.isActive,
+      });
       setEditType(null);
-      setNotice('Тип номера обновлён.');
+      setEditDeleteConfirm(false);
+      showToast({ type: 'success', title: 'Тип номера сохранён', description: updated.name });
       await loadData(selectedHoldingId);
     } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : 'Не удалось обновить тип номера.');
+      const message = updateError instanceof Error ? updateError.message : 'Не удалось обновить тип номера.';
+      setError(message);
+      showToast({ type: 'error', title: 'Не удалось сохранить тип', description: message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDeleteConfirm() {
+    if (!editType) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const name = editType.name;
+      await deletePhoneNumberType(editType.id);
+      setEditType(null);
+      setEditDeleteConfirm(false);
+      showToast({ type: 'success', title: 'Тип номера удалён', description: name });
+      await loadData(selectedHoldingId);
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить тип номера.';
+      setError(message);
+      setEditDeleteConfirm(false);
+      showToast({ type: 'error', title: 'Не удалось удалить тип', description: message });
     } finally {
       setSaving(false);
     }
@@ -276,9 +354,6 @@ export function TypesNumbersPage() {
     <div>
       <h1 className="sa-page-title">Типы номеров</h1>
 
-      {notice && (
-        <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>{notice}</div>
-      )}
       {error && !createOpen && !editType && (
         <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{error}</div>
       )}
@@ -290,7 +365,7 @@ export function TypesNumbersPage() {
             value={selectedHoldingId}
             onChange={(holdingId) => {
               setSelectedHoldingId(holdingId);
-              setNotice(null);
+              setError(null);
             }}
             disabled={holdingsLoading || holdings.length === 0}
             loading={holdingsLoading}
@@ -299,7 +374,7 @@ export function TypesNumbersPage() {
         <div className="sa-toolbar-actions">
           <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={() => { setError(null); setCreateOpen(true); }}>
             <LetsIcon name="add-light" size={16} bold />
-            Создать номер
+            Создать тип
           </button>
         </div>
       </div>
@@ -318,7 +393,13 @@ export function TypesNumbersPage() {
       </div>
 
       <div className="sa-companies-table-wrap sa-holdings-table-wrap">
-        <table className="sa-table sa-holdings-table">
+        <table className="sa-table sa-holdings-table sa-types-numbers-table">
+          <colgroup>
+            <col className="sa-col-name" />
+            <col className="sa-col-type" />
+            <col className="sa-col-status" />
+            <col className="sa-col-actions" />
+          </colgroup>
           <thead>
             <tr>
               <th>Название</th>
@@ -346,8 +427,14 @@ export function TypesNumbersPage() {
                   </span>
                 </td>
                 <td className="sa-holdings-actions-cell">
-                  <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditType(item); }}>
-                    Редактировать
+                  <button
+                    type="button"
+                    className="sa-btn-icon sa-btn-brutal-3d-icon"
+                    onClick={() => { setError(null); setEditDeleteConfirm(false); setEditType(item); }}
+                    aria-label={`Редактировать ${item.name}`}
+                    title="Редактировать"
+                  >
+                    <EditIcon />
                   </button>
                 </td>
               </tr>
@@ -378,7 +465,13 @@ export function TypesNumbersPage() {
         submitLabel="Сохранить"
         saving={saving}
         error={editType ? error : null}
-        onClose={() => setEditType(null)}
+        deleteConfirm={editDeleteConfirm}
+        onDeleteConfirmChange={setEditDeleteConfirm}
+        onDelete={() => { void handleDeleteConfirm(); }}
+        onClose={() => {
+          setEditType(null);
+          setEditDeleteConfirm(false);
+        }}
         onSubmit={handleEdit}
       />
     </div>

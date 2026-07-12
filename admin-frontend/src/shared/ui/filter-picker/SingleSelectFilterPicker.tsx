@@ -18,6 +18,7 @@ type Props<T extends string> = {
   value: T;
   placeholder?: string;
   disabled?: boolean;
+  zIndex?: number;
   onChange: (value: T) => void;
 };
 
@@ -81,7 +82,7 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
           aria-expanded={open}
         />
       </FilterPickerField>
-      <FilterPickerMenu open={open} anchorRef={pickerRef} role="listbox">
+      <FilterPickerMenu open={open} anchorRef={pickerRef} role="listbox" zIndex={props.zIndex}>
         {filteredOptions.length ? filteredOptions.map((option) => {
           const selected = props.value === option.value;
           return (

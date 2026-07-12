@@ -27,6 +27,10 @@ import { FixedOverlayPortal } from '../../../shared/ui/fixed-overlay-portal/Fixe
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { FilterPickerField } from '../../../shared/ui/filter-picker/FilterPickerField';
 import { FilterPickerMenu } from '../../../shared/ui/filter-picker/FilterPickerMenu';
+import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { EditIcon, RefreshIcon, PauseIcon, CloseIcon } from '../../../shared/ui/icons/ActionIcons';
+import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
+import { useToast } from '../../../shared/ui/toast/ToastProvider';
 
 type WizardStep = 1 | 2 | 3;
 type DataPageTab = 'data' | 'imports';
@@ -106,10 +110,23 @@ function statusLabel(status: ImportSourceItem['status']): string {
   return 'Ошибка';
 }
 
+function importStatusBadgeClass(status: ImportSourceItem['status'] | 'running'): string {
+  if (status === 'active') return 'sa-status-badge sa-status-norm';
+  if (status === 'paused') return 'sa-status-badge sa-status-no-data';
+  if (status === 'running') return 'sa-status-badge sa-status-risk';
+  return 'sa-status-badge sa-status-critical';
+}
+
 function runStatusLabel(status: ImportRunItem['status']): string {
   if (status === 'success') return 'Успешно';
   if (status === 'running') return 'Выполняется';
   return 'Ошибка';
+}
+
+function runStatusBadgeClass(status: ImportRunItem['status']): string {
+  if (status === 'success') return 'sa-status-badge sa-status-norm';
+  if (status === 'running') return 'sa-status-badge sa-status-risk';
+  return 'sa-status-badge sa-status-critical';
 }
 
 function scheduleLabel(value: string | null | undefined): string {
@@ -165,24 +182,6 @@ function compactList(values: string[], fallback = 'Определим автом
   return clean.slice(0, 3).join(', ') + (clean.length > 3 ? ` +${clean.length - 3}` : '');
 }
 
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
-function EditIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z" />
-    </svg>
-  );
-}
-
 function lineClampStyle(lines: number): React.CSSProperties {
   return {
     display: '-webkit-box',
@@ -224,12 +223,11 @@ function CompactTagsCell(props: { tags: string[] }) {
       {hiddenCount > 0 && (
         <button
           type="button"
-          className="sa-btn-outline sa-btn-sm"
+          className="sa-btn-field sa-btn-sm sa-tags-more-btn"
           onClick={(event) => {
             event.stopPropagation();
             setExpanded((current) => !current);
           }}
-          style={{ padding: '4px 8px', minHeight: 26, flex: '0 0 auto' }}
           title={expanded ? 'Свернуть теги' : props.tags.join(', ')}
           aria-expanded={expanded}
         >
@@ -551,7 +549,9 @@ function ImportEditModal(props: {
   item: ImportEditModalItem | null;
   onClose: () => void;
   onSaved: (item: ImportSourceItem) => void;
+  onDeleted?: (importId: string) => void;
 }) {
+  const { showToast } = useToast();
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [schedule, setSchedule] = useState('manual');
@@ -560,6 +560,8 @@ function ImportEditModal(props: {
   const [sourceFields, setSourceFields] = useState<string[]>([]);
   const [sourceFieldsLoading, setSourceFieldsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -570,6 +572,8 @@ function ImportEditModal(props: {
     setTagRules(props.item.tagRules);
     setEditTab('settings');
     setSourceFields(fieldsFromImportSource(props.item));
+    setAttempted(false);
+    setDeleteConfirmOpen(false);
     setError(null);
   }, [props.item]);
 
@@ -596,8 +600,18 @@ function ImportEditModal(props: {
 
   if (!props.item) return null;
 
+  const nameInvalid = attempted && !name.trim();
+  const urlInvalid = attempted && !url.trim();
+
   async function save() {
     if (!props.item) return;
+    setAttempted(true);
+    if (!name.trim() || !url.trim()) {
+      setEditTab('settings');
+      setError('Заполните название и URL источника.');
+      showToast({ type: 'error', title: 'Не удалось сохранить импорт', description: 'Заполните обязательные поля.' });
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -607,111 +621,153 @@ function ImportEditModal(props: {
         schedule: schedule === 'manual' ? null : schedule,
         tagRules,
       });
+      showToast({ type: 'success', title: 'Импорт сохранён', description: updated.name });
       props.onSaved(updated);
       props.onClose();
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить импорт.');
+      const message = saveError instanceof Error ? saveError.message : 'Не удалось сохранить импорт.';
+      setError(message);
+      showToast({ type: 'error', title: 'Не удалось сохранить импорт', description: message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!props.item) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const id = props.item.id;
+      const deletedName = props.item.name;
+      await deleteImportSource(id);
+      showToast({ type: 'success', title: 'Импорт удалён', description: deletedName });
+      props.onDeleted?.(id);
+      setDeleteConfirmOpen(false);
+      props.onClose();
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить импорт.';
+      setError(message);
+      showToast({ type: 'error', title: 'Не удалось удалить импорт', description: message });
     } finally {
       setBusy(false);
     }
   }
 
   return (
+    <>
     <FixedOverlayPortal>
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.48)', display: 'grid', placeItems: 'center', padding: 20, zIndex: 130 }}
       onClick={props.onClose}
     >
-      <div style={overlayCardStyle(980)} onClick={(event) => event.stopPropagation()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>Редактировать импорт</h2>
-            <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13 }}>{props.item.format} · {props.item.itemsPath}</div>
+      <div className="sa-imports-overlay-card" style={{ width: 'min(100%, 980px)' }} onClick={(event) => event.stopPropagation()}>
+        <div className="sa-imports-overlay-card__header">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 24 }}>Редактировать импорт</h2>
+              <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13 }}>{props.item.format} · {props.item.itemsPath}</div>
+            </div>
+            <button type="button" className="sa-btn-brutal-3d sa-modal-close" onClick={props.onClose} aria-label="Закрыть" title="Закрыть">
+              <CloseIcon />
+            </button>
           </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
+          {error && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14, marginTop: 14 }}>{error}</div>}
         </div>
 
-        {error && <div style={{ padding: 12, borderRadius: 14, background: '#fef2f2', color: '#b91c1c', fontSize: 14, marginBottom: 14 }}>{error}</div>}
-
-        <div style={{ display: 'grid', gap: 18 }}>
-          <section className="sa-card" style={{ padding: 14, display: 'grid', gap: 12 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
-              <div><div className="sa-meta">Статус</div><strong>{statusLabel(props.item.status)}</strong></div>
-              <div><div className="sa-meta">Запуск</div><strong>{scheduleLabel(schedule === 'manual' ? null : schedule)}</strong></div>
-              <div><div className="sa-meta">Формат</div><strong>{props.item.format.toUpperCase()}</strong></div>
-              <div><div className="sa-meta">Правил тегов</div><strong>{tagRules.length}</strong></div>
-            </div>
-            <div>
-              <div className="sa-meta">Источник данных</div>
-              <div style={{ wordBreak: 'break-all' }}>{url}</div>
-            </div>
-          </section>
-
-          <div className="sa-dialog-tabs" style={{ marginBottom: 0 }}>
-            <button
-              type="button"
-              className={`sa-dialog-tab ${editTab === 'settings' ? 'sa-dialog-tab-active' : ''}`}
-              onClick={() => setEditTab('settings')}
-            >
-              Настройки
-            </button>
-            <button
-              type="button"
-              className={`sa-dialog-tab ${editTab === 'tags' ? 'sa-dialog-tab-active' : ''}`}
-              onClick={() => setEditTab('tags')}
-            >
-              Теги
-            </button>
-          </div>
-
-          {editTab === 'settings' && (
-            <section className="sa-card" style={{ padding: 16, display: 'grid', gap: 14 }}>
-              <div>
-                <h3 style={{ margin: '0 0 4px', fontSize: 17 }}>Настройки источника</h3>
-                <div className="sa-meta">Здесь меняются название, ссылка и периодичность импорта.</div>
+        <div className="sa-imports-overlay-card__body">
+          <div style={{ display: 'grid', gap: 18 }}>
+            <section className="sa-imports-panel">
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+                <div><div className="sa-meta">Статус</div><span className={importStatusBadgeClass(props.item.status)}>{statusLabel(props.item.status)}</span></div>
+                <div><div className="sa-meta">Запуск</div><strong>{scheduleLabel(schedule === 'manual' ? null : schedule)}</strong></div>
+                <div><div className="sa-meta">Формат</div><strong>{props.item.format.toUpperCase()}</strong></div>
+                <div><div className="sa-meta">Правил тегов</div><strong>{tagRules.length}</strong></div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span>Название</span>
-                  <input className="sa-input" value={name} onChange={(event) => setName(event.target.value)} />
-                </label>
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span>URL источника</span>
-                  <input className="sa-input" value={url} onChange={(event) => setUrl(event.target.value)} />
-                </label>
-                <label style={{ display: 'grid', gap: 6 }}>
-                  <span>Периодичность запуска</span>
-                  <select className="sa-select" value={schedule} onChange={(event) => setSchedule(event.target.value)}>
-                    <option value="manual">Вручную</option>
-                    <option value="hourly">Раз в час</option>
-                    <option value="daily">Раз в день</option>
-                    <option value="weekly">Раз в неделю</option>
-                  </select>
-                </label>
+              <div>
+                <div className="sa-meta">Источник данных</div>
+                <div style={{ wordBreak: 'break-all' }}>{url}</div>
               </div>
             </section>
-          )}
 
-          {editTab === 'tags' && (
-            <section className="sa-card" style={{ padding: 16, display: 'grid', gap: 14 }}>
-              <div>
-                <h3 style={{ margin: '0 0 4px', fontSize: 17 }}>Правила тегов</h3>
-                <div className="sa-meta">
-                  Теги автоматически проставляются новым данным при запуске этого импорта.
-                  {sourceFieldsLoading ? ' Загружаем поля из данных...' : ` Доступно полей: ${sourceFields.length}.`}
+            <div className="sa-dialog-tabs" style={{ marginBottom: 0 }}>
+              <button
+                type="button"
+                className={`sa-dialog-tab ${editTab === 'settings' ? 'sa-dialog-tab-active' : ''}`}
+                onClick={() => setEditTab('settings')}
+              >
+                Настройки
+              </button>
+              <button
+                type="button"
+                className={`sa-dialog-tab ${editTab === 'tags' ? 'sa-dialog-tab-active' : ''}`}
+                onClick={() => setEditTab('tags')}
+              >
+                Теги
+              </button>
+            </div>
+
+            {editTab === 'settings' && (
+              <section className="sa-imports-panel">
+                <div>
+                  <h3 style={{ margin: '0 0 4px', fontSize: 17 }}>Настройки источника</h3>
+                  <div className="sa-meta">Здесь меняются название, ссылка и периодичность импорта.</div>
                 </div>
-              </div>
-              <TagRulesEditor availableFields={sourceFields} tagRules={tagRules} onChange={setTagRules} />
-            </section>
-          )}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+                  <label style={{ display: 'grid', gap: 6 }}>
+                    <span>Название</span>
+                    <input
+                      className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      aria-invalid={nameInvalid || undefined}
+                    />
+                  </label>
+                  <label style={{ display: 'grid', gap: 6 }}>
+                    <span>URL источника</span>
+                    <input
+                      className={`sa-input${urlInvalid ? ' sa-field-invalid' : ''}`}
+                      value={url}
+                      onChange={(event) => setUrl(event.target.value)}
+                      aria-invalid={urlInvalid || undefined}
+                    />
+                  </label>
+                  <label style={{ display: 'grid', gap: 6 }}>
+                    <span>Периодичность запуска</span>
+                    <select className="sa-select" value={schedule} onChange={(event) => setSchedule(event.target.value)}>
+                      <option value="manual">Вручную</option>
+                      <option value="hourly">Раз в час</option>
+                      <option value="daily">Раз в день</option>
+                      <option value="weekly">Раз в неделю</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+            )}
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', borderTop: '1px solid var(--sa-divider)', paddingTop: 14, flexWrap: 'wrap' }}>
-            <div className="sa-meta">Изменения применятся после сохранения.</div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-              <button className="sa-btn-primary" disabled={busy || !name.trim() || !url.trim()} onClick={() => void save()}>
+            {editTab === 'tags' && (
+              <section className="sa-imports-panel">
+                <div>
+                  <h3 style={{ margin: '0 0 4px', fontSize: 17 }}>Правила тегов</h3>
+                  <div className="sa-meta">
+                    Теги автоматически проставляются новым данным при запуске этого импорта.
+                    {sourceFieldsLoading ? ' Загружаем поля из данных...' : ` Доступно полей: ${sourceFields.length}.`}
+                  </div>
+                </div>
+                <TagRulesEditor availableFields={sourceFields} tagRules={tagRules} onChange={setTagRules} />
+              </section>
+            )}
+          </div>
+        </div>
+
+        <div className="sa-imports-overlay-card__footer">
+          <div className="sa-modal-footer-row">
+            <button type="button" className="sa-btn-danger" disabled={busy} onClick={() => setDeleteConfirmOpen(true)}>
+              Удалить импорт
+            </button>
+            <div className="sa-modal-footer-row__right">
+              <button type="button" className="sa-btn-outline" onClick={props.onClose} disabled={busy}>Отмена</button>
+              <button type="button" className="sa-btn-primary" disabled={busy} onClick={() => void save()}>
                 {busy ? 'Сохраняем...' : 'Сохранить'}
               </button>
             </div>
@@ -720,6 +776,14 @@ function ImportEditModal(props: {
       </div>
     </div>
     </FixedOverlayPortal>
+    <DeleteConfirmModal
+      open={deleteConfirmOpen}
+      title="Удалить импорт?"
+      saving={busy}
+      onCancel={() => setDeleteConfirmOpen(false)}
+      onConfirm={() => { void remove(); }}
+    />
+    </>
   );
 }
 
@@ -743,16 +807,16 @@ function ImportInfoModal(props: {
             <h2 style={{ margin: 0, fontSize: 24 }}>{item.name}</h2>
             <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13 }}>Информация об импорте</div>
           </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          <button type="button" className="sa-btn-brutal-3d sa-modal-close" onClick={props.onClose} aria-label="Закрыть" title="Закрыть">
+            <CloseIcon />
           </button>
         </div>
 
         <div style={{ display: 'grid', gap: 16 }}>
-          <section className="sa-card" style={{ padding: 14, display: 'grid', gap: 10 }}>
+          <section className="sa-imports-panel">
             <h3 style={{ margin: 0, fontSize: 16 }}>Основное</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-              <div><div className="sa-meta">Статус</div><strong>{statusLabel(item.status)}</strong></div>
+              <div><div className="sa-meta">Статус</div><span className={importStatusBadgeClass(item.status)}>{statusLabel(item.status)}</span></div>
               <div><div className="sa-meta">Запуск</div><strong>{scheduleLabel(item.schedule)}</strong></div>
               <div><div className="sa-meta">Формат</div><strong>{item.format.toUpperCase()}</strong></div>
               <div><div className="sa-meta">Загружено данных</div><strong>{item.itemsCount}</strong></div>
@@ -769,7 +833,7 @@ function ImportInfoModal(props: {
             )}
           </section>
 
-          <section className="sa-card" style={{ padding: 14, display: 'grid', gap: 10 }}>
+          <section className="sa-imports-panel">
             <h3 style={{ margin: 0, fontSize: 16 }}>Теги</h3>
             {item.tagRules.length ? (
               <div style={{ display: 'grid', gap: 8 }}>
@@ -786,7 +850,7 @@ function ImportInfoModal(props: {
             ) : <div className="sa-meta">Правила тегов пока не настроены.</div>}
           </section>
 
-          <section className="sa-card" style={{ padding: 14, display: 'grid', gap: 10 }}>
+          <section className="sa-imports-panel">
             <h3 style={{ margin: 0, fontSize: 16 }}>Последние 5 запусков</h3>
             {latestRuns.length ? (
               <div className="sa-table-wrap">
@@ -804,7 +868,7 @@ function ImportInfoModal(props: {
                     {latestRuns.map((run) => (
                       <tr key={run.id}>
                         <td>{formatDate(run.startedAt)}</td>
-                        <td>{runStatusLabel(run.status)}</td>
+                        <td><span className={runStatusBadgeClass(run.status)}>{runStatusLabel(run.status)}</span></td>
                         <td className="sa-text-right">{run.totalItems}</td>
                         <td className="sa-text-right">{run.createdItems}</td>
                         <td className="sa-text-right">{run.updatedItems}</td>
@@ -844,6 +908,7 @@ function ImportWizard(props: {
   const [autoRulesBusy, setAutoRulesBusy] = useState(false);
   const [autoRulesError, setAutoRulesError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attempted, setAttempted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const availableFields = useMemo(() => flattenFieldsFromItems(sampleItems), [sampleItems]);
@@ -864,10 +929,15 @@ function ImportWizard(props: {
     setAutoRulesGenerated(false);
     setAutoRulesBusy(false);
     setAutoRulesError(null);
+    setAttempted(false);
     setError(null);
   }, [props.open, props.selectedHoldingId, props.holdings]);
 
   if (!props.open) return null;
+
+  const nameInvalid = attempted && !name.trim();
+  const holdingInvalid = attempted && !holdingId;
+  const urlInvalid = attempted && !url.trim();
 
   async function generateAutoRules(sample: unknown[], fields: string[]) {
     if (sample.length === 0 || fields.length === 0) return;
@@ -886,9 +956,14 @@ function ImportWizard(props: {
   }
 
   async function analyze() {
-    setBusy(true);
+    setAttempted(true);
     setError(null);
     setAutoRulesError(null);
+    if (!name.trim() || !holdingId || !url.trim()) {
+      setError('Заполните обязательные поля.');
+      return;
+    }
+    setBusy(true);
     try {
       const result = await analyzeImportSource(url);
       const resultFields = flattenFieldsFromItems(result.sampleItems);
@@ -948,8 +1023,8 @@ function ImportWizard(props: {
             <h2 style={{ margin: 0, fontSize: 24 }}>Создать импорт</h2>
             <div style={{ marginTop: 6, color: 'var(--sa-text-secondary)', fontSize: 13 }}>Шаг {step} из 3</div>
           </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          <button type="button" className="sa-btn-brutal-3d sa-modal-close" onClick={props.onClose} aria-label="Закрыть" title="Закрыть">
+            <CloseIcon />
           </button>
         </div>
 
@@ -959,18 +1034,34 @@ function ImportWizard(props: {
           <form onSubmit={(event) => { event.preventDefault(); void analyze(); }} style={{ display: 'grid', gap: 14 }}>
             <label style={{ display: 'grid', gap: 6 }}>
               <span>Название</span>
-              <input className="sa-input" value={name} onChange={(event) => setName(event.target.value)} required />
+              <input
+                className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                aria-invalid={nameInvalid || undefined}
+              />
             </label>
             <label style={{ display: 'grid', gap: 6 }}>
               <span>Компания</span>
-              <select className="sa-select" value={holdingId} onChange={(event) => setHoldingId(event.target.value)} required>
+              <select
+                className={`sa-select${holdingInvalid ? ' sa-field-invalid' : ''}`}
+                value={holdingId}
+                onChange={(event) => setHoldingId(event.target.value)}
+                aria-invalid={holdingInvalid || undefined}
+              >
                 <option value="">Выберите компанию</option>
                 {props.holdings.map((holding) => <option key={holding.id} value={holding.id}>{holding.name}</option>)}
               </select>
             </label>
             <label style={{ display: 'grid', gap: 6 }}>
               <span>URL источника</span>
-              <input className="sa-input" value={url} onChange={(event) => setUrl(event.target.value)} required placeholder="https://example.com/feed.xml" />
+              <input
+                className={`sa-input${urlInvalid ? ' sa-field-invalid' : ''}`}
+                value={url}
+                onChange={(event) => setUrl(event.target.value)}
+                placeholder="https://example.com/feed.xml"
+                aria-invalid={urlInvalid || undefined}
+              />
             </label>
             <label style={{ display: 'grid', gap: 6 }}>
               <span>Периодичность</span>
@@ -982,7 +1073,7 @@ function ImportWizard(props: {
               </select>
             </label>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button type="submit" className="sa-btn-primary" disabled={busy || !holdingId || !name.trim() || !url.trim()}>
+              <button type="submit" className="sa-btn-primary" disabled={busy}>
                 {busy ? 'Анализируем...' : 'Проанализировать источник'}
               </button>
             </div>
@@ -1069,6 +1160,7 @@ function ImportWizard(props: {
 }
 
 export function ImportsPage() {
+  const { showToast } = useToast();
   const [activePageTab, setActivePageTab] = useState<DataPageTab>('data');
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
@@ -1190,9 +1282,12 @@ export function ImportsPage() {
       await runImportSource(id, { signal: controller.signal });
       await loadList();
       await loadDataItems();
+      showToast({ type: 'success', title: 'Данные обновлены' });
     } catch (runError) {
       if (runError instanceof DOMException && runError.name === 'AbortError') return;
-      setError(runError instanceof Error ? runError.message : 'Не удалось обновить данные.');
+      const message = runError instanceof Error ? runError.message : 'Не удалось обновить данные.';
+      setError(message);
+      showToast({ type: 'error', title: 'Не удалось обновить', description: message });
     } finally {
       runControllersRef.current.delete(id);
       setBusyId((current) => (current === id ? null : current));
@@ -1208,20 +1303,11 @@ export function ImportsPage() {
     try {
       await cancelImportSource(item.id);
       await loadList();
+      showToast({ type: 'success', title: 'Загрузка остановлена' });
     } catch (stopError) {
-      setError(stopError instanceof Error ? stopError.message : 'Не удалось остановить загрузку.');
-    }
-  }
-
-  async function removeImport(item: ImportSourceItem) {
-    if (!window.confirm(`Удалить импорт "${item.name}"?`)) return;
-    setBusyId(item.id);
-    try {
-      await deleteImportSource(item.id);
-      await loadList();
-      await loadDataItems();
-    } finally {
-      setBusyId(null);
+      const message = stopError instanceof Error ? stopError.message : 'Не удалось остановить загрузку.';
+      setError(message);
+      showToast({ type: 'error', title: 'Не удалось остановить загрузку', description: message });
     }
   }
 
@@ -1230,13 +1316,22 @@ export function ImportsPage() {
     void loadList();
   }
 
+  function handleImportDeleted(importId: string) {
+    setItems((current) => current.filter((entry) => entry.id !== importId));
+    setSelectedImportIds((current) => current.filter((id) => id !== importId));
+    void loadList();
+    void loadDataItems();
+  }
+
   async function openImportInfo(item: ImportSourceItem) {
     setBusyId(item.id);
     try {
       const detail = await fetchImportDetail(item.id);
       setInfoModalData({ item: detail.item, runs: detail.runs });
     } catch (detailError) {
-      setError(detailError instanceof Error ? detailError.message : 'Не удалось загрузить информацию об импорте.');
+      const message = detailError instanceof Error ? detailError.message : 'Не удалось загрузить информацию об импорте.';
+      setError(message);
+      showToast({ type: 'error', title: 'Не удалось открыть импорт', description: message });
     } finally {
       setBusyId(null);
     }
@@ -1290,6 +1385,7 @@ export function ImportsPage() {
           />
           {activePageTab === 'imports' && (
             <button type="button" className="sa-btn-brutal-3d" disabled={holdings.length === 0} onClick={() => setWizardOpen(true)}>
+              <LetsIcon name="add-light" size={16} bold />
               Создать импорт
             </button>
           )}
@@ -1420,14 +1516,21 @@ export function ImportsPage() {
           )}
 
           <div className="sa-companies-table-wrap sa-holdings-table-wrap">
-            <table className="sa-table sa-holdings-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+            <table className="sa-table sa-holdings-table sa-imports-data-table">
+              <colgroup>
+                <col className="sa-col-name" />
+                <col className="sa-col-desc" />
+                <col className="sa-col-source" />
+                <col className="sa-col-tags" />
+                <col className="sa-col-updated" />
+              </colgroup>
               <thead>
                 <tr>
-                  <th style={{ width: 200 }}>Название</th>
-                  <th style={{ width: 320 }}>Описание</th>
-                  <th style={{ width: 160 }}>Источник</th>
-                  <th style={{ width: 260 }}>Теги</th>
-                  <th style={{ width: 160 }}>Обновлено</th>
+                  <th>Название</th>
+                  <th>Описание</th>
+                  <th>Источник</th>
+                  <th>Теги</th>
+                  <th>Обновлено</th>
                 </tr>
               </thead>
               <tbody>
@@ -1444,11 +1547,15 @@ export function ImportsPage() {
                     tabIndex={0}
                     onKeyDown={(event) => event.key === 'Enter' && openDescriptionItem(item)}
                   >
-                    <td style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.title}>{item.title}</td>
-                    <td style={{ overflow: 'hidden' }}>
-                      <div style={{ ...lineClampStyle(2), color: 'var(--sa-text-secondary)' }}>{item.description}</div>
+                    <td title={item.title}>
+                      <div className="sa-cell-name sa-imports-title">{item.title}</div>
                     </td>
-                    <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={item.importSourceName}>{item.importSourceName}</td>
+                    <td>
+                      <div className="sa-imports-desc" style={{ color: 'var(--sa-text-secondary)' }}>{item.description}</div>
+                    </td>
+                    <td title={item.importSourceName}>
+                      <div className="sa-imports-source">{item.importSourceName}</div>
+                    </td>
                     <td onClick={(event) => event.stopPropagation()}>
                       <CompactTagsCell tags={item.tags} />
                     </td>
@@ -1487,7 +1594,16 @@ export function ImportsPage() {
 
       {activePageTab === 'imports' && (
         <div className="sa-companies-table-wrap sa-holdings-table-wrap">
-          <table className="sa-table sa-holdings-table">
+          <table className="sa-table sa-holdings-table sa-imports-sources-table">
+              <colgroup>
+                <col className="sa-col-name" />
+                <col className="sa-col-status" />
+                <col className="sa-col-url" />
+                <col className="sa-col-format" />
+                <col className="sa-col-updated" />
+                <col className="sa-col-num" />
+                <col className="sa-col-actions" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Название</th>
@@ -1508,10 +1624,17 @@ export function ImportsPage() {
                   const isRunningImport = activeImportId === item.id;
                   const isAnyImportRunning = activeImportId !== null;
                   return (
-                  <tr key={item.id}>
-                    <td style={{ fontWeight: 700 }}>
+                  <tr
+                    key={item.id}
+                    className="sa-row-clickable"
+                    onClick={() => { void openImportInfo(item); }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(event) => event.key === 'Enter' && void openImportInfo(item)}
+                  >
+                    <td title={item.name}>
                       <div style={{ display: 'grid', gap: 4 }}>
-                        <span>{item.name}</span>
+                        <div className="sa-cell-name sa-imports-title">{item.name}</div>
                         {isRunningImport && (
                           <span className="sa-ai-summary-loading" style={{ fontSize: 12 }}>
                             <span className="sa-ai-summary-spinner" aria-hidden="true" />
@@ -1522,47 +1645,47 @@ export function ImportsPage() {
                     </td>
                     <td>
                       {isRunningImport ? (
-                        <span className="sa-emp-status">Загружается</span>
+                        <span className={importStatusBadgeClass('running')}>Загружается</span>
                       ) : (
-                        <span className={item.status === 'error' ? 'sa-emp-status sa-emp-warn' : 'sa-emp-status'}>{statusLabel(item.status)}</span>
+                        <span className={importStatusBadgeClass(item.status)}>{statusLabel(item.status)}</span>
                       )}
                     </td>
                     <td style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.url}</td>
                     <td>{item.format}</td>
                     <td>{formatDate(item.lastRunAt)}</td>
                     <td className="sa-text-right">{item.itemsCount}</td>
-                    <td onClick={(event) => event.stopPropagation()}>
-                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                    <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
+                      <div>
                         {isRunningImport ? (
-                          <button className="sa-btn-danger sa-btn-sm" onClick={() => void stopImportLoading(item)}>Остановить загрузку</button>
-                        ) : !isAnyImportRunning ? (
                           <button
-                            className="sa-btn-outline sa-btn-sm"
-                            disabled={busyId === item.id}
+                            type="button"
+                            className="sa-btn-outline sa-btn-sm sa-imports-run-btn"
+                            onClick={() => void stopImportLoading(item)}
+                          >
+                            <PauseIcon />
+                            Остановить
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="sa-btn-outline sa-btn-sm sa-imports-run-btn"
+                            disabled={busyId === item.id || isAnyImportRunning}
                             onClick={() => void runImport(item.id)}
                           >
-                            Обновить данные
+                            <RefreshIcon />
+                            Обновить
                           </button>
-                        ) : null}
+                        )}
                         <button
-                          className="sa-btn-outline sa-btn-icon"
-                          disabled={busyId === item.id}
-                          onClick={() => void openImportInfo(item)}
-                          aria-label="Посмотреть импорт"
-                          title="Посмотреть импорт"
-                        >
-                          <EyeIcon />
-                        </button>
-                        <button
-                          className="sa-btn-outline sa-btn-icon"
+                          type="button"
+                          className="sa-btn-icon sa-btn-brutal-3d-icon"
                           disabled={busyId === item.id}
                           onClick={() => setEditModalItem(item)}
                           aria-label="Редактировать импорт"
-                          title="Редактировать импорт"
+                          title="Редактировать"
                         >
                           <EditIcon />
                         </button>
-                        <button className="sa-btn-danger sa-btn-sm" disabled={busyId === item.id} onClick={() => void removeImport(item)}>Удалить</button>
                       </div>
                     </td>
                   </tr>
@@ -1575,12 +1698,17 @@ export function ImportsPage() {
       <ImportWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
-        onSaved={() => { void loadList(); void loadDataItems(); void loadTags(); }}
+        onSaved={() => { void loadList(); void loadDataItems(); void loadTags(); showToast({ type: 'success', title: 'Импорт создан' }); }}
         holdings={holdings}
         selectedHoldingId={selectedHoldingId || null}
       />
       <ImportInfoModal data={infoModalData} onClose={() => setInfoModalData(null)} />
-      <ImportEditModal item={editModalItem} onClose={() => setEditModalItem(null)} onSaved={handleImportSaved} />
+      <ImportEditModal
+        item={editModalItem}
+        onClose={() => setEditModalItem(null)}
+        onSaved={handleImportSaved}
+        onDeleted={handleImportDeleted}
+      />
       <DescriptionModal item={descriptionModalItem} onClose={() => setDescriptionModalItem(null)} />
     </div>
   );

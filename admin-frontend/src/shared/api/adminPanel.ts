@@ -1390,6 +1390,14 @@ export async function updatePhoneNumberType(
   return data.item as PhoneNumberTypeItem;
 }
 
+export async function deletePhoneNumberType(typeId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/phone-number-types/${typeId}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить тип номера.');
+}
+
 export async function fetchDealershipPhoneNumbers(dealershipId: string): Promise<PhoneNumberItem[]> {
   const res = await apiFetch(`${API_BASE}/api/admin/dealerships/${dealershipId}/phone-numbers`);
   if (!res.ok) return [];

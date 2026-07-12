@@ -19,12 +19,16 @@ import {
 import { deltaDisplay, ratingClass, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import { UserPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { EditIcon, PhoneIcon } from '../../../shared/ui/icons/ActionIcons';
 import { BrutalModal } from '../../../shared/ui/brutal-modal';
 import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
 import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
 import { FiltersPanel, FilterGroup, FiltersToggleButton } from '../../../shared/ui/filters-panel';
+
+const TEMPLATE_FORM_ID = 'permission-template-form';
 
 type Props = {
   role: AdminRole;
@@ -71,7 +75,6 @@ type SelectOption = {
   label: string;
   description?: string;
 };
-type UserQuickFilter = 'training' | 'fails' | 'best' | 'comm';
 type UserOwnershipFilter = 'all' | 'own' | 'franchised';
 type UserEmployeeRow = {
   user: UserAccountItem;
@@ -82,13 +85,6 @@ type UserEmployeeRow = {
 };
 
 const NO_HOLDING_VALUE = '__no_holding__';
-
-const USER_QUICK_FILTERS: { id: UserQuickFilter; label: string }[] = [
-  { id: 'training', label: 'Нужно обучение' },
-  { id: 'fails', label: 'Провалы' },
-  { id: 'best', label: 'Лучшие' },
-  { id: 'comm', label: 'Проблемы коммуникации' },
-];
 
 const USER_COLUMN_DEFS: { key: UserSortKey; label: string; align?: 'right' }[] = [
   { key: 'fullName', label: 'Сотрудник' },
@@ -104,14 +100,6 @@ const USER_ANALYTICS_STATUS_LABELS: Record<UserAccountItem['analytics']['status'
   risk: 'Риск',
   critical: 'Критично',
   'no-data': 'Нет данных',
-};
-
-const COMM_LABELS: Record<UserAccountItem['analytics']['communicationFlag'], string> = {
-  ok: 'Ок',
-  fillers: 'Паразиты',
-  aggression: 'Агрессия',
-  profanity: 'Ненормативная',
-  'low-engagement': 'Слабая вовлечённость',
 };
 
 const EMPTY_USER_FORM: UserFormState = {
@@ -372,26 +360,6 @@ function userMatchesOwnership(user: UserAccountItem, ownership: UserOwnershipFil
   ].some((type) => type === ownership);
 }
 
-function commTooltip(flag: UserAccountItem['analytics']['communicationFlag']): string {
-  switch (flag) {
-    case 'ok': return 'Коммуникация в норме';
-    case 'fillers': return 'Обнаружены слова-паразиты в речи';
-    case 'aggression': return 'Выявлены признаки агрессии в диалоге';
-    case 'profanity': return 'Обнаружена ненормативная лексика';
-    case 'low-engagement': return 'Низкая вовлеченность в диалог';
-  }
-}
-
-function matchesUserQuickFilter(user: UserAccountItem, filter: UserQuickFilter): boolean {
-  const analytics = user.analytics;
-  switch (filter) {
-    case 'training': return analytics.status === 'critical' || analytics.status === 'risk';
-    case 'fails': return analytics.failsCount >= 1;
-    case 'best': return analytics.aiRating >= 80 && analytics.status === 'norm';
-    case 'comm': return analytics.communicationFlag !== 'ok';
-  }
-}
-
 function SearchableSelect(props: {
   label?: string;
   value: string;
@@ -441,112 +409,89 @@ function SearchableSelect(props: {
   }, [open]);
 
   return (
-    <div ref={rootRef} style={{ display: 'grid', gap: 6, position: 'relative' }}>
-      {props.label && <div style={{ fontSize: 13, fontWeight: 600 }}>{props.label}</div>}
+    <div ref={rootRef} className={`sa-searchable-select${open ? ' sa-searchable-select--open' : ''}${props.disabled ? ' is-disabled' : ''}`}>
+      {props.label && <div className="sa-searchable-select__label">{props.label}</div>}
       <button
         type="button"
-        className="sa-search-input"
+        className="sa-searchable-select__trigger"
         disabled={props.disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
         onClick={() => {
           if (!props.disabled) setOpen((current) => !current);
         }}
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          textAlign: 'left',
-          paddingLeft: 12,
-          cursor: props.disabled ? 'not-allowed' : 'pointer',
-          color: selected ? 'var(--sa-text)' : 'var(--sa-text-secondary)',
-        }}
       >
-        <span>
-          <span style={{ display: 'block', fontWeight: selected ? 700 : 500 }}>{selected?.label || props.placeholder}</span>
+        <span className="sa-searchable-select__value">
+          <span className="sa-searchable-select__value-label">{selected?.label || props.placeholder}</span>
           {selected?.description && (
-            <span style={{ display: 'block', fontSize: 12, color: 'var(--sa-text-secondary)', marginTop: 2 }}>{selected.description}</span>
+            <span className="sa-searchable-select__value-desc">{selected.description}</span>
           )}
         </span>
-        <span aria-hidden="true" style={{ color: 'var(--sa-text-secondary)', fontSize: 12 }}>{open ? '▲' : '▼'}</span>
+        <span className="sa-searchable-select__chevron" aria-hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </span>
       </button>
       {open && !props.disabled && dropdownRect && createPortal(
         <div
-          ref={dropdownRef}
+          className="theme-brutal"
           style={{
             position: 'fixed',
-            zIndex: 1000,
+            zIndex: 1500,
             top: dropdownRect.bottom + 6,
             left: dropdownRect.left,
-            width: dropdownRect.width,
-            padding: 10,
-            border: '1px solid #E5E7EB',
-            borderRadius: 12,
-            background: '#fff',
-            boxShadow: '0 18px 40px rgba(15,23,42,0.16)',
+            width: Math.max(dropdownRect.width, 240),
           }}
         >
-          <input
-            className="sa-search-input"
-            value={query}
-            autoFocus
-            placeholder="Поиск..."
-            onChange={(event) => setQuery(event.target.value)}
-            style={{
-              marginBottom: 8,
-              paddingLeft: 12,
-              background: '#F9FAFB',
-              borderColor: '#F59E0B',
-              boxShadow: '0 0 0 3px rgba(245,158,11,0.12)',
-            }}
-          />
-          <div style={{ display: 'grid', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
-            {props.value && (
-              <button
-                type="button"
-                onClick={() => {
-                  props.onChange('');
-                  setQuery('');
-                  setOpen(false);
-                }}
-                style={{
-                  border: 'none',
-                  borderRadius: 8,
-                  padding: '9px 10px',
-                  background: 'transparent',
-                  color: 'var(--sa-text-secondary)',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                }}
-              >
-                {props.placeholder}
-              </button>
-            )}
-            {filtered.length === 0 && (
-              <div style={{ padding: 10, color: 'var(--sa-text-secondary)', fontSize: 13 }}>Ничего не найдено</div>
-            )}
-            {filtered.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => {
-                  props.onChange(option.value);
-                  setQuery('');
-                  setOpen(false);
-                }}
-                style={{
-                  border: 'none',
-                  borderRadius: 8,
-                  padding: '9px 10px',
-                  background: option.value === props.value ? '#FFFBEB' : 'transparent',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                }}
-              >
-                <span style={{ display: 'block', fontWeight: 700 }}>{option.label}</span>
-                {option.description && (
-                  <span style={{ display: 'block', color: 'var(--sa-text-secondary)', fontSize: 12, marginTop: 2 }}>{option.description}</span>
-                )}
-              </button>
-            ))}
+          <div ref={dropdownRef} className="sa-searchable-select__menu">
+            <input
+              className="sa-input sa-searchable-select__search"
+              value={query}
+              autoFocus
+              placeholder="Поиск..."
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            <div className="sa-searchable-select__options" role="listbox">
+              {props.value && (
+                <button
+                  type="button"
+                  className="sa-tag-filter-option"
+                  onClick={() => {
+                    props.onChange('');
+                    setQuery('');
+                    setOpen(false);
+                  }}
+                >
+                  <span className="sa-tag-filter-option__label">{props.placeholder}</span>
+                </button>
+              )}
+              {filtered.length === 0 && (
+                <div className="sa-searchable-select__empty">Ничего не найдено</div>
+              )}
+              {filtered.map((option) => {
+                const isSelected = option.value === props.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    className={`sa-tag-filter-option${isSelected ? ' sa-tag-filter-option--selected' : ''}`}
+                    onClick={() => {
+                      props.onChange(option.value);
+                      setQuery('');
+                      setOpen(false);
+                    }}
+                  >
+                    <span className="sa-tag-filter-option__label">{option.label}</span>
+                    {option.description && (
+                      <span className="sa-searchable-select__option-desc">{option.description}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>,
         document.body,
@@ -707,7 +652,7 @@ function CreateUserModal(props: {
         </label>
         <div>
           <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ пользователя</div>
-          <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ display: 'grid', gap: 12 }}>
             {form.memberships.map((membership, index) => {
               const dealerships = availableDealerships(membership);
               const holdingId = membership.holdingId || dealershipMap.get(membership.dealershipId)?.holdingId || '';
@@ -726,50 +671,48 @@ function CreateUserModal(props: {
                 description: item.holdingName || 'Без компании',
               }));
               return (
-                <div key={`${index}-${membership.role}-${membership.dealershipId}`} className="sa-card" style={{ padding: 12 }}>
-                  <div style={{ display: 'grid', gap: 10 }}>
+                <div key={`${index}-${membership.role}-${membership.dealershipId}`} style={{ display: 'grid', gap: 10 }}>
+                  <SearchableSelect
+                    label="Права"
+                    value={props.canManageGlobalUsers ? membership.role : 'manager'}
+                    disabled={!props.canManageGlobalUsers}
+                    options={roleOptions}
+                    placeholder="Выберите права пользователя"
+                    onChange={(value) => updateMembershipRole(index, value)}
+                  />
+                  {membership.role === 'holding_admin' && (
                     <SearchableSelect
-                      label="Права"
-                      value={props.canManageGlobalUsers ? membership.role : 'manager'}
-                      disabled={!props.canManageGlobalUsers}
-                      options={roleOptions}
-                      placeholder="Выберите права пользователя"
-                      onChange={(value) => updateMembershipRole(index, value)}
+                      label="Компания"
+                      value={holdingId}
+                      options={(props.meta?.holdings || []).map((item) => ({ value: item.id, label: item.name }))}
+                      placeholder="Выберите компанию"
+                      onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
                     />
-                    {membership.role === 'holding_admin' && (
+                  )}
+                  {(membership.role === 'dealership_admin' || membership.role === 'manager') && (
+                    <>
                       <SearchableSelect
                         label="Компания"
                         value={holdingId}
-                        options={(props.meta?.holdings || []).map((item) => ({ value: item.id, label: item.name }))}
+                        options={holdingOptions}
                         placeholder="Выберите компанию"
                         onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
                       />
-                    )}
-                    {(membership.role === 'dealership_admin' || membership.role === 'manager') && (
-                      <>
-                        <SearchableSelect
-                          label="Компания"
-                          value={holdingId}
-                          options={holdingOptions}
-                          placeholder="Выберите компанию"
-                          onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
-                        />
-                        <SearchableSelect
-                          label="Точка"
-                          value={membership.dealershipId}
-                          options={dealershipOptions}
-                          placeholder={holdingId ? 'Выберите точку' : 'Сначала выберите компанию'}
-                          onChange={(value) => {
-                            const selectedDealership = dealershipMap.get(value);
-                            updateMembership(index, {
-                              dealershipId: value,
-                              holdingId: selectedDealership?.holdingId || NO_HOLDING_VALUE,
-                            });
-                          }}
-                        />
-                      </>
-                    )}
-                  </div>
+                      <SearchableSelect
+                        label="Точка"
+                        value={membership.dealershipId}
+                        options={dealershipOptions}
+                        placeholder={holdingId ? 'Выберите точку' : 'Сначала выберите компанию'}
+                        onChange={(value) => {
+                          const selectedDealership = dealershipMap.get(value);
+                          updateMembership(index, {
+                            dealershipId: value,
+                            holdingId: selectedDealership?.holdingId || NO_HOLDING_VALUE,
+                          });
+                        }}
+                      />
+                    </>
+                  )}
                 </div>
               );
             })}
@@ -784,8 +727,8 @@ function KeyValueList(props: { items: Array<{ label: string; value: React.ReactN
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       {props.items.map((item) => (
-        <div key={item.label} className="sa-card" style={{ padding: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--sa-text-secondary)', marginBottom: 4 }}>{item.label}</div>
+        <div key={item.label} className="sa-bordered-block">
+          <div className="sa-meta" style={{ marginBottom: 4 }}>{item.label}</div>
           <div style={{ fontWeight: 600 }}>{item.value}</div>
         </div>
       ))}
@@ -802,13 +745,12 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [fullNameFilter, setFullNameFilter] = useState('');
   const [emailFilter, setEmailFilter] = useState('');
   const [phoneFilter, setPhoneFilter] = useState('');
-  const [roleFilter, setRoleFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState<string[]>([]);
   const [holdingFilter, setHoldingFilter] = useState('');
   const [dealershipFilter, setDealershipFilter] = useState('');
   const [ownershipFilter, setOwnershipFilter] = useState<UserOwnershipFilter>('all');
   const [userSortKey, setUserSortKey] = useState<UserSortKey>('aiRating');
   const [userSortDir, setUserSortDir] = useState<SortDir>('desc');
-  const [userQuickFilter, setUserQuickFilter] = useState<UserQuickFilter | null>(null);
   const [showUserFilters, setShowUserFilters] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -923,8 +865,8 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       const q = normalizePhoneValue(phoneFilter);
       list = list.filter((row) => q && userPhoneHaystack(row.user).includes(q));
     }
-    if (roleFilter) {
-      list = list.filter((row) => row.user.memberships.some((membership) => membership.role === roleFilter));
+    if (roleFilter.length > 0) {
+      list = list.filter((row) => row.user.memberships.some((membership) => roleFilter.includes(membership.role)));
     }
     if (holdingFilter) {
       list = list.filter((row) => userMatchesScope(row.user, `holding:${holdingFilter}`));
@@ -938,7 +880,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     if (ownershipFilter !== 'all') {
       list = list.filter((row) => userMatchesOwnership(row.user, ownershipFilter));
     }
-    if (userQuickFilter) list = list.filter((row) => matchesUserQuickFilter(row.user, userQuickFilter));
 
     return [...list].sort((a, b) => {
       let cmp = 0;
@@ -948,25 +889,17 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       else cmp = (a.user.analytics[userSortKey] ?? -Infinity) - (b.user.analytics[userSortKey] ?? -Infinity);
       return userSortDir === 'asc' ? cmp : -cmp;
     });
-  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, selectedGlobalHoldingId, userQuickFilter, userSortDir, userSortKey, users]);
+  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, selectedGlobalHoldingId, userSortDir, userSortKey, users]);
 
   const activeUserFiltersCount = [
     fullNameFilter.trim(),
     emailFilter.trim(),
     phoneFilter.trim(),
-    roleFilter,
+    roleFilter.length > 0 ? 'roles' : '',
     holdingFilter,
     dealershipFilter,
     ownershipFilter !== 'all' ? ownershipFilter : '',
   ].filter(Boolean).length;
-
-  const filteredTemplates = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return templates;
-    return templates.filter((item) =>
-      [item.name, item.description || '', ...item.permissions].join(' ').toLowerCase().includes(q),
-    );
-  }, [templates, search]);
 
   const groupedTemplatePermissions = useMemo(() => {
     const q = permissionSearch.trim().toLowerCase();
@@ -1271,8 +1204,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     }
   }
 
-  async function handleCreateTemplate(event: React.FormEvent) {
-    event.preventDefault();
+  async function handleCreateTemplate() {
     setSavingTemplate(true);
     setError(null);
     setNotice(null);
@@ -1290,8 +1222,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     }
   }
 
-  async function handleEditTemplate(event: React.FormEvent) {
-    event.preventDefault();
+  async function handleEditTemplate() {
     if (!activeTemplateId) return;
     setSavingTemplate(true);
     setError(null);
@@ -1361,18 +1292,22 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           <input className="sa-search-input" value={userForm.managerFullName} onChange={(event) => setUserForm((current) => ({ ...current, managerFullName: event.target.value, displayName: event.target.value }))} />
         </label>
         {showStatus && (
-          <label className="sa-form-field">
+          <div style={{ display: 'grid', gap: 6 }}>
             <span>Состояние аккаунта</span>
-            <select className="sa-select" value={userForm.status} onChange={(event) => setUserForm((current) => ({ ...current, status: event.target.value }))}>
-              <option value="active">Аккаунт включен</option>
-              <option value="invited">Приглашение отправлено</option>
-              <option value="disabled">Аккаунт выключен</option>
-            </select>
-          </label>
+            <SingleSelectFilterPicker
+              value={userForm.status}
+              options={[
+                { value: 'active', label: 'Аккаунт включен' },
+                { value: 'invited', label: 'Приглашение отправлено' },
+                { value: 'disabled', label: 'Аккаунт выключен' },
+              ]}
+              onChange={(status) => setUserForm((current) => ({ ...current, status }))}
+            />
+          </div>
         )}
         <div>
           <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ пользователя</div>
-          <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ display: 'grid', gap: 12 }}>
             {userForm.memberships.map((membership, index) => {
               const dealerships = availableDealerships(membership);
               const holdingId = membership.holdingId || dealershipMap.get(membership.dealershipId)?.holdingId || '';
@@ -1391,50 +1326,48 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 description: item.holdingName || 'Без компании',
               }));
               return (
-                <div key={`${index}-${membership.role}-${membership.dealershipId}`} className="sa-card" style={{ padding: 12 }}>
-                  <div style={{ display: 'grid', gap: 10 }}>
+                <div key={`${index}-${membership.role}-${membership.dealershipId}`} style={{ display: 'grid', gap: 10 }}>
+                  <SearchableSelect
+                    label="Права"
+                    value={canManageGlobalUsers ? membership.role : 'manager'}
+                    disabled={!canManageGlobalUsers}
+                    options={roleOptions}
+                    placeholder="Выберите права пользователя"
+                    onChange={(value) => updateMembershipRole(index, value)}
+                  />
+                  {membership.role === 'holding_admin' && (
                     <SearchableSelect
-                      label="Права"
-                      value={canManageGlobalUsers ? membership.role : 'manager'}
-                      disabled={!canManageGlobalUsers}
-                      options={roleOptions}
-                      placeholder="Выберите права пользователя"
-                      onChange={(value) => updateMembershipRole(index, value)}
+                      label="Компания"
+                      value={holdingId}
+                      options={(meta?.holdings || []).map((item) => ({ value: item.id, label: item.name }))}
+                      placeholder="Выберите компанию"
+                      onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
                     />
-                    {membership.role === 'holding_admin' && (
+                  )}
+                  {(membership.role === 'dealership_admin' || membership.role === 'manager') && (
+                    <>
                       <SearchableSelect
                         label="Компания"
                         value={holdingId}
-                        options={(meta?.holdings || []).map((item) => ({ value: item.id, label: item.name }))}
+                        options={holdingOptions}
                         placeholder="Выберите компанию"
                         onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
                       />
-                    )}
-                    {(membership.role === 'dealership_admin' || membership.role === 'manager') && (
-                      <>
-                        <SearchableSelect
-                          label="Компания"
-                          value={holdingId}
-                          options={holdingOptions}
-                          placeholder="Выберите компанию"
-                          onChange={(value) => updateMembership(index, { holdingId: value, dealershipId: '' })}
-                        />
-                        <SearchableSelect
-                          label="Точка"
-                          value={membership.dealershipId}
-                          options={dealershipOptions}
-                          placeholder={holdingId ? 'Выберите точку' : 'Сначала выберите компанию'}
-                          onChange={(value) => {
-                            const selectedDealership = dealershipMap.get(value);
-                            updateMembership(index, {
-                              dealershipId: value,
-                              holdingId: selectedDealership?.holdingId || NO_HOLDING_VALUE,
-                            });
-                          }}
-                        />
-                      </>
-                    )}
-                  </div>
+                      <SearchableSelect
+                        label="Точка"
+                        value={membership.dealershipId}
+                        options={dealershipOptions}
+                        placeholder={holdingId ? 'Выберите точку' : 'Сначала выберите компанию'}
+                        onChange={(value) => {
+                          const selectedDealership = dealershipMap.get(value);
+                          updateMembership(index, {
+                            dealershipId: value,
+                            holdingId: selectedDealership?.holdingId || NO_HOLDING_VALUE,
+                          });
+                        }}
+                      />
+                    </>
+                  )}
                 </div>
               );
             })}
@@ -1464,7 +1397,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     );
   }
 
-  function renderTemplateForm(onSubmit: (event: React.FormEvent) => void, submitLabel: string) {
+  function renderTemplateForm() {
     const selectedCount = templateForm.permissions.length;
     const totalCount = meta?.permissions.length || 0;
 
@@ -1489,20 +1422,30 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     }
 
     return (
-      <form onSubmit={onSubmit} style={{ display: 'grid', gap: 12 }}>
-        <label className="sa-form-field">
+      <form id={TEMPLATE_FORM_ID} onSubmit={(event) => event.preventDefault()} style={{ display: 'grid', gap: 14 }}>
+        <label style={{ display: 'grid', gap: 6 }}>
           <span>Название шаблона</span>
-          <input className="sa-search-input" value={templateForm.name} onChange={(event) => setTemplateForm((current) => ({ ...current, name: event.target.value }))} />
+          <input
+            className="sa-input"
+            value={templateForm.name}
+            onChange={(event) => setTemplateForm((current) => ({ ...current, name: event.target.value }))}
+          />
         </label>
-        <label className="sa-form-field">
+        <label style={{ display: 'grid', gap: 6 }}>
           <span>Описание</span>
-          <textarea className="sa-search-input" rows={3} value={templateForm.description} onChange={(event) => setTemplateForm((current) => ({ ...current, description: event.target.value }))} />
+          <textarea
+            className="sa-input"
+            rows={3}
+            value={templateForm.description}
+            onChange={(event) => setTemplateForm((current) => ({ ...current, description: event.target.value }))}
+          />
         </label>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-end', marginBottom: 10 }}>
+
+        <div className="sa-bordered-block" style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <div>
               <div style={{ fontWeight: 700 }}>Права доступа</div>
-              <div style={{ color: 'var(--sa-text-secondary)', fontSize: 12, marginTop: 4 }}>
+              <div className="sa-meta" style={{ marginTop: 4 }}>
                 Выбрано {selectedCount} из {totalCount}. Технические коды показаны мелким текстом для проверки.
               </div>
             </div>
@@ -1517,16 +1460,15 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           </div>
 
           <input
-            className="sa-search-input"
+            className="sa-input"
             placeholder="Найти право: звонки, пользователи, дашборд..."
             value={permissionSearch}
             onChange={(event) => setPermissionSearch(event.target.value)}
-            style={{ marginBottom: 12 }}
           />
 
-          <div style={{ display: 'grid', gap: 12, maxHeight: 420, overflowY: 'auto', paddingRight: 4 }}>
+          <div className="sa-template-permissions-scroll">
             {groupedTemplatePermissions.length === 0 && (
-              <div className="sa-card" style={{ padding: 14, color: 'var(--sa-text-secondary)' }}>
+              <div className="sa-bordered-block sa-meta">
                 Ничего не найдено. Попробуйте другой запрос.
               </div>
             )}
@@ -1537,11 +1479,11 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               const allSelected = selectedInGroup === groupKeys.length && groupKeys.length > 0;
 
               return (
-                <section key={group.id} className="sa-card" style={{ padding: 14 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', marginBottom: 10 }}>
+                <section key={group.id} className="sa-bordered-block" style={{ display: 'grid', gap: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     <div>
-                      <div style={{ fontWeight: 800 }}>{group.title}</div>
-                      <div style={{ color: 'var(--sa-text-secondary)', fontSize: 12, marginTop: 4 }}>{group.description}</div>
+                      <div style={{ fontWeight: 700 }}>{group.title}</div>
+                      <div className="sa-meta" style={{ marginTop: 4 }}>{group.description}</div>
                     </div>
                     <button
                       type="button"
@@ -1552,7 +1494,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                     </button>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <span className="sa-metric-chip">{selectedInGroup}/{groupKeys.length} выбрано</span>
                   </div>
 
@@ -1562,32 +1504,17 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                       return (
                         <label
                           key={permission.key}
-                          style={{
-                            display: 'grid',
-                            gridTemplateColumns: '18px 1fr',
-                            gap: 10,
-                            alignItems: 'flex-start',
-                            padding: '10px 12px',
-                            border: `1px solid ${checked ? '#F59E0B' : '#E5E7EB'}`,
-                            borderRadius: 10,
-                            background: checked ? '#FFFBEB' : '#fff',
-                            cursor: 'pointer',
-                          }}
+                          className={`sa-permission-option${checked ? ' is-checked' : ''}`}
                         >
                           <input
                             type="checkbox"
                             checked={checked}
                             onChange={() => togglePermission(permission.key)}
-                            style={{ marginTop: 3 }}
                           />
                           <span>
-                            <span style={{ display: 'block', fontWeight: 700 }}>{permissionLabel(permission.key)}</span>
-                            <span style={{ display: 'block', color: 'var(--sa-text-secondary)', fontSize: 12, marginTop: 3 }}>
-                              {permission.description}
-                            </span>
-                            <span style={{ display: 'block', color: '#9CA3AF', fontSize: 11, marginTop: 4, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>
-                              {permission.key}
-                            </span>
+                            <span className="sa-permission-option__title">{permissionLabel(permission.key)}</span>
+                            <span className="sa-permission-option__desc">{permission.description}</span>
+                            <span className="sa-permission-option__code">{permission.key}</span>
                           </span>
                         </label>
                       );
@@ -1598,10 +1525,31 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
             })}
           </div>
         </div>
-        <button type="submit" className="sa-btn-danger" disabled={savingTemplate}>
-          {savingTemplate ? 'Сохраняем...' : submitLabel}
-        </button>
       </form>
+    );
+  }
+
+  function renderTemplateFormFooter(options: {
+    submitLabel: string;
+    onClose: () => void;
+    onSubmit: () => void;
+  }) {
+    return (
+      <div className="sa-modal-footer-row">
+        <div className="sa-modal-footer-row__right">
+          <button type="button" className="sa-btn-outline" onClick={options.onClose} disabled={savingTemplate}>
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="sa-btn-primary"
+            disabled={savingTemplate}
+            onClick={options.onSubmit}
+          >
+            {savingTemplate ? 'Сохраняем...' : options.submitLabel}
+          </button>
+        </div>
+      </div>
     );
   }
 
@@ -1612,19 +1560,29 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       ) : (
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
           <h1 className="sa-page-title" style={{ marginBottom: 0 }}>Пользователи</h1>
-          <select
-            className="sa-select"
-            value={selectedGlobalHoldingId}
-            onChange={(event) => setSelectedGlobalHoldingId(event.target.value)}
-            disabled={loading || (meta?.holdings || []).length === 0}
-            style={{ minWidth: 220 }}
-            title="Глобальный фильтр по компаниям"
-          >
-            {(meta?.holdings || []).length === 0 ? <option value="">Нет компаний</option> : null}
-            {(meta?.holdings || []).map((holding) => (
-              <option key={holding.id} value={holding.id}>{holding.name}</option>
-            ))}
-          </select>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <HoldingSelectPicker
+              holdings={meta?.holdings || []}
+              value={selectedGlobalHoldingId}
+              onChange={setSelectedGlobalHoldingId}
+              disabled={loading || (meta?.holdings || []).length === 0}
+              loading={loading}
+            />
+            {tab === 'templates' && canManageTemplates && (
+              <button
+                type="button"
+                className="sa-btn-brutal-3d"
+                onClick={() => {
+                  resetTemplateForm();
+                  setPermissionSearch('');
+                  setCreateTemplateOpen(true);
+                }}
+              >
+                <LetsIcon name="add-light" size={16} bold />
+                Новый шаблон
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -1701,51 +1659,36 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
 
       {tab === 'users' && (
         <>
-          <div className="sa-toolbar">
-            <div className="sa-toolbar-split sa-holdings-toolbar">
-              <div className="sa-toolbar-filters">
-                <div className="sa-search-wrap">
-                  <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-                  </svg>
-                  <input
-                    className="sa-search-input"
-                    placeholder="Поиск по имени / точке / городу..."
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                  />
-                </div>
-                <FiltersToggleButton
-                  active={showUserFilters}
-                  count={activeUserFiltersCount}
-                  onClick={() => setShowUserFilters((current) => !current)}
-                  className="sa-btn-border-only"
+          <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
+            <div className="sa-toolbar-filters">
+              <div className="sa-search-wrap">
+                <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+                </svg>
+                <input
+                  className="sa-search-input"
+                  placeholder="Поиск по имени / точке / городу..."
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
                 />
               </div>
-              <div className="sa-toolbar-actions">
-                <button
-                  type="button"
-                  className="sa-btn-brutal-3d"
-                  onClick={() => {
-                    setCreateUserOpen(true);
-                  }}
-                >
-                  <LetsIcon name="add-light" size={16} bold />
-                  Новый пользователь
-                </button>
-              </div>
+              <FiltersToggleButton
+                active={showUserFilters}
+                count={activeUserFiltersCount}
+                onClick={() => setShowUserFilters((current) => !current)}
+              />
             </div>
-            <div className="sa-toolbar-chips">
-              {USER_QUICK_FILTERS.map((filter) => (
-                <button
-                  key={filter.id}
-                  type="button"
-                  className={`sa-chip ${userQuickFilter === filter.id ? 'sa-chip-active' : ''}`}
-                  onClick={() => setUserQuickFilter((current) => (current === filter.id ? null : filter.id))}
-                >
-                  {filter.label}
-                </button>
-              ))}
+            <div className="sa-toolbar-actions">
+              <button
+                type="button"
+                className="sa-btn-brutal-3d"
+                onClick={() => {
+                  setCreateUserOpen(true);
+                }}
+              >
+                <LetsIcon name="add-light" size={16} bold />
+                Новый пользователь
+              </button>
             </div>
           </div>
 
@@ -1755,11 +1698,10 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 setFullNameFilter('');
                 setEmailFilter('');
                 setPhoneFilter('');
-                setRoleFilter('');
+                setRoleFilter([]);
                 setHoldingFilter('');
                 setDealershipFilter('');
                 setOwnershipFilter('all');
-                setUserQuickFilter(null);
               }}
             >
               <FilterGroup label="Данные пользователя">
@@ -1773,8 +1715,12 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                   <label key={item} className="sa-filter-check">
                     <input
                       type="checkbox"
-                      checked={roleFilter === item}
-                      onChange={() => setRoleFilter((current) => (current === item ? '' : item))}
+                      checked={roleFilter.includes(item)}
+                      onChange={() => setRoleFilter((current) => (
+                        current.includes(item)
+                          ? current.filter((role) => role !== item)
+                          : [...current, item]
+                      ))}
                     />
                     {roleLabel(item)}
                   </label>
@@ -1782,10 +1728,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               </FilterGroup>
 
               <FilterGroup label="Компания">
-                <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
-                  <SearchableSelect
+                <div className="sa-tag-filter-picker-wrap" style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
+                  <SingleSelectFilterPicker
                     value={holdingFilter}
-                    options={holdingFilterOptions}
+                    options={[
+                      { value: '', label: 'Все компании' },
+                      ...holdingFilterOptions.map((option) => ({ value: option.value, label: option.label })),
+                    ]}
                     placeholder="Все компании"
                     onChange={setHoldingFilter}
                   />
@@ -1793,10 +1742,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               </FilterGroup>
 
               <FilterGroup label="Точка">
-                <div style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
-                  <SearchableSelect
+                <div className="sa-tag-filter-picker-wrap" style={{ minWidth: 0, flex: '1 1 260px', maxWidth: 420 }}>
+                  <SingleSelectFilterPicker
                     value={dealershipFilter}
-                    options={dealershipFilterOptions}
+                    options={[
+                      { value: '', label: 'Все точки' },
+                      ...dealershipFilterOptions.map((option) => ({ value: option.value, label: option.label })),
+                    ]}
                     placeholder="Все точки"
                     onChange={setDealershipFilter}
                   />
@@ -1805,14 +1757,16 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
 
               <FilterGroup label="Франшиза / Свои">
                 {[
+                  { value: 'all' as UserOwnershipFilter, label: 'Все' },
                   { value: 'own' as UserOwnershipFilter, label: 'Свои' },
                   { value: 'franchised' as UserOwnershipFilter, label: 'Франшиза' },
                 ].map((option) => (
                   <label key={option.value} className="sa-filter-check">
                     <input
-                      type="checkbox"
+                      type="radio"
+                      name="user-ownership-filter"
                       checked={ownershipFilter === option.value}
-                      onChange={() => setOwnershipFilter((current) => (current === option.value ? 'all' : option.value))}
+                      onChange={() => setOwnershipFilter(option.value)}
                     />
                     {option.label}
                   </label>
@@ -1830,8 +1784,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 <col className="sa-col-num" />
                 <col className="sa-col-num" />
                 <col className="sa-col-num" />
-                <col className="sa-col-comm" />
-                <col className="sa-col-mistake" />
                 <col className="sa-col-status" />
                 <col className="sa-col-actions" />
               </colgroup>
@@ -1849,8 +1801,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                       </span>
                     </th>
                   ))}
-                  <th>Коммуникация</th>
-                  <th>ТОП-ошибка</th>
                   <th className="sa-th-sortable" onClick={() => handleUserSort('status')}>
                     Статус{' '}
                     <span className={userSortKey === 'status' ? 'sa-sort-icon' : 'sa-sort-icon sa-sort-icon-inactive'}>
@@ -1862,9 +1812,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
+                  <tr><td colSpan={8} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
                 ) : userEmployeeRows.length === 0 ? (
-                  <tr><td colSpan={10} className="sa-meta" style={{ padding: 32 }}>
+                  <tr><td colSpan={8} className="sa-meta" style={{ padding: 32 }}>
                     Нет пользователей по выбранным фильтрам
                     <br /><span style={{ fontSize: 12, opacity: 0.7 }}>Сбросьте фильтры или измените поиск</span>
                   </td></tr>
@@ -1904,22 +1854,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                             {analytics.failsCount}
                           </span>
                         </td>
-                        <td title={commTooltip(analytics.communicationFlag)}>
-                          {COMM_LABELS[analytics.communicationFlag]}
-                        </td>
-                        <td><span className="sa-top-mistake" title={analytics.topMistakeLabel}>{analytics.topMistakeLabel}</span></td>
                         <td><span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span></td>
                         <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
                           <div>
-                            <button
-                              type="button"
-                              className="sa-btn-icon sa-btn-brutal-3d-icon"
-                              onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}
-                              aria-label="Номера телефонов"
-                              title="Номера телефонов"
-                            >
-                              <PhoneIcon />
-                            </button>
                             <button
                               type="button"
                               className="sa-btn-icon sa-btn-brutal-3d-icon"
@@ -1968,19 +1905,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                       <span className="sa-metric-chip"><span className={delta.cls}>{delta.text}</span></span>
                       <span className="sa-metric-chip">Проверки: {analytics.auditsCount}</span>
                       <span className="sa-metric-chip">Провалы: {analytics.failsCount}</span>
-                      <span>{COMM_LABELS[analytics.communicationFlag]}</span>
                       <span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span>
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }} onClick={(event) => event.stopPropagation()}>
-                      <button
-                        type="button"
-                        className="sa-btn-icon sa-btn-brutal-3d-icon"
-                        onClick={() => actionUser && setPhoneNumbersUserId(actionUser.id)}
-                        aria-label="Номера телефонов"
-                        title="Номера телефонов"
-                      >
-                        <PhoneIcon />
-                      </button>
                       <button
                         type="button"
                         className="sa-btn-icon sa-btn-brutal-3d-icon"
@@ -2000,73 +1927,63 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       )}
 
       {tab === 'templates' && canManageTemplates && (
-        <section className="sa-card" style={{ padding: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 16 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 22 }}>Список шаблонов прав</h2>
-              <div style={{ fontSize: 13, color: 'var(--sa-text-secondary)', marginTop: 6 }}>
-                {loading ? 'Загрузка...' : `${filteredTemplates.length} шаблонов`}
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <input
-                className="sa-search-input"
-                style={{ width: 320 }}
-                placeholder="Поиск по названию и permission"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-              <button type="button" className="sa-btn-danger" onClick={() => { resetTemplateForm(); setPermissionSearch(''); setCreateTemplateOpen(true); }}>
-                Новый шаблон
-              </button>
-            </div>
+        templates.length === 0 ? (
+          <div className="sa-meta" style={{ padding: 12 }}>
+            {loading ? 'Загрузка...' : 'Шаблонов пока нет'}
           </div>
-
-          <div style={{ display: 'grid', gap: 10 }}>
-            {filteredTemplates.map((template) => (
-              <div key={template.id} className="sa-card" style={{ padding: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16 }}>
-                  <div>
-                    <div style={{ fontWeight: 700 }}>{template.name}</div>
-                    <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>{template.description || 'Без описания'}</div>
-                    <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      <span className="sa-metric-chip">{template.assignedAccountsCount} назначений</span>
-                      {template.permissions.slice(0, 6).map((permission) => (
-                        <span key={permission} className="sa-metric-chip">{permissionLabel(permission)}</span>
-                      ))}
-                      {template.isSystem && <span className="sa-metric-chip">Системный</span>}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'flex-start' }}>
-                    <button type="button" className="sa-btn-outline" onClick={() => { setActiveTemplateId(template.id); setViewTemplateOpen(true); }}>
-                      Просмотр
-                    </button>
-                    <button
-                      type="button"
-                      className="sa-btn-outline"
-                      disabled={template.isSystem}
-                      title={template.isSystem ? 'Системные шаблоны редактируются в коде.' : undefined}
-                      onClick={() => {
-                        if (template.isSystem) return;
-                        setActiveTemplateId(template.id);
-                        fillTemplateForm(template);
-                        setPermissionSearch('');
-                        setEditTemplateOpen(true);
-                      }}
-                    >
-                      Редактирование
-                    </button>
-                    {!template.isSystem && (
-                      <button type="button" className="sa-btn-danger" onClick={() => { setActiveTemplateId(template.id); setDeleteTemplateOpen(true); }}>
-                        Удалить
-                      </button>
-                    )}
+        ) : (
+          <div className="sa-templates-list">
+            {templates.map((template) => (
+              <div
+                key={template.id}
+                className="sa-template-card"
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  setActiveTemplateId(template.id);
+                  setViewTemplateOpen(true);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setActiveTemplateId(template.id);
+                    setViewTemplateOpen(true);
+                  }
+                }}
+              >
+                <div className="sa-template-card__body">
+                  <div style={{ fontWeight: 700 }}>{template.name}</div>
+                  <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>{template.description || 'Без описания'}</div>
+                  <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    <span className="sa-metric-chip">{template.assignedAccountsCount} назначений</span>
+                    {template.permissions.slice(0, 6).map((permission) => (
+                      <span key={permission} className="sa-metric-chip">{permissionLabel(permission)}</span>
+                    ))}
+                    {template.isSystem && <span className="sa-metric-chip">Системный</span>}
                   </div>
                 </div>
+                {!template.isSystem && (
+                  <div
+                    className="sa-template-card__actions"
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      className="sa-btn-danger"
+                      onClick={() => {
+                        setActiveTemplateId(template.id);
+                        setDeleteTemplateOpen(true);
+                      }}
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
-        </section>
+        )
       )}
         </>
       )}
@@ -2164,8 +2081,14 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         subtitle="Создание шаблона прав вынесено в отдельное модальное окно."
         open={createTemplateOpen}
         onClose={() => setCreateTemplateOpen(false)}
+        width={760}
+        footer={renderTemplateFormFooter({
+          submitLabel: 'Создать шаблон',
+          onClose: () => setCreateTemplateOpen(false),
+          onSubmit: () => { void handleCreateTemplate(); },
+        })}
       >
-        {renderTemplateForm(handleCreateTemplate, 'Создать шаблон')}
+        {renderTemplateForm()}
       </ModalFrame>
 
       <ModalFrame
@@ -2184,15 +2107,16 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 { label: 'Назначений', value: activeTemplate.assignedAccountsCount },
               ]}
             />
-            <div className="sa-card" style={{ padding: 12 }}>
-              <div style={{ fontWeight: 700, marginBottom: 8 }}>Права доступа</div>
+            <div className="sa-bordered-block" style={{ display: 'grid', gap: 10 }}>
+              <div style={{ fontWeight: 700 }}>Права доступа</div>
               <div style={{ display: 'grid', gap: 8 }}>
                 {activeTemplatePermissionGroups.map((group) => {
                   const isOpen = openTemplatePermissionGroups.includes(group.id);
                   return (
-                    <div key={group.id} style={{ border: '1px solid #E5E7EB', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                    <div key={group.id} className="sa-template-accordion">
                       <button
                         type="button"
+                        className="sa-template-accordion__header"
                         onClick={() =>
                           setOpenTemplatePermissionGroups((current) =>
                             current.includes(group.id)
@@ -2200,39 +2124,23 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                               : [...current, group.id],
                           )
                         }
-                        style={{
-                          width: '100%',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 12,
-                          padding: '12px 14px',
-                          border: 'none',
-                          background: '#F9FAFB',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                        }}
                       >
                         <span>
-                          <span style={{ display: 'block', fontWeight: 800 }}>{group.title}</span>
-                          <span style={{ display: 'block', color: 'var(--sa-text-secondary)', fontSize: 12, marginTop: 3 }}>
-                            {group.description}
-                          </span>
+                          <span className="sa-template-accordion__title">{group.title}</span>
+                          <span className="sa-template-accordion__desc">{group.description}</span>
                         </span>
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                        <span className="sa-template-accordion__meta">
                           <span className="sa-metric-chip">{group.selected.length}/{group.total}</span>
-                          <span aria-hidden="true" style={{ color: 'var(--sa-text-secondary)', fontSize: 12 }}>
-                            {isOpen ? '▲' : '▼'}
-                          </span>
+                          <span aria-hidden="true">{isOpen ? '▲' : '▼'}</span>
                         </span>
                       </button>
 
                       {isOpen && (
-                        <div style={{ display: 'grid', gap: 8, padding: 12 }}>
+                        <div className="sa-template-accordion__body">
                           {group.selected.map((permission) => (
-                            <div key={permission.key} style={{ padding: '10px 12px', border: '1px solid #EEF2F7', borderRadius: 10 }}>
-                              <div style={{ fontWeight: 800 }}>{permissionLabel(permission.key)}</div>
-                              <div style={{ color: 'var(--sa-text-secondary)', fontSize: 12, marginTop: 4 }}>
+                            <div key={permission.key} className="sa-bordered-block">
+                              <div style={{ fontWeight: 700 }}>{permissionLabel(permission.key)}</div>
+                              <div className="sa-meta" style={{ marginTop: 4 }}>
                                 {permission.description}
                               </div>
                             </div>
@@ -2243,7 +2151,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                   );
                 })}
                 {activeTemplatePermissionGroups.length === 0 && (
-                  <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>В шаблоне пока нет выбранных прав.</div>
+                  <div className="sa-meta">В шаблоне пока нет выбранных прав.</div>
                 )}
               </div>
             </div>
@@ -2256,8 +2164,14 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         subtitle="Изменение шаблона выполняется через отдельное модальное окно."
         open={editTemplateOpen}
         onClose={() => setEditTemplateOpen(false)}
+        width={760}
+        footer={renderTemplateFormFooter({
+          submitLabel: 'Сохранить шаблон',
+          onClose: () => setEditTemplateOpen(false),
+          onSubmit: () => { void handleEditTemplate(); },
+        })}
       >
-        {renderTemplateForm(handleEditTemplate, 'Сохранить шаблон')}
+        {renderTemplateForm()}
       </ModalFrame>
 
       <DeleteConfirmModal

@@ -45,7 +45,7 @@ export function FilterPickerMenu(props: Props) {
 
   return createPortal(
     <div
-      className={['sa-tag-filter-menu', 'sa-tag-filter-menu--portal', props.menuClassName].filter(Boolean).join(' ')}
+      className={['theme-brutal', 'sa-tag-filter-menu', 'sa-tag-filter-menu--portal', props.menuClassName].filter(Boolean).join(' ')}
       style={menuStyle}
       role={props.role}
     >

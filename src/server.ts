@@ -103,6 +103,7 @@ import {
   handleDeleteDealershipDirection,
   handleDeleteDealershipPhoneNumber,
   handleDeleteHolding,
+  handleDeletePhoneNumberType,
   handleListDealerships,
   handleListCities,
   handleListDealershipDirections,
@@ -3665,6 +3666,13 @@ app.patch('/api/admin/phone-number-types/:typeId', (req, res) => {
   handleUpdatePhoneNumberType(req, res).catch((error) => {
     console.error('Update phone number type route error:', error);
     res.status(500).json({ error: 'Не удалось обновить тип номера.' });
+  });
+});
+
+app.delete('/api/admin/phone-number-types/:typeId', (req, res) => {
+  handleDeletePhoneNumberType(req, res).catch((error) => {
+    console.error('Delete phone number type route error:', error);
+    res.status(500).json({ error: 'Не удалось удалить тип номера.' });
   });
 });
 

@@ -15,8 +15,12 @@ import {
   type PhoneNumberTypeItem,
 } from '../../api/adminPanel';
 import { useGlobalHoldingFilter } from '../../lib/global-holding-filter/useGlobalHoldingFilter';
+import { SingleSelectFilterPicker } from '../filter-picker/SingleSelectFilterPicker';
 import { formatPhoneInput, formatPhoneInputLive } from '../phone-number-utils';
 import { BrutalModal } from '../brutal-modal';
+import { DeleteConfirmModal } from '../delete-confirm-modal';
+import { EditIcon } from '../icons/ActionIcons';
+import { LetsIcon } from '../icons/LetsIcon';
 import { UnsavedChangesModal } from '../unsaved-changes-modal';
 
 type PhoneFormState = {
@@ -43,6 +47,7 @@ function PhoneNumberFormModal(props: {
   error: string | null;
   contextLabel?: string | null;
   requireChanges?: boolean;
+  onDelete?: () => void;
   onClose: () => void;
   onSubmit: (form: PhoneFormState) => void;
 }) {
@@ -56,6 +61,10 @@ function PhoneNumberFormModal(props: {
   );
   const typeInvalid = attempted && !form.typeId;
   const phoneInvalid = attempted && !form.phone.trim();
+  const typeOptions = useMemo(
+    () => props.types.map((type) => ({ value: type.id, label: type.name })),
+    [props.types],
+  );
 
   useEffect(() => {
     if (props.open && !wasOpenRef.current) {
@@ -92,6 +101,11 @@ function PhoneNumberFormModal(props: {
         nested
         footer={(
           <div className="sa-modal-footer-row">
+            {props.onDelete ? (
+              <button type="button" className="sa-btn-danger" onClick={props.onDelete} disabled={props.saving}>
+                Удалить номер
+              </button>
+            ) : null}
             <div className="sa-modal-footer-row__right">
               <button type="button" className="sa-btn-outline" onClick={requestClose} disabled={props.saving}>Отмена</button>
               <button
@@ -120,20 +134,21 @@ function PhoneNumberFormModal(props: {
             </div>
           )}
 
-          <label style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
             <span>Тип номера</span>
-            <select
-              className={`sa-select${typeInvalid ? ' sa-field-invalid' : ''}`}
-              value={form.typeId}
-              onChange={(event) => setForm((current) => ({ ...current, typeId: event.target.value }))}
-              aria-invalid={typeInvalid || undefined}
-            >
-              <option value="">Выберите тип</option>
-              {props.types.map((type) => (
-                <option key={type.id} value={type.id}>{type.name}</option>
-              ))}
-            </select>
-          </label>
+            <div className={`sa-tag-filter-picker-wrap${typeInvalid ? ' sa-field-invalid' : ''}`} style={{ width: '100%' }}>
+              <SingleSelectFilterPicker
+                value={form.typeId}
+                options={typeOptions}
+                placeholder="Выберите тип"
+                zIndex={1500}
+                onChange={(value) => setForm((current) => ({ ...current, typeId: value }))}
+              />
+            </div>
+            {typeInvalid && (
+              <div className="sa-meta" style={{ color: 'var(--tb-status-red)' }}>Выберите тип номера</div>
+            )}
+          </div>
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Номер телефона</span>
@@ -147,10 +162,17 @@ function PhoneNumberFormModal(props: {
             />
           </label>
 
-          <label className="sa-filter-check">
-            <input type="checkbox" checked={form.isActive} onChange={(event) => setForm((current) => ({ ...current, isActive: event.target.checked }))} />
-            <span>Номер активен</span>
-          </label>
+          <button
+            type="button"
+            className="sa-toggle-field"
+            aria-pressed={form.isActive}
+            onClick={() => setForm((current) => ({ ...current, isActive: !current.isActive }))}
+          >
+            <span className="sa-toggle-field__text">Номер активен</span>
+            <span className="sa-toggle-field__control" aria-hidden="true">
+              <span className="sa-toggle-field__thumb" />
+            </span>
+          </button>
 
           {props.error && (
             <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14 }}>
@@ -185,6 +207,55 @@ function normalizePhoneForm(form: PhoneFormState): PhoneFormState {
   };
 }
 
+function PhoneNumbersTable(props: {
+  loading: boolean;
+  items: PhoneNumberItem[];
+  onEdit: (item: PhoneNumberItem) => void;
+}) {
+  return (
+    <div className="sa-table-wrap sa-table-wrap-plain">
+      <table className="sa-table sa-phone-numbers-table">
+        <thead>
+          <tr>
+            <th>Тип</th>
+            <th>Номер</th>
+            <th>Статус</th>
+            <th className="sa-text-right sa-phone-numbers-actions-col">Действия</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.loading ? (
+            <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
+          ) : props.items.length === 0 ? (
+            <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
+          ) : props.items.map((item) => (
+            <tr key={item.id}>
+              <td style={{ fontWeight: 700 }}>{item.typeName}</td>
+              <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
+              <td>
+                <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                  {item.isActive ? 'Активен' : 'Неактивен'}
+                </span>
+              </td>
+              <td className="sa-phone-numbers-actions-cell">
+                <button
+                  type="button"
+                  className="sa-btn-icon sa-btn-brutal-3d-icon"
+                  onClick={() => props.onEdit(item)}
+                  aria-label={`Редактировать ${item.phone}`}
+                  title="Редактировать"
+                >
+                  <EditIcon />
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
   dealershipId: string;
   open: boolean;
@@ -197,6 +268,7 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editItem, setEditItem] = useState<PhoneNumberItem | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const defaultForm = useMemo<PhoneFormState>(() => ({
     ...EMPTY_FORM,
@@ -246,6 +318,7 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
     try {
       await updateDealershipPhoneNumber(editItem.id, form);
       setEditItem(null);
+      setDeleteConfirmOpen(false);
       await loadData();
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : 'Не удалось обновить номер телефона.');
@@ -254,104 +327,93 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
     }
   }
 
-  async function handleDelete(item: PhoneNumberItem) {
+  async function handleDelete() {
+    if (!editItem) return;
     setSaving(true);
     setError(null);
     try {
-      await deleteDealershipPhoneNumber(item.id);
+      await deleteDealershipPhoneNumber(editItem.id);
+      setDeleteConfirmOpen(false);
+      setEditItem(null);
       await loadData();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить номер телефона.');
+      setDeleteConfirmOpen(false);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <BrutalModal
-      open={open}
-      onClose={onClose}
-      title="Номера телефонов"
-      subtitle="Номера, привязанные к этой точке."
-      width="wide"
-      headerActions={(
-        <button type="button" className="sa-btn-brutal-3d" onClick={() => { setError(null); setAddOpen(true); }} disabled={types.length === 0}>
-          Добавить
-        </button>
-      )}
-    >
-      {types.length === 0 && !loading && (
-        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-          Сначала создайте активный тип номера с принадлежностью “Для точек”.
-        </div>
-      )}
-      {error && !addOpen && !editItem && (
-        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14, marginBottom: 12 }}>
-          {error}
-        </div>
-      )}
+    <>
+      <BrutalModal
+        open={open}
+        onClose={onClose}
+        title="Номера телефонов"
+        subtitle="Номера, привязанные к этой точке."
+        width="wide"
+        headerActions={(
+          <button type="button" className="sa-btn-brutal-3d" onClick={() => { setError(null); setAddOpen(true); }} disabled={types.length === 0}>
+            <LetsIcon name="add-light" size={16} bold />
+            Добавить
+          </button>
+        )}
+      >
+        {types.length === 0 && !loading && (
+          <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
+            Сначала создайте активный тип номера с принадлежностью “Для точек”.
+          </div>
+        )}
+        {error && !addOpen && !editItem && (
+          <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
 
-      <div className="sa-table-wrap sa-table-wrap-plain">
-        <table className="sa-table">
-          <thead>
-            <tr>
-              <th>Тип</th>
-              <th>Номер</th>
-              <th>Статус</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
-            ) : items.length === 0 ? (
-              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
-            ) : items.map((item) => (
-              <tr key={item.id}>
-                <td style={{ fontWeight: 700 }}>{item.typeName}</td>
-                <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
-                <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активен' : 'Неактивен'}</span></td>
-                <td style={{ textAlign: 'right' }}>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                    <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditItem(item); }}>
-                      Редактировать
-                    </button>
-                    <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => handleDelete(item)} disabled={saving}>
-                      Удалить
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+        <PhoneNumbersTable
+          loading={loading}
+          items={items}
+          onEdit={(item) => { setError(null); setDeleteConfirmOpen(false); setEditItem(item); }}
+        />
 
-      <PhoneNumberFormModal
-        open={addOpen}
-        title="Добавить номер"
-        submitLabel="Добавить"
-        initial={defaultForm}
-        types={types}
+        <PhoneNumberFormModal
+          open={addOpen}
+          title="Добавить номер"
+          submitLabel="Добавить"
+          initial={defaultForm}
+          types={types}
+          saving={saving}
+          error={addOpen ? error : null}
+          onClose={() => setAddOpen(false)}
+          onSubmit={handleCreate}
+        />
+
+        <PhoneNumberFormModal
+          open={!!editItem}
+          title="Редактировать номер"
+          submitLabel="Сохранить"
+          initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
+          types={types}
+          saving={saving}
+          error={editItem ? error : null}
+          requireChanges
+          onDelete={() => setDeleteConfirmOpen(true)}
+          onClose={() => {
+            setEditItem(null);
+            setDeleteConfirmOpen(false);
+          }}
+          onSubmit={handleEdit}
+        />
+      </BrutalModal>
+
+      <DeleteConfirmModal
+        open={deleteConfirmOpen && !!editItem}
+        title="Удалить номер?"
         saving={saving}
-        error={addOpen ? error : null}
-        onClose={() => setAddOpen(false)}
-        onSubmit={handleCreate}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => { void handleDelete(); }}
       />
-
-      <PhoneNumberFormModal
-        open={!!editItem}
-        title="Редактировать номер"
-        submitLabel="Сохранить изменения"
-        initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
-        types={types}
-        saving={saving}
-        error={editItem ? error : null}
-        requireChanges
-        onClose={() => setEditItem(null)}
-        onSubmit={handleEdit}
-      />
-    </BrutalModal>
+    </>
   );
 }
 
@@ -370,6 +432,7 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [editItem, setEditItem] = useState<PhoneNumberItem | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const defaultForm = useMemo<PhoneFormState>(() => ({
     ...EMPTY_FORM,
@@ -438,6 +501,7 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
     try {
       await updateUserPhoneNumber(editItem.id, form);
       setEditItem(null);
+      setDeleteConfirmOpen(false);
       await loadData();
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : 'Не удалось обновить номер телефона.');
@@ -446,113 +510,102 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
     }
   }
 
-  async function handleDelete(item: PhoneNumberItem) {
+  async function handleDelete() {
+    if (!editItem) return;
     setSaving(true);
     setError(null);
     try {
-      await deleteUserPhoneNumber(item.id);
+      await deleteUserPhoneNumber(editItem.id);
+      setDeleteConfirmOpen(false);
+      setEditItem(null);
       await loadData();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить номер телефона.');
+      setDeleteConfirmOpen(false);
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <BrutalModal
-      open={open}
-      onClose={onClose}
-      title="Номера телефонов"
-      subtitle="Номера, привязанные к этому пользователю."
-      width="wide"
-      headerActions={(
-        <button
-          type="button"
-          className="sa-btn-brutal-3d"
-          onClick={() => { setError(null); setAddOpen(true); }}
-          disabled={!selectedHoldingId || types.length === 0}
-        >
-          Добавить
-        </button>
-      )}
-    >
-      {holdings.length === 0 && !holdingsLoading && (
-        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-          Перед добавлением номера пользователя добавьте компанию.
-        </div>
-      )}
-      {selectedHoldingId && types.length === 0 && !loading && (
-        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-          Сначала создайте активный тип номера с принадлежностью “Для пользователей” в выбранной компании.
-        </div>
-      )}
-      {error && !addOpen && !editItem && (
-        <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14, marginBottom: 12 }}>
-          {error}
-        </div>
-      )}
+    <>
+      <BrutalModal
+        open={open}
+        onClose={onClose}
+        title="Номера телефонов"
+        subtitle="Номера, привязанные к этому пользователю."
+        width="wide"
+        headerActions={(
+          <button
+            type="button"
+            className="sa-btn-brutal-3d"
+            onClick={() => { setError(null); setAddOpen(true); }}
+            disabled={!selectedHoldingId || types.length === 0}
+          >
+            <LetsIcon name="add-light" size={16} bold />
+            Добавить
+          </button>
+        )}
+      >
+        {holdings.length === 0 && !holdingsLoading && (
+          <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
+            Перед добавлением номера пользователя добавьте компанию.
+          </div>
+        )}
+        {selectedHoldingId && types.length === 0 && !loading && (
+          <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
+            Сначала создайте активный тип номера с принадлежностью “Для пользователей” в выбранной компании.
+          </div>
+        )}
+        {error && !addOpen && !editItem && (
+          <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-red-bg)', color: 'var(--tb-status-red)', fontSize: 14, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
 
-      <div className="sa-table-wrap sa-table-wrap-plain">
-        <table className="sa-table">
-          <thead>
-            <tr>
-              <th>Тип</th>
-              <th>Номер</th>
-              <th>Статус</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
-            ) : items.length === 0 ? (
-              <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
-            ) : items.map((item) => (
-              <tr key={item.id}>
-                <td style={{ fontWeight: 700 }}>{item.typeName}</td>
-                <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
-                <td><span className={item.isActive ? 'sa-emp-status' : 'sa-emp-status sa-emp-warn'}>{item.isActive ? 'Активен' : 'Неактивен'}</span></td>
-                <td style={{ textAlign: 'right' }}>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                    <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => { setError(null); setEditItem(item); }}>
-                      Редактировать
-                    </button>
-                    <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => handleDelete(item)} disabled={saving}>
-                      Удалить
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+        <PhoneNumbersTable
+          loading={loading}
+          items={items}
+          onEdit={(item) => { setError(null); setDeleteConfirmOpen(false); setEditItem(item); }}
+        />
 
-      <PhoneNumberFormModal
-        open={addOpen}
-        title="Добавить номер"
-        submitLabel="Добавить"
-        initial={defaultForm}
-        types={types}
+        <PhoneNumberFormModal
+          open={addOpen}
+          title="Добавить номер"
+          submitLabel="Добавить"
+          initial={defaultForm}
+          types={types}
+          saving={saving}
+          error={addOpen ? error : null}
+          onClose={() => setAddOpen(false)}
+          onSubmit={handleCreate}
+        />
+
+        <PhoneNumberFormModal
+          open={!!editItem}
+          title="Редактировать номер"
+          submitLabel="Сохранить"
+          initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
+          types={types}
+          saving={saving}
+          error={editItem ? error : null}
+          requireChanges
+          onDelete={() => setDeleteConfirmOpen(true)}
+          onClose={() => {
+            setEditItem(null);
+            setDeleteConfirmOpen(false);
+          }}
+          onSubmit={handleEdit}
+        />
+      </BrutalModal>
+
+      <DeleteConfirmModal
+        open={deleteConfirmOpen && !!editItem}
+        title="Удалить номер?"
         saving={saving}
-        error={addOpen ? error : null}
-        onClose={() => setAddOpen(false)}
-        onSubmit={handleCreate}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => { void handleDelete(); }}
       />
-
-      <PhoneNumberFormModal
-        open={!!editItem}
-        title="Редактировать номер"
-        submitLabel="Сохранить изменения"
-        initial={editItem ? { typeId: editItem.typeId, phone: formatPhoneInput(editItem.phone), isActive: editItem.isActive } : defaultForm}
-        types={types}
-        saving={saving}
-        error={editItem ? error : null}
-        requireChanges
-        onClose={() => setEditItem(null)}
-        onSubmit={handleEdit}
-      />
-    </BrutalModal>
+    </>
   );
 }
