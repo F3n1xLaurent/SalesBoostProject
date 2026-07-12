@@ -7055,7 +7055,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         .filter((line) => line.text);
       let unifiedReport = normalizeUnifiedCallReport(
         evaluation?.unified_call_report,
-        { totalScore: score, transcript: reportTranscript, source: 'trainer' },
+        { totalScore: score, transcript: reportTranscript, source: 'trainer', dimensionScores: dimensions },
         catalog,
       );
       if (!unifiedReport && reportTranscript.length >= 2) {
@@ -7267,9 +7267,11 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         text: String(line.text || line.content || '').trim(),
       }))
       .filter((line) => line.text);
+    const catalog = await getCallReportProblemCatalog(prisma);
     let unifiedReport = normalizeUnifiedCallReport(
       evaluation?.unified_call_report,
-      { totalScore: score, transcript: reportTranscript },
+      { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions },
+      catalog,
     );
     if (!unifiedReport && type === 'call' && evaluation && reportTranscript.length >= 2) {
       try {

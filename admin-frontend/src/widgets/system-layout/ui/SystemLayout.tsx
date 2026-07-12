@@ -428,7 +428,6 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                 <Audits
                   audits={audits}
                   loading={auditsLoading}
-                  onOpenDetail={(auditId) => navigate(buildAuditPath(auditId))}
                 />
               )}
               {activeTab === 'audits' && !selectedAuditId && selectedBatchDetailId && (
@@ -501,7 +500,6 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
             <Audits
               audits={audits}
               loading={auditsLoading}
-              onOpenDetail={(auditId) => navigate(buildAuditPath(auditId))}
             />
           )}
           {role === 'dealer' && activeTab === 'audits' && selectedAuditId && (

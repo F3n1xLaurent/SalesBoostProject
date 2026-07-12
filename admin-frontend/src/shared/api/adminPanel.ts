@@ -167,6 +167,7 @@ export interface AuditDetailItem {
       text: string;
       mark: 'positive' | 'normal' | 'negative' | null;
       comment: string | null;
+      betterExample?: string | null;
     }>;
     recommendations: Array<{
       text: string;

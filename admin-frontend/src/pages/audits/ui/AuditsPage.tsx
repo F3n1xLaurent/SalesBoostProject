@@ -1,23 +1,30 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import {
+  fetchAuditDetail,
   fetchDealerships,
   fetchCallReportProblems,
   fetchHoldings,
+  type AuditDetailItem,
   type AuditItem,
   type CallReportProblemItem,
   type DealershipItem,
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+import { MultiSelectFilterPicker } from '../../../shared/ui/filter-picker/MultiSelectFilterPicker';
 import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { FiltersPanel, FilterGroup, FiltersToggleButton } from '../../../shared/ui/filters-panel';
+import { SlideOver } from '../../../shared/ui/slide-over';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 
 type AuditType = 'trainer' | 'call';
 type AuditStatus = 'completed' | 'failed' | 'interrupted';
 type CommunicationFlag = 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
+
+const PROBLEM_CATEGORY_ORDER = ['Контакт', 'Диагностика', 'Продукт', 'Закрытие', 'Коммуникация'] as const;
 
 type AuditListRow = {
   id: string;
@@ -59,7 +66,6 @@ const AUDIT_STATUS_CLASS: Record<AuditStatus, string> = {
 type Props = {
   audits: AuditItem[];
   loading?: boolean;
-  onOpenDetail?: (auditId: string) => void;
 };
 
 /* ────────────────────── Sort config ────────────────────── */
@@ -176,9 +182,9 @@ function auditItemToRow(item: AuditItem): AuditListRow {
 export function Audits({
   audits,
   loading = false,
-  onOpenDetail,
 }: Props) {
   const location = useLocation();
+  const navigate = useNavigate();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [dealerships, setDealerships] = useState<DealershipItem[]>([]);
@@ -210,6 +216,24 @@ export function Audits({
     [selectedDealerships],
   );
   const allReportIssues = useMemo(() => problemCatalog.map((item) => item.title), [problemCatalog]);
+  const problemsByCategory = useMemo(() => {
+    const map = new Map<string, CallReportProblemItem[]>();
+    for (const item of problemCatalog) {
+      const category = item.category?.trim() || 'Другое';
+      const list = map.get(category) ?? [];
+      list.push(item);
+      map.set(category, list);
+    }
+    const ordered = PROBLEM_CATEGORY_ORDER
+      .filter((category) => map.has(category))
+      .map((category) => [category, map.get(category)!] as const);
+    for (const [category, items] of map) {
+      if (!PROBLEM_CATEGORY_ORDER.includes(category as typeof PROBLEM_CATEGORY_ORDER[number])) {
+        ordered.push([category, items]);
+      }
+    }
+    return ordered;
+  }, [problemCatalog]);
 
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('dateTime');
@@ -222,6 +246,10 @@ export function Audits({
   const [filterScoreBands, setFilterScoreBands] = useState<Set<ScoreBand>>(new Set());
   const [filterProblems, setFilterProblems] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
+  const [reportDrawerOpen, setReportDrawerOpen] = useState(false);
+  const [reportDrawerLoading, setReportDrawerLoading] = useState(false);
+  const [reportDrawerError, setReportDrawerError] = useState<string | null>(null);
+  const [reportDrawerDetail, setReportDrawerDetail] = useState<AuditDetailItem | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -336,11 +364,6 @@ export function Audits({
     next.has(band) ? next.delete(band) : next.add(band);
     return next;
   });
-  const toggleProblem = (issue: string) => setFilterProblems((prev) => {
-    const next = new Set(prev);
-    next.has(issue) ? next.delete(issue) : next.add(issue);
-    return next;
-  });
 
   const activeFiltersCount = filterCity.size + filterDealership.size + filterScoreBands.size + filterProblems.size;
 
@@ -387,6 +410,41 @@ export function Audits({
     const m = Math.floor(sec / 60);
     const s = sec % 60;
     return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function closeReportDrawer() {
+    setReportDrawerOpen(false);
+    setReportDrawerLoading(false);
+    setReportDrawerError(null);
+    setReportDrawerDetail(null);
+  }
+
+  async function openReportDrawer(auditId: string) {
+    setReportDrawerOpen(true);
+    setReportDrawerLoading(true);
+    setReportDrawerError(null);
+    setReportDrawerDetail(null);
+    try {
+      const detail = await fetchAuditDetail(auditId);
+      if (!detail) {
+        setReportDrawerError('Отчёт не найден');
+        return;
+      }
+      setReportDrawerDetail(detail);
+    } catch (error) {
+      setReportDrawerError(error instanceof Error ? error.message : 'Не удалось загрузить отчёт');
+    } finally {
+      setReportDrawerLoading(false);
+    }
+  }
+
+  function setCategoryProblems(categoryTitles: string[], nextSelectedInCategory: string[]) {
+    setFilterProblems((prev) => {
+      const next = new Set(prev);
+      for (const title of categoryTitles) next.delete(title);
+      for (const title of nextSelectedInCategory) next.add(title);
+      return next;
+    });
   }
 
   return (
@@ -442,7 +500,6 @@ export function Audits({
               active={showFilters}
               count={activeFiltersCount}
               onClick={() => setShowFilters(!showFilters)}
-              className="sa-btn-outline"
             />
           </div>
         </div>
@@ -465,18 +522,25 @@ export function Audits({
               </label>
             ))}
           </FilterGroup>
-          <FilterGroup label="Проблемы">
+          <FilterGroup label="Проблемы" className="sa-filter-group--problems" optionsClassName="sa-problems-category-grid">
             {problemCatalogLoading ? (
               <span className="sa-meta">Загружаем справочник проблем...</span>
-            ) : allReportIssues.length === 0 ? (
+            ) : problemsByCategory.length === 0 ? (
               <span className="sa-meta">Справочник проблем пуст</span>
             ) : (
-              allReportIssues.map((issue) => (
-                <label key={issue} className="sa-filter-check">
-                  <input type="checkbox" checked={filterProblems.has(issue)} onChange={() => toggleProblem(issue)} />
-                  {issue}
-                </label>
-              ))
+              problemsByCategory.map(([category, items]) => {
+                const titles = items.map((item) => item.title);
+                const selectedInCategory = titles.filter((title) => filterProblems.has(title));
+                return (
+                  <MultiSelectFilterPicker
+                    key={category}
+                    placeholder={category}
+                    options={items.map((item) => ({ value: item.title, label: item.title }))}
+                    values={selectedInCategory}
+                    onChange={(values) => setCategoryProblems(titles, values)}
+                  />
+                );
+              })
             )}
           </FilterGroup>
           <FilterGroup label="Город">
@@ -536,7 +600,7 @@ export function Audits({
                 <tr
                   key={r.id}
                   className="sa-row-clickable"
-                  onClick={() => onOpenDetail?.(r.id)}
+                  onClick={() => openReportDrawer(r.id)}
                 >
                   <td>
                     <div style={{ fontSize: 13 }}>{formatDateTime(r.dateTime)}</div>
@@ -575,7 +639,7 @@ export function Audits({
 
       <div className="sa-mobile-only">
         {visibleRows.map((r) => (
-          <div key={r.id} className="sa-mobile-row" onClick={() => onOpenDetail?.(r.id)}>
+          <div key={r.id} className="sa-mobile-row" onClick={() => openReportDrawer(r.id)}>
             <div className="sa-mobile-row-header">
               <div>
                 <div className="sa-cell-name">{r.employeeName}</div>
@@ -598,16 +662,39 @@ export function Audits({
             Показаны {pageStart}-{pageEnd} из {filtered.length}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={currentPage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+            <button type="button" className="sa-btn-field sa-btn-sm" disabled={currentPage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>
               Назад
             </button>
             <span className="sa-metric-chip">Стр. {currentPage} из {totalPages}</span>
-            <button type="button" className="sa-btn-outline sa-btn-sm" disabled={currentPage === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
+            <button type="button" className="sa-btn-field sa-btn-sm" disabled={currentPage === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
               Вперёд
             </button>
           </div>
         </div>
       )}
+
+      <SlideOver
+        open={reportDrawerOpen}
+        title={reportDrawerDetail?.type === 'trainer' ? 'Отчёт тренировки' : 'Аналитика звонка'}
+        width="xl"
+        onClose={closeReportDrawer}
+      >
+        {reportDrawerLoading ? (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка отчёта...</div>
+        ) : reportDrawerError ? (
+          <div className="sa-card" style={{ padding: 20 }}>
+            <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть отчёт</div>
+            <div className="sa-meta" style={{ marginTop: 8 }}>{reportDrawerError}</div>
+          </div>
+        ) : reportDrawerDetail ? (
+          <AuditAnalyticsReport
+            detail={reportDrawerDetail}
+            onOpenEmployee={(id) => navigate(`/users/${encodeURIComponent(id)}`)}
+          />
+        ) : (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите проверку.</div>
+        )}
+      </SlideOver>
     </>
   );
 }

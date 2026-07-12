@@ -1572,7 +1572,7 @@ export function ImportsPage() {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <button
                 type="button"
-                className="sa-btn-outline sa-btn-sm"
+                className="sa-btn-field sa-btn-sm"
                 disabled={dataLoading || dataPage === 0}
                 onClick={() => setDataPage((current) => Math.max(0, current - 1))}
               >
@@ -1581,7 +1581,7 @@ export function ImportsPage() {
               <span className="sa-chip">Страница {dataPage + 1} из {dataTotalPages}</span>
               <button
                 type="button"
-                className="sa-btn-outline sa-btn-sm"
+                className="sa-btn-field sa-btn-sm"
                 disabled={dataLoading || dataPage + 1 >= dataTotalPages}
                 onClick={() => setDataPage((current) => current + 1)}
               >

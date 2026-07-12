@@ -9,8 +9,8 @@
   /* Palette */
   --tb-ink: #161613;
   --tb-ink-soft: rgba(22, 22, 19, 0.55);
-  --tb-cream: #F3F2ED;
-  --tb-cream-deep: #ECEBE6;
+  --tb-cream: #F3F3F3;
+  --tb-cream-deep: #ECECEC;
   --tb-brutal-red: #E31E24;
   --tb-status-green: #2D9B5E;
   --tb-status-green-bg: #E8F3EC;
@@ -1425,6 +1425,27 @@
   width: 100%;
 }
 
+.theme-brutal .sa-filter-group--problems {
+  flex: 1 1 100%;
+  min-width: min(100%, 320px);
+}
+
+.theme-brutal .sa-problems-category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.theme-brutal .sa-problems-category-grid .sa-tag-filter-picker {
+  width: 100% !important;
+  max-width: none;
+}
+
+.theme-brutal .sa-problems-category-grid .sa-tag-filter-picker .sa-input {
+  width: 100%;
+}
+
 .theme-brutal .sa-filter-reset {
   appearance: none;
   margin: 0;
@@ -2462,39 +2483,165 @@
 .theme-brutal .sa-call-report-meta span,
 .theme-brutal .sa-call-report-category,
 .theme-brutal .sa-call-report-finding,
-.theme-brutal .sa-call-report-turn {
-  border-color: rgba(22, 22, 19, 0.08);
+.theme-brutal .sa-call-report-turn,
+.theme-brutal .sa-call-report-action {
+  border-color: rgba(22, 22, 19, 0.1);
 }
 
-.theme-brutal .sa-call-report-score-main,
-.theme-brutal .sa-call-report-category,
-.theme-brutal .sa-call-report-finding {
-  background: rgba(22, 22, 19, 0.03);
-}
-
-.theme-brutal .sa-call-report-finding blockquote {
+.theme-brutal .sa-call-report .sa-card,
+.theme-brutal .sa-call-report-section,
+.theme-brutal .sa-call-report-score {
   background: #FFFFFF;
-  border-left-color: var(--tb-ink);
+  border: 1px solid rgba(22, 22, 19, 0.1);
+  border-radius: 14px;
+  box-shadow: none;
 }
 
-.theme-brutal .sa-call-report-score-main--good,
+.theme-brutal .sa-call-report-block {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.theme-brutal .sa-call-report .sa-section-title {
+  margin-bottom: 0;
+}
+
+.theme-brutal .sa-call-report-list--strengths .sa-call-report-list-icon {
+  color: var(--tb-status-green);
+  background: var(--tb-status-green-bg);
+}
+
+.theme-brutal .sa-call-report-list--weaknesses .sa-call-report-list-icon {
+  color: var(--tb-status-red);
+  background: var(--tb-status-red-bg);
+}
+
+.theme-brutal .sa-call-report-action-tag--category {
+  border-color: rgba(22, 22, 19, 0.16);
+  color: var(--tb-ink);
+  background: #FFFFFF;
+}
+
+.theme-brutal .sa-call-report-action-tag--problem {
+  background: #F5F5F5;
+  color: var(--sa-text-secondary);
+}
+
+.theme-brutal .sa-call-report-category {
+  background: #FFFFFF;
+  border: 1px solid rgba(22, 22, 19, 0.1);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: none;
+}
+
+.theme-brutal .sa-call-report-finding,
+.theme-brutal .sa-call-report-finding-row {
+  background: #FFFFFF;
+  border-color: rgba(22, 22, 19, 0.1);
+  box-shadow: none;
+}
+
+.theme-brutal .sa-call-report-finding-quote {
+  background: #F7F7F5;
+  border: 1px solid rgba(22, 22, 19, 0.08);
+}
+
+.theme-brutal .sa-call-report-better,
+.theme-brutal .sa-call-report-turn-example {
+  background: #F4FAF6;
+  border: 1px solid rgba(45, 155, 94, 0.18);
+}
+
+.theme-brutal .sa-call-report-collapse-toggle {
+  background: #FFFFFF;
+  border-color: rgba(22, 22, 19, 0.1);
+}
+
+.theme-brutal .sa-call-report-collapse-toggle.is-open .sa-call-report-collapse-icon {
+  background: var(--tb-ink);
+  border-color: var(--tb-ink);
+  color: #FFFFFF;
+}
+
+.theme-brutal .sa-call-report-gauge-center strong {
+  font-family: var(--tb-font-mono);
+  font-feature-settings: var(--tb-font-mono-features);
+  color: var(--tb-ink);
+}
+
+.theme-brutal .sa-call-report-gauge--good .sa-call-report-gauge-fill {
+  stroke: var(--tb-status-green);
+}
+
+.theme-brutal .sa-call-report-gauge--mid .sa-call-report-gauge-fill {
+  stroke: #E8B04A;
+}
+
+.theme-brutal .sa-call-report-gauge--bad .sa-call-report-gauge-fill {
+  stroke: var(--tb-status-red);
+}
+
+.theme-brutal .sa-call-report-category-fill--good {
+  background: var(--tb-status-green);
+}
+
+.theme-brutal .sa-call-report-category-fill--mid {
+  background: #E8B04A;
+}
+
+.theme-brutal .sa-call-report-category-fill--bad {
+  background: var(--tb-status-red);
+}
+
+.theme-brutal .sa-call-report-turn--client {
+  background: #F5F5F5;
+  border-color: rgba(22, 22, 19, 0.1);
+}
+
+.theme-brutal .sa-call-report-turn--manager {
+  background: #FFFFFF;
+  border-color: rgba(22, 22, 19, 0.16);
+}
+
+.theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-good {
+  background: var(--tb-status-green-bg);
+  border-color: rgba(45, 155, 94, 0.35);
+}
+
+.theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-normal {
+  background: #FFF8EB;
+  border-color: rgba(232, 176, 74, 0.45);
+}
+
+.theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-bad {
+  background: var(--tb-status-red-bg);
+  border-color: rgba(224, 82, 82, 0.35);
+}
+
 .theme-brutal .sa-call-report-mark--good {
   background: var(--tb-status-green-bg);
   color: var(--tb-status-green);
 }
 
-.theme-brutal .sa-call-report-score-main--mid,
 .theme-brutal .sa-call-report-mark--normal,
 .theme-brutal .sa-call-report-priority--important {
-  background: var(--tb-status-orange-bg);
-  color: var(--tb-status-orange);
+  background: #FFF4DF;
+  color: #C98A1E;
 }
 
-.theme-brutal .sa-call-report-score-main--bad,
 .theme-brutal .sa-call-report-mark--bad,
 .theme-brutal .sa-call-report-priority--critical {
   background: var(--tb-status-red-bg);
   color: var(--tb-status-red);
+}
+
+.theme-brutal .sa-call-report-score-main--good,
+.theme-brutal .sa-call-report-score-main--mid,
+.theme-brutal .sa-call-report-score-main--bad {
+  background: transparent;
 }
 
 .theme-brutal .sa-modal-overlay {
@@ -2710,15 +2857,20 @@
 }
 
 .theme-brutal .sa-slide-over-panel {
-  background: var(--tb-cream);
-  box-shadow: -22px 0 48px rgba(22, 22, 19, 0.18);
+  background: #FFFFFF;
+  box-shadow: none;
+  border-left: 1px solid rgba(22, 22, 19, 0.1);
   border-radius: var(--sa-card-radius) 0 0 var(--sa-card-radius);
   overflow: hidden;
 }
 
 .theme-brutal .sa-slide-over-header {
   background: #FFFFFF;
-  border-bottom-color: rgba(22, 22, 19, 0.08);
+  border-bottom: 1px solid rgba(22, 22, 19, 0.08);
+}
+
+.theme-brutal .sa-slide-over-body {
+  background: #FFFFFF;
 }
 
 .theme-brutal .sa-modal.sa-modal-narrow {
@@ -3130,6 +3282,16 @@
   border-color: rgba(22, 22, 19, 0.28);
   box-shadow: 0 0 0 3px rgba(22, 22, 19, 0.05);
   transform: none;
+}
+
+.theme-brutal .sa-btn-field:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.theme-brutal .sa-btn-field.sa-btn-sm.is-active {
+  border-color: rgba(22, 22, 19, 0.32);
+  box-shadow: 0 0 0 3px rgba(22, 22, 19, 0.08);
 }
 
 .theme-brutal .sa-imports-data-table .sa-col-name {
