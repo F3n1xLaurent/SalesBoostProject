@@ -78,6 +78,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   const selectedEmployeeId = route.employeeId || null;
   const selectedAuditId = route.auditId || null;
   const selectedBatchDetailId = route.batchId || null;
+  const trainerSessionActive = role === 'staff' && activeTab === 'staff-trainer' && Boolean(route.trainerSessionId);
   const employeeSourceDealership = searchParams.get('source_dealership')
     ? {
       id: searchParams.get('source_dealership') || '',
@@ -302,27 +303,29 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   }, [isSuperOrCompany, callBatches]);
 
   return (
-    <div className="super-admin-app theme-brutal">
-      <AdminSidebar
-        activeTab={activeTab}
-        onTab={handleTabChange}
-        role={role}
-        profileName={profileName}
-        onRoleChange={handleRoleChange}
-        hasActiveBatch={hasActiveBatch}
-        onLogout={onLogout}
-        allowedRoles={allowedRoles}
-      />
+    <div className={`super-admin-app theme-brutal${trainerSessionActive ? ' super-admin-app--trainer-focus' : ''}`}>
+      {!trainerSessionActive && (
+        <AdminSidebar
+          activeTab={activeTab}
+          onTab={handleTabChange}
+          role={role}
+          profileName={profileName}
+          onRoleChange={handleRoleChange}
+          hasActiveBatch={hasActiveBatch}
+          onLogout={onLogout}
+          allowedRoles={allowedRoles}
+        />
+      )}
       <main
         className="super-admin-main"
         style={{
-          marginLeft: SIDEBAR_WIDTH,
+          marginLeft: trainerSessionActive ? 0 : SIDEBAR_WIDTH,
           minHeight: '100vh',
-          paddingTop: 32,
-          paddingBottom: 48,
+          paddingTop: trainerSessionActive ? 0 : 32,
+          paddingBottom: trainerSessionActive ? 0 : 48,
         }}
       >
-        <div className="super-admin-content">
+        <div className={`super-admin-content${trainerSessionActive ? ' super-admin-content--trainer-focus' : ''}`}>
           <div key={location.pathname} className="sa-page-enter">
           {backendNotRunning && shouldLoadAuditData && (
             <StatusNotice tone="warning">

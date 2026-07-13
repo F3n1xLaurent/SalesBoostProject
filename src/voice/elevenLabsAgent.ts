@@ -375,7 +375,7 @@ export async function runElevenLabsAgentAudioTurn(params: {
         conversation.waiters.splice(index, 1);
       }
       reject(new Error('ElevenLabs agent audio response timeout'));
-    }, 22000);
+    }, 32000);
     conversation.waiters.push({ resolve, reject, timeout, idleTimeout: null, audioChunks: [], text: '', userTranscript: '', endedByAgent: false });
   });
 

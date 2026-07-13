@@ -229,7 +229,7 @@ export function AuditAnalyticsReport({
                   <div className="sa-call-report-category-bar">
                     <i
                       className={`sa-call-report-category-fill sa-call-report-category-fill--${scoreTone(item.score)}`}
-                      style={{ width: `${item.score}%` }}
+                      style={{ width: `${item.score <= 0 ? 5 : Math.max(item.score, 4)}%` }}
                     />
                   </div>
                   <p>{item.comment}</p>

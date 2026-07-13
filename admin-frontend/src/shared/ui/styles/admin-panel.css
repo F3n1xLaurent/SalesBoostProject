@@ -3154,6 +3154,7 @@
 .sa-call-report-category-fill {
   display: block;
   height: 100%;
+  min-width: 7px;
   border-radius: inherit;
   transition: width 0.7s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -3489,40 +3490,33 @@
 }
 
 .sa-call-report-turn {
-  width: min(760px, 92%);
-  padding: 14px 16px;
-  border-radius: 14px;
-  border: 1.5px solid rgba(22, 22, 19, 0.12);
+  width: min(460px, 86%);
+  padding: 10px 12px 11px;
+  border-radius: 16px;
+  border: 1px solid rgba(22, 22, 19, 0.08);
   background: #FFFFFF;
+  box-shadow: none;
 }
 
 .sa-call-report-turn--client {
   align-self: flex-start;
-  background: #F5F5F5;
-  border-color: rgba(22, 22, 19, 0.1);
-  border-radius: 14px 14px 14px 4px;
+  background: #FFFFFF;
+  border: 1px solid rgba(22, 22, 19, 0.08);
 }
 
 .sa-call-report-turn--manager {
   align-self: flex-end;
   background: #FFFFFF;
-  border-color: rgba(22, 22, 19, 0.16);
-  border-radius: 14px 14px 4px 14px;
+  border: 1px solid rgba(22, 22, 19, 0.16);
+  box-shadow: none;
 }
 
-.sa-call-report-turn--manager.sa-call-report-turn--mark-good {
-  border-color: rgba(45, 155, 94, 0.45);
-  background: #F4FAF6;
-}
-
-.sa-call-report-turn--manager.sa-call-report-turn--mark-normal {
-  border-color: rgba(232, 176, 74, 0.45);
-  background: #FFF8EB;
-}
-
+.sa-call-report-turn--manager.sa-call-report-turn--mark-good,
+.sa-call-report-turn--manager.sa-call-report-turn--mark-normal,
 .sa-call-report-turn--manager.sa-call-report-turn--mark-bad {
-  border-color: rgba(220, 38, 38, 0.4);
-  background: #FFF5F5;
+  background: #FFFFFF;
+  border: 1px solid rgba(22, 22, 19, 0.16);
+  box-shadow: none;
 }
 
 .sa-call-report-turn-meta {

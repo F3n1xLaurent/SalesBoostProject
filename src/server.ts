@@ -822,6 +822,124 @@ function categoryComparisonFromSessions(ownSessions: AnalyticsSession[], franchi
   }));
 }
 
+function categoryCommentFromEvaluation(evaluation: Record<string, unknown> | null, category: AnalyticsCategory): string | null {
+  const report = evaluation?.unified_call_report && typeof evaluation.unified_call_report === 'object'
+    ? evaluation.unified_call_report as Record<string, unknown>
+    : null;
+  if (!report) return null;
+  const categories = Array.isArray(report.categories) ? report.categories : [];
+  const match = categories.find((item) => item && typeof item === 'object' && String((item as Record<string, unknown>).name || '') === category) as Record<string, unknown> | undefined;
+  const comment = String(match?.comment || '').trim();
+  return comment || null;
+}
+
+function categoryFindingTitlesFromEvaluation(evaluation: Record<string, unknown> | null, category: AnalyticsCategory): string[] {
+  const report = evaluation?.unified_call_report && typeof evaluation.unified_call_report === 'object'
+    ? evaluation.unified_call_report as Record<string, unknown>
+    : null;
+  if (!report) return [];
+  const findings = Array.isArray(report.keyFindings) ? report.keyFindings : [];
+  return findings
+    .filter((item) => item && typeof item === 'object' && String((item as Record<string, unknown>).category || '') === category)
+    .map((item) => String((item as Record<string, unknown>).problemTitle || '').trim())
+    .filter(Boolean);
+}
+
+function pickMostFrequentText(values: string[]): string | null {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    const key = value.trim().replace(/\s+/g, ' ');
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [text, count] of counts) {
+    if (count > bestCount) {
+      best = text;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function trainerCategoryInsightsFromSessions(sessions: Array<{
+  score: number | null;
+  dimensionsJson: string | null;
+  evaluationJson: string | null;
+}>): Array<{ name: AnalyticsCategory; score: number; comment: string; hint: string }> {
+  const buckets = new Map<AnalyticsCategory, { sum: number; count: number; comments: string[]; findings: string[] }>();
+  for (const category of ANALYTICS_CATEGORIES) {
+    buckets.set(category, { sum: 0, count: 0, comments: [], findings: [] });
+  }
+
+  for (const session of sessions) {
+    const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+    const dimensions = extractDimensionsFromSession(session);
+    const reportCats = evaluation?.unified_call_report && typeof evaluation.unified_call_report === 'object'
+      ? (evaluation.unified_call_report as Record<string, unknown>).categories
+      : null;
+    const reportScores = new Map<AnalyticsCategory, number>();
+    if (Array.isArray(reportCats)) {
+      for (const raw of reportCats) {
+        if (!raw || typeof raw !== 'object') continue;
+        const name = String((raw as Record<string, unknown>).name || '') as AnalyticsCategory;
+        if (!ANALYTICS_CATEGORIES.includes(name)) continue;
+        const score = numberOrNull((raw as Record<string, unknown>).score);
+        if (score != null) reportScores.set(name, score);
+      }
+    }
+
+    for (const category of ANALYTICS_CATEGORIES) {
+      const bucket = buckets.get(category)!;
+      let score = reportScores.get(category);
+      if (score == null) {
+        const dimEntries = Object.entries(dimensions).filter(([key]) => dimensionLabel(key) === category);
+        if (dimEntries.length) {
+          score = Math.round(dimEntries.reduce((sum, [, value]) => sum + value, 0) / dimEntries.length);
+        }
+      }
+      if (score != null) {
+        bucket.sum += score;
+        bucket.count += 1;
+      }
+      const comment = categoryCommentFromEvaluation(evaluation, category);
+      if (comment) bucket.comments.push(comment);
+      bucket.findings.push(...categoryFindingTitlesFromEvaluation(evaluation, category));
+    }
+  }
+
+  return ANALYTICS_CATEGORIES.map((category) => {
+    const bucket = buckets.get(category)!;
+    const score = bucket.count ? Math.round(bucket.sum / bucket.count) : 0;
+    const topFinding = pickMostFrequentText(bucket.findings);
+    const topComment = pickMostFrequentText(bucket.comments);
+    let comment = 'Пока мало данных по этой категории.';
+    if (bucket.count === 0) {
+      comment = 'Нет данных из тренажёра.';
+    } else if (score >= 76) {
+      comment = topComment && score < 90
+        ? topComment
+        : 'Стабильно хорошо — системных проблем не видно.';
+    } else if (topFinding) {
+      comment = topFinding;
+    } else if (topComment) {
+      comment = topComment;
+    } else {
+      comment = 'Есть просадки — разберите отчёты по этой категории.';
+    }
+    if (comment.length > 110) comment = `${comment.slice(0, 107).trim()}…`;
+    return {
+      name: category,
+      score,
+      comment,
+      hint: bucket.count
+        ? `Средний балл по ${bucket.count} тренировкам`
+        : `Нет данных по категории «${category}»`,
+    };
+  });
+}
+
 function dimensionBreakdownFromSessions(sessions: AnalyticsSession[]): { block: AnalyticsCategory; score: number; hint: string }[] {
   const sums = new Map<AnalyticsCategory, { sum: number; count: number }>();
   for (const session of sessions) {
@@ -1729,6 +1847,26 @@ async function ttsBase64(text: string, replyMode: 'text' | 'text+voice', ttsVoic
   }
 }
 
+/** Trainer client replies must always be voice bubbles — never text-only. */
+async function ensureTrainerClientAudio(params: {
+  text: string;
+  ttsVoice: TtsVoice;
+  audioBase64?: string | null;
+  audioMimeType?: string | null;
+}): Promise<{ audioBase64: string; audioMimeType: string | null }> {
+  if (params.audioBase64) {
+    return {
+      audioBase64: params.audioBase64,
+      audioMimeType: params.audioMimeType ?? null,
+    };
+  }
+  const audioBase64 = await ttsBase64(params.text, 'text+voice', params.ttsVoice);
+  if (!audioBase64) {
+    throw new Error('Не удалось синтезировать голос клиента. Попробуйте отправить сообщение ещё раз.');
+  }
+  return { audioBase64, audioMimeType: 'audio/mpeg' };
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeout: NodeJS.Timeout | null = null;
   try {
@@ -1741,6 +1879,104 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+function fallbackTrainerDialogTitle(transcript: TrainerTranscriptTurn[]): string | null {
+  const firstClient = transcript.find((turn) => turn.role === 'client' && String(turn.text || '').trim());
+  if (!firstClient) return null;
+  let text = String(firstClient.text || '').trim();
+  text = text
+    .replace(/^(здравствуйте|добрый день|добрый вечер|доброе утро)[!,.]?\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (text.length < 8) return null;
+  const clause = text.split(/[.!?]/)[0]?.trim() || text;
+  if (clause.length < 8) return null;
+  return clause.length > 56 ? `${clause.slice(0, 53).trim()}…` : clause;
+}
+
+async function generateTrainerDialogTitle(transcript: TrainerTranscriptTurn[]): Promise<string | null> {
+  const fallback = fallbackTrainerDialogTitle(transcript);
+  const clientLines = transcript
+    .filter((turn) => turn.role === 'client' && String(turn.text || '').trim())
+    .slice(0, 4)
+    .map((turn) => String(turn.text).trim());
+  if (!clientLines.length) return fallback;
+  try {
+    const response = await openai.chat.completions.create({
+      model: config.openaiChatModel,
+      temperature: 0.4,
+      max_tokens: 48,
+      messages: [
+        {
+          role: 'system',
+          content: 'Сформулируй короткое название тренировки по запросу клиента (что хочет купить/узнать). Только название на русском, 3–7 слов, без кавычек, без точки, без слова «тренировка».',
+        },
+        {
+          role: 'user',
+          content: `Реплики клиента:\n${clientLines.map((line, index) => `${index + 1}. ${line}`).join('\n')}`,
+        },
+      ],
+    });
+    const raw = String(response.choices[0]?.message?.content || '')
+      .trim()
+      .replace(/^["«»']+|["«»']+$/g, '')
+      .replace(/[.!?]+$/g, '')
+      .trim();
+    if (raw.length >= 4 && raw.length <= 80) return raw;
+  } catch (error) {
+    console.warn('[trainer] dialog title generation failed:', error instanceof Error ? error.message : error);
+  }
+  return fallback;
+}
+
+async function finalizeTrainerSessionEvaluation(params: {
+  sessionId: string;
+  caseContext: Record<string, unknown>;
+  runtime: TrainerRuntimeContext;
+  transcript: TrainerTranscriptTurn[];
+  forcedFail: boolean;
+  failureReason: string | null;
+  multiplier: number;
+}): Promise<void> {
+  const audit = await buildTrainerAuditEvaluation({
+    caseContext: params.caseContext,
+    runtime: params.runtime,
+    transcript: params.transcript,
+    forcedFail: params.forcedFail,
+    failureReason: params.failureReason,
+  });
+  const title = await generateTrainerDialogTitle(params.transcript);
+  const finalPoints = params.forcedFail ? 0 : Math.round(audit.score * params.multiplier);
+  const nextCaseContext = {
+    ...params.caseContext,
+    ...(title ? { dialogTitle: title } : {}),
+  };
+  await prisma.trainerSession.update({
+    where: { id: params.sessionId },
+    data: {
+      score: audit.score,
+      baseScore: audit.score,
+      finalPoints,
+      evaluationJson: jsonStringify(audit.evaluation),
+      dimensionsJson: jsonStringify(audit.dimensions),
+      checklistResultsJson: jsonStringify(audit.checklist),
+      objectionsAnalysisJson: jsonStringify(audit.issues),
+      topRecommendationsJson: jsonStringify(audit.recommendations),
+      caseContextJson: jsonStringify(nextCaseContext),
+    },
+  });
+  if (title) {
+    try {
+      await prisma.trainerSession.update({
+        where: { id: params.sessionId },
+        data: { title },
+      });
+    } catch (error) {
+      console.warn('[trainer] failed to persist session title column:', error instanceof Error ? error.message : error);
+    }
+  }
+  await finalizeTrainerSessionSideEffects(params.sessionId);
 }
 
 async function buildTrainerAuditEvaluation(params: {
@@ -1811,6 +2047,47 @@ async function buildTrainerAuditEvaluation(params: {
   };
 }
 
+async function persistTrainerDialogTitle(sessionId: string, caseContext: Record<string, unknown>, title: string) {
+  const trimmed = title.trim();
+  if (!trimmed) return;
+  const nextCaseContext = {
+    ...caseContext,
+    dialogTitle: trimmed,
+  };
+  await prisma.trainerSession.update({
+    where: { id: sessionId },
+    data: { caseContextJson: jsonStringify(nextCaseContext) },
+  });
+  try {
+    await prisma.trainerSession.update({
+      where: { id: sessionId },
+      data: { title: trimmed },
+    });
+  } catch (error) {
+    console.warn('[trainer] failed to persist session title column:', error instanceof Error ? error.message : error);
+  }
+}
+
+async function assignTrainerDialogTitle(sessionId: string, caseContext: Record<string, unknown>, transcript: TrainerTranscriptTurn[]) {
+  const quickTitle = fallbackTrainerDialogTitle(transcript);
+  if (quickTitle) {
+    await persistTrainerDialogTitle(sessionId, caseContext, quickTitle);
+  }
+  void generateTrainerDialogTitle(transcript).then(async (llmTitle) => {
+    if (!llmTitle || llmTitle === quickTitle) return;
+    const fresh = await prisma.trainerSession.findUnique({
+      where: { id: sessionId },
+      select: { caseContextJson: true },
+    });
+    const latestContext = fresh
+      ? safeJsonParseLocal<Record<string, unknown>>(fresh.caseContextJson, caseContext)
+      : caseContext;
+    await persistTrainerDialogTitle(sessionId, latestContext, llmTitle);
+  }).catch((error) => {
+    console.warn('[trainer] async dialog title failed:', error instanceof Error ? error.message : error);
+  });
+}
+
 async function initializeTrainerDialog(params: {
   sessionId: string;
   replyMode: 'text' | 'text+voice';
@@ -1824,13 +2101,84 @@ async function initializeTrainerDialog(params: {
     const lastClient = [...existingTranscript].reverse().find((turn) => turn.role === 'client');
     return {
       clientMessage: lastClient?.text ?? '',
-      audioBase64: null,
+      audioBase64: lastClient?.audioBase64 ?? null,
+      audioMimeType: lastClient?.audioMimeType ?? null,
       transcript: existingTranscript,
     };
   }
 
   const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
   const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
+
+  const finalizeFirstTurn = async (input: {
+    clientMessage: string;
+    audioBase64: string | null;
+    audioMimeType?: string | null;
+    caseContext: Record<string, unknown>;
+    extraSessionData?: Record<string, unknown>;
+  }) => {
+    let audioBase64 = input.audioBase64;
+    let audioMimeType = input.audioMimeType ?? null;
+    const ensured = await ensureTrainerClientAudio({
+      text: input.clientMessage,
+      ttsVoice: params.ttsVoice,
+      audioBase64,
+      audioMimeType,
+    });
+    audioBase64 = ensured.audioBase64;
+    audioMimeType = ensured.audioMimeType;
+    const transcript: TrainerTranscriptTurn[] = [{
+      role: 'client',
+      text: input.clientMessage,
+      createdAt: new Date().toISOString(),
+      audioBase64,
+      audioMimeType,
+    }];
+    const quickTitle = fallbackTrainerDialogTitle(transcript);
+    const caseContextWithTitle = quickTitle
+      ? { ...input.caseContext, dialogTitle: quickTitle }
+      : input.caseContext;
+    await prisma.trainerSession.update({
+      where: { id: session.id },
+      data: {
+        transcriptJson: jsonStringify(transcript),
+        caseContextJson: jsonStringify(caseContextWithTitle),
+        ...(input.extraSessionData || {}),
+      },
+    });
+    if (quickTitle) {
+      try {
+        await prisma.trainerSession.update({
+          where: { id: session.id },
+          data: { title: quickTitle },
+        });
+      } catch (error) {
+        console.warn('[trainer] failed to persist session title column:', error instanceof Error ? error.message : error);
+      }
+      void generateTrainerDialogTitle(transcript).then(async (llmTitle) => {
+        if (!llmTitle || llmTitle === quickTitle) return;
+        const fresh = await prisma.trainerSession.findUnique({
+          where: { id: session.id },
+          select: { caseContextJson: true },
+        });
+        const latestContext = fresh
+          ? safeJsonParseLocal<Record<string, unknown>>(fresh.caseContextJson, caseContextWithTitle)
+          : caseContextWithTitle;
+        await persistTrainerDialogTitle(session.id, latestContext, llmTitle);
+      }).catch((error) => {
+        console.warn('[trainer] async dialog title failed:', error instanceof Error ? error.message : error);
+      });
+    } else {
+      await assignTrainerDialogTitle(session.id, caseContextWithTitle, transcript);
+    }
+    return {
+      clientMessage: input.clientMessage,
+      audioBase64,
+      audioMimeType,
+      transcript,
+    };
+  };
+
   if (isElevenLabsAgentEnabled()) {
     try {
       const firstMessage = trainerInitialClientMessage(caseContext);
@@ -1841,36 +2189,23 @@ async function initializeTrainerDialog(params: {
         elevenLabsVoiceId,
       });
       const clientMessage = agentOut.clientMessage || firstMessage;
-      const transcript: TrainerTranscriptTurn[] = [{
-        role: 'client',
-        text: clientMessage,
-        createdAt: new Date().toISOString(),
-        audioBase64: agentOut.audioBase64,
-        audioMimeType: agentOut.audioMimeType,
-      }];
       const runtime = getTrainerRuntime(caseContext);
       const nextRuntime = {
         ...runtime,
         elevenLabsConversationId: agentOut.conversationId,
       };
-      await prisma.trainerSession.update({
-        where: { id: session.id },
-        data: {
-          transcriptJson: jsonStringify(transcript),
-          caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
-          elevenLabsConversationId: agentOut.conversationId,
-        },
-      });
-      return {
+      return await finalizeFirstTurn({
         clientMessage,
         audioBase64: agentOut.audioBase64,
         audioMimeType: agentOut.audioMimeType,
-        transcript,
-      };
+        caseContext: withTrainerRuntime(caseContext, nextRuntime),
+        extraSessionData: { elevenLabsConversationId: agentOut.conversationId },
+      });
     } catch (error) {
       console.error('[trainer] ElevenLabs agent init error:', error);
     }
   }
+
   const runtime = getTrainerRuntime(caseContext);
   const maxClientTurns = runtime.strictness === 'low' ? 8 : runtime.strictness === 'high' ? 14 : 12;
   const state = {
@@ -1893,27 +2228,12 @@ async function initializeTrainerDialog(params: {
     notes: out.update_state.notes,
     client_turns: out.update_state.client_turns,
   };
-  const transcript: TrainerTranscriptTurn[] = [{
-    role: 'client',
-    text: out.client_message,
-    createdAt: new Date().toISOString(),
-    audioBase64: await ttsBase64(out.client_message, params.replyMode, params.ttsVoice),
-    audioMimeType: null,
-  }];
   const nextRuntime = { ...runtime, state: nextState };
-  await prisma.trainerSession.update({
-    where: { id: session.id },
-    data: {
-      transcriptJson: jsonStringify(transcript),
-      caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
-    },
-  });
-  return {
+  return finalizeFirstTurn({
     clientMessage: out.client_message,
-    audioBase64: transcript[0]?.audioBase64 ?? null,
-    audioMimeType: null,
-    transcript,
-  };
+    audioBase64: null,
+    caseContext: withTrainerRuntime(caseContext, nextRuntime),
+  });
 }
 
 async function runTrainerSessionTurn(params: {
@@ -2063,10 +2383,14 @@ async function runTrainerSessionTurn(params: {
   }
 
   const nowIso = new Date().toISOString();
-  if (!clientAudioBase64) {
-    clientAudioBase64 = await ttsBase64(clientMessage, params.replyMode, params.ttsVoice);
-    clientAudioMimeType = null;
-  }
+  const clientAudio = await ensureTrainerClientAudio({
+    text: clientMessage,
+    ttsVoice: params.ttsVoice,
+    audioBase64: clientAudioBase64,
+    audioMimeType: clientAudioMimeType,
+  });
+  clientAudioBase64 = clientAudio.audioBase64;
+  clientAudioMimeType = clientAudio.audioMimeType;
   const transcript: TrainerTranscriptTurn[] = [
     ...transcriptBefore,
     {
@@ -2094,25 +2418,9 @@ async function runTrainerSessionTurn(params: {
   };
   if (endConversation && result) {
     const forcedFail = result.verdict === 'fail' && Boolean(result.reasonCode);
-    const audit = await buildTrainerAuditEvaluation({
-      caseContext,
-      runtime: nextRuntime,
-      transcript,
-      forcedFail,
-      failureReason: result.reasonCode,
-    });
-    const finalPoints = forcedFail ? 0 : Math.round(audit.score * session.multiplier);
     updateData.status = result.verdict === 'fail' && result.reasonCode ? 'failed' : 'completed';
     updateData.completedAt = new Date();
-    updateData.score = audit.score;
-    updateData.baseScore = audit.score;
-    updateData.finalPoints = finalPoints;
     updateData.failureReason = result.reasonCode;
-    updateData.evaluationJson = jsonStringify(audit.evaluation);
-    updateData.dimensionsJson = jsonStringify(audit.dimensions);
-    updateData.checklistResultsJson = jsonStringify(audit.checklist);
-    updateData.objectionsAnalysisJson = jsonStringify(audit.issues);
-    updateData.topRecommendationsJson = jsonStringify(audit.recommendations);
   }
   const updated = await prisma.trainerSession.update({
     where: { id: session.id },
@@ -2120,15 +2428,25 @@ async function runTrainerSessionTurn(params: {
     include: { scenario: { select: { id: true, name: true } } },
   });
   if (endConversation && result) {
-    await finalizeTrainerSessionSideEffects(updated.id).catch((error) => {
-      console.error('trainer finalize side effects error:', error);
-    });
+    const forcedFail = result.verdict === 'fail' && Boolean(result.reasonCode);
     closeElevenLabsAgentConversation(updated.id);
+    void finalizeTrainerSessionEvaluation({
+      sessionId: updated.id,
+      caseContext,
+      runtime: nextRuntime,
+      transcript,
+      forcedFail,
+      failureReason: result.reasonCode,
+      multiplier: session.multiplier,
+    }).catch((error) => {
+      console.error('trainer finalize evaluation error:', error);
+    });
   }
 
   return {
     clientMessage,
     endConversation,
+    reportReady: !endConversation,
     audioBase64: clientAudioBase64,
     audioMimeType: clientAudioMimeType,
     managerTranscript: params.managerText,
@@ -2169,6 +2487,12 @@ async function runTrainerSessionAudioTurn(params: {
 
   const managerText = agentOut.userTranscript || 'Голосовое сообщение менеджера';
   const clientMessage = agentOut.clientMessage || 'Понял вас. Расскажите, пожалуйста, подробнее.';
+  const clientAudio = await ensureTrainerClientAudio({
+    text: clientMessage,
+    ttsVoice: params.ttsVoice,
+    audioBase64: agentOut.audioBase64,
+    audioMimeType: agentOut.audioMimeType,
+  });
   const historyBefore = transcriptBefore.map((turn) => ({ role: turn.role, content: turn.text }));
   const history = [
     ...historyBefore,
@@ -2197,8 +2521,8 @@ async function runTrainerSessionAudioTurn(params: {
       role: 'client',
       text: clientMessage,
       createdAt: nowIso,
-      audioBase64: agentOut.audioBase64,
-      audioMimeType: agentOut.audioMimeType,
+      audioBase64: clientAudio.audioBase64,
+      audioMimeType: clientAudio.audioMimeType,
     },
   ];
   const state = { ...runtime.state };
@@ -2221,24 +2545,8 @@ async function runTrainerSessionAudioTurn(params: {
     durationSec: transcript.reduce((sum, turn) => sum + (turn.durationSec ?? 0), 0),
   };
   if (endConversation && result) {
-    const audit = await buildTrainerAuditEvaluation({
-      caseContext,
-      runtime: nextRuntime,
-      transcript,
-      forcedFail: false,
-      failureReason: null,
-    });
-    const finalPoints = Math.round(audit.score * session.multiplier);
     updateData.status = 'completed';
     updateData.completedAt = new Date();
-    updateData.score = audit.score;
-    updateData.baseScore = audit.score;
-    updateData.finalPoints = finalPoints;
-    updateData.evaluationJson = jsonStringify(audit.evaluation);
-    updateData.dimensionsJson = jsonStringify(audit.dimensions);
-    updateData.checklistResultsJson = jsonStringify(audit.checklist);
-    updateData.objectionsAnalysisJson = jsonStringify(audit.issues);
-    updateData.topRecommendationsJson = jsonStringify(audit.recommendations);
   }
 
   const updated = await prisma.trainerSession.update({
@@ -2247,17 +2555,26 @@ async function runTrainerSessionAudioTurn(params: {
     include: { scenario: { select: { id: true, name: true } } },
   });
   if (endConversation && result) {
-    await finalizeTrainerSessionSideEffects(updated.id).catch((error) => {
-      console.error('trainer finalize side effects error:', error);
-    });
     closeElevenLabsAgentConversation(updated.id);
+    void finalizeTrainerSessionEvaluation({
+      sessionId: updated.id,
+      caseContext,
+      runtime: nextRuntime,
+      transcript,
+      forcedFail: false,
+      failureReason: null,
+      multiplier: session.multiplier,
+    }).catch((error) => {
+      console.error('trainer finalize evaluation error:', error);
+    });
   }
 
   return {
     clientMessage,
     endConversation,
-    audioBase64: agentOut.audioBase64,
-    audioMimeType: agentOut.audioMimeType,
+    reportReady: !endConversation,
+    audioBase64: clientAudio.audioBase64,
+    audioMimeType: clientAudio.audioMimeType,
     managerTranscript: managerText,
     result,
     session: trainerSessionSummary(updated),
@@ -2870,24 +3187,37 @@ function trainerSessionSummary(session: {
   sessionType: string;
   status: string;
   scenarioId: string | null;
+  title?: string | null;
   score: number | null;
   finalPoints: number | null;
   failureReason: string | null;
   startedAt: Date;
   completedAt: Date | null;
+  evaluationJson?: string | null;
+  caseContextJson?: string | null;
   scenario?: { id: string; name: string } | null;
 }) {
+  const scenarioName = session.scenario?.name ?? 'Сценарий';
+  const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+  const contextTitle = typeof caseContext.dialogTitle === 'string' ? caseContext.dialogTitle.trim() : '';
+  const title = (typeof session.title === 'string' && session.title.trim())
+    ? session.title.trim()
+    : (contextTitle || null);
+  const evaluation = typeof session.evaluationJson === 'string' ? session.evaluationJson.trim() : '';
   return {
     id: session.id,
     type: session.sessionType,
     status: session.status,
     scenarioId: session.scenarioId,
-    scenarioName: session.scenario?.name ?? 'Сценарий',
+    scenarioName,
+    title,
+    displayName: title || scenarioName,
     score: session.score,
     finalPoints: session.finalPoints,
     failureReason: session.failureReason,
     startedAt: session.startedAt.toISOString(),
     completedAt: session.completedAt?.toISOString() ?? null,
+    reportReady: Boolean(evaluation && evaluation !== 'null' && evaluation !== '{}'),
   };
 }
 
@@ -2932,7 +3262,7 @@ app.get('/api/trainer/profile', async (req, res) => {
     const manager = await resolveTrainerManager(req);
     if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
 
-    const [streak, scoreAgg, sessionsTotal, sessions30d] = await Promise.all([
+    const [streak, scoreAgg, sessionsTotal, sessions30d, recentSessions] = await Promise.all([
       prisma.trainerStreak.findUnique({ where: { employeeId: manager.id } }),
       prisma.trainerScore.aggregate({
         where: { employeeId: manager.id },
@@ -2946,7 +3276,38 @@ app.get('/api/trainer/profile', async (req, res) => {
           startedAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
         },
       }),
+      prisma.trainerSession.findMany({
+        where: { employeeId: manager.id, status: { in: ['completed', 'failed'] } },
+        orderBy: { startedAt: 'desc' },
+        take: 40,
+        select: {
+          startedAt: true,
+          completedAt: true,
+          score: true,
+          dimensionsJson: true,
+          evaluationJson: true,
+        },
+      }),
     ]);
+
+    const categoryScores = trainerCategoryInsightsFromSessions(recentSessions);
+    const scoreTrend = [...recentSessions]
+      .reverse()
+      .filter((session) => session.score != null)
+      .slice(-10)
+      .map((session) => ({
+        date: localDateKey(session.completedAt ?? session.startedAt),
+        avgScore: Math.round(Number(session.score)),
+        count: 1,
+      }));
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const testsLast7d = recentSessions.filter((session) => (
+      (session.completedAt ?? session.startedAt) >= weekAgo
+    )).length;
+    const strongest = [...categoryScores].sort((a, b) => b.score - a.score)[0] ?? null;
+    const weakest = [...categoryScores].sort((a, b) => a.score - b.score)[0] ?? null;
+    const scored = recentSessions.map((session) => session.score).filter((score): score is number => score != null);
+    const avgScore = scored.length ? round1(scored.reduce((sum, score) => sum + score, 0) / scored.length) : 0;
 
     res.json({
       profile: {
@@ -2963,6 +3324,16 @@ app.get('/api/trainer/profile', async (req, res) => {
         lastActiveDate: streak?.lastActiveDate ?? null,
         sessionsTotal,
         sessions30d,
+        avgScore,
+        testsLast7d,
+        strongestCategory: strongest && strongest.score > 0
+          ? { name: strongest.name, score: strongest.score }
+          : null,
+        weakestCategory: weakest && recentSessions.length > 0
+          ? { name: weakest.name, score: weakest.score }
+          : null,
+        categoryScores,
+        scoreTrend,
       },
     });
   } catch (error) {
@@ -3142,7 +3513,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
       });
     }
 
-    const initialMessage = await initializeTrainerDialog({
+    const initialMessagePromise = initializeTrainerDialog({
       sessionId: session.id,
       replyMode,
       ttsVoice,
@@ -3151,10 +3522,13 @@ app.post('/api/trainer/session/start', async (req, res) => {
       return null;
     });
 
+    // Don't block UI on first voice turn — client polls /dialog until ready.
+    void initialMessagePromise;
+
     res.json({
       session: trainerSessionSummary(session),
       caseContext,
-      initialMessage,
+      initialMessage: null,
     });
   } catch (error) {
     console.error('trainer/session/start error:', error);
@@ -3202,25 +3576,42 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     if (!audioBase64 || typeof audioBase64 !== 'string') {
       return res.status(400).json({ error: 'audioBase64 обязателен' });
     }
-    if (String(mimeType || '').toLowerCase().includes('audio/pcm')) {
-      if (!isElevenLabsAgentEnabled()) {
-        return res.status(400).json({ error: 'ElevenLabs Agent не настроен для прямого аудио.' });
+
+    const isPcm = String(mimeType || '').toLowerCase().includes('audio/pcm');
+
+    if (isPcm && isElevenLabsAgentEnabled()) {
+      try {
+        const out = await runTrainerSessionAudioTurn({
+          sessionId: session.id,
+          audioBase64,
+          durationSec,
+          ttsVoice,
+        });
+        console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
+        return res.json(out);
+      } catch (error) {
+        console.error('[trainer] ElevenLabs audio turn failed, falling back to STT+text:', error);
       }
-      const out = await runTrainerSessionAudioTurn({
-        sessionId: session.id,
-        audioBase64,
-        durationSec,
-        ttsVoice,
-      });
-      console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
-      return res.json(out);
     }
 
-    const ext = mimeType?.includes('ogg') ? 'ogg' : mimeType?.includes('mp4') ? 'm4a' : 'webm';
-    const tmpPath = path.join(os.tmpdir(), `trainer-voice-${Date.now()}.${ext}`);
-    const buf = Buffer.from(audioBase64, 'base64');
+    // STT path (also used as fallback when direct PCM/agent turn fails)
+    let tmpPath = '';
+    let sttAudioBase64 = audioBase64;
+    let sttMimeType = mimeType || 'audio/webm';
+    if (isPcm) {
+      sttAudioBase64 = wavBase64FromPcm16Base64(audioBase64);
+      sttMimeType = 'audio/wav';
+      tmpPath = path.join(os.tmpdir(), `trainer-voice-${Date.now()}.wav`);
+    } else {
+      const ext = mimeType?.includes('ogg') ? 'ogg' : mimeType?.includes('mp4') ? 'm4a' : mimeType?.includes('wav') ? 'wav' : 'webm';
+      tmpPath = path.join(os.tmpdir(), `trainer-voice-${Date.now()}.${ext}`);
+    }
+    const buf = Buffer.from(sttAudioBase64, 'base64');
+    if (buf.length < 512) {
+      return res.status(400).json({ error: 'Слишком короткое голосовое сообщение. Запишите ещё раз.' });
+    }
     await fs.promises.writeFile(tmpPath, buf);
-    console.log(`[trainer] voice-message audio saved session=${session.id} bytes=${buf.length} mime=${mimeType || 'unknown'}`);
+    console.log(`[trainer] voice-message audio saved session=${session.id} bytes=${buf.length} mime=${sttMimeType}`);
 
     let managerText = '';
     try {
@@ -3231,7 +3622,7 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
       fs.promises.unlink(tmpPath).catch(() => {});
     }
     if (!managerText.trim()) {
-      return res.status(400).json({ error: 'Не удалось распознать голосовое сообщение' });
+      return res.status(400).json({ error: 'Не удалось распознать речь. Говорите чуть громче и дольше, затем попробуйте снова.' });
     }
 
     const out = await runTrainerSessionTurn({
@@ -3240,13 +3631,17 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
       durationSec,
       replyMode,
       ttsVoice,
-      managerAudioBase64: audioBase64,
-      managerAudioMimeType: mimeType || 'audio/webm',
+      managerAudioBase64: sttAudioBase64,
+      managerAudioMimeType: sttMimeType,
     });
     console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
     res.json(out);
   } catch (error) {
     console.error('trainer/session/voice-message error:', error);
+    const message = error instanceof Error ? error.message : '';
+    if (message.includes('timeout') || message.includes('TIMEOUT') || message.includes('Timeout')) {
+      return res.status(504).json({ error: 'Сервис ответа клиента не успел. Отправьте сообщение ещё раз.' });
+    }
     res.status(500).json({ error: 'Не удалось обработать голосовое сообщение.' });
   }
 });
@@ -3278,6 +3673,30 @@ app.get('/api/trainer/session/:id/report', async (req, res) => {
     });
   } catch (error) {
     console.error('trainer/session/report error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить отчёт тренировки.' });
+  }
+});
+
+app.get('/api/trainer/session/:id/audit-detail', async (req, res) => {
+  try {
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const session = await prisma.trainerSession.findFirst({
+      where: { id: String(req.params.id), employeeId: manager.id },
+      include: {
+        employee: { include: { dealership: { include: { holding: true } } } },
+        branch: { include: { holding: true } },
+        company: true,
+        scenario: true,
+      },
+    });
+    if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+    if (session.status !== 'completed' && session.status !== 'failed') {
+      return res.status(409).json({ error: 'Отчёт появится после завершения тренировки.' });
+    }
+    res.json({ item: await buildTrainerAuditDetailItem(session) });
+  } catch (error) {
+    console.error('trainer/session/audit-detail error:', error);
     res.status(500).json({ error: 'Не удалось загрузить отчёт тренировки.' });
   }
 });
@@ -6980,6 +7399,147 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
   }
 });
 
+async function buildTrainerAuditDetailItem(session: {
+  id: string;
+  employeeId: string;
+  score: number | null;
+  status: string;
+  failureReason: string | null;
+  durationSec: number | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  evaluationJson: string | null;
+  transcriptJson: string | null;
+  checklistResultsJson: string | null;
+  topRecommendationsJson: string | null;
+  dimensionsJson: string | null;
+  objectionsAnalysisJson: string | null;
+  employee?: { fullName: string; dealership?: { id: string; name: string; city: string | null; holding?: { id: string; name: string } | null } | null } | null;
+  branch?: { id: string; name: string; city: string | null; holding?: { id: string; name: string } | null } | null;
+  company?: { id: string; name: string } | null;
+  scenario?: { id: string; name: string } | null;
+}) {
+  let evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+  const score = scoreFromEvaluation(evaluation, session.score);
+  const status = session.status === 'failed' || !!session.failureReason || score < 50
+    ? 'failed' as const
+    : 'completed' as const;
+  const dimensions = extractDimensionsFromSession(session);
+  const blocksBreakdown = Object.entries(dimensions).map(([key, value]) => ({
+    block: dimensionLabel(key),
+    score: Math.round(value),
+    hint: `Средний балл блока «${dimensionLabel(key)}»`,
+  })).sort((a, b) => a.score - b.score);
+  const rawChecklist = extractChecklistFromSession(session);
+  const checklist = rawChecklist
+    .filter((item) => String(item.status || '').toUpperCase() !== 'NA')
+    .map((item) => {
+      const normalized = String(item.status || '').toUpperCase();
+      return {
+        label: AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Пункт чек-листа',
+        result: normalized === 'YES' ? 'pass' as const : normalized === 'NO' ? 'fail' as const : 'warn' as const,
+        quote: item.comment || (normalized === 'YES' ? 'Выполнено' : normalized === 'NO' ? 'Не выполнено' : 'Частично выполнено'),
+      };
+    });
+  const transcriptRaw = safeJsonParseLocal<Array<{ role?: string; text?: string; content?: string }> | null>(session.transcriptJson, null) ?? [];
+  const duration = session.durationSec ?? 0;
+  const step = transcriptRaw.length > 0 ? Math.max(1, Math.floor(duration / transcriptRaw.length)) : 0;
+  const transcript = transcriptRaw.map((line, index) => {
+    const seconds = index * step;
+    const speaker = line.role === 'manager' || line.role === 'assistant' ? 'manager' as const : 'client' as const;
+    return {
+      speaker,
+      time: `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`,
+      text: String(line.text || line.content || ''),
+      critical: false,
+    };
+  }).filter((line) => line.text.trim());
+  const recommendationsRaw = safeJsonParseLocal<unknown[]>(session.topRecommendationsJson, []);
+  const recommendations = Array.isArray(evaluation?.recommendations) ? evaluation.recommendations as unknown[] : recommendationsRaw;
+  const recommendedTrainings = recommendations.slice(0, 3).map((item) => {
+    const text = typeof item === 'string'
+      ? item
+      : item && typeof item === 'object'
+      ? String((item as Record<string, unknown>).recommendation || (item as Record<string, unknown>).title || (item as Record<string, unknown>).description || 'Рекомендация')
+      : 'Рекомендация';
+    return { title: text, description: 'Отработать в тренажёре' };
+  });
+  const catalog = await getCallReportProblemCatalog(prisma);
+  const reportIssues = extractReportIssuesFromSession(session, catalog);
+  const errors = reportIssues.slice(0, 5).map((issue, index) => ({
+    issue,
+    percent: Math.max(30, Math.min(100, 100 - index * 12)),
+  }));
+  const branch = session.branch ?? session.employee?.dealership ?? null;
+  const company = session.company ?? branch?.holding ?? null;
+  const endedAt = session.completedAt ?? session.startedAt;
+  const reportTranscript = transcriptRaw
+    .map((line) => ({
+      role: (line.role === 'manager' || line.role === 'assistant' ? 'manager' : 'client') as 'manager' | 'client',
+      text: String(line.text || line.content || '').trim(),
+    }))
+    .filter((line) => line.text);
+  let unifiedReport = normalizeUnifiedCallReport(
+    evaluation?.unified_call_report,
+    { totalScore: score, transcript: reportTranscript, source: 'trainer', dimensionScores: dimensions },
+    catalog,
+  );
+  if (!unifiedReport && reportTranscript.length >= 2) {
+    try {
+      unifiedReport = await generateUnifiedTrainerReport({
+        transcript: reportTranscript,
+        totalScore: score,
+        evaluation: evaluation ?? {},
+        scenarioName: session.scenario?.name ?? null,
+      });
+      evaluation = {
+        ...(evaluation ?? {}),
+        unified_call_report: unifiedReport,
+      };
+      await prisma.trainerSession.update({
+        where: { id: session.id },
+        data: { evaluationJson: JSON.stringify(evaluation) },
+      });
+    } catch (reportError) {
+      console.warn('trainer audit detail unified report generation failed:', reportError instanceof Error ? reportError.message : reportError);
+    }
+  }
+
+  return {
+    id: `trainer-${session.id}`,
+    type: 'trainer' as const,
+    dateTime: endedAt.toISOString(),
+    employeeId: session.employeeId,
+    employeeName: session.employee?.fullName ?? 'Не назначен',
+    dealershipId: branch?.id ?? '',
+    dealershipName: branch?.name ?? company?.name ?? 'Без точки',
+    city: branch?.city ?? '—',
+    totalScore: score,
+    verdict: status === 'failed' ? 'Нуждается в разборе' : 'Оценено',
+    status,
+    duration,
+    communicationFlag: communicationFlagFromSessions([session as unknown as AnalyticsSession]),
+    blocksBreakdown,
+    checklist,
+    transcript,
+    events: [
+      { time: '00:00', label: 'Тренировка начата', type: 'info' as const },
+      { time: duration ? `${String(Math.floor(duration / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}` : '00:00', label: `Статус: ${session.status}`, type: status === 'completed' ? 'info' as const : 'warning' as const },
+      ...(session.failureReason ? [{ time: '00:00', label: getFailureReasonLabel(session.failureReason), type: 'error' as const }] : []),
+    ],
+    errors,
+    topQuestions: reportIssues.slice(0, 5),
+    recommendedTrainings,
+    answerTimeSec: null,
+    attempts: null,
+    callback: null,
+    scenarioName: session.scenario?.name ?? null,
+    assignedBy: null,
+    failReason: session.failureReason ? getFailureReasonLabel(session.failureReason) : null,
+    unifiedReport,
+  };
+}
+
 app.get('/api/admin/audits/:id', async (req, res) => {
   try {
     const rawId = String(req.params.id || '').trim();
@@ -7000,128 +7560,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         },
       });
       if (!session) return res.status(404).json({ error: 'Audit not found' });
-
-      let evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
-      const score = scoreFromEvaluation(evaluation, session.score);
-      const status = session.status === 'failed' || !!session.failureReason || score < 50
-        ? 'failed' as const
-        : 'completed' as const;
-      const dimensions = extractDimensionsFromSession(session);
-      const blocksBreakdown = Object.entries(dimensions).map(([key, value]) => ({
-        block: dimensionLabel(key),
-        score: Math.round(value),
-        hint: `Средний балл блока «${dimensionLabel(key)}»`,
-      })).sort((a, b) => a.score - b.score);
-      const rawChecklist = extractChecklistFromSession(session);
-      const checklist = rawChecklist
-        .filter((item) => String(item.status || '').toUpperCase() !== 'NA')
-        .map((item) => {
-          const normalized = String(item.status || '').toUpperCase();
-          return {
-            label: AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Пункт чек-листа',
-            result: normalized === 'YES' ? 'pass' as const : normalized === 'NO' ? 'fail' as const : 'warn' as const,
-            quote: item.comment || (normalized === 'YES' ? 'Выполнено' : normalized === 'NO' ? 'Не выполнено' : 'Частично выполнено'),
-          };
-        });
-      const transcriptRaw = safeJsonParseLocal<Array<{ role?: string; text?: string; content?: string }> | null>(session.transcriptJson, null) ?? [];
-      const duration = session.durationSec ?? 0;
-      const step = transcriptRaw.length > 0 ? Math.max(1, Math.floor(duration / transcriptRaw.length)) : 0;
-      const transcript = transcriptRaw.map((line, index) => {
-        const seconds = index * step;
-        const speaker = line.role === 'manager' || line.role === 'assistant' ? 'manager' as const : 'client' as const;
-        return {
-          speaker,
-          time: `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`,
-          text: String(line.text || line.content || ''),
-          critical: false,
-        };
-      }).filter((line) => line.text.trim());
-      const recommendationsRaw = safeJsonParseLocal<unknown[]>(session.topRecommendationsJson, []);
-      const recommendations = Array.isArray(evaluation?.recommendations) ? evaluation.recommendations as unknown[] : recommendationsRaw;
-      const recommendedTrainings = recommendations.slice(0, 3).map((item) => {
-        const text = typeof item === 'string'
-          ? item
-          : item && typeof item === 'object'
-          ? String((item as Record<string, unknown>).recommendation || (item as Record<string, unknown>).title || (item as Record<string, unknown>).description || 'Рекомендация')
-          : 'Рекомендация';
-        return { title: text, description: 'Отработать в тренажёре' };
-      });
-      const catalog = await getCallReportProblemCatalog(prisma);
-      const reportIssues = extractReportIssuesFromSession(session, catalog);
-      const errors = reportIssues.slice(0, 5).map((issue, index) => ({
-        issue,
-        percent: Math.max(30, Math.min(100, 100 - index * 12)),
-      }));
-      const branch = session.branch ?? session.employee?.dealership ?? null;
-      const company = session.company ?? branch?.holding ?? session.employee?.dealership?.holding ?? null;
-      const endedAt = session.completedAt ?? session.startedAt;
-      const reportTranscript = transcriptRaw
-        .map((line) => ({
-          role: (line.role === 'manager' || line.role === 'assistant' ? 'manager' : 'client') as 'manager' | 'client',
-          text: String(line.text || line.content || '').trim(),
-        }))
-        .filter((line) => line.text);
-      let unifiedReport = normalizeUnifiedCallReport(
-        evaluation?.unified_call_report,
-        { totalScore: score, transcript: reportTranscript, source: 'trainer', dimensionScores: dimensions },
-        catalog,
-      );
-      if (!unifiedReport && reportTranscript.length >= 2) {
-        try {
-          unifiedReport = await generateUnifiedTrainerReport({
-            transcript: reportTranscript,
-            totalScore: score,
-            evaluation: evaluation ?? {},
-            scenarioName: session.scenario?.name ?? null,
-          });
-          evaluation = {
-            ...(evaluation ?? {}),
-            unified_call_report: unifiedReport,
-          };
-          await prisma.trainerSession.update({
-            where: { id: session.id },
-            data: { evaluationJson: JSON.stringify(evaluation) },
-          });
-        } catch (reportError) {
-          console.warn('admin/audits/:id trainer unified report generation failed:', reportError instanceof Error ? reportError.message : reportError);
-        }
-      }
-
-      return res.json({
-        item: {
-          id: `trainer-${session.id}`,
-          type: 'trainer',
-          dateTime: endedAt.toISOString(),
-          employeeId: session.employeeId,
-          employeeName: session.employee?.fullName ?? 'Не назначен',
-          dealershipId: branch?.id ?? '',
-          dealershipName: branch?.name ?? company?.name ?? 'Без точки',
-          city: branch?.city ?? '—',
-          totalScore: score,
-          verdict: status === 'failed' ? 'Нуждается в разборе' : 'Оценено',
-          status,
-          duration,
-          communicationFlag: communicationFlagFromSessions([session as unknown as AnalyticsSession]),
-          blocksBreakdown,
-          checklist,
-          transcript,
-          events: [
-            { time: '00:00', label: 'Тренировка начата', type: 'info' as const },
-            { time: duration ? `${String(Math.floor(duration / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}` : '00:00', label: `Статус: ${session.status}`, type: status === 'completed' ? 'info' as const : 'warning' as const },
-            ...(session.failureReason ? [{ time: '00:00', label: getFailureReasonLabel(session.failureReason), type: 'error' as const }] : []),
-          ],
-          errors,
-          topQuestions: reportIssues.slice(0, 5),
-          recommendedTrainings,
-          answerTimeSec: null,
-          attempts: null,
-          callback: null,
-          scenarioName: session.scenario?.name ?? null,
-          assignedBy: null,
-          failReason: session.failureReason ? getFailureReasonLabel(session.failureReason) : null,
-          unifiedReport,
-        },
-      });
+      return res.json({ item: await buildTrainerAuditDetailItem(session) });
     }
 
     const numericId = Number.parseInt(rawId.replace(/^call-/, ''), 10);

@@ -57,7 +57,7 @@ export function SlideOver({ open, title, children, width = 'xl', onClose }: Slid
       <button type="button" className="sa-slide-over-backdrop" aria-label="Закрыть" onClick={onClose} />
       <aside className={`sa-slide-over-panel sa-slide-over-panel-${width}`}>
         <div className="sa-slide-over-header">
-          <button type="button" className="sa-btn-outline sa-btn-icon sa-slide-over-close" aria-label="Закрыть" onClick={onClose}>
+          <button type="button" className="sa-btn-brutal-3d sa-btn-brutal-3d-icon sa-slide-over-close" aria-label="Закрыть" onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>

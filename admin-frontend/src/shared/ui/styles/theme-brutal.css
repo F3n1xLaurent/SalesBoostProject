@@ -147,6 +147,24 @@
   margin: 0 auto;
 }
 
+.theme-brutal .super-admin-content.super-admin-content--trainer-focus {
+  max-width: none !important;
+  width: 100%;
+  min-height: 100vh;
+  padding: 16px 20px !important;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.theme-brutal.super-admin-app--trainer-focus .super-admin-main {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  width: 100% !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
 .theme-brutal .sa-kpi-grid {
   gap: var(--sa-gap);
   align-items: stretch;
@@ -1189,11 +1207,12 @@
   font-weight: 600;
   box-shadow: none;
   transform: none;
-  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
 .theme-brutal .sa-btn-primary:hover:not(:disabled) {
-  background: var(--tb-ink);
+  background: #FFFFFF;
+  color: var(--tb-ink);
   border-color: var(--tb-ink);
   transform: translate(-2px, -3px);
   box-shadow: 4px 5px 0 var(--tb-ink);
@@ -2600,29 +2619,25 @@
   background: var(--tb-status-red);
 }
 
+.theme-brutal .sa-call-report-turn {
+  width: min(460px, 86%);
+  padding: 10px 12px 11px;
+  border-radius: 16px;
+  box-shadow: none;
+}
+
 .theme-brutal .sa-call-report-turn--client {
-  background: #F5F5F5;
-  border-color: rgba(22, 22, 19, 0.1);
-}
-
-.theme-brutal .sa-call-report-turn--manager {
   background: #FFFFFF;
-  border-color: rgba(22, 22, 19, 0.16);
+  border: 1px solid rgba(22, 22, 19, 0.08);
 }
 
-.theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-good {
-  background: var(--tb-status-green-bg);
-  border-color: rgba(45, 155, 94, 0.35);
-}
-
-.theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-normal {
-  background: #FFF8EB;
-  border-color: rgba(232, 176, 74, 0.45);
-}
-
+.theme-brutal .sa-call-report-turn--manager,
+.theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-good,
+.theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-normal,
 .theme-brutal .sa-call-report-turn--manager.sa-call-report-turn--mark-bad {
-  background: var(--tb-status-red-bg);
-  border-color: rgba(224, 82, 82, 0.35);
+  background: #FFFFFF;
+  border: 1px solid rgba(22, 22, 19, 0.16);
+  box-shadow: none;
 }
 
 .theme-brutal .sa-call-report-mark--good {
@@ -3859,7 +3874,7 @@
 .theme-brutal .sa-staff-profile-root {
   display: flex;
   flex-direction: column;
-  gap: var(--sa-section-gap);
+  gap: 28px;
   width: 100%;
 }
 
@@ -3897,12 +3912,26 @@
   color: var(--sa-text-secondary);
 }
 
-.theme-brutal .sa-staff-profile-points {
+.theme-brutal .sa-staff-profile-section {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-  flex-shrink: 0;
+  gap: 14px;
+  margin-bottom: 0;
+}
+
+.theme-brutal .sa-staff-profile-section > .sa-section-title {
+  margin: 0;
+}
+
+.theme-brutal .sa-staff-profile-section-note {
+  margin: -4px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--sa-text-secondary);
+}
+
+.theme-brutal .sa-staff-profile-points {
+  display: none;
 }
 
 .theme-brutal .sa-staff-profile-points-label {
@@ -3926,6 +3955,104 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sa-gap);
+}
+
+.theme-brutal .sa-staff-skills-card {
+  padding: 0;
+}
+
+.theme-brutal .sa-staff-skills-card .sa-brutal-card-body {
+  padding: 16px;
+}
+
+.theme-brutal .sa-staff-skills-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.theme-brutal .sa-staff-skill-card {
+  min-width: 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: transparent;
+  border: 1px solid rgba(22, 22, 19, 0.1);
+  box-shadow: none;
+}
+
+.theme-brutal .sa-staff-skill-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.theme-brutal .sa-staff-skill-top strong {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--tb-ink);
+  letter-spacing: -0.01em;
+}
+
+.theme-brutal .sa-staff-skill-top span {
+  font-family: var(--tb-font-mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.theme-brutal .sa-staff-skill-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(22, 22, 19, 0.08);
+  overflow: hidden;
+}
+
+.theme-brutal .sa-staff-skill-bar i {
+  display: block;
+  height: 100%;
+  min-width: 7px;
+  border-radius: inherit;
+}
+
+.theme-brutal .sa-staff-skill-comment {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--sa-text-secondary);
+}
+
+.theme-brutal .sa-staff-kpi-card .sa-kpi-value-large {
+  font-size: clamp(18px, 2.2vw, 28px);
+  line-height: 1.15;
+}
+
+.theme-brutal .sa-staff-chart-card {
+  padding: 0;
+}
+
+.theme-brutal .sa-staff-chart-card .sa-brutal-card-body {
+  padding: 8px 4px 4px;
+}
+
+.theme-brutal .sa-staff-trend-chart {
+  margin: 0;
+}
+
+.theme-brutal .sa-staff-trend-chart .sa-chart-plot {
+  position: relative;
+}
+
+@media (max-width: 1100px) {
+  .theme-brutal .sa-staff-skills-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .theme-brutal .sa-staff-skills-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .theme-brutal .sa-staff-profile-empty {

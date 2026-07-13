@@ -515,6 +515,7 @@ model TrainerSession {
   companyId              String?
   sessionType            String    // "plan" | "free"
   scenarioId             String?
+  title                  String?
   status                 String    @default("in_progress") // "in_progress" | "completed" | "cancelled" | "failed" | "paused"
   difficulty             String    @default("medium") // "easy" | "medium" | "hard"
   clientType             String?   // "random" | configured client category
