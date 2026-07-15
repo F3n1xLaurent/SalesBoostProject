@@ -1398,6 +1398,56 @@ export async function handleUpdatePhoneNumberType(req: Request, res: Response): 
   }
 }
 
+export async function handleDeletePhoneNumberType(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  try {
+    assertSuperadmin(account);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
+    return;
+  }
+
+  const typeId = String(req.params.typeId || '').trim();
+  if (!typeId) {
+    res.status(400).json({ error: 'Некорректный typeId.' });
+    return;
+  }
+
+  try {
+    const current = await prisma.phoneNumberType.findUnique({
+      where: { id: typeId },
+      select: { id: true, holdingId: true, name: true },
+    });
+    if (!current) {
+      res.status(404).json({ error: 'Тип номера не найден.' });
+      return;
+    }
+    if (current.holdingId && !canManageHoldingForAccount(account, current.holdingId)) {
+      res.status(403).json({ error: 'Нет доступа к этой компании.' });
+      return;
+    }
+
+    const linkedCount = await prisma.phoneNumber.count({ where: { typeId } });
+    if (linkedCount > 0) {
+      res.status(409).json({
+        error: `Тип используется в ${linkedCount} номерах. Сначала удалите или смените эти номера.`,
+      });
+      return;
+    }
+
+    await prisma.phoneNumberType.delete({ where: { id: typeId } });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete phone number type error:', error);
+    res.status(500).json({ error: 'Не удалось удалить тип номера.' });
+  }
+}
+
 export async function handleListDealershipPhoneNumbers(req: Request, res: Response): Promise<void> {
   const account = req.authAccount;
   if (!account) {

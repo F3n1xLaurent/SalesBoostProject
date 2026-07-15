@@ -31,13 +31,15 @@ export function FiltersPanel({
 type FilterGroupProps = {
   label: string;
   children: React.ReactNode;
+  className?: string;
+  optionsClassName?: string;
 };
 
-export function FilterGroup({ label, children }: FilterGroupProps) {
+export function FilterGroup({ label, children, className, optionsClassName }: FilterGroupProps) {
   return (
-    <div className="sa-filter-group">
+    <div className={['sa-filter-group', className].filter(Boolean).join(' ')}>
       <span className="sa-filter-label">{label}</span>
-      <div className="sa-filter-options">{children}</div>
+      <div className={['sa-filter-options', optionsClassName].filter(Boolean).join(' ')}>{children}</div>
     </div>
   );
 }

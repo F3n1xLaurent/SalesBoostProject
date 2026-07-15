@@ -8,6 +8,7 @@ import {
   createCallScript,
   deleteCallCustomerProfile,
   deleteCallCustomerVoice,
+  deleteCallPlan,
   deleteCallScript,
   fetchAuditDetail,
   fetchCallPlanOptions,
@@ -46,10 +47,22 @@ import {
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { $auth } from '../../../entities/session';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { EditIcon, PhoneIcon, RefreshIcon, TrashIcon } from '../../../shared/ui/icons/ActionIcons';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { BrutalModal } from '../../../shared/ui/brutal-modal';
+import { BrutalSelect } from '../../../shared/ui/BrutalSelect';
+import { BrutalSegmented } from '../../../shared/ui/brutal-segmented';
+import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
 import { ModalPortal } from '../../../shared/ui/ModalPortal';
 import { SlideOver } from '../../../shared/ui/slide-over';
+import { useToast } from '../../../shared/ui/toast/ToastProvider';
+import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+
+const PROFILE_FORM_ID = 'call-settings-profile-form';
+const VOICE_EDIT_FORM_ID = 'call-settings-voice-edit-form';
+const VOICE_CREATE_FORM_ID = 'call-settings-voice-create-form';
+const SELECTED_ROW_BG = '#F5F5F5';
 
 type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
 type CallSettingsRoute =
@@ -151,6 +164,35 @@ const EMPTY_SCRIPT_FORM: CallScriptForm = {
   successCriteria: [],
 };
 
+function normalizeScriptForm(form: CallScriptForm) {
+  return {
+    name: form.name.trim(),
+    profileIds: [...form.profileIds].sort(),
+    context: form.context.trim(),
+    dataCondition: {
+      holdingId: form.dataCondition.holdingId,
+      tags: [...form.dataCondition.tags].sort(),
+    },
+    objections: form.objections.map((item) => ({
+      id: item.id,
+      phrase: item.phrase.trim(),
+      whenAppropriate: item.whenAppropriate.trim(),
+    })),
+    questions: form.questions.map((item) => ({
+      id: item.id,
+      text: item.text.trim(),
+      required: item.required,
+    })),
+    successCriteria: form.successCriteria.map((item) => ({
+      id: item.id,
+      sourceType: item.sourceType,
+      sourceId: item.sourceId,
+      expectedAnswer: item.expectedAnswer.trim(),
+      score: item.score,
+    })),
+  };
+}
+
 function voiceLabel(id: string, voices: CustomerVoice[]): string {
   return voices.find((voice) => voice.id === id)?.name || 'Универсальный';
 }
@@ -164,6 +206,38 @@ function normalizeAgeRange(ageFrom: number, ageTo: number): { ageFrom: number; a
     ageFrom: normalizedFrom,
     ageTo: normalizedTo,
     age: Math.round((normalizedFrom + normalizedTo) / 2),
+  };
+}
+
+function normalizeProfileForm(form: CustomerProfileForm) {
+  const ages = normalizeAgeRange(form.ageFrom, form.ageTo);
+  return {
+    name: form.name.trim(),
+    voiceId: form.voiceId,
+    ageFrom: ages.ageFrom,
+    ageTo: ages.ageTo,
+    temperament: form.temperament,
+    patience: form.patience,
+    replyLength: form.replyLength,
+    communicationStyle: form.communicationStyle.trim(),
+  };
+}
+
+function profileFormFromItem(profile: CustomerProfile | null, fallbackVoiceId: string): CustomerProfileForm {
+  if (!profile) {
+    return { ...EMPTY_FORM, voiceId: fallbackVoiceId };
+  }
+  return {
+    name: profile.name,
+    voiceId: profile.voiceId,
+    age: profile.age,
+    ageFrom: profile.ageFrom ?? profile.age,
+    ageTo: profile.ageTo ?? profile.age,
+    character: '',
+    temperament: profile.temperament,
+    patience: profile.patience,
+    replyLength: profile.replyLength,
+    communicationStyle: profile.communicationStyle,
   };
 }
 
@@ -369,12 +443,20 @@ function ProfileModal(props: {
   open: boolean;
   initialProfile: CustomerProfile | null;
   voices: CustomerVoice[];
+  saving?: boolean;
   onClose: () => void;
   onSave: (profile: CustomerProfileForm) => void;
+  onDelete?: () => void;
 }) {
-  const [form, setForm] = useState<CustomerProfileForm>(EMPTY_FORM);
-  const isEdit = Boolean(props.initialProfile);
   const activeVoices = useMemo(() => props.voices.filter((voice) => voice.isEnabled), [props.voices]);
+  const fallbackVoiceId = activeVoices[0]?.id ?? FALLBACK_VOICE_ID;
+  const [form, setForm] = useState<CustomerProfileForm>(() => profileFormFromItem(props.initialProfile, fallbackVoiceId));
+  const [initialForm, setInitialForm] = useState<CustomerProfileForm>(() => profileFormFromItem(props.initialProfile, fallbackVoiceId));
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const wasOpenRef = React.useRef(false);
+  const isEdit = Boolean(props.initialProfile);
   const selectedVoice = props.voices.find((voice) => voice.id === form.voiceId);
   const visibleVoices = useMemo(
     () => selectedVoice && !activeVoices.some((voice) => voice.id === selectedVoice.id)
@@ -382,83 +464,138 @@ function ProfileModal(props: {
       : activeVoices,
     [activeVoices, selectedVoice],
   );
+  const voiceOptions = useMemo(
+    () => visibleVoices.map((voice) => ({
+      value: voice.id,
+      label: `${voice.name}${voice.isEnabled ? '' : ' (выключен)'}`,
+    })),
+    [visibleVoices],
+  );
+  const isDirty = useMemo(
+    () => JSON.stringify(normalizeProfileForm(form)) !== JSON.stringify(normalizeProfileForm(initialForm)),
+    [form, initialForm],
+  );
+  const nameInvalid = attempted && !form.name.trim();
 
   useEffect(() => {
-    if (!props.open) return;
-    if (props.initialProfile) {
-      setForm({
-        name: props.initialProfile.name,
-        voiceId: props.initialProfile.voiceId,
-        age: props.initialProfile.age,
-        ageFrom: props.initialProfile.ageFrom ?? props.initialProfile.age,
-        ageTo: props.initialProfile.ageTo ?? props.initialProfile.age,
-        character: '',
-        temperament: props.initialProfile.temperament,
-        patience: props.initialProfile.patience,
-        replyLength: props.initialProfile.replyLength,
-        communicationStyle: props.initialProfile.communicationStyle,
-      });
-    } else {
-      setForm({ ...EMPTY_FORM, voiceId: activeVoices[0]?.id ?? FALLBACK_VOICE_ID });
+    if (props.open && !wasOpenRef.current) {
+      const next = profileFormFromItem(props.initialProfile, activeVoices[0]?.id ?? FALLBACK_VOICE_ID);
+      setForm(next);
+      setInitialForm(next);
+      setAttempted(false);
+      setUnsavedOpen(false);
+      setDeleteConfirm(false);
     }
+    if (!props.open) {
+      setDeleteConfirm(false);
+      setUnsavedOpen(false);
+    }
+    wasOpenRef.current = props.open;
   }, [props.open, props.initialProfile, activeVoices]);
 
   if (!props.open) return null;
 
-  function save(event: React.FormEvent) {
-    event.preventDefault();
-    const name = form.name.trim();
-    if (!name) return;
+  function requestClose() {
+    if (isEdit && isDirty) {
+      setUnsavedOpen(true);
+      return;
+    }
+    props.onClose();
+  }
+
+  function persist(): boolean {
+    if (!form.name.trim() || activeVoices.length === 0) {
+      setAttempted(true);
+      return false;
+    }
+    if (isEdit && !isDirty) return false;
     props.onSave({
       ...form,
-      name,
+      name: form.name.trim(),
       ...normalizeAgeRange(form.ageFrom, form.ageTo),
       character: '',
       communicationStyle: form.communicationStyle.trim(),
     });
+    return true;
   }
 
-  return (
-    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-medium">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>{isEdit ? 'Редактировать профиль клиента' : 'Создать профиль клиента'}</h2>
-          </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </div>
+  function save(event: React.FormEvent) {
+    event.preventDefault();
+    setAttempted(true);
+    persist();
+  }
 
-        <form onSubmit={save} style={{ display: 'grid', gap: 14 }}>
+  const ageFillLeft = ((Math.min(form.ageFrom, form.ageTo) - 18) / 47) * 100;
+  const ageFillRight = 100 - ((Math.max(form.ageFrom, form.ageTo) - 18) / 47) * 100;
+
+  return (
+    <>
+      <BrutalModal
+        open={props.open}
+        onClose={requestClose}
+        title={isEdit ? 'Редактировать профиль' : 'Создать профиль'}
+        subtitle="Параметры клиента для голосового обзвона."
+        width="medium"
+        footer={(
+          <div className="sa-modal-footer-row">
+            {isEdit && props.onDelete ? (
+              <button
+                type="button"
+                className="sa-btn-danger"
+                onClick={() => setDeleteConfirm(true)}
+                disabled={props.saving}
+              >
+                Удалить
+              </button>
+            ) : <span />}
+            <div className="sa-modal-footer-row__right">
+              <button type="button" className="sa-btn-outline" onClick={requestClose} disabled={props.saving}>Отмена</button>
+              <button
+                type="submit"
+                form={PROFILE_FORM_ID}
+                className="sa-btn-primary"
+                disabled={props.saving || (isEdit && !isDirty) || activeVoices.length === 0}
+              >
+                {props.saving ? 'Сохраняем...' : isEdit ? 'Сохранить' : 'Создать профиль'}
+              </button>
+            </div>
+          </div>
+        )}
+      >
+        <form id={PROFILE_FORM_ID} onSubmit={save} style={{ display: 'grid', gap: 14 }}>
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название профиля</span>
-            <input className="sa-input" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+            <input
+              className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+              value={form.name}
+              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              aria-invalid={nameInvalid || undefined}
+            />
           </label>
 
-          <label style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
             <span>Голос</span>
-            <select className="sa-select" value={form.voiceId} onChange={(event) => setForm((current) => ({ ...current, voiceId: event.target.value }))} disabled={activeVoices.length === 0}>
-              {visibleVoices.length === 0 && <option value={form.voiceId}>Нет включенных голосов</option>}
-              {visibleVoices.map((voice) => (
-                <option key={voice.id} value={voice.id} disabled={!voice.isEnabled}>
-                  {voice.name}{voice.isEnabled ? '' : ' (выключен)'}
-                </option>
-              ))}
-            </select>
-          </label>
+            <BrutalSelect
+              value={form.voiceId}
+              options={voiceOptions.length > 0 ? voiceOptions : [{ value: form.voiceId || FALLBACK_VOICE_ID, label: 'Нет включенных голосов' }]}
+              disabled={activeVoices.length === 0}
+              aria-label="Голос"
+              onChange={(value) => setForm((current) => ({ ...current, voiceId: value }))}
+            />
+          </div>
 
           <label style={{ display: 'grid', gap: 8 }}>
             <span>Возраст: {form.ageFrom === form.ageTo ? form.ageFrom : `${form.ageFrom}-${form.ageTo}`}</span>
             <div style={{ position: 'relative', height: 28, display: 'grid', alignItems: 'center' }}>
-              <div style={{ position: 'absolute', left: 0, right: 0, height: 4, borderRadius: 999, background: '#e5e7eb' }} />
+              <div style={{ position: 'absolute', left: 0, right: 0, height: 4, borderRadius: 999, background: 'rgba(22, 22, 19, 0.12)' }} />
               <div
                 style={{
                   position: 'absolute',
-                  left: `${((Math.min(form.ageFrom, form.ageTo) - 18) / 47) * 100}%`,
-                  right: `${100 - ((Math.max(form.ageFrom, form.ageTo) - 18) / 47) * 100}%`,
+                  left: `${ageFillLeft}%`,
+                  right: `${ageFillRight}%`,
                   height: 4,
                   borderRadius: 999,
-                  background: '#6366f1',
+                  background: 'var(--tb-ink, #161613)',
                 }}
               />
               <input
@@ -491,37 +628,67 @@ function ProfileModal(props: {
           </label>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
               <span>Темперамент</span>
-              <select className="sa-select" value={form.temperament} onChange={(event) => setForm((current) => ({ ...current, temperament: event.target.value as CustomerTemperament }))}>
-                {TEMPERAMENTS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
+              <BrutalSelect
+                value={form.temperament}
+                options={TEMPERAMENTS.map((item) => ({ value: item.value, label: item.label }))}
+                aria-label="Темперамент"
+                onChange={(value) => setForm((current) => ({ ...current, temperament: value as CustomerTemperament }))}
+              />
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
               <span>Терпение клиента</span>
-              <select className="sa-select" value={form.patience} onChange={(event) => setForm((current) => ({ ...current, patience: event.target.value as CustomerPatience }))}>
-                {PATIENCE.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
+              <BrutalSelect
+                value={form.patience}
+                options={PATIENCE.map((item) => ({ value: item.value, label: item.label }))}
+                aria-label="Терпение клиента"
+                onChange={(value) => setForm((current) => ({ ...current, patience: value as CustomerPatience }))}
+              />
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
               <span>Длина реплик</span>
-              <select className="sa-select" value={form.replyLength} onChange={(event) => setForm((current) => ({ ...current, replyLength: event.target.value as ReplyLength }))}>
-                {REPLY_LENGTHS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
+              <BrutalSelect
+                value={form.replyLength}
+                options={REPLY_LENGTHS.map((item) => ({ value: item.value, label: item.label }))}
+                aria-label="Длина реплик"
+                onChange={(value) => setForm((current) => ({ ...current, replyLength: value as ReplyLength }))}
+              />
+            </div>
           </div>
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Примеры живых вопросов / стиль коммуникации</span>
             <textarea className="sa-input" rows={5} value={form.communicationStyle} onChange={(event) => setForm((current) => ({ ...current, communicationStyle: event.target.value }))} />
           </label>
-
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={!form.name.trim() || activeVoices.length === 0}>{isEdit ? 'Сохранить профиль' : 'Создать профиль'}</button>
-          </div>
         </form>
-    </ModalPortal>
+      </BrutalModal>
+
+      <UnsavedChangesModal
+        open={unsavedOpen}
+        saving={props.saving}
+        onCancel={() => setUnsavedOpen(false)}
+        onDiscard={() => {
+          setUnsavedOpen(false);
+          props.onClose();
+        }}
+        onSave={() => {
+          setAttempted(true);
+          if (persist()) setUnsavedOpen(false);
+        }}
+      />
+
+      <DeleteConfirmModal
+        open={deleteConfirm}
+        title={`Удалить профиль «${form.name || props.initialProfile?.name || ''}»?`}
+        saving={props.saving}
+        onCancel={() => setDeleteConfirm(false)}
+        onConfirm={() => {
+          setDeleteConfirm(false);
+          props.onDelete?.();
+        }}
+      />
+    </>
   );
 }
 
@@ -534,7 +701,14 @@ function VoicesModal(props: {
   onUpdate: (id: string, voice: Omit<CustomerVoiceForm, 'id'>) => Promise<void>;
   onDelete: (voice: CustomerVoice) => Promise<void>;
 }) {
-  const [drafts, setDrafts] = useState<Record<string, CustomerVoiceForm>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<CustomerVoiceForm>({
+    id: '',
+    name: '',
+    elevenLabsCode: '',
+    openaiCode: '',
+    isEnabled: true,
+  });
   const [newVoice, setNewVoice] = useState<CustomerVoiceForm>({
     id: '',
     name: '',
@@ -542,34 +716,78 @@ function VoicesModal(props: {
     openaiCode: '',
     isEnabled: true,
   });
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [unsavedOpen, setUnsavedOpen] = useState(false);
+  const [initialEditForm, setInitialEditForm] = useState<CustomerVoiceForm | null>(null);
 
   useEffect(() => {
-    if (!props.open) return;
-    setDrafts(Object.fromEntries(props.voices.map((voice) => [voice.id, {
+    if (!props.open) {
+      setEditingId(null);
+      setDeleteConfirm(false);
+      setUnsavedOpen(false);
+      setInitialEditForm(null);
+      return;
+    }
+    setNewVoice({ id: '', name: '', elevenLabsCode: '', openaiCode: '', isEnabled: true });
+  }, [props.open]);
+
+  useEffect(() => {
+    if (!editingId) {
+      setInitialEditForm(null);
+      return;
+    }
+    const voice = props.voices.find((item) => item.id === editingId);
+    if (!voice) {
+      setEditingId(null);
+      return;
+    }
+    const next = {
       id: voice.id,
       name: voice.name,
       elevenLabsCode: voice.elevenLabsCode || '',
       openaiCode: voice.openaiCode || '',
       isEnabled: voice.isEnabled,
-    }])));
-    setNewVoice({ id: '', name: '', elevenLabsCode: '', openaiCode: '', isEnabled: true });
-  }, [props.open, props.voices]);
+    };
+    setEditForm(next);
+    setInitialEditForm(next);
+  }, [editingId, props.voices]);
 
   if (!props.open) return null;
 
-  function updateDraft(id: string, patch: Partial<CustomerVoiceForm>) {
-    setDrafts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
+  const editing = editingId !== null;
+  const saving = props.savingId !== null;
+  const voiceDirty = Boolean(
+    editing
+    && initialEditForm
+    && JSON.stringify({
+      name: editForm.name.trim(),
+      elevenLabsCode: (editForm.elevenLabsCode || '').trim(),
+      openaiCode: (editForm.openaiCode || '').trim(),
+      isEnabled: editForm.isEnabled,
+    }) !== JSON.stringify({
+      name: initialEditForm.name.trim(),
+      elevenLabsCode: (initialEditForm.elevenLabsCode || '').trim(),
+      openaiCode: (initialEditForm.openaiCode || '').trim(),
+      isEnabled: initialEditForm.isEnabled,
+    }),
+  );
+
+  async function persistEdit(): Promise<boolean> {
+    if (!editingId || !editForm.name.trim()) return false;
+    if (!voiceDirty) return false;
+    await props.onUpdate(editingId, {
+      name: editForm.name.trim(),
+      elevenLabsCode: editForm.elevenLabsCode?.trim() || null,
+      openaiCode: editForm.openaiCode?.trim() || null,
+      isEnabled: editForm.isEnabled,
+    });
+    setEditingId(null);
+    return true;
   }
 
-  async function saveDraft(id: string) {
-    const draft = drafts[id];
-    if (!draft?.name.trim()) return;
-    await props.onUpdate(id, {
-      name: draft.name.trim(),
-      elevenLabsCode: draft.elevenLabsCode?.trim() || null,
-      openaiCode: draft.openaiCode?.trim() || null,
-      isEnabled: draft.isEnabled,
-    });
+  async function saveEdit(event: React.FormEvent) {
+    event.preventDefault();
+    await persistEdit();
   }
 
   async function createVoice(event: React.FormEvent) {
@@ -587,88 +805,200 @@ function VoicesModal(props: {
     setNewVoice({ id: '', name: '', elevenLabsCode: '', openaiCode: '', isEnabled: true });
   }
 
+  function openEdit(voice: CustomerVoice) {
+    setEditingId(voice.id);
+    const next = {
+      id: voice.id,
+      name: voice.name,
+      elevenLabsCode: voice.elevenLabsCode || '',
+      openaiCode: voice.openaiCode || '',
+      isEnabled: voice.isEnabled,
+    };
+    setEditForm(next);
+    setInitialEditForm(next);
+  }
+
+  function requestLeaveEdit() {
+    if (voiceDirty) {
+      setUnsavedOpen(true);
+      return;
+    }
+    setEditingId(null);
+  }
+
+  function requestCloseModal() {
+    if (editing) {
+      requestLeaveEdit();
+      return;
+    }
+    props.onClose();
+  }
+
   return (
-    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-wide">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24 }}>Голоса клиентов</h2>
-            <div className="sa-meta" style={{ marginTop: 4 }}>Доступно только суперадминам. Выключенные голоса нельзя выбрать в профиле клиента.</div>
-          </div>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </div>
-
-        <div className="sa-table-wrap" style={{ maxHeight: '44vh', overflow: 'auto' }}>
-          <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
-            <thead>
-              <tr>
-                <th style={{ width: 140 }}>ID</th>
-                <th>Название</th>
-                <th>ElevenLabs</th>
-                <th>OpenAI</th>
-                <th style={{ width: 130 }}>Статус</th>
-                <th style={{ width: 210 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {props.voices.map((voice) => {
-                const draft = drafts[voice.id] ?? {
-                  id: voice.id,
-                  name: voice.name,
-                  elevenLabsCode: voice.elevenLabsCode || '',
-                  openaiCode: voice.openaiCode || '',
-                  isEnabled: voice.isEnabled,
-                };
-                return (
-                  <tr key={voice.id}>
-                    <td><code>{voice.id}</code></td>
-                    <td><input className="sa-input" value={draft.name} onChange={(event) => updateDraft(voice.id, { name: event.target.value })} /></td>
-                    <td><input className="sa-input" placeholder="может быть пусто" value={draft.elevenLabsCode || ''} onChange={(event) => updateDraft(voice.id, { elevenLabsCode: event.target.value })} /></td>
-                    <td><input className="sa-input" placeholder="может быть пусто" value={draft.openaiCode || ''} onChange={(event) => updateDraft(voice.id, { openaiCode: event.target.value })} /></td>
-                    <td>
-                      <label className="sa-filter-check" style={{ width: 'fit-content' }}>
-                        <input type="checkbox" checked={draft.isEnabled} onChange={(event) => updateDraft(voice.id, { isEnabled: event.target.checked })} />
-                        Включен
-                      </label>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                        <button type="button" className="sa-btn-outline sa-btn-sm" disabled={props.savingId === voice.id || !draft.name.trim()} onClick={() => saveDraft(voice.id)}>
-                          Сохранить
-                        </button>
-                        <button type="button" className="sa-btn-danger sa-btn-sm" disabled={props.savingId === voice.id} onClick={() => props.onDelete(voice)}>
-                          Удалить
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {props.voices.length === 0 && (
-                <tr><td colSpan={6} className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Голоса пока не добавлены.</td></tr>
+    <>
+      <BrutalModal
+        open={props.open}
+        onClose={requestCloseModal}
+        title={editing ? 'Редактировать голос' : 'Голоса клиентов'}
+        subtitle={editing
+          ? `ID: ${editForm.id}`
+          : 'Доступно только суперадминам. Выключенные голоса нельзя выбрать в профиле.'}
+        width="wide"
+        footer={(
+          <div className="sa-modal-footer-row">
+            {editing ? (
+              <button
+                type="button"
+                className="sa-btn-danger"
+                disabled={saving}
+                onClick={() => setDeleteConfirm(true)}
+              >
+                Удалить
+              </button>
+            ) : <span />}
+            <div className="sa-modal-footer-row__right">
+              {editing ? (
+                <>
+                  <button type="button" className="sa-btn-outline" disabled={saving} onClick={requestLeaveEdit}>Назад</button>
+                  <button
+                    type="submit"
+                    form={VOICE_EDIT_FORM_ID}
+                    className="sa-btn-primary"
+                    disabled={saving || !editForm.name.trim() || !voiceDirty}
+                  >
+                    {props.savingId === editingId ? 'Сохраняем...' : 'Сохранить'}
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="sa-btn-outline" onClick={props.onClose}>Закрыть</button>
               )}
-            </tbody>
-          </table>
-        </div>
-
-        <form onSubmit={createVoice} style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--sa-divider)', display: 'grid', gap: 12 }}>
-          <h3 className="sa-section-title" style={{ margin: 0 }}>Добавить голос</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 0.8fr) minmax(180px, 1fr) minmax(160px, 1fr) minmax(160px, 1fr) auto', gap: 10, alignItems: 'center' }}>
-            <input className="sa-input" placeholder="id" value={newVoice.id} onChange={(event) => setNewVoice((current) => ({ ...current, id: event.target.value }))} />
-            <input className="sa-input" placeholder="Название голоса" value={newVoice.name} onChange={(event) => setNewVoice((current) => ({ ...current, name: event.target.value }))} />
-            <input className="sa-input" placeholder="код ElevenLabs" value={newVoice.elevenLabsCode || ''} onChange={(event) => setNewVoice((current) => ({ ...current, elevenLabsCode: event.target.value }))} />
-            <input className="sa-input" placeholder="код OpenAI" value={newVoice.openaiCode || ''} onChange={(event) => setNewVoice((current) => ({ ...current, openaiCode: event.target.value }))} />
-            <label className="sa-filter-check">
-              <input type="checkbox" checked={newVoice.isEnabled} onChange={(event) => setNewVoice((current) => ({ ...current, isEnabled: event.target.checked }))} />
-              Включен
+            </div>
+          </div>
+        )}
+      >
+        {editing ? (
+          <form id={VOICE_EDIT_FORM_ID} onSubmit={saveEdit} style={{ display: 'grid', gap: 14 }}>
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span>Название</span>
+              <input className="sa-input" value={editForm.name} onChange={(event) => setEditForm((current) => ({ ...current, name: event.target.value }))} required />
             </label>
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span>Код ElevenLabs</span>
+              <input className="sa-input" placeholder="может быть пусто" value={editForm.elevenLabsCode || ''} onChange={(event) => setEditForm((current) => ({ ...current, elevenLabsCode: event.target.value }))} />
+            </label>
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span>Код OpenAI</span>
+              <input className="sa-input" placeholder="может быть пусто" value={editForm.openaiCode || ''} onChange={(event) => setEditForm((current) => ({ ...current, openaiCode: event.target.value }))} />
+            </label>
+            <button
+              type="button"
+              className="sa-toggle-field"
+              aria-pressed={editForm.isEnabled}
+              onClick={() => setEditForm((current) => ({ ...current, isEnabled: !current.isEnabled }))}
+            >
+              <span className="sa-toggle-field__text">Голос включен</span>
+              <span className="sa-toggle-field__control" aria-hidden="true">
+                <span className="sa-toggle-field__thumb" />
+              </span>
+            </button>
+          </form>
+        ) : (
+          <div style={{ display: 'grid', gap: 18 }}>
+            <div className="sa-table-wrap">
+              <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+                <thead>
+                  <tr>
+                    <th style={{ width: 140 }}>ID</th>
+                    <th>Название</th>
+                    <th>ElevenLabs</th>
+                    <th>OpenAI</th>
+                    <th style={{ width: 120 }}>Статус</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {props.voices.map((voice) => (
+                    <tr
+                      key={voice.id}
+                      className="sa-row-clickable"
+                      onClick={() => openEdit(voice)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => event.key === 'Enter' && openEdit(voice)}
+                    >
+                      <td><code>{voice.id}</code></td>
+                      <td>{voice.name}</td>
+                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{voice.elevenLabsCode || '—'}</td>
+                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{voice.openaiCode || '—'}</td>
+                      <td>{voice.isEnabled ? 'Включен' : 'Выключен'}</td>
+                    </tr>
+                  ))}
+                  {props.voices.length === 0 && (
+                    <tr><td colSpan={5} className="sa-meta" style={{ padding: 24, textAlign: 'center' }}>Голоса пока не добавлены.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <form id={VOICE_CREATE_FORM_ID} onSubmit={createVoice} style={{ display: 'grid', gap: 12, paddingTop: 4, borderTop: '1px solid var(--sa-divider)' }}>
+              <h3 className="sa-section-title" style={{ margin: 0 }}>Добавить голос</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+                <input className="sa-input" placeholder="id" value={newVoice.id} onChange={(event) => setNewVoice((current) => ({ ...current, id: event.target.value }))} />
+                <input className="sa-input" placeholder="Название голоса" value={newVoice.name} onChange={(event) => setNewVoice((current) => ({ ...current, name: event.target.value }))} />
+                <input className="sa-input" placeholder="код ElevenLabs" value={newVoice.elevenLabsCode || ''} onChange={(event) => setNewVoice((current) => ({ ...current, elevenLabsCode: event.target.value }))} />
+                <input className="sa-input" placeholder="код OpenAI" value={newVoice.openaiCode || ''} onChange={(event) => setNewVoice((current) => ({ ...current, openaiCode: event.target.value }))} />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="sa-toggle-field"
+                  aria-pressed={newVoice.isEnabled}
+                  onClick={() => setNewVoice((current) => ({ ...current, isEnabled: !current.isEnabled }))}
+                  style={{ width: 'fit-content' }}
+                >
+                  <span className="sa-toggle-field__text">Включен</span>
+                  <span className="sa-toggle-field__control" aria-hidden="true">
+                    <span className="sa-toggle-field__thumb" />
+                  </span>
+                </button>
+                <button type="submit" className="sa-btn-primary" disabled={props.savingId === 'new' || !newVoice.id.trim() || !newVoice.name.trim()}>
+                  {props.savingId === 'new' ? 'Добавляем...' : 'Добавить голос'}
+                </button>
+              </div>
+            </form>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <button type="submit" className="sa-btn-primary" disabled={props.savingId === 'new' || !newVoice.id.trim() || !newVoice.name.trim()}>Добавить голос</button>
-          </div>
-        </form>
-    </ModalPortal>
+        )}
+      </BrutalModal>
+
+      <UnsavedChangesModal
+        open={unsavedOpen}
+        saving={saving}
+        onCancel={() => setUnsavedOpen(false)}
+        onDiscard={() => {
+          setUnsavedOpen(false);
+          setEditingId(null);
+        }}
+        onSave={async () => {
+          if (await persistEdit()) setUnsavedOpen(false);
+        }}
+      />
+
+      <DeleteConfirmModal
+        open={deleteConfirm}
+        title={`Удалить голос «${editForm.name}»?`}
+        saving={saving}
+        onCancel={() => setDeleteConfirm(false)}
+        onConfirm={async () => {
+          const voice = props.voices.find((item) => item.id === editingId);
+          if (!voice) {
+            setDeleteConfirm(false);
+            return;
+          }
+          setDeleteConfirm(false);
+          await props.onDelete(voice);
+          setEditingId(null);
+        }}
+      />
+    </>
   );
 }
 
@@ -678,6 +1008,7 @@ function ScriptEditor(props: {
   profiles: CustomerProfile[];
   onBack: () => void;
   onSave: (script: Omit<CallScript, 'id' | 'createdAt' | 'updatedAt'>) => void;
+  onDelete?: () => void;
 }) {
   const [form, setForm] = useState<CallScriptForm>(EMPTY_SCRIPT_FORM);
   const [tags, setTags] = useState<string[]>([]);
@@ -688,12 +1019,15 @@ function ScriptEditor(props: {
   const [countLoading, setCountLoading] = useState(false);
   const [objectionModalOpen, setObjectionModalOpen] = useState(false);
   const [questionModalOpen, setQuestionModalOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const [initialSnapshot, setInitialSnapshot] = useState('');
   const isEdit = Boolean(props.initialScript);
 
   useEffect(() => {
     const source = props.initialScript;
-    if (source) {
-      setForm({
+    const nextForm = source
+      ? {
         name: source.name,
         profileIds: [...source.profileIds],
         context: source.context,
@@ -701,19 +1035,19 @@ function ScriptEditor(props: {
         objections: source.objections.map((item) => ({ ...item })),
         questions: source.questions.map((item) => ({ ...item })),
         successCriteria: source.successCriteria.map((item) => ({ ...item })),
-      });
-      setScoreDrafts(Object.fromEntries(source.successCriteria.map((item) => [item.id, String(item.score)])));
-    } else {
-      setForm({
+      }
+      : {
         ...EMPTY_SCRIPT_FORM,
         profileIds: [],
         dataCondition: { holdingId: props.holdingId, tags: [] },
         objections: [],
         questions: [],
         successCriteria: [],
-      });
-      setScoreDrafts({});
-    }
+      };
+    setForm(nextForm);
+    setScoreDrafts(Object.fromEntries((nextForm.successCriteria || []).map((item) => [item.id, String(item.score)])));
+    setInitialSnapshot(JSON.stringify(normalizeScriptForm(nextForm)));
+    setAttempted(false);
     setTagSearch('');
   }, [props.initialScript, props.holdingId]);
 
@@ -879,7 +1213,9 @@ function ScriptEditor(props: {
 
   function save(event: React.FormEvent) {
     event.preventDefault();
+    setAttempted(true);
     if (!form.name.trim()) return;
+    if (isEdit && !isDirty) return;
     props.onSave({
       holdingId: props.holdingId,
       ...form,
@@ -897,21 +1233,35 @@ function ScriptEditor(props: {
     });
   }
 
+  const isDirty = JSON.stringify(normalizeScriptForm({
+    ...form,
+    successCriteria: form.successCriteria.map((item) => ({
+      ...item,
+      score: clampScore(Number(scoreDrafts[item.id] || item.score || 0)),
+    })),
+  })) !== initialSnapshot;
+  const nameInvalid = attempted && !form.name.trim();
+
   return (
     <div style={{ display: 'grid', gap: 18 }}>
-      <section className="sa-card" style={{ padding: 20, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <div>
-          <h1 className="sa-page-title" style={{ marginBottom: 6 }}>{isEdit ? 'Скрипт' : 'Создание скрипта'}</h1>
-          <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>{isEdit ? 'Посмотрите и отредактируйте настройки скрипта.' : 'Соберите контекст, выборку данных, вопросы и критерии оценки.'}</div>
-        </div>
-        <button type="button" className="sa-btn-outline" onClick={props.onBack}>Назад к скриптам</button>
-      </section>
+      <div className="sa-breadcrumb">
+        <button type="button" className="sa-btn-text" onClick={props.onBack}>Скрипты</button>
+        <span className="sa-breadcrumb-sep">→</span>
+        <span>{isEdit ? (form.name.trim() || props.initialScript?.name || 'Скрипт') : 'Новый скрипт'}</span>
+      </div>
+
+      <h1 className="sa-page-title">{isEdit ? 'Скрипт' : 'Создание скрипта'}</h1>
 
       <form onSubmit={save} style={{ display: 'grid', gap: 16 }}>
         <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название скрипта</span>
-            <input className="sa-input" value={form.name} onChange={(event) => updateForm({ name: event.target.value })} required />
+            <input
+              className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
+              value={form.name}
+              onChange={(event) => updateForm({ name: event.target.value })}
+              aria-invalid={nameInvalid || undefined}
+            />
           </label>
 
           <div style={{ display: 'grid', gap: 8 }}>
@@ -1007,6 +1357,7 @@ function ScriptEditor(props: {
                       return (
                         <label
                           key={tag}
+                          className="sa-filter-check"
                           style={{
                             display: 'grid',
                             gridTemplateColumns: '20px minmax(0, 1fr)',
@@ -1014,8 +1365,13 @@ function ScriptEditor(props: {
                             alignItems: 'center',
                             padding: '10px 12px',
                             borderTop: '1px solid var(--sa-divider)',
-                            background: checked ? '#f0f7ff' : '#fff',
+                            borderRadius: 0,
+                            borderLeft: 0,
+                            borderRight: 0,
+                            borderBottom: 0,
+                            background: checked ? SELECTED_ROW_BG : '#fff',
                             cursor: 'pointer',
+                            minHeight: 0,
                           }}
                         >
                           <input type="checkbox" checked={checked} onChange={() => toggleTag(tag)} />
@@ -1033,17 +1389,28 @@ function ScriptEditor(props: {
         <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <h3 style={{ margin: 0, fontSize: 18 }}>Возражения</h3>
-            <button type="button" className="sa-btn-outline" onClick={() => setObjectionModalOpen(true)}>Добавить возражение</button>
+            <button type="button" className="sa-btn-outline" onClick={() => setObjectionModalOpen(true)}>
+              <LetsIcon name="add-light" size={16} bold />
+              Добавить возражение
+            </button>
           </div>
           {form.objections.length === 0 ? <div className="sa-meta">Возражения пока не добавлены.</div> : (
             <div style={{ display: 'grid', gap: 8 }}>
               {form.objections.map((item) => (
-                <div key={item.id} style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                <div key={item.id} style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
                   <div>
                     <strong>{item.phrase}</strong>
                     <div className="sa-meta" style={{ marginTop: 4 }}>{item.whenAppropriate || 'Любой кейс'}</div>
                   </div>
-                  <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => removeObjection(item.id)}>Удалить</button>
+                  <button
+                    type="button"
+                    className="sa-btn-outline sa-btn-icon"
+                    onClick={() => removeObjection(item.id)}
+                    aria-label="Удалить возражение"
+                    title="Удалить"
+                  >
+                    <TrashIcon />
+                  </button>
                 </div>
               ))}
             </div>
@@ -1053,17 +1420,28 @@ function ScriptEditor(props: {
         <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <h3 style={{ margin: 0, fontSize: 18 }}>Список вопросов</h3>
-            <button type="button" className="sa-btn-outline" onClick={() => setQuestionModalOpen(true)}>Добавить вопрос</button>
+            <button type="button" className="sa-btn-outline" onClick={() => setQuestionModalOpen(true)}>
+              <LetsIcon name="add-light" size={16} bold />
+              Добавить вопрос
+            </button>
           </div>
           {form.questions.length === 0 ? <div className="sa-meta">Вопросы пока не добавлены.</div> : (
             <div style={{ display: 'grid', gap: 8 }}>
               {form.questions.map((item) => (
-                <div key={item.id} style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                <div key={item.id} style={{ border: '1px solid var(--sa-divider)', borderRadius: 12, padding: 12, display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
                   <div>
                     <strong>{item.text}</strong>
                     <div className="sa-meta" style={{ marginTop: 4 }}>{item.required ? 'Обязательный' : 'Не обязательный'}</div>
                   </div>
-                  <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => removeQuestion(item.id)}>Удалить</button>
+                  <button
+                    type="button"
+                    className="sa-btn-outline sa-btn-icon"
+                    onClick={() => removeQuestion(item.id)}
+                    aria-label="Удалить вопрос"
+                    title="Удалить"
+                  >
+                    <TrashIcon />
+                  </button>
                 </div>
               ))}
             </div>
@@ -1107,9 +1485,16 @@ function ScriptEditor(props: {
           )}
         </section>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
-          <button type="button" className="sa-btn-outline" onClick={props.onBack}>Отмена</button>
-          <button type="submit" className="sa-btn-primary" disabled={!form.name.trim()}>{isEdit ? 'Сохранить изменения' : 'Сохранить скрипт'}</button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          {isEdit && props.onDelete ? (
+            <button type="button" className="sa-btn-danger" onClick={() => setDeleteConfirm(true)}>Удалить</button>
+          ) : <span />}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="sa-btn-outline" onClick={props.onBack}>Отмена</button>
+            <button type="submit" className="sa-btn-primary" disabled={isEdit && !isDirty}>
+              {isEdit ? 'Сохранить изменения' : 'Сохранить скрипт'}
+            </button>
+          </div>
         </div>
       </form>
 
@@ -1128,6 +1513,16 @@ function ScriptEditor(props: {
         onClose={() => setQuestionModalOpen(false)}
         onSave={addQuestion}
       />
+      <DeleteConfirmModal
+        open={deleteConfirm}
+        title={`Удалить скрипт «${form.name || props.initialScript?.name || ''}»?`}
+        nested={false}
+        onCancel={() => setDeleteConfirm(false)}
+        onConfirm={() => {
+          setDeleteConfirm(false);
+          props.onDelete?.();
+        }}
+      />
     </div>
   );
 }
@@ -1140,11 +1535,15 @@ function PlanTargetPicker<T extends { id: string }>(props: {
   selectedIds: string[];
   countLabel: string;
   emptyLabel: string;
+  invalid?: boolean;
   renderItem: (item: T, selected: boolean) => React.ReactNode;
   onToggle: (id: string) => void;
 }) {
   return (
-    <div style={{ border: '1px solid var(--sa-divider)', borderRadius: 14, overflow: 'hidden', background: '#fff' }}>
+    <div
+      className={props.invalid ? 'sa-field-invalid' : undefined}
+      style={{ border: `1px solid ${props.invalid ? 'var(--sa-danger, #b91c1c)' : 'var(--sa-divider)'}`, borderRadius: 14, overflow: 'hidden', background: '#fff' }}
+    >
       <div style={{ padding: 12, borderBottom: '1px solid var(--sa-divider)', display: 'grid', gap: 10 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <strong>{props.title}</strong>
@@ -1160,6 +1559,7 @@ function PlanTargetPicker<T extends { id: string }>(props: {
           return (
             <label
               key={item.id}
+              className="sa-filter-check"
               style={{
                 display: 'grid',
                 gridTemplateColumns: '20px minmax(0, 1fr)',
@@ -1167,8 +1567,13 @@ function PlanTargetPicker<T extends { id: string }>(props: {
                 alignItems: 'center',
                 padding: '11px 12px',
                 borderTop: '1px solid var(--sa-divider)',
-                background: selected ? '#f0f7ff' : '#fff',
+                borderRadius: 0,
+                borderLeft: 0,
+                borderRight: 0,
+                borderBottom: 0,
+                background: selected ? SELECTED_ROW_BG : '#fff',
                 cursor: 'pointer',
+                minHeight: 0,
               }}
             >
               <input type="checkbox" checked={selected} onChange={() => props.onToggle(item.id)} />
@@ -1187,6 +1592,7 @@ function CallPlanEditor(props: {
   initialPlan?: CallPlan | null;
   onBack: () => void;
   onSave: (plan: CallPlanForm) => void;
+  onDelete?: () => void;
 }) {
   const [name, setName] = useState(props.initialPlan?.name || '');
   const [targetType, setTargetType] = useState<CallPlanTargetType>(props.initialPlan?.targetType || 'employees');
@@ -1198,22 +1604,39 @@ function CallPlanEditor(props: {
   const [frequency, setFrequency] = useState<CallPlanFrequency>(props.initialPlan?.frequency || 'daily');
   const [callTimeFrom, setCallTimeFrom] = useState(props.initialPlan?.callTimeFrom || '09:00');
   const [callTimeTo, setCallTimeTo] = useState(props.initialPlan?.callTimeTo || '09:15');
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const [initialSnapshot, setInitialSnapshot] = useState('');
+  const isEdit = Boolean(props.initialPlan);
 
   useEffect(() => {
-    setName(props.initialPlan?.name || '');
-    setTargetType(props.initialPlan?.targetType || 'employees');
-    setTargetIds(props.initialPlan?.targetIds || []);
-    setScriptId(props.initialPlan?.scriptId || '');
-    setPhoneNumberTypeId(props.initialPlan?.phoneNumberTypeId || '');
-    setFrequency(props.initialPlan?.frequency || 'daily');
-    setCallTimeFrom(props.initialPlan?.callTimeFrom || '09:00');
-    setCallTimeTo(props.initialPlan?.callTimeTo || '09:15');
+    const next = {
+      name: props.initialPlan?.name || '',
+      targetType: props.initialPlan?.targetType || 'employees' as CallPlanTargetType,
+      targetIds: props.initialPlan?.targetIds || [],
+      scriptId: props.initialPlan?.scriptId || '',
+      phoneNumberTypeId: props.initialPlan?.phoneNumberTypeId || '',
+      frequency: props.initialPlan?.frequency || 'daily' as CallPlanFrequency,
+      callTimeFrom: props.initialPlan?.callTimeFrom || '09:00',
+      callTimeTo: props.initialPlan?.callTimeTo || '09:15',
+    };
+    setName(next.name);
+    setTargetType(next.targetType);
+    setTargetIds(next.targetIds);
+    setScriptId(next.scriptId);
+    setPhoneNumberTypeId(next.phoneNumberTypeId);
+    setFrequency(next.frequency);
+    setCallTimeFrom(next.callTimeFrom);
+    setCallTimeTo(next.callTimeTo);
+    setInitialSnapshot(JSON.stringify(next));
+    setAttempted(false);
   }, [props.initialPlan]);
 
   useEffect(() => {
+    if (props.initialPlan) return;
     setScriptId((current) => current || props.options.scripts[0]?.id || '');
     setPhoneNumberTypeId((current) => current || props.options.phoneNumberTypes[0]?.id || '');
-  }, [props.options.scripts, props.options.phoneNumberTypes]);
+  }, [props.initialPlan, props.options.scripts, props.options.phoneNumberTypes]);
 
   const filteredEmployees = useMemo(() => {
     const query = employeeSearch.trim().toLowerCase();
@@ -1245,8 +1668,9 @@ function CallPlanEditor(props: {
 
   function save(event: React.FormEvent) {
     event.preventDefault();
+    setAttempted(true);
     if (!scriptId || !phoneNumberTypeId || targetIds.length === 0) return;
-    props.onSave({
+    const payload = {
       holdingId: props.holdingId,
       name: name.trim() || (targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек'),
       targetType,
@@ -1256,20 +1680,44 @@ function CallPlanEditor(props: {
       frequency,
       callTimeFrom,
       callTimeTo,
-    });
+    };
+    if (isEdit && JSON.stringify({
+      name,
+      targetType,
+      targetIds,
+      scriptId,
+      phoneNumberTypeId,
+      frequency,
+      callTimeFrom,
+      callTimeTo,
+    }) === initialSnapshot) return;
+    props.onSave(payload);
   }
+
+  const currentSnapshot = JSON.stringify({
+    name,
+    targetType,
+    targetIds,
+    scriptId,
+    phoneNumberTypeId,
+    frequency,
+    callTimeFrom,
+    callTimeTo,
+  });
+  const isDirty = currentSnapshot !== initialSnapshot;
+  const targetsInvalid = attempted && targetIds.length === 0;
+  const scriptInvalid = attempted && !scriptId;
+  const phoneTypeInvalid = attempted && !phoneNumberTypeId;
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
-      <section className="sa-card" style={{ padding: 20, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <div>
-          <h1 className="sa-page-title" style={{ marginBottom: 6 }}>{props.initialPlan ? 'Редактирование прозвона' : 'Создание прозвона'}</h1>
-          <div style={{ color: 'var(--sa-text-secondary)', fontSize: 14 }}>
-            {props.initialPlan ? 'Измените аудиторию, скрипт, тип номера и окно звонка.' : 'Выберите аудиторию, скрипт, тип номера и окно звонка.'}
-          </div>
-        </div>
-        <button type="button" className="sa-btn-outline" onClick={props.onBack}>Назад к планам</button>
-      </section>
+      <div className="sa-breadcrumb">
+        <button type="button" className="sa-btn-text" onClick={props.onBack}>План прозвона</button>
+        <span className="sa-breadcrumb-sep">→</span>
+        <span>{props.initialPlan ? (name.trim() || props.initialPlan.name) : 'Новый обзвон'}</span>
+      </div>
+
+      <h1 className="sa-page-title">{props.initialPlan ? 'Редактирование прозвона' : 'Создание прозвона'}</h1>
 
       <form onSubmit={save} style={{ display: 'grid', gap: 16 }}>
         <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
@@ -1282,22 +1730,22 @@ function CallPlanEditor(props: {
               placeholder={targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек'}
             />
           </label>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
-            {([
-              { id: 'employees' as const, title: 'Сотрудники', text: 'Обзвон конкретных сотрудников' },
-              { id: 'dealerships' as const, title: 'Точки', text: 'Обзвон всех сотрудников точки/точек' },
-            ]).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={targetType === item.id ? 'sa-btn-primary' : 'sa-btn-outline'}
-                onClick={() => switchTargetType(item.id)}
-                style={{ minHeight: 94, justifyContent: 'flex-start', textAlign: 'left', display: 'grid', gap: 4 }}
-              >
-                <strong style={{ fontSize: 18 }}>{item.title}</strong>
-                <span style={{ fontWeight: 500, opacity: 0.82 }}>{item.text}</span>
-              </button>
-            ))}
+          <div style={{ display: 'grid', gap: 8 }}>
+            <span>Аудитория</span>
+            <BrutalSegmented
+              value={targetType}
+              options={[
+                { value: 'employees', label: 'Сотрудники' },
+                { value: 'dealerships', label: 'Точки' },
+              ]}
+              onChange={switchTargetType}
+              ariaLabel="Тип аудитории"
+            />
+            <div className="sa-meta">
+              {targetType === 'employees'
+                ? 'Обзвон конкретных сотрудников'
+                : 'Обзвон всех сотрудников точки/точек'}
+            </div>
           </div>
 
           {targetType === 'employees' ? (
@@ -1309,6 +1757,7 @@ function CallPlanEditor(props: {
               selectedIds={targetIds}
               countLabel={`Выбрано: ${selectedEmployeesCount}`}
               emptyLabel="Сотрудников не найдено."
+              invalid={targetsInvalid}
               onToggle={toggleTarget}
               renderItem={(employee) => (
                 <div style={{ minWidth: 0 }}>
@@ -1328,6 +1777,7 @@ function CallPlanEditor(props: {
               selectedIds={targetIds}
               countLabel={`Выбрано сотрудников: ${selectedEmployeesCount}`}
               emptyLabel="Точек не найдено."
+              invalid={targetsInvalid}
               onToggle={toggleTarget}
               renderItem={(dealership) => (
                 <div style={{ minWidth: 0 }}>
@@ -1339,30 +1789,48 @@ function CallPlanEditor(props: {
               )}
             />
           )}
+          {targetsInvalid && (
+            <div className="sa-meta" style={{ color: '#b91c1c' }}>Выберите хотя бы одного участника аудитории.</div>
+          )}
         </section>
 
         <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 14 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
+            <div style={{ display: 'grid', gap: 6 }}>
               <span>Скрипт</span>
-              <select className="sa-select" value={scriptId} onChange={(event) => setScriptId(event.target.value)} required>
-                <option value="">Выберите скрипт</option>
-                {props.options.scripts.map((script) => <option key={script.id} value={script.id}>{script.name}</option>)}
-              </select>
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
+              <BrutalSelect
+                value={scriptId}
+                options={[
+                  { value: '', label: 'Выберите скрипт' },
+                  ...props.options.scripts.map((script) => ({ value: script.id, label: script.name })),
+                ]}
+                aria-label="Скрипт"
+                invalid={scriptInvalid}
+                onChange={setScriptId}
+              />
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
               <span>Тип номера</span>
-              <select className="sa-select" value={phoneNumberTypeId} onChange={(event) => setPhoneNumberTypeId(event.target.value)} required>
-                <option value="">Выберите тип номера</option>
-                {props.options.phoneNumberTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}
-              </select>
-            </label>
-            <label style={{ display: 'grid', gap: 6 }}>
+              <BrutalSelect
+                value={phoneNumberTypeId}
+                options={[
+                  { value: '', label: 'Выберите тип номера' },
+                  ...props.options.phoneNumberTypes.map((type) => ({ value: type.id, label: type.name })),
+                ]}
+                aria-label="Тип номера"
+                invalid={phoneTypeInvalid}
+                onChange={setPhoneNumberTypeId}
+              />
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
               <span>Частотность</span>
-              <select className="sa-select" value={frequency} onChange={(event) => setFrequency(event.target.value as CallPlanFrequency)}>
-                {PLAN_FREQUENCIES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
+              <BrutalSelect
+                value={frequency}
+                options={PLAN_FREQUENCIES.map((item) => ({ value: item.value, label: item.label }))}
+                aria-label="Частотность"
+                onChange={(value) => setFrequency(value as CallPlanFrequency)}
+              />
+            </div>
           </div>
           {!isManualFrequency && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
@@ -1378,13 +1846,28 @@ function CallPlanEditor(props: {
           )}
         </section>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
-          <button type="button" className="sa-btn-outline" onClick={props.onBack}>Отмена</button>
-          <button type="submit" className="sa-btn-primary" disabled={!scriptId || !phoneNumberTypeId || targetIds.length === 0}>
-            {props.initialPlan ? 'Сохранить изменения' : 'Создать обзвон'}
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          {props.initialPlan && props.onDelete ? (
+            <button type="button" className="sa-btn-danger" onClick={() => setDeleteConfirm(true)}>Удалить</button>
+          ) : <span />}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="sa-btn-outline" onClick={props.onBack}>Отмена</button>
+            <button type="submit" className="sa-btn-primary" disabled={isEdit && !isDirty}>
+              {props.initialPlan ? 'Сохранить изменения' : 'Создать обзвон'}
+            </button>
+          </div>
         </div>
       </form>
+      <DeleteConfirmModal
+        open={deleteConfirm}
+        title={`Удалить план «${name || props.initialPlan?.name || ''}»?`}
+        nested={false}
+        onCancel={() => setDeleteConfirm(false)}
+        onConfirm={() => {
+          setDeleteConfirm(false);
+          props.onDelete?.();
+        }}
+      />
     </div>
   );
 }
@@ -1447,10 +1930,10 @@ export function CallSettingsPage() {
   const [planOptions, setPlanOptions] = useState<CallPlanOptions>({ employees: [], dealerships: [], phoneNumberTypes: [], scripts: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [voicesModalOpen, setVoicesModalOpen] = useState(false);
   const [voiceSavingId, setVoiceSavingId] = useState<string | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [editingProfile, setEditingProfile] = useState<CustomerProfile | null>(null);
   const [scriptEditorOpen, setScriptEditorOpen] = useState(false);
   const [editingScript, setEditingScript] = useState<CallScript | null>(null);
@@ -1464,6 +1947,8 @@ export function CallSettingsPage() {
   const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
   const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
   const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
+  const [planDeleteConfirm, setPlanDeleteConfirm] = useState(false);
+  const { showToast } = useToast();
   const canManageVoices = auth.status === 'authenticated' && auth.user.allowedRoles.includes('super');
 
   useEffect(() => {
@@ -1623,6 +2108,7 @@ export function CallSettingsPage() {
 
   async function saveProfile(profile: CustomerProfileForm) {
     if (!selectedHoldingId) return;
+    setProfileSaving(true);
     try {
       const saved = editingProfile
         ? await updateCallCustomerProfile(editingProfile.id, profile)
@@ -1633,20 +2119,28 @@ export function CallSettingsPage() {
       });
       setModalOpen(false);
       setEditingProfile(null);
+      showToast({
+        type: 'success',
+        title: editingProfile ? 'Профиль сохранён' : 'Профиль создан',
+        description: saved.name,
+      });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить профиль клиента.');
+      const message = saveError instanceof Error ? saveError.message : 'Не удалось сохранить профиль клиента.';
+      showToast({ type: 'error', title: 'Не удалось сохранить профиль', description: message });
+    } finally {
+      setProfileSaving(false);
     }
   }
 
   async function saveNewVoice(voice: CustomerVoiceForm) {
     setVoiceSavingId('new');
-    setError(null);
     try {
       const created = await createCallCustomerVoice(voice);
       setVoices((current) => [...current.filter((item) => item.id !== created.id), created].sort((a, b) => a.name.localeCompare(b.name, 'ru')));
-      setNotice('Голос добавлен.');
+      showToast({ type: 'success', title: 'Голос добавлен', description: created.name });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось добавить голос.');
+      const message = saveError instanceof Error ? saveError.message : 'Не удалось добавить голос.';
+      showToast({ type: 'error', title: 'Не удалось добавить голос', description: message });
       throw saveError;
     } finally {
       setVoiceSavingId(null);
@@ -1655,13 +2149,13 @@ export function CallSettingsPage() {
 
   async function saveExistingVoice(id: string, voice: Omit<CustomerVoiceForm, 'id'>) {
     setVoiceSavingId(id);
-    setError(null);
     try {
       const updated = await updateCallCustomerVoice(id, voice);
       setVoices((current) => current.map((item) => item.id === id ? updated : item).sort((a, b) => a.name.localeCompare(b.name, 'ru')));
-      setNotice('Голос обновлён.');
+      showToast({ type: 'success', title: 'Голос сохранён', description: updated.name });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось обновить голос.');
+      const message = saveError instanceof Error ? saveError.message : 'Не удалось обновить голос.';
+      showToast({ type: 'error', title: 'Не удалось сохранить голос', description: message });
       throw saveError;
     } finally {
       setVoiceSavingId(null);
@@ -1669,28 +2163,33 @@ export function CallSettingsPage() {
   }
 
   async function removeVoice(voice: CustomerVoice) {
-    if (!window.confirm(`Удалить голос "${voice.name}"? Он будет скрыт из интерфейса, но профили клиентов не сломаются.`)) return;
     setVoiceSavingId(voice.id);
-    setError(null);
     try {
       await deleteCallCustomerVoice(voice.id);
       setVoices((current) => current.filter((item) => item.id !== voice.id));
-      setNotice('Голос удалён из интерфейса.');
+      showToast({ type: 'success', title: 'Голос удалён', description: voice.name });
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить голос.');
+      const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить голос.';
+      showToast({ type: 'error', title: 'Не удалось удалить голос', description: message });
     } finally {
       setVoiceSavingId(null);
     }
   }
 
   async function removeProfile(profile: CustomerProfile) {
-    if (!window.confirm(`Удалить профиль "${profile.name}"?`)) return;
+    setProfileSaving(true);
     try {
       await deleteCallCustomerProfile(profile.id);
       setProfiles((current) => current.filter((item) => item.id !== profile.id));
       setScripts((current) => current.map((script) => ({ ...script, profileIds: script.profileIds.filter((id) => id !== profile.id) })));
+      setModalOpen(false);
+      setEditingProfile(null);
+      showToast({ type: 'success', title: 'Профиль удалён', description: profile.name });
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить профиль клиента.');
+      const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить профиль клиента.';
+      showToast({ type: 'error', title: 'Не удалось удалить профиль', description: message });
+    } finally {
+      setProfileSaving(false);
     }
   }
 
@@ -1706,8 +2205,14 @@ export function CallSettingsPage() {
       setScriptEditorOpen(true);
       setEditingScript(saved);
       navigate(`/call-settings/scripts/${encodeURIComponent(saved.id)}`, { replace: !editingScript });
+      showToast({
+        type: 'success',
+        title: editingScript ? 'Скрипт сохранён' : 'Скрипт создан',
+        description: saved.name,
+      });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить скрипт.');
+      const message = saveError instanceof Error ? saveError.message : 'Не удалось сохранить скрипт.';
+      showToast({ type: 'error', title: 'Не удалось сохранить скрипт', description: message });
     }
   }
 
@@ -1716,20 +2221,37 @@ export function CallSettingsPage() {
   }
 
   async function removeScript(script: CallScript) {
-    if (!window.confirm(`Удалить скрипт "${script.name}"?`)) return;
     try {
       await deleteCallScript(script.id);
       setScripts((current) => current.filter((item) => item.id !== script.id));
       if (route.tab === 'scripts' && route.scriptId === script.id) navigate(CALL_SETTINGS_PATHS.scripts, { replace: true });
+      showToast({ type: 'success', title: 'Скрипт удалён', description: script.name });
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Не удалось удалить скрипт.');
+      const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить скрипт.';
+      showToast({ type: 'error', title: 'Не удалось удалить скрипт', description: message });
+    }
+  }
+
+  async function removePlan(plan: CallPlan) {
+    try {
+      await deleteCallPlan(plan.id);
+      setPlans((current) => current.filter((item) => item.id !== plan.id));
+      setSelectedPlan(null);
+      setPlanCalls([]);
+      setPlanEditorOpen(false);
+      navigate(CALL_SETTINGS_PATHS.plan, { replace: true });
+      showToast({ type: 'success', title: 'План прозвона удалён', description: plan.name });
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить план прозвона.';
+      showToast({ type: 'error', title: 'Не удалось удалить план', description: message });
     }
   }
 
   async function savePlan(plan: CallPlanForm) {
     try {
-      const saved = route.tab === 'plan' && route.edit && route.planId
-        ? await updateCallPlan(route.planId, plan)
+      const isEdit = route.tab === 'plan' && route.edit && route.planId;
+      const saved = isEdit
+        ? await updateCallPlan(route.planId!, plan)
         : await createCallPlan(plan);
       setPlans((current) => {
         const exists = current.some((item) => item.id === saved.id);
@@ -1737,8 +2259,14 @@ export function CallSettingsPage() {
       });
       setPlanEditorOpen(false);
       navigate(`/call-settings/plans/${encodeURIComponent(saved.id)}`, { replace: true });
+      showToast({
+        type: 'success',
+        title: isEdit ? 'План сохранён' : 'План создан',
+        description: saved.name,
+      });
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Не удалось сохранить план прозвона.');
+      const message = saveError instanceof Error ? saveError.message : 'Не удалось сохранить план прозвона.';
+      showToast({ type: 'error', title: 'Не удалось сохранить план', description: message });
     }
   }
 
@@ -1746,10 +2274,11 @@ export function CallSettingsPage() {
     try {
       const result = await initiateCallPlan(plan.id);
       setPlans((current) => current.map((item) => item.id === result.item.id ? result.item : item));
-      setNotice(`Прозвон инициирован: ${result.totalJobs} звонков.`);
+      showToast({ type: 'success', title: 'Прозвон инициирован', description: `${result.totalJobs} звонков` });
       if (selectedPlan?.id === plan.id || route.planId === plan.id) await openPlanHistory(result.item, { skipNavigate: true });
     } catch (initError) {
-      setError(initError instanceof Error ? initError.message : 'Не удалось инициировать прозвон.');
+      const message = initError instanceof Error ? initError.message : 'Не удалось инициировать прозвон.';
+      showToast({ type: 'error', title: 'Не удалось инициировать прозвон', description: message });
     }
   }
 
@@ -1807,9 +2336,9 @@ export function CallSettingsPage() {
     if (!promptPreview) return;
     try {
       await navigator.clipboard.writeText(promptPreview.prompt);
-      setNotice('Промпт скопирован.');
+      showToast({ type: 'success', title: 'Промпт скопирован' });
     } catch {
-      setNotice('Не удалось скопировать автоматически.');
+      showToast({ type: 'error', title: 'Не удалось скопировать промпт' });
     }
   }
 
@@ -1821,6 +2350,7 @@ export function CallSettingsPage() {
         profiles={sortedProfiles}
         onBack={() => navigate(CALL_SETTINGS_PATHS.scripts)}
         onSave={saveScript}
+        onDelete={editingScript ? () => removeScript(editingScript) : undefined}
       />
     );
   }
@@ -1834,11 +2364,9 @@ export function CallSettingsPage() {
         holdingId={selectedHoldingId}
         options={{ ...planOptions, scripts: sortedScripts }}
         initialPlan={initialPlan}
-        onBack={() => {
-          if (route.tab === 'plan' && route.planId) navigate(`/call-settings/plans/${encodeURIComponent(route.planId)}`);
-          else navigate(CALL_SETTINGS_PATHS.plan);
-        }}
+        onBack={() => navigate(CALL_SETTINGS_PATHS.plan)}
         onSave={savePlan}
+        onDelete={initialPlan ? () => removePlan(initialPlan) : undefined}
       />
     );
   }
@@ -1846,79 +2374,116 @@ export function CallSettingsPage() {
   if (selectedPlan) {
     const selectedScript = scripts.find((script) => script.id === selectedPlan.scriptId);
     const selectedPhoneType = planOptions.phoneNumberTypes.find((type) => type.id === selectedPlan.phoneNumberTypeId);
-    const selectedTargetItems = selectedPlan.targetType === 'employees'
-      ? planOptions.employees.filter((employee) => selectedPlan.targetIds.includes(employee.id)).map((employee) => ({
-        id: employee.id,
-        title: employee.fullName,
-        meta: employee.dealershipName,
-      }))
-      : planOptions.dealerships.filter((dealership) => selectedPlan.targetIds.includes(dealership.id)).map((dealership) => ({
-        id: dealership.id,
-        title: dealership.name,
-        meta: `${dealership.city || 'Город не указан'} · сотрудников: ${dealership.employeesCount}`,
-      }));
+    const selectedEmployees = selectedPlan.targetType === 'employees'
+      ? planOptions.employees.filter((employee) => selectedPlan.targetIds.includes(employee.id))
+      : planOptions.employees.filter((employee) => selectedPlan.targetIds.includes(employee.dealershipId));
+    const audienceCount = selectedPlan.targetType === 'employees'
+      ? selectedPlan.targetIds.length
+      : planOptions.dealerships.filter((item) => selectedPlan.targetIds.includes(item.id)).reduce((sum, item) => sum + item.employeesCount, 0);
+    const scheduleLabel = PLAN_FREQUENCIES.find((item) => item.value === selectedPlan.frequency)?.label || selectedPlan.frequency;
     return (
       <div style={{ display: 'grid', gap: 18 }}>
+        <div className="sa-breadcrumb">
+          <button type="button" className="sa-btn-text" onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>План прозвона</button>
+          <span className="sa-breadcrumb-sep">→</span>
+          <span>{selectedPlan.name}</span>
+        </div>
+
         <section className="sa-card" style={{ padding: 20, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           <div>
             <h1 className="sa-page-title" style={{ marginBottom: 6 }}>{selectedPlan.name}</h1>
             <div className="sa-meta">Состав плана, история прозвонов и аналитика.</div>
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>Обновить</button>
-            <button type="button" className="sa-btn-outline" onClick={() => navigate(`/call-settings/plans/${encodeURIComponent(selectedPlan.id)}/edit`)}>Редактировать</button>
-            <button type="button" className="sa-btn-primary" onClick={() => initiatePlan(selectedPlan)}>Позвонить по аудитории</button>
-            <button type="button" className="sa-btn-outline" onClick={() => navigate(CALL_SETTINGS_PATHS.plan)}>Назад к планам</button>
+            <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>
+              <RefreshIcon />
+              Обновить
+            </button>
+            <button type="button" className="sa-btn-outline" onClick={() => navigate(`/call-settings/plans/${encodeURIComponent(selectedPlan.id)}/edit`)}>
+              <EditIcon />
+              Редактировать
+            </button>
+            <button type="button" className="sa-btn-outline" onClick={() => initiatePlan(selectedPlan)}>
+              <PhoneIcon />
+              Позвонить по аудитории
+            </button>
+            <button type="button" className="sa-btn-danger" onClick={() => setPlanDeleteConfirm(true)}>Удалить</button>
           </div>
         </section>
-        <section className="sa-card" style={{ padding: 20, display: 'grid', gap: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0, fontSize: 18 }}>Из чего состоит план</h2>
-            <span className="sa-chip">ID: {selectedPlan.id}</span>
+
+        <div className="sa-kpi-grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
+          <div className="sa-card sa-brutal-card" style={{ padding: '14px 16px', minHeight: 0 }}>
+            <div className="sa-meta">Аудитория</div>
+            <div style={{ marginTop: 8, fontSize: 15, fontWeight: 650, lineHeight: 1.3 }}>
+              {selectedPlan.targetType === 'employees' ? 'Сотрудники' : 'Точки'}
+            </div>
+            <div className="sa-meta" style={{ marginTop: 4 }}>{audienceCount} выбрано</div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
-            <div className="sa-card" style={{ padding: 12 }}>
-              <div className="sa-meta">Аудитория</div>
-              <strong>{selectedPlan.targetType === 'employees' ? 'Сотрудники' : 'Точки'}</strong>
-              <div className="sa-meta" style={{ marginTop: 4 }}>{selectedTargetItems.length} выбрано</div>
-            </div>
-            <div className="sa-card" style={{ padding: 12 }}>
-              <div className="sa-meta">Скрипт</div>
-              <strong>{selectedScript?.name || 'Не найден'}</strong>
-            </div>
-            <div className="sa-card" style={{ padding: 12 }}>
-              <div className="sa-meta">Тип номера</div>
-              <strong>{selectedPhoneType?.name || 'Не найден'}</strong>
-            </div>
-            <div className="sa-card" style={{ padding: 12 }}>
-              <div className="sa-meta">Расписание</div>
-              <strong>{PLAN_FREQUENCIES.find((item) => item.value === selectedPlan.frequency)?.label || selectedPlan.frequency}</strong>
-              {selectedPlan.frequency !== 'manual' && (
-                <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
-              )}
+          <div className="sa-card sa-brutal-card" style={{ padding: '14px 16px', minHeight: 0 }}>
+            <div className="sa-meta">Скрипт</div>
+            <div style={{ marginTop: 8, fontSize: 15, fontWeight: 650, lineHeight: 1.3 }}>
+              {selectedScript?.name || 'Не найден'}
             </div>
           </div>
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ fontWeight: 700 }}>Выбранные {selectedPlan.targetType === 'employees' ? 'сотрудники' : 'точки'}</div>
-            {selectedTargetItems.length === 0 ? (
-              <div className="sa-meta">Выбранные элементы не найдены в текущей компании.</div>
-            ) : (
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {selectedTargetItems.slice(0, 24).map((item) => (
-                  <span key={item.id} className="sa-chip" title={item.meta}>{item.title}</span>
-                ))}
-                {selectedTargetItems.length > 24 && <span className="sa-chip">+{selectedTargetItems.length - 24}</span>}
-              </div>
+          <div className="sa-card sa-brutal-card" style={{ padding: '14px 16px', minHeight: 0 }}>
+            <div className="sa-meta">Тип номера</div>
+            <div style={{ marginTop: 8, fontSize: 15, fontWeight: 650, lineHeight: 1.3 }}>
+              {selectedPhoneType?.name || 'Не найден'}
+            </div>
+          </div>
+          <div className="sa-card sa-brutal-card" style={{ padding: '14px 16px', minHeight: 0 }}>
+            <div className="sa-meta">Расписание</div>
+            <div style={{ marginTop: 8, fontSize: 15, fontWeight: 650, lineHeight: 1.3 }}>{scheduleLabel}</div>
+            {selectedPlan.frequency !== 'manual' && (
+              <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
             )}
           </div>
+        </div>
+
+        <section style={{ display: 'grid', gap: 12 }}>
+          <h2 className="sa-section-title" style={{ margin: 0 }}>Выбранные сотрудники</h2>
+          <div className="sa-companies-table-wrap sa-desktop-only">
+            <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+              <thead>
+                <tr>
+                  <th>Сотрудник</th>
+                  <th style={{ width: 220 }}>Точка</th>
+                  <th style={{ width: 220 }}>Email</th>
+                  <th style={{ width: 160 }}>Телефон</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedEmployees.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="sa-empty-state">
+                      Сотрудники не найдены в текущей компании.
+                    </td>
+                  </tr>
+                ) : (
+                  selectedEmployees.map((employee) => (
+                    <tr key={employee.id}>
+                      <td>
+                        <div className="sa-cell-name">{employee.fullName}</div>
+                      </td>
+                      <td>{employee.dealershipName}</td>
+                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{employee.email || '—'}</td>
+                      <td>{employee.phone || '—'}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </section>
-        <section className="sa-card" style={{ padding: 20 }}>
+
+        <section style={{ display: 'grid', gap: 12 }}>
+          <h2 className="sa-section-title" style={{ margin: 0 }}>История прозвонов</h2>
           {planCallsLoading ? (
             <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Загрузка...</div>
           ) : planCalls.length === 0 ? (
             <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Звонков по этому плану пока нет.</div>
           ) : (
-            <div className="sa-table-wrap">
+            <div className="sa-companies-table-wrap sa-desktop-only">
               <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
                 <thead>
                   <tr>
@@ -1935,8 +2500,28 @@ export function CallSettingsPage() {
                   {planCalls.map((call) => {
                     const analytics = getEvaluationSummary(call.evaluation);
                     const score = call.totalScore ?? analytics.overallScore;
+                    const canOpenAnalytics = Boolean(call.auditId);
                     return (
-                      <tr key={call.id}>
+                      <tr
+                        key={call.id}
+                        className={canOpenAnalytics ? 'sa-row-clickable' : undefined}
+                        onClick={() => {
+                          if (!canOpenAnalytics) {
+                            showToast({
+                              type: 'info',
+                              title: 'Аналитика ещё не готова',
+                              description: 'Появится после создания проверки по звонку.',
+                            });
+                            return;
+                          }
+                          void openCallAnalyticsDrawer(call);
+                        }}
+                        role={canOpenAnalytics ? 'button' : undefined}
+                        tabIndex={canOpenAnalytics ? 0 : undefined}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && canOpenAnalytics) void openCallAnalyticsDrawer(call);
+                        }}
+                      >
                         <td>
                           <strong>{call.employeeName || 'Сотрудник'}</strong>
                           <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
@@ -1954,19 +2539,7 @@ export function CallSettingsPage() {
                         </td>
                         <td>{formatPlanCallDuration(call.answerTimeSec)}</td>
                         <td>{formatPlanCallDuration(call.talkDurationSec)}</td>
-                        <td>
-                          <div>{new Date(call.startedAt).toLocaleString('ru-RU')}</div>
-                          <button
-                            type="button"
-                            className="sa-link-button"
-                            onClick={() => void openCallAnalyticsDrawer(call)}
-                            disabled={!call.auditId}
-                            title={!call.auditId ? 'Аналитика появится после создания проверки по звонку' : undefined}
-                            style={{ padding: 0, border: 0, background: 'transparent', color: call.auditId ? 'var(--sa-accent)' : 'var(--sa-text-secondary)', fontWeight: 700, cursor: call.auditId ? 'pointer' : 'not-allowed', marginTop: 6 }}
-                          >
-                            Показать аналитику
-                          </button>
-                        </td>
+                        <td>{new Date(call.startedAt).toLocaleString('ru-RU')}</td>
                       </tr>
                     );
                   })}
@@ -1992,6 +2565,16 @@ export function CallSettingsPage() {
             <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите звонок.</div>
           )}
         </SlideOver>
+        <DeleteConfirmModal
+          open={planDeleteConfirm}
+          title={`Удалить план «${selectedPlan.name}»?`}
+          nested={false}
+          onCancel={() => setPlanDeleteConfirm(false)}
+          onConfirm={() => {
+            setPlanDeleteConfirm(false);
+            void removePlan(selectedPlan);
+          }}
+        />
       </div>
     );
   }
@@ -2020,7 +2603,7 @@ export function CallSettingsPage() {
           {activeTab === 'profiles' && (
             <button type="button" className="sa-btn-brutal-3d" disabled={!selectedHoldingId} onClick={openCreate}>
               <LetsIcon name="add-light" size={16} bold />
-              Создать профиль клиента
+              Создать профиль
             </button>
           )}
           {activeTab === 'scripts' && (
@@ -2045,7 +2628,6 @@ export function CallSettingsPage() {
       </div>
 
       {error && <div className="sa-batch-live-error" style={{ marginBottom: 12 }}>{error}</div>}
-      {notice && <div className="sa-batch-live-note" style={{ marginBottom: 12 }}>{notice}</div>}
 
       {activeTab === 'profiles' && (
         <div className="sa-companies-table-wrap sa-desktop-only">
@@ -2059,16 +2641,14 @@ export function CallSettingsPage() {
                 <th style={{ width: 130 }}>Терпение</th>
                 <th style={{ width: 130 }}>Реплики</th>
                 <th>Стиль общения</th>
-                <th style={{ width: 90 }} />
-                <th style={{ width: 32 }} />
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
+                <tr><td colSpan={7} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
               ) : sortedProfiles.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="sa-empty-state">
+                  <td colSpan={7} className="sa-empty-state">
                     Профилей клиентов пока нет
                   </td>
                 </tr>
@@ -2099,10 +2679,6 @@ export function CallSettingsPage() {
                         <span className="sa-meta">—</span>
                       )}
                     </td>
-                    <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
-                      <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => removeProfile(profile)}>Удалить</button>
-                    </td>
-                    <td className="sa-row-chevron-cell">→</td>
                   </tr>
                 ))
               )}
@@ -2121,16 +2697,14 @@ export function CallSettingsPage() {
                 <th style={{ width: 180 }}>Выборка</th>
                 <th style={{ width: 120 }}>Вопросы</th>
                 <th style={{ width: 140 }}>Возражения</th>
-                <th style={{ width: 90 }} />
-                <th style={{ width: 32 }} />
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
+                <tr><td colSpan={5} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
               ) : sortedScripts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="sa-empty-state">
+                  <td colSpan={5} className="sa-empty-state">
                     Скриптов пока нет
                   </td>
                 </tr>
@@ -2159,10 +2733,6 @@ export function CallSettingsPage() {
                       <td>{script.dataCondition.tags.length ? `${script.dataCondition.tags.length} тегов` : 'Без тегов'}</td>
                       <td>{script.questions.length}</td>
                       <td>{script.objections.length}</td>
-                      <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
-                        <button type="button" className="sa-btn-danger sa-btn-sm" onClick={() => removeScript(script)}>Удалить</button>
-                      </td>
-                      <td className="sa-row-chevron-cell">→</td>
                     </tr>
                   );
                 })
@@ -2182,16 +2752,15 @@ export function CallSettingsPage() {
                 <th style={{ width: 180 }}>Скрипт</th>
                 <th style={{ width: 150 }}>Частотность</th>
                 <th style={{ width: 140 }}>Время</th>
-                <th style={{ width: 200 }} />
-                <th style={{ width: 32 }} />
+                <th className="sa-text-right sa-holdings-actions-col" style={{ width: 88 }}>Действия</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={7} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
+                <tr><td colSpan={6} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
               ) : sortedPlans.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="sa-empty-state">
+                  <td colSpan={6} className="sa-empty-state">
                     Планов прозвона пока нет
                   </td>
                 </tr>
@@ -2220,26 +2789,22 @@ export function CallSettingsPage() {
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
                       <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
                       <td>{plan.frequency === 'manual' ? '—' : `${plan.callTimeFrom} - ${plan.callTimeTo}`}</td>
-                      <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
-                        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                          <button
-                            type="button"
-                            className="sa-btn-outline sa-btn-icon"
-                            onClick={() => openPromptPreview(plan)}
-                            aria-label="Тест промпта"
-                            title="Тест промпта"
-                            disabled={promptPreviewLoadingId === plan.id}
-                          >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                              <path d="M10 2v6L5 19a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3L14 8V2" />
-                              <path d="M8 2h8" />
-                              <path d="M7 16h10" />
-                            </svg>
-                          </button>
-                          <button type="button" className="sa-btn-outline sa-btn-sm" onClick={() => initiatePlan(plan)}>Позвонить по аудитории</button>
-                        </div>
+                      <td className="sa-holdings-actions-cell sa-text-right" onClick={(event) => event.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="sa-btn-outline sa-btn-icon"
+                          onClick={() => openPromptPreview(plan)}
+                          aria-label="Тест промпта"
+                          title="Тест промпта"
+                          disabled={promptPreviewLoadingId === plan.id}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                            <path d="M10 2v6L5 19a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3L14 8V2" />
+                            <path d="M8 2h8" />
+                            <path d="M7 16h10" />
+                          </svg>
+                        </button>
                       </td>
-                      <td className="sa-row-chevron-cell">→</td>
                     </tr>
                   );
                 })
@@ -2253,8 +2818,10 @@ export function CallSettingsPage() {
         open={modalOpen}
         initialProfile={editingProfile}
         voices={voices}
+        saving={profileSaving}
         onClose={() => { setModalOpen(false); setEditingProfile(null); }}
         onSave={saveProfile}
+        onDelete={editingProfile ? () => void removeProfile(editingProfile) : undefined}
       />
       <VoicesModal
         open={voicesModalOpen}

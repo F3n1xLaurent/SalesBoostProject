@@ -39,6 +39,7 @@ export type UnifiedCallReport = {
     text: string;
     mark: UnifiedDialogMark | null;
     comment: string | null;
+    betterExample: string | null;
   }>;
   recommendations: Array<{
     text: string;
@@ -71,6 +72,41 @@ function clampScore(value: unknown): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(parsed)) return 0;
   return Math.max(0, Math.min(100, Math.round(parsed)));
+}
+
+const DIMENSION_TO_CATEGORY: Record<string, UnifiedReportCategory> = {
+  contact: 'Контакт',
+  first_contact: 'Контакт',
+  intro: 'Контакт',
+  opening: 'Контакт',
+  diagnosis: 'Диагностика',
+  diagnostics: 'Диагностика',
+  needs: 'Диагностика',
+  needs_discovery: 'Диагностика',
+  product: 'Продукт',
+  product_and_sales: 'Продукт',
+  presentation: 'Продукт',
+  product_presentation: 'Продукт',
+  closing: 'Закрытие',
+  closing_commitment: 'Закрытие',
+  objections: 'Закрытие',
+  objection_handling: 'Закрытие',
+  next_step: 'Закрытие',
+  communication: 'Коммуникация',
+  comm: 'Коммуникация',
+  tone: 'Коммуникация',
+};
+
+function categoryScoresFromDimensions(dimensionScores: Record<string, number> | undefined): Partial<Record<UnifiedReportCategory, number>> {
+  if (!dimensionScores) return {};
+  const result: Partial<Record<UnifiedReportCategory, number>> = {};
+  for (const [key, value] of Object.entries(dimensionScores)) {
+    const category = DIMENSION_TO_CATEGORY[String(key || '').trim().toLowerCase()];
+    if (!category) continue;
+    const score = clampScore(value);
+    result[category] = result[category] == null ? score : Math.round(((result[category] as number) + score) / 2);
+  }
+  return result;
 }
 
 export function unifiedVerdict(score: number): UnifiedCallReport['verdict'] {
@@ -108,21 +144,39 @@ function normalizeMark(value: unknown): UnifiedDialogMark {
 
 export function normalizeUnifiedCallReport(
   value: unknown,
-  fallback: { totalScore: number; transcript: TranscriptTurn[]; source?: UnifiedCallReport['source'] },
+  fallback: {
+    totalScore: number;
+    transcript: TranscriptTurn[];
+    source?: UnifiedCallReport['source'];
+    dimensionScores?: Record<string, number>;
+  },
   catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
 ): UnifiedCallReport | null {
   if (!value || typeof value !== 'object') return null;
   const source = value as Record<string, unknown>;
   const totalScore = clampScore(source.totalScore ?? fallback.totalScore);
   const categoriesSource = Array.isArray(source.categories) ? source.categories : [];
-  const categories = UNIFIED_REPORT_CATEGORIES.map((name) => {
+  const fromDimensions = categoryScoresFromDimensions(fallback.dimensionScores);
+  let categories = UNIFIED_REPORT_CATEGORIES.map((name) => {
     const raw = categoriesSource.find((item) => item && typeof item === 'object' && asText((item as Record<string, unknown>).name) === name) as Record<string, unknown> | undefined;
+    const rawScore = raw?.score;
+    const hasNumericScore = rawScore !== undefined && rawScore !== null && String(rawScore).trim() !== '' && Number.isFinite(Number(rawScore));
+    const parsedScore = hasNumericScore ? clampScore(rawScore) : null;
     return {
       name,
-      score: clampScore(raw?.score ?? totalScore),
+      score: parsedScore ?? fromDimensions[name] ?? totalScore,
       comment: asText(raw?.comment) || 'Комментарий по категории не сформирован.',
     };
   });
+
+  // LLM often copies schema stub with score: 0 for every category.
+  const allZero = categories.every((item) => item.score === 0);
+  if (allZero && totalScore > 0) {
+    categories = categories.map((item) => ({
+      ...item,
+      score: clampScore(fromDimensions[item.name] ?? totalScore),
+    }));
+  }
 
   const findings = (Array.isArray(source.keyFindings) ? source.keyFindings : [])
     .map((item) => {
@@ -147,12 +201,25 @@ export function normalizeUnifiedCallReport(
       ? dialogSource[index] as Record<string, unknown>
       : {};
     const role = turn.role;
+    const betterExample = role === 'manager' ? asText(raw.betterExample) || null : null;
     return {
       role,
       text: turn.text,
       mark: role === 'manager' ? normalizeMark(raw.mark) : null,
       comment: role === 'manager' ? asText(raw.comment) || null : null,
+      betterExample,
     };
+  }).map((line) => {
+    if (line.role !== 'manager' || line.betterExample) return line;
+    const matched = findings.find((finding) => {
+      const quote = finding.quote.trim().toLowerCase();
+      const text = line.text.trim().toLowerCase();
+      if (!quote || !text) return false;
+      return text.includes(quote) || quote.includes(text) || text.includes(quote.slice(0, Math.min(40, quote.length)));
+    });
+    return matched?.betterExample
+      ? { ...line, betterExample: matched.betterExample }
+      : line;
   });
 
   const recommendations = (Array.isArray(source.recommendations) ? source.recommendations : [])
@@ -213,10 +280,12 @@ export async function generateUnifiedCallReport(input: {
       : '- Отчёт только по звонку, не по тренировке.',
     '- Общий балл 0-100 и verdict: Хорошо для 76-100, Средне для 50-75, Плохо для 0-49.',
     '- categories должны быть ровно 5 и только: Контакт, Диагностика, Продукт, Закрытие, Коммуникация.',
+    '- Для каждой категории score — реалистичное число 0-100 на основе dimension_scores / checklist / issues. Не ставь 0 всем категориям, если общий балл > 0.',
     '- keyFindings: problemTitle выбирай ТОЛЬКО из справочника ниже. Нельзя придумывать новые названия проблем.',
     '- keyFindings.quote должна быть реальной цитатой из диалога. Если точной цитаты нет, возьми самый близкий фрагмент из стенограммы.',
     '- dialog должен содержать ВСЕ реплики исходного диалога в том же порядке.',
-    '- Для каждой реплики менеджера mark: positive | normal | negative. Для клиента mark=null и comment=null.',
+    '- Для каждой реплики менеджера mark: positive | normal | negative. Для клиента mark=null, comment=null, betterExample=null.',
+    '- Для реплик менеджера с mark=normal или negative добавь comment и, если уместно, betterExample — короткий пример, как стоило сказать.',
     '- recommendations должны быть конкретными следующими шагами для менеджера/руководителя филиала.',
     '- Все пользовательские тексты строго на русском.',
     '',
@@ -239,7 +308,7 @@ export async function generateUnifiedCallReport(input: {
       summary: '2-3 предложения, общее впечатление от разговора простым языком',
       totalScore,
       verdict: unifiedVerdict(totalScore),
-      categories: UNIFIED_REPORT_CATEGORIES.map((name) => ({ name, score: 0, comment: 'краткий комментарий' })),
+      categories: UNIFIED_REPORT_CATEGORIES.map((name) => ({ name, score: totalScore, comment: 'краткий комментарий' })),
       strengths: ['короткий буллет без цитат'],
       weaknesses: ['короткий буллет без цитат'],
       keyFindings: [{
@@ -255,6 +324,7 @@ export async function generateUnifiedCallReport(input: {
         text: turn.text,
         mark: turn.role === 'manager' ? 'normal' : null,
         comment: turn.role === 'manager' ? 'короткий комментарий' : null,
+        betterExample: turn.role === 'manager' ? 'пример, как стоило сказать' : null,
       })),
       recommendations: [{ text: 'конкретное действие', category: 'Контакт', problemTitle: catalog[0]?.title ?? DEFAULT_CALL_REPORT_PROBLEMS[0].title }],
     }, null, 2),
@@ -274,7 +344,14 @@ export async function generateUnifiedCallReport(input: {
   const content = response.choices[0]?.message?.content?.trim();
   if (!content) throw new Error('Empty unified report response');
   const parsed = JSON.parse(content) as unknown;
-  const normalized = normalizeUnifiedCallReport(parsed, { totalScore, transcript: input.transcript, source }, catalog);
+  const dimensionScores = input.evaluation.dimension_scores && typeof input.evaluation.dimension_scores === 'object'
+    ? input.evaluation.dimension_scores as Record<string, number>
+    : undefined;
+  const normalized = normalizeUnifiedCallReport(
+    parsed,
+    { totalScore, transcript: input.transcript, source, dimensionScores },
+    catalog,
+  );
   if (!normalized) throw new Error('Invalid unified report JSON');
   return normalized;
 }

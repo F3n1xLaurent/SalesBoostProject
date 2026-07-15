@@ -9,7 +9,9 @@ import {
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
+import { BrutalSelect } from '../../../shared/ui/BrutalSelect';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { EditIcon } from '../../../shared/ui/icons/ActionIcons';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { BrutalModal } from '../../../shared/ui/brutal-modal';
 import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
@@ -135,21 +137,18 @@ function DirectionModal(props: {
         )}
       >
         <form id={DIRECTION_FORM_ID} onSubmit={handleSubmit} style={{ display: 'grid', gap: 14 }}>
-          <label style={{ display: 'grid', gap: 6 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
             <span>Компания</span>
-            <select
-              className={`sa-select${holdingInvalid ? ' sa-field-invalid' : ''}`}
+            <BrutalSelect
               value={form.holdingId}
+              options={props.holdings.map((holding) => ({ value: holding.id, label: holding.name }))}
+              placeholder="Выберите компанию"
               disabled={!isCreate}
-              onChange={(event) => setForm((current) => ({ ...current, holdingId: event.target.value }))}
-              aria-invalid={holdingInvalid || undefined}
-            >
-              <option value="">Выберите компанию</option>
-              {props.holdings.map((holding) => (
-                <option key={holding.id} value={holding.id}>{holding.name}</option>
-              ))}
-            </select>
-          </label>
+              invalid={holdingInvalid}
+              aria-label="Компания"
+              onChange={(value) => setForm((current) => ({ ...current, holdingId: value }))}
+            />
+          </div>
 
           <label style={{ display: 'grid', gap: 6 }}>
             <span>Название</span>
@@ -439,10 +438,7 @@ export function DealershipDirectionsPage() {
                     aria-label={`Редактировать ${item.name}`}
                     title="Редактировать"
                   >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                      <path d="M12 20h9" />
-                      <path d="M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />
-                    </svg>
+                    <EditIcon />
                   </button>
                 </td>
               </tr>

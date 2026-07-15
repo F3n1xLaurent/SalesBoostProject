@@ -1,41 +1,27 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { FilterPickerField } from './FilterPickerField';
 import { FilterPickerMenu } from './FilterPickerMenu';
-
-export type FilterPickerOption<T extends string = string> = {
-  value: T;
-  label: string;
-};
-
-function filterPickerWidth(labels: string[], min = 120, max = 480): number {
-  const longest = labels.reduce((maxLabel, label) => (label.length > maxLabel.length ? label : maxLabel), '');
-  const width = Math.ceil(longest.length * 8 + 56);
-  return Math.min(Math.max(width, min), max);
-}
+import type { FilterPickerOption } from './SingleSelectFilterPicker';
 
 type Props<T extends string> = {
   options: FilterPickerOption<T>[];
-  value: T;
-  placeholder?: string;
+  values: T[];
+  placeholder: string;
   disabled?: boolean;
   zIndex?: number;
-  onChange: (value: T) => void;
+  onChange: (values: T[]) => void;
 };
 
-export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
+export function MultiSelectFilterPicker<T extends string>(props: Props<T>) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
-  const selectedOption = props.options.find((option) => option.value === props.value) ?? null;
+  const selectedSet = new Set(props.values);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredOptions = props.options.filter(
     (option) => !normalizedQuery || option.label.toLowerCase().includes(normalizedQuery),
   );
-
-  const pickerWidth = useMemo(
-    () => filterPickerWidth(props.options.map((option) => option.label)),
-    [props.options],
-  );
+  const selectedCount = props.values.length;
 
   function openPicker() {
     if (props.disabled) return;
@@ -47,23 +33,29 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
     setQuery('');
   }
 
-  function selectValue(value: T) {
-    props.onChange(value);
-    closePicker();
+  function toggleValue(value: T) {
+    const next = new Set(selectedSet);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    props.onChange([...next]);
   }
 
-  const inputValue = open ? (query || selectedOption?.label || '') : (selectedOption?.label ?? '');
+  const displayValue = open
+    ? query
+    : selectedCount > 0
+      ? `${props.placeholder} · ${selectedCount}`
+      : props.placeholder;
 
   return (
     <div
       ref={pickerRef}
-      className={`sa-tag-filter-picker${open ? ' sa-tag-filter-picker--open' : ''}`}
-      style={{ width: pickerWidth }}
+      className={`sa-tag-filter-picker${open ? ' sa-tag-filter-picker--open' : ''}${selectedCount > 0 ? ' has-value' : ''}`}
+      style={{ width: '100%', minWidth: 0 }}
     >
       <FilterPickerField open={open} onActivate={openPicker}>
         <input
           className="sa-input"
-          value={inputValue}
+          value={displayValue}
           onChange={(event) => {
             setQuery(event.target.value);
             setOpen(true);
@@ -76,15 +68,16 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
             if (menu?.contains(next)) return;
             window.setTimeout(closePicker, 160);
           }}
-          placeholder={props.placeholder ?? selectedOption?.label ?? 'Выберите значение'}
+          placeholder={props.placeholder}
           disabled={props.disabled}
           aria-haspopup="listbox"
           aria-expanded={open}
+          readOnly={!open}
         />
       </FilterPickerField>
       <FilterPickerMenu open={open} anchorRef={pickerRef} role="listbox" zIndex={props.zIndex}>
         {filteredOptions.length ? filteredOptions.map((option) => {
-          const selected = props.value === option.value;
+          const selected = selectedSet.has(option.value);
           return (
             <button
               key={option.value}
@@ -94,9 +87,10 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
               className={`sa-tag-filter-option${selected ? ' sa-tag-filter-option--selected' : ''}`}
               onMouseDown={(event) => {
                 event.preventDefault();
-                selectValue(option.value);
+                toggleValue(option.value);
               }}
             >
+              <input type="checkbox" checked={selected} readOnly tabIndex={-1} aria-hidden />
               <span className="sa-tag-filter-option__label" title={option.label}>{option.label}</span>
             </button>
           );

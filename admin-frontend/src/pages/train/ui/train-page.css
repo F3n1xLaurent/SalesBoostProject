@@ -375,7 +375,7 @@
   height: 100dvh;
   max-height: 100vh;
   max-height: 100dvh;
-  background: #edf1f7;
+  background: transparent;
   display: grid;
   grid-template-rows: auto 1fr auto;
   overflow: hidden;
@@ -1100,7 +1100,7 @@
 }
 
 .train-brutal-select-menu .sa-tag-filter-option--selected {
-  background: #F1F0EC;
+  background: #F5F5F5;
   color: #161613;
   font-weight: 600;
 }
@@ -1593,7 +1593,7 @@
 }
 
 .train-chat-shell {
-  background: #dbe4ef;
+  background: transparent;
 }
 
 .train-chat-header {
@@ -1642,7 +1642,7 @@
    ============================================================ */
 .theme-brutal.train-app {
   --tb-ink: #161613;
-  --tb-cream: #F3F2ED;
+  --tb-cream: #F3F3F3;
   --tb-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --sa-bg: var(--tb-cream);
   --sa-text: var(--tb-ink);
@@ -1898,7 +1898,8 @@
 }
 
 .theme-brutal.train-app .train-chat-shell {
-  background: var(--tb-cream);
+  background: transparent;
+  overflow: hidden;
 }
 
 .theme-brutal.train-app .train-chat-header,
@@ -1909,17 +1910,70 @@
 }
 
 .theme-brutal.train-app .train-chat-header {
-  border-bottom: none;
-  padding: 16px min(22px, 5vw) 10px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  min-height: 72px;
+}
+
+.theme-brutal.train-app .train-chat-header-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.theme-brutal.train-app .train-chat-header-copy {
+  min-width: 0;
+}
+
+.theme-brutal.train-app .train-chat-header-copy strong,
+.theme-brutal.train-app .train-chat-header-copy span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-brutal.train-app .train-chat-body {
+  background: transparent;
+  padding: 6px 18px 24px;
+}
+
+.theme-brutal.train-app .train-chat-thread {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  gap: 14px;
+  justify-content: flex-start;
+  padding-top: 8px;
+}
+
+.theme-brutal.train-app .train-chat-status,
+.theme-brutal.train-app .train-chat-error {
+  width: min(520px, 100%);
+  margin: 0 auto;
+  text-align: center;
+  border-radius: 14px;
+  padding: 10px 14px;
+}
+
+.theme-brutal.train-app .train-chat-error {
+  background: #FAECEC;
+  color: #E05252;
+  border: 1px solid rgba(224, 82, 82, 0.18);
 }
 
 .theme-brutal.train-app .train-recorder-bar {
-  border-top: none;
-  padding-top: 8px;
-  padding-bottom: 22px;
+  padding: 8px 18px 22px;
 }
 
-.theme-brutal.train-app .train-recorder-bar--active {
+.theme-brutal.train-app .train-record-zone {
+  width: min(420px, 100%);
+  margin: 0 auto;
+}
+
+.theme-brutal.train-app.train-app-embedded .train-session-wrap {
   background: transparent;
 }
 
@@ -1928,12 +1982,10 @@
   pointer-events: none;
 }
 
-.theme-brutal.train-app .train-chat-body {
-  background: var(--tb-cream);
-  padding: 6px 22px 24px;
-}
-
 .theme-brutal.train-app .train-audio-bubble {
+  width: fit-content;
+  max-width: min(420px, 92%);
+  min-width: 0;
   border-radius: 16px;
   padding: 10px 12px 11px;
   box-shadow: none;
@@ -1944,10 +1996,20 @@
   border: 1px solid rgba(22, 22, 19, 0.08);
 }
 
+.theme-brutal.train-app .train-voice-main {
+  width: max-content;
+  max-width: 100%;
+}
+
+.theme-brutal.train-app .train-voice-wave {
+  width: max-content;
+  max-width: 100%;
+}
+
 .theme-brutal.train-app .train-audio-manager {
   background: #FFFFFF;
-  border: 2px solid var(--tb-ink);
-  box-shadow: 3px 4px 0 rgba(22, 22, 19, 0.12);
+  border: 1px solid rgba(22, 22, 19, 0.16);
+  box-shadow: none;
 }
 
 .theme-brutal.train-app .train-audio-client::before,
@@ -1978,15 +2040,48 @@
 }
 
 .theme-brutal.train-app .train-record-button {
-  background: #FFFFFF;
+  background: var(--tb-ink);
   border: 2px solid var(--tb-ink);
+  box-shadow: none;
+  transform: none;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+}
+
+.theme-brutal.train-app .train-record-button:hover:not(:disabled) {
+  background: #FFFFFF;
+  border-color: var(--tb-ink);
+  transform: translate(-2px, -3px);
   box-shadow: 4px 5px 0 var(--tb-ink);
+}
+
+.theme-brutal.train-app .train-record-button .train-record-button-core {
+  background: #FFFFFF;
+}
+
+.theme-brutal.train-app .train-record-button:hover:not(:disabled) .train-record-button-core {
+  background: var(--tb-ink);
 }
 
 .theme-brutal.train-app .train-record-button-active {
   background: #FAECEC;
   border-color: var(--tb-status-red);
+  box-shadow: none;
+}
+
+.theme-brutal.train-app .train-record-button-active:hover:not(:disabled) {
+  background: #FFFFFF;
+  border-color: var(--tb-status-red);
+  transform: translate(-2px, -3px);
   box-shadow: 4px 5px 0 var(--tb-status-red);
+}
+
+.theme-brutal.train-app .train-record-button-active .train-record-button-core {
+  background: var(--tb-status-red);
+  border-radius: 6px;
+}
+
+.theme-brutal.train-app .train-record-button-active:hover:not(:disabled) .train-record-button-core {
+  background: var(--tb-status-red);
 }
 
 .theme-brutal.train-app .train-chat-header strong {
@@ -2132,7 +2227,7 @@ body > .train-modal-backdrop .train-report h2 {
   }
 }
 
-/* Embedded in SystemLayout — admin sidebar stays visible */
+/* Embedded in SystemLayout — admin sidebar stays visible on hub */
 .theme-brutal.train-app.train-app-embedded {
   width: 100%;
   margin: 0;
@@ -2146,6 +2241,31 @@ body > .train-modal-backdrop .train-report h2 {
   border-radius: var(--sa-card-radius, 22px);
   overflow: hidden;
   background: var(--tb-cream);
+}
+
+/* Focus mode: no sidebar — narrower centered chat */
+.theme-brutal .super-admin-content--trainer-focus > .sa-page-enter {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.theme-brutal.train-app.train-app-embedded.train-app--session {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.theme-brutal.train-app.train-app-embedded.train-app--session .train-session-wrap {
+  width: min(100%, 780px);
+  height: calc(100vh - 32px);
+  min-height: 520px;
+  margin: 0 auto;
+  background: transparent;
+  border-radius: 0;
 }
 
 .theme-brutal.train-app.train-app-embedded .train-session-loading {
@@ -2185,6 +2305,100 @@ body > .train-modal-backdrop .train-report h2 {
   flex-wrap: wrap;
 }
 
+.theme-brutal.train-app .train-hub-plan-hero {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.theme-brutal.train-app .train-hub-plan-hero-card {
+  width: min(100%, 420px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 8px 8px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  text-align: center;
+}
+
+.theme-brutal.train-app .train-hub-plan-hero-label {
+  font-family: var(--tb-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--sa-text-secondary);
+}
+
+.theme-brutal.train-app .train-hub-plan-hero-hint {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--sa-text-secondary);
+}
+
+.theme-brutal.train-app .train-hub-start-btn {
+  margin-top: 4px;
+  min-width: 220px;
+  min-height: 48px;
+  padding: 12px 28px;
+  font-size: 15px;
+  font-weight: 650;
+  border: 2px solid var(--tb-ink);
+  background: var(--tb-ink);
+  color: #FFFFFF;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.theme-brutal.train-app .train-hub-start-btn svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.theme-brutal.train-app .train-hub-start-btn svg [stroke],
+.theme-brutal.train-app .train-hub-start-btn svg path[stroke],
+.theme-brutal.train-app .train-hub-start-btn svg.sa-icon-stroke-2 [stroke],
+.theme-brutal.train-app .train-hub-start-btn svg.sa-icon-stroke-2 path[stroke] {
+  stroke-width: 2.4px !important;
+}
+
+.theme-brutal.train-app .train-hub-start-btn .sa-icon-bold {
+  filter: drop-shadow(0 0 0.55px currentColor);
+}
+
+.theme-brutal.train-app .train-hub-start-btn:hover:not(:disabled) {
+  background: #FFFFFF;
+  color: var(--tb-ink);
+  border-color: var(--tb-ink);
+  transform: translate(-2px, -3px);
+  box-shadow: 4px 5px 0 var(--tb-ink);
+}
+
+.theme-brutal.train-app .train-hub-start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.theme-brutal.train-app .train-hub-plan-hero-card .train-hub-dots--lg {
+  justify-content: center;
+  gap: 18px;
+}
+
+.theme-brutal.train-app .train-hub-plan-hero-card .train-hub-status-circle--plan,
+.theme-brutal.train-app .train-hub-plan-hero-card .train-hub-dots--lg .train-hub-dot {
+  width: 58px;
+  height: 58px;
+}
+
+.theme-brutal.train-app .train-hub-plan-hero-card .train-hub-status-circle--plan svg {
+  width: 28px;
+  height: 28px;
+}
+
 .theme-brutal.train-app .train-hub-title {
   margin-bottom: 4px !important;
 }
@@ -2219,6 +2433,172 @@ body > .train-modal-backdrop .train-report h2 {
 .theme-brutal.train-app .train-hub-stats {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
+  margin-bottom: 8px;
+}
+
+.theme-brutal.train-app .train-hub-history {
+  margin-top: 22px;
+}
+
+.theme-brutal.train-app .train-report-ready {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: #FFFFFF;
+  border: none;
+  box-shadow: 0 1px 4px rgba(22, 22, 19, 0.05), 0 4px 16px rgba(22, 22, 19, 0.04);
+}
+
+.theme-brutal.train-app .train-report-ready--status {
+  justify-content: center;
+  text-align: center;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.theme-brutal.train-app .train-report-ready--generating {
+  border: none;
+  box-shadow: 0 1px 4px rgba(22, 22, 19, 0.05), 0 4px 16px rgba(22, 22, 19, 0.04);
+}
+
+.theme-brutal.train-app .train-report-score-gauge {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.theme-brutal.train-app .train-report-score-gauge-center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.theme-brutal.train-app .train-report-score-gauge-center strong {
+  font-family: var(--tb-font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--tb-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.theme-brutal.train-app .train-report-ready .train-report-ready-copy {
+  flex: 1;
+  min-width: 160px;
+}
+
+.theme-brutal.train-app .train-report-ai-icon {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 2px;
+  display: grid;
+  place-items: center;
+}
+
+.theme-brutal.train-app .train-report-ai-orbit {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--tb-ink);
+  border-right-color: rgba(22, 22, 19, 0.18);
+  animation: train-report-ai-spin 1.1s linear infinite;
+}
+
+.theme-brutal.train-app .train-report-ai-orbit--slow {
+  inset: 6px;
+  border-top-color: rgba(22, 22, 19, 0.35);
+  border-right-color: transparent;
+  border-bottom-color: rgba(22, 22, 19, 0.12);
+  animation-duration: 1.8s;
+  animation-direction: reverse;
+}
+
+.theme-brutal.train-app .train-report-ai-core {
+  position: relative;
+  z-index: 1;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #FFFFFF;
+  border: 1.5px solid rgba(22, 22, 19, 0.12);
+  color: var(--tb-ink);
+  animation: train-report-ai-pulse 1.6s ease-in-out infinite;
+}
+
+.theme-brutal.train-app .train-report-ai-core svg {
+  display: block;
+}
+
+@keyframes train-report-ai-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes train-report-ai-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.94); opacity: 0.78; }
+}
+
+.theme-brutal.train-app .train-report-ready-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.theme-brutal.train-app .train-report-ready-copy strong {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--tb-ink);
+}
+
+.theme-brutal.train-app .train-report-ready-copy span {
+  font-size: 13px;
+  color: var(--sa-text-secondary);
+  line-height: 1.4;
+}
+
+.theme-brutal .sa-modal-body .train-controls-modal {
+  display: grid;
+  gap: 14px;
+}
+
+.theme-brutal .sa-modal-body .train-controls-modal label {
+  display: grid;
+  gap: 8px;
+}
+
+.theme-brutal .sa-modal-body .train-controls-modal label span {
+  font-family: var(--tb-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sa-text-secondary);
+}
+
+.theme-brutal .train-slide-report {
+  min-width: 0;
+}
+
+.theme-brutal .train-slide-report .train-audit-report {
+  gap: 12px;
+}
+
+.theme-brutal .train-slide-report .train-report-complete-banner {
+  display: none;
 }
 
 .theme-brutal.train-app .train-hub-stat-card {
@@ -2251,12 +2631,12 @@ body > .train-modal-backdrop .train-report h2 {
 }
 
 .theme-brutal.train-app .train-hub-dots--lg {
-  gap: 12px;
+  gap: 14px;
 }
 
 .theme-brutal.train-app .train-hub-dots--lg .train-hub-dot {
-  width: 38px;
-  height: 38px;
+  width: 48px;
+  height: 48px;
   border-width: 2.5px;
 }
 
@@ -2307,8 +2687,8 @@ body > .train-modal-backdrop .train-report h2 {
 }
 
 .theme-brutal.train-app .train-hub-status-circle--plan {
-  width: 38px;
-  height: 38px;
+  width: 48px;
+  height: 48px;
 }
 
 .theme-brutal.train-app .train-hub-status-circle--quest {
@@ -2350,6 +2730,22 @@ body > .train-modal-backdrop .train-report h2 {
   gap: 12px;
   flex-wrap: wrap;
   min-height: 28px;
+}
+
+.theme-brutal.train-app .train-hub-history-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.theme-brutal.train-app .train-hub-history-filters .sa-tag-filter-picker-wrap {
+  min-width: 0;
+}
+
+.theme-brutal.train-app .train-hub-history-filters .sa-tag-filter-picker {
+  min-width: 140px;
+  max-width: 220px;
 }
 
 .theme-brutal.train-app .train-hub-section-title {
@@ -2496,16 +2892,17 @@ body > .train-modal-backdrop .train-report h2 {
   }
 }
 
-/* ─── Streak celebration ─── */
+/* ─── Streak / success celebration (portaled to body) ─── */
+.theme-brutal.train-streak-celebration-backdrop,
 .theme-brutal.train-app .train-streak-celebration-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1200;
+  z-index: 1300;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: rgba(22, 22, 19, 0.42);
-  backdrop-filter: blur(4px);
+  padding: 20px;
+  box-sizing: border-box;
+  background: rgba(22, 22, 19, 0.32);
   animation: train-streak-backdrop-in 0.28s ease;
 }
 
@@ -2514,14 +2911,15 @@ body > .train-modal-backdrop .train-report h2 {
   to { opacity: 1; }
 }
 
+.theme-brutal .train-streak-celebration,
 .theme-brutal.train-app .train-streak-celebration {
   position: relative;
-  width: min(100%, 420px);
+  width: min(100%, 400px);
   padding: 36px 32px 28px;
   background: #FFFFFF;
-  border-radius: 24px;
-  border: 2px solid var(--tb-ink);
-  box-shadow: 6px 8px 0 var(--tb-ink);
+  border-radius: var(--sa-card-radius, 18px);
+  border: none;
+  box-shadow: 0 12px 40px rgba(22, 22, 19, 0.14);
   text-align: center;
   overflow: hidden;
   animation: train-streak-card-in 0.42s cubic-bezier(0.22, 1, 0.36, 1);
@@ -2578,24 +2976,27 @@ body > .train-modal-backdrop .train-report h2 {
   }
 }
 
+.theme-brutal .train-streak-celebration-kicker,
 .theme-brutal.train-app .train-streak-celebration-kicker {
   font-family: var(--tb-font-mono);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--tb-status-green);
+  color: var(--sa-text-secondary);
   margin-bottom: 8px;
 }
 
+.theme-brutal .train-streak-celebration-title,
 .theme-brutal.train-app .train-streak-celebration-title {
-  margin: 0 0 6px;
-  font-size: 26px;
+  margin: 0 0 18px;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--tb-ink);
 }
 
+.theme-brutal .train-streak-celebration-scenario,
 .theme-brutal.train-app .train-streak-celebration-scenario {
   margin: 0 0 22px;
   font-size: 14px;
@@ -2603,18 +3004,53 @@ body > .train-modal-backdrop .train-report h2 {
   line-height: 1.4;
 }
 
+.theme-brutal .train-success-check-circle,
+.theme-brutal.train-app .train-success-check-circle {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tb-status-green, #2D9B5E);
+  border: 2.5px solid var(--tb-status-green, #2D9B5E);
+  color: #FFFFFF;
+}
+
+.theme-brutal .train-success-check-circle svg [stroke],
+.theme-brutal .train-success-check-circle svg path[stroke],
+.theme-brutal.train-app .train-success-check-circle svg [stroke],
+.theme-brutal.train-app .train-success-check-circle svg path[stroke] {
+  stroke: currentColor;
+  stroke-width: 2.2px !important;
+}
+
+.theme-brutal.train-app .train-success-check {
+  display: none;
+}
+
+.theme-brutal .train-success-celebration .train-streak-celebration-title,
+.theme-brutal.train-app .train-success-celebration .train-streak-celebration-title {
+  margin-bottom: 8px;
+}
+
+.theme-brutal .train-streak-celebration-streak,
 .theme-brutal.train-app .train-streak-celebration-streak {
   display: inline-flex;
   align-items: baseline;
   justify-content: center;
   gap: 8px;
-  margin: 0 auto 10px;
-  padding: 14px 22px;
-  border-radius: 18px;
-  background: var(--tb-cream);
-  border: 2px solid rgba(22, 22, 19, 0.08);
+  margin: 0 auto 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
+.theme-brutal .train-streak-celebration-label,
+.theme-brutal .train-streak-celebration-unit,
 .theme-brutal.train-app .train-streak-celebration-label,
 .theme-brutal.train-app .train-streak-celebration-unit {
   font-family: var(--tb-font-mono);
@@ -2625,33 +3061,34 @@ body > .train-modal-backdrop .train-report h2 {
   color: var(--sa-text-secondary);
 }
 
+.theme-brutal .train-streak-celebration-value,
 .theme-brutal.train-app .train-streak-celebration-value {
   font-family: var(--tb-font-mono);
-  font-size: 48px;
+  font-size: 56px;
   font-weight: 700;
   line-height: 1;
   color: var(--tb-ink);
   transition: color 0.2s ease;
 }
 
+.theme-brutal .train-streak-celebration-streak--pop .train-streak-celebration-value,
 .theme-brutal.train-app .train-streak-celebration-streak--pop .train-streak-celebration-value {
-  color: var(--tb-status-green);
+  color: var(--tb-ink);
   animation: train-streak-pop 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes train-streak-pop {
   0% { transform: scale(1); }
-  45% { transform: scale(1.18); }
+  45% { transform: scale(1.14); }
   100% { transform: scale(1); }
 }
 
+.theme-brutal .train-streak-celebration-hint,
 .theme-brutal.train-app .train-streak-celebration-hint {
-  margin: 0 0 22px;
-  font-size: 13px;
-  line-height: 1.45;
-  color: var(--sa-text-secondary);
+  display: none;
 }
 
+.theme-brutal .train-streak-celebration-btn,
 .theme-brutal.train-app .train-streak-celebration-btn {
   min-width: 160px;
   padding: 11px 22px;
@@ -2662,5 +3099,15 @@ body > .train-modal-backdrop .train-report h2 {
   .theme-brutal.train-app.train-app-embedded .train-session-wrap {
     height: calc(100vh - 88px);
     min-height: 480px;
+  }
+
+  .theme-brutal.train-app.train-app-embedded.train-app--session .train-session-wrap {
+    height: calc(100vh - 24px);
+    min-height: 440px;
+    width: 100%;
+  }
+
+  .theme-brutal .super-admin-content.super-admin-content--trainer-focus {
+    padding: 12px !important;
   }
 }

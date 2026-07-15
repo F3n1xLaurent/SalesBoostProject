@@ -11,6 +11,8 @@ type Props = {
   options: BrutalSelectOption[];
   disabled?: boolean;
   placeholder?: string;
+  invalid?: boolean;
+  'aria-label'?: string;
   onChange: (value: string) => void;
 };
 
@@ -40,13 +42,22 @@ export function BrutalSelect(props: Props) {
   }
 
   return (
-    <div ref={rootRef} className={`train-brutal-select${open ? ' train-brutal-select--open' : ''}`}>
+    <div
+      ref={rootRef}
+      className={[
+        'train-brutal-select',
+        open ? 'train-brutal-select--open' : '',
+        props.invalid ? 'sa-field-invalid' : '',
+      ].filter(Boolean).join(' ')}
+    >
       <button
         type="button"
         className="train-brutal-select-trigger"
         disabled={props.disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-invalid={props.invalid || undefined}
+        aria-label={props['aria-label']}
         onClick={() => setOpen((current) => !current)}
       >
         <span className="train-brutal-select-value">{selected?.label ?? props.placeholder ?? 'Выберите'}</span>
@@ -56,7 +67,7 @@ export function BrutalSelect(props: Props) {
           </svg>
         </span>
       </button>
-      <FilterPickerMenu open={open} anchorRef={rootRef} role="listbox" menuClassName="train-brutal-select-menu" zIndex={1300}>
+      <FilterPickerMenu open={open} anchorRef={rootRef} role="listbox" menuClassName="train-brutal-select-menu" zIndex={1500}>
         {props.options.map((option) => {
           const isSelected = option.value === props.value;
           return (

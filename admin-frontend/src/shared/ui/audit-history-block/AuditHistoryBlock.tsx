@@ -102,7 +102,7 @@ export function AuditHistoryBlock({
           <button
             key={option.value}
             type="button"
-            className={`sa-btn-outline sa-btn-sm ${filter === option.value ? 'sa-chip-active' : ''}`}
+            className={`sa-btn-field sa-btn-sm ${filter === option.value ? 'is-active' : ''}`}
             onClick={() => setFilter(option.value)}
           >
             {option.label}
@@ -169,7 +169,7 @@ export function AuditHistoryBlock({
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <button
                 type="button"
-                className="sa-btn-outline sa-btn-sm"
+                className="sa-btn-field sa-btn-sm"
                 disabled={page === 1}
                 onClick={() => setPage((current) => Math.max(1, current - 1))}
               >
@@ -178,7 +178,7 @@ export function AuditHistoryBlock({
               <span className="sa-metric-chip">Стр. {page} из {totalPages}</span>
               <button
                 type="button"
-                className="sa-btn-outline sa-btn-sm"
+                className="sa-btn-field sa-btn-sm"
                 disabled={page === totalPages}
                 onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
               >

@@ -3,25 +3,27 @@ import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router';
 import {
   abandonTrainerSession,
+  fetchTrainerAuditDetail,
   fetchTrainerDialog,
   fetchTrainerHistory,
   fetchTrainerProfile,
-  fetchTrainerReport,
   fetchTrainerScenarios,
-  fetchTrainerTodayPlan,
   sendTrainerVoiceMessage,
   startTrainerSession,
+  waitForTrainerReport,
   type TrainerInitialMessage,
-  type TrainerPlanItem,
   type TrainerProfile,
-  type TrainerReport,
   type TrainerScenario,
   type TrainerSessionSummary,
 } from '../../../shared/api/trainer';
-import { ratingClass, scoreBarColor } from '../../../shared/lib/admin-panel/utils';
+import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 import { buildTrainerSessionPath, parseAdminPath } from '../../../shared/routing/adminRoutes';
+import { BrutalModal } from '../../../shared/ui/brutal-modal';
 import { BrutalSelect } from '../../../shared/ui/BrutalSelect';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
+import { SlideOver } from '../../../shared/ui/slide-over';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import './train-page.css';
@@ -59,38 +61,6 @@ function clientProfileTitle(caseContext: Record<string, unknown> | null): string
   return clientTypeLabels[type] || 'Клиент';
 }
 
-function scoreLabel(score: number | null): string {
-  if (score == null) return '—';
-  if (score >= 76) return 'Хорошо';
-  if (score >= 50) return 'Средне';
-  return 'Плохо';
-}
-
-function sessionStatusLabel(status: string, score: number | null): string {
-  if (status === 'completed') return score == null ? 'Пройдена' : `${score}/100`;
-  if (status === 'failed') return 'Провалена';
-  if (status === 'in_progress') return 'В процессе';
-  return 'Не начата';
-}
-
-function checklistStatusLabel(value: unknown): string {
-  const status = String(value || '').toUpperCase();
-  if (status === 'YES') return 'Да';
-  if (status === 'PARTIAL') return 'Частично';
-  if (status === 'NO') return 'Нет';
-  return status || '—';
-}
-
-function formatDateTime(value: string | null): string {
-  if (!value) return '—';
-  return new Date(value).toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 function formatDateShort(value: string | null): string {
   if (!value) return '—';
   return new Date(value).toLocaleDateString('ru-RU', {
@@ -108,24 +78,49 @@ function trainerQualityTag(score: number | null): string | null {
   return 'Нужно улучшить';
 }
 
+type HistoryGradeFilter = 'all' | 'excellent' | 'good' | 'medium' | 'improve' | 'none';
+
+function historyGradeKey(score: number | null): Exclude<HistoryGradeFilter, 'all'> {
+  if (score == null) return 'none';
+  if (score >= 85) return 'excellent';
+  if (score >= 76) return 'good';
+  if (score >= 50) return 'medium';
+  return 'improve';
+}
+
 function trainerScoreClass(score: number): 'sa-score-green' | 'sa-score-orange' | 'sa-score-red' {
   if (score >= 76) return 'sa-score-green';
   if (score >= 50) return 'sa-score-orange';
   return 'sa-score-red';
 }
 
-function planQuestLabel(status: string): string {
-  if (status === 'completed') return 'Выполнено';
-  if (status === 'in_progress') return 'В процессе';
-  if (status === 'failed') return 'Не пройдено';
-  return 'Доступно';
-}
-
 const VOICE_BAR_COUNT = 28;
 const RECORD_LEVEL_BARS = 16;
+const DAILY_FREE_GOAL = 3;
+const HISTORY_PAGE_SIZE = 15;
+
+function isLocalToday(iso: string | null | undefined): boolean {
+  if (!iso) return false;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  return (
+    date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  );
+}
+
+function countTodayFreeCompleted(history: TrainerSessionSummary[]): number {
+  return history.filter((item) => (
+    item.type === 'free'
+    && item.status === 'completed'
+    && isLocalToday(item.completedAt || item.startedAt)
+  )).length;
+}
 
 function TrainerDoneCircle(props: { size: 'plan' | 'quest' }) {
-  const iconSize = props.size === 'plan' ? 20 : 22;
+  const iconSize = props.size === 'plan' ? 28 : 22;
   return (
     <span className={`train-hub-status-circle train-hub-status-circle--done train-hub-status-circle--${props.size}`} aria-hidden>
       <LetsIcon name="done-light" size={iconSize} strokeWidth={2} />
@@ -133,319 +128,384 @@ function TrainerDoneCircle(props: { size: 'plan' | 'quest' }) {
   );
 }
 
-function TrainerFailedCircle(props: { size: 'plan' | 'quest' }) {
-  const iconSize = props.size === 'plan' ? 20 : 22;
-  return (
-    <span className={`train-hub-status-circle train-hub-status-circle--failed train-hub-status-circle--${props.size}`} aria-hidden>
-      <LetsIcon name="close-round-light" size={iconSize} strokeWidth={2} />
-    </span>
-  );
-}
-
-function buildSequentialPlanDotStates(items: TrainerPlanItem[], total: number): Array<'empty' | 'done' | 'failed'> {
-  const dots: Array<'empty' | 'done' | 'failed'> = Array.from({ length: total }, () => 'empty');
-  const resolved = items
-    .filter((item) => item.status === 'completed' || item.status === 'failed')
-    .sort((left, right) => {
-      const leftTime = left.completedAt ? Date.parse(left.completedAt) : Number.MAX_SAFE_INTEGER;
-      const rightTime = right.completedAt ? Date.parse(right.completedAt) : Number.MAX_SAFE_INTEGER;
-      if (leftTime !== rightTime) return leftTime - rightTime;
-      return 0;
-    });
-
-  let withoutTimestamp = 0;
-  resolved.forEach((item, index) => {
-    if (index >= total) return;
-    if (!item.completedAt) withoutTimestamp += 1;
-    dots[index] = item.status === 'completed' ? 'done' : 'failed';
-  });
-
-  if (withoutTimestamp === resolved.length && resolved.length > 0) {
-    const states: Array<'done' | 'failed'> = [];
-    items.forEach((item) => {
-      if (item.status === 'completed') states.push('done');
-    });
-    items.forEach((item) => {
-      if (item.status === 'failed') states.push('failed');
-    });
-    for (let index = 0; index < Math.min(total, states.length); index += 1) {
-      dots[index] = states[index];
-    }
-  }
-
-  return dots;
-}
-
 function TrainerProgressDots(props: {
-  items: TrainerPlanItem[];
-  fallbackTotal?: number;
+  completed: number;
+  total?: number;
   size?: 'md' | 'lg';
 }) {
-  const sourceItems = props.items.length > 0
-    ? props.items
-    : Array.from({ length: props.fallbackTotal ?? 3 }, (_, index) => ({
-      id: `placeholder-${index}`,
-      scenarioId: null,
-      scenarioName: '',
-      status: 'not_started',
-      trainerSessionId: null,
-    }));
-  const completed = sourceItems.filter((item) => item.status === 'completed').length;
-  const total = sourceItems.length;
-  const dotStates = buildSequentialPlanDotStates(sourceItems, total);
+  const total = props.total ?? DAILY_FREE_GOAL;
+  const completed = Math.max(0, Math.min(props.completed, total));
   const sizeClass = props.size === 'lg' ? 'train-hub-dots--lg' : 'train-hub-dots--md';
 
   return (
     <div className={`train-hub-dots ${sizeClass}`} role="img" aria-label={`${completed} из ${total} выполнено`}>
-      {dotStates.map((state, index) => {
-        if (state === 'done') {
+      {Array.from({ length: total }).map((_, index) => {
+        if (index < completed) {
           return props.size === 'lg'
-            ? <TrainerDoneCircle key={sourceItems[index]?.id || index} size="plan" />
-            : <span key={sourceItems[index]?.id || index} className="train-hub-dot train-hub-dot--done" />;
+            ? <TrainerDoneCircle key={index} size="plan" />
+            : <span key={index} className="train-hub-dot train-hub-dot--done" />;
         }
-
-        if (state === 'failed') {
-          return props.size === 'lg'
-            ? <TrainerFailedCircle key={sourceItems[index]?.id || index} size="plan" />
-            : <span key={sourceItems[index]?.id || index} className="train-hub-dot train-hub-dot--failed" />;
-        }
-
-        return (
-          <span key={sourceItems[index]?.id || index} className="train-hub-dot train-hub-dot--empty" />
-        );
+        return <span key={index} className="train-hub-dot train-hub-dot--empty" />;
       })}
     </div>
   );
 }
 
-function TrainerStatCard(props: { label: string; value: React.ReactNode; hint?: string; game?: boolean }) {
-  return (
-    <div className={`sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card train-hub-stat-card ${props.game ? 'train-hub-stat-card--game' : ''}`}>
-      <div className="sa-kpi-card-top">
-        <div className="sa-kpi-card-heading">{props.label}</div>
-      </div>
-      <div className="sa-kpi-card-spacer" aria-hidden />
-      <div className="sa-kpi-card-bottom">
-        <div className={props.game ? 'train-hub-stat-game-value' : 'sa-kpi-value sa-kpi-value-large'}>{props.value}</div>
-        {props.hint && <div className="sa-kpi-desc">{props.hint}</div>}
-      </div>
-    </div>
-  );
-}
-
-function TrainerQuestCard(props: {
-  item: TrainerPlanItem;
-  index: number;
-  busy: boolean;
-  onStart: (item: TrainerPlanItem) => void;
-  onContinue: (sessionId: string) => void;
-}) {
-  const { item, index } = props;
-  const isDone = item.status === 'completed';
-  const isFailed = item.status === 'failed';
-  const isActive = item.status === 'in_progress';
-  const canStart = !isDone && !isFailed && !isActive;
-
-  const handleClick = () => {
-    if (isActive && item.trainerSessionId) {
-      props.onContinue(item.trainerSessionId);
-      return;
-    }
-    if (canStart) props.onStart(item);
-  };
-
-  return (
-    <article
-      className={`train-hub-quest train-hub-quest--${item.status || 'not_started'}`}
-      style={{ animationDelay: `${props.index * 60}ms` }}
-    >
-      <div className="train-hub-quest-index">
-        {isDone ? <TrainerDoneCircle size="quest" /> : isFailed ? <TrainerFailedCircle size="quest" /> : index + 1}
-      </div>
-      <div className="train-hub-quest-body">
-        <div className="train-hub-quest-title">{item.scenarioName || 'Сценарий'}</div>
-        <div className="train-hub-quest-meta">{planQuestLabel(item.status)}</div>
-      </div>
-      {!isDone && !isFailed && (
-        <button
-          type="button"
-          className="sa-btn-brutal-3d train-hub-quest-action"
-          disabled={props.busy}
-          onClick={handleClick}
-        >
-          {isActive ? 'Продолжить' : 'Начать'}
-        </button>
-      )}
-      {(isDone || isFailed) && (
-        <span className={`train-hub-quest-badge ${isDone ? 'sa-score-green' : 'sa-score-red'}`}>
-          {planQuestLabel(item.status)}
-        </span>
-      )}
-    </article>
-  );
-}
-
 function TrainerHub(props: {
   profile: TrainerProfile | null;
-  planItems: TrainerPlanItem[];
   history: TrainerSessionSummary[];
-  completedPlanCount: number;
   busy: boolean;
   error: string | null;
   canStartFree: boolean;
   onNewSession: () => void;
-  onStartPlan: (item: TrainerPlanItem) => void;
   onOpenSession: (sessionId: string) => void;
+  onOpenReport: (sessionId: string) => void;
 }) {
-  const planTotal = props.planItems.length || 3;
+  const [filterScenario, setFilterScenario] = useState('all');
+  const [filterType, setFilterType] = useState<'all' | 'free' | 'plan'>('all');
+  const [filterGrade, setFilterGrade] = useState<HistoryGradeFilter>('all');
+  const [historyPage, setHistoryPage] = useState(1);
+  const todayFreeCompleted = useMemo(() => countTodayFreeCompleted(props.history), [props.history]);
+
+  const scenarioOptions = useMemo(() => {
+    const names = [...new Set(props.history.map((item) => item.scenarioName || 'Тренировка'))]
+      .sort((left, right) => left.localeCompare(right, 'ru'));
+    return [
+      { value: 'all', label: 'Все сценарии' },
+      ...names.map((name) => ({ value: name, label: name })),
+    ];
+  }, [props.history]);
+
+  const typeOptions = useMemo(() => ([
+    { value: 'all' as const, label: 'Все типы' },
+    { value: 'free' as const, label: 'Свободная' },
+    { value: 'plan' as const, label: 'План' },
+  ]), []);
+
+  const gradeOptions = useMemo(() => ([
+    { value: 'all' as const, label: 'Все оценки' },
+    { value: 'excellent' as const, label: 'Отлично' },
+    { value: 'good' as const, label: 'Хорошо' },
+    { value: 'medium' as const, label: 'Средне' },
+    { value: 'improve' as const, label: 'Нужно улучшить' },
+    { value: 'none' as const, label: 'Без оценки' },
+  ]), []);
+
+  const filteredHistory = useMemo(() => props.history.filter((item) => {
+    if (item.status === 'in_progress') return false;
+    const scenarioName = item.scenarioName || 'Тренировка';
+    if (filterScenario !== 'all' && scenarioName !== filterScenario) return false;
+    if (filterType !== 'all' && item.type !== filterType) return false;
+    if (filterGrade !== 'all' && historyGradeKey(item.score) !== filterGrade) return false;
+    return true;
+  }), [props.history, filterScenario, filterType, filterGrade]);
+
+  const historyTotalPages = Math.max(1, Math.ceil(filteredHistory.length / HISTORY_PAGE_SIZE));
+  const safeHistoryPage = Math.min(historyPage, historyTotalPages);
+  const historyStartIndex = (safeHistoryPage - 1) * HISTORY_PAGE_SIZE;
+  const pagedHistory = filteredHistory.slice(historyStartIndex, historyStartIndex + HISTORY_PAGE_SIZE);
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [filterScenario, filterType, filterGrade, props.history]);
+
+  function handleHistoryOpen(item: TrainerSessionSummary) {
+    if (item.status === 'completed' || item.status === 'failed') {
+      props.onOpenReport(item.id);
+    }
+  }
+
+  function historyStatusLabel(item: TrainerSessionSummary): { text: string; className?: string } {
+    if (item.status === 'cancelled') return { text: 'Прервана' };
+    if ((item.status === 'completed' || item.status === 'failed') && item.score == null && !item.reportReady) {
+      return { text: 'Оценивается…', className: 'sa-meta' };
+    }
+    if (item.status === 'failed') {
+      const tag = trainerQualityTag(item.score);
+      return tag
+        ? { text: tag, className: trainerScoreClass(item.score ?? 0) }
+        : { text: 'Провал', className: 'sa-score-red' };
+    }
+    const tag = trainerQualityTag(item.score);
+    if (tag) return { text: tag, className: trainerScoreClass(item.score ?? 0) };
+    return { text: '—' };
+  }
 
   return (
     <div className="train-hub sa-page-enter">
       <header className="train-hub-block train-hub-header">
         <div>
           <h1 className="sa-page-title train-hub-title">Тренажёр</h1>
-          <p className="train-hub-subtitle">
-            {props.profile
-              ? `${props.profile.branchName}${props.profile.city ? `, ${props.profile.city}` : ''} · ${props.profile.companyName}`
-              : 'Тренировка диалога с виртуальным клиентом'}
-          </p>
         </div>
-        <button
-          type="button"
-          className="sa-btn-brutal-3d train-hub-new-btn"
-          disabled={props.busy || !props.canStartFree}
-          onClick={props.onNewSession}
-        >
-          <LetsIcon name="add-light" size={16} bold />
-          Новая тренировка
-        </button>
       </header>
 
       {props.error && (
         <div className="train-hub-block train-hub-error" role="alert">{props.error}</div>
       )}
 
-      <div className="train-hub-block sa-kpi-grid train-hub-stats">
-        <TrainerStatCard
-          label="Стрик"
-          value={props.profile?.currentStreak ?? 0}
-          hint={`Рекорд ${props.profile?.longestStreak ?? 0} дн.`}
-        />
-        <TrainerStatCard
-          label="AI-баллы"
-          value={props.profile?.totalPoints ?? 0}
-          hint="За всё время"
-        />
-        <TrainerStatCard
-          label="Сессии за 30 дней"
-          value={props.profile?.sessions30d ?? 0}
-          hint={`${props.profile?.sessionsTotal ?? 0} всего`}
-        />
-        <TrainerStatCard
-          label="План дня"
-          game
-          value={(
-            <TrainerProgressDots
-              items={props.planItems}
-              fallbackTotal={3}
-              size="lg"
-            />
-          )}
-          hint={`${props.completedPlanCount} из ${planTotal} выполнено`}
-        />
-      </div>
-
-      <section className="train-hub-block train-hub-section">
-        <div className="train-hub-section-head">
-          <h2 className="train-hub-section-title">Задачи на день</h2>
+      <section className="train-hub-block train-hub-plan-hero">
+        <div className="train-hub-plan-hero-card">
+          <div className="train-hub-plan-hero-label">План дня</div>
+          <TrainerProgressDots
+            completed={todayFreeCompleted}
+            total={DAILY_FREE_GOAL}
+            size="lg"
+          />
+          <p className="train-hub-plan-hero-hint">
+            {Math.min(todayFreeCompleted, DAILY_FREE_GOAL)} из {DAILY_FREE_GOAL} выполнено
+          </p>
+          <button
+            type="button"
+            className="sa-btn-brutal-3d train-hub-start-btn"
+            disabled={props.busy || !props.canStartFree}
+            onClick={props.onNewSession}
+          >
+            <LetsIcon name="add-light" size={18} bold strokeWidth={2} />
+            Начать тренировку
+          </button>
         </div>
-        {props.planItems.length === 0 ? (
-          <p className="train-hub-empty">На сегодня задач пока нет. Запустите свободную тренировку.</p>
-        ) : (
-          <div className="train-hub-quests">
-            {props.planItems.map((item, index) => (
-              <TrainerQuestCard
-                key={item.id}
-                item={item}
-                index={index}
-                busy={props.busy}
-                onStart={props.onStartPlan}
-                onContinue={props.onOpenSession}
-              />
-            ))}
-          </div>
-        )}
       </section>
 
-      <section className="train-hub-block train-hub-section">
+      <section className="train-hub-block train-hub-section train-hub-history">
         <div className="train-hub-section-head">
           <h2 className="train-hub-section-title">История тренировок</h2>
+          {props.history.length > 0 && (
+            <div className="train-hub-history-filters">
+              <div className="sa-tag-filter-picker-wrap">
+                <SingleSelectFilterPicker
+                  options={scenarioOptions}
+                  value={filterScenario}
+                  onChange={setFilterScenario}
+                  placeholder="Сценарий"
+                />
+              </div>
+              <div className="sa-tag-filter-picker-wrap">
+                <SingleSelectFilterPicker
+                  options={typeOptions}
+                  value={filterType}
+                  onChange={setFilterType}
+                  placeholder="Тип"
+                />
+              </div>
+              <div className="sa-tag-filter-picker-wrap">
+                <SingleSelectFilterPicker
+                  options={gradeOptions}
+                  value={filterGrade}
+                  onChange={setFilterGrade}
+                  placeholder="Оценка"
+                />
+              </div>
+            </div>
+          )}
         </div>
         {props.history.length === 0 ? (
           <p className="train-hub-empty">История появится после первой тренировки.</p>
+        ) : filteredHistory.length === 0 ? (
+          <p className="train-hub-empty">Нет тренировок по выбранным фильтрам.</p>
         ) : (
-          <div className="train-hub-panel sa-companies-table-wrap">
-            <table className="sa-table">
-              <thead>
-                <tr>
-                  <th>Сценарий</th>
-                  <th>Дата</th>
-                  <th>Тип</th>
-                  <th>Оценка</th>
-                  <th>Балл</th>
-                </tr>
-              </thead>
-              <tbody>
-                {props.history.map((item) => {
-                  const score = item.score;
-                  const qualityTag = trainerQualityTag(score);
-                  return (
-                    <tr
-                      key={item.id}
-                      className="sa-row-clickable"
-                      onClick={() => props.onOpenSession(item.id)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          props.onOpenSession(item.id);
-                        }
-                      }}
+          <>
+            <div className="train-hub-panel sa-companies-table-wrap">
+              <table className="sa-table">
+                <thead>
+                  <tr>
+                    <th>Название</th>
+                    <th>Дата</th>
+                    <th>Тип</th>
+                    <th>Оценка</th>
+                    <th>Балл</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pagedHistory.map((item) => {
+                    const score = item.score;
+                    const status = historyStatusLabel(item);
+                    const canOpen = item.status === 'completed' || item.status === 'failed';
+                    return (
+                      <tr
+                        key={item.id}
+                        className={canOpen ? 'sa-row-clickable' : undefined}
+                        onClick={canOpen ? () => handleHistoryOpen(item) : undefined}
+                        role={canOpen ? 'button' : undefined}
+                        tabIndex={canOpen ? 0 : undefined}
+                        onKeyDown={canOpen ? (event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            handleHistoryOpen(item);
+                          }
+                        } : undefined}
+                      >
+                        <td>{item.displayName || item.title || item.scenarioName || 'Тренировка'}</td>
+                        <td className="sa-meta">{formatDateShort(item.completedAt || item.startedAt)}</td>
+                        <td>{item.type === 'plan' ? 'План' : 'Свободная'}</td>
+                        <td>
+                          {status.className ? (
+                            <span className={status.className}>{status.text}</span>
+                          ) : (
+                            <span className="sa-meta">{status.text}</span>
+                          )}
+                        </td>
+                        <td>
+                          {score != null ? (
+                            <span className={`sa-kpi-value ${trainerScoreClass(score)}`}>{score.toFixed(0)}</span>
+                          ) : status.text === 'Оценивается…' ? (
+                            <span className="sa-meta">…</span>
+                          ) : (
+                            <span className="sa-meta">Н/Д</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className={`sa-audit-history-pagination${filteredHistory.length > HISTORY_PAGE_SIZE ? '' : ' is-empty'}`}>
+              {filteredHistory.length > HISTORY_PAGE_SIZE ? (
+                <>
+                  <span className="sa-meta">
+                    Показаны {historyStartIndex + 1}-{Math.min(historyStartIndex + HISTORY_PAGE_SIZE, filteredHistory.length)} из {filteredHistory.length}
+                  </span>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      className="sa-btn-field sa-btn-sm"
+                      disabled={safeHistoryPage === 1}
+                      onClick={() => setHistoryPage((current) => Math.max(1, current - 1))}
                     >
-                      <td>{item.scenarioName || 'Тренировка'}</td>
-                      <td className="sa-meta">{formatDateShort(item.completedAt || item.startedAt)}</td>
-                      <td>{item.type === 'plan' ? 'План' : 'Свободная'}</td>
-                      <td>
-                        {qualityTag ? (
-                          <span className={trainerScoreClass(score ?? 0)}>{qualityTag}</span>
-                        ) : (
-                          <span className="sa-meta">—</span>
-                        )}
-                      </td>
-                      <td>
-                        {score != null ? (
-                          <span className={`sa-kpi-value ${trainerScoreClass(score)}`}>{score.toFixed(0)}</span>
-                        ) : (
-                          <span className="sa-meta">Н/Д</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      Назад
+                    </button>
+                    <span className="sa-metric-chip">Стр. {safeHistoryPage} из {historyTotalPages}</span>
+                    <button
+                      type="button"
+                      className="sa-btn-field sa-btn-sm"
+                      disabled={safeHistoryPage === historyTotalPages}
+                      onClick={() => setHistoryPage((current) => Math.min(historyTotalPages, current + 1))}
+                    >
+                      Вперёд
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </>
         )}
       </section>
     </div>
   );
 }
 
+function trainerSessionLabel(session: Pick<TrainerSessionSummary, 'displayName' | 'title' | 'scenarioName'>): string {
+  return session.displayName || session.title || session.scenarioName || 'Тренировка';
+}
+
+function voiceBubbleWidthPx(durationSec?: number | null): number {
+  const bars = voiceBarCountForDuration(durationSec);
+  // play button + gap + waveform bars (3px + 3px gap) + bubble padding
+  return Math.max(140, Math.min(420, 38 + 9 + bars * 6 + 28));
+}
+
+function voiceBarCountForDuration(durationSec?: number | null): number {
+  const sec = Math.max(0.6, Math.min(28, Number(durationSec) || 2));
+  return Math.max(8, Math.min(36, Math.round(8 + sec * 1.35)));
+}
+
+function estimateDurationFromAudioUrl(url: string | null | undefined): number | null {
+  if (!url || !url.startsWith('data:')) return null;
+  const comma = url.indexOf(',');
+  if (comma < 0) return null;
+  const header = url.slice(0, comma);
+  const base64 = url.slice(comma + 1);
+  const bytes = Math.floor(base64.length * 0.75);
+  if (bytes < 200) return 1;
+  if (/wav/i.test(header)) {
+    const pcmBytes = Math.max(0, bytes - 44);
+    return Math.max(1, Math.round(pcmBytes / (16000 * 2)));
+  }
+  // compressed voice ≈ 12–16 kbps
+  return Math.max(1, Math.round(bytes / 1800));
+}
+
+function localPlanDate(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function TrainMiniScoreGauge(props: { score: number }) {
+  const score = Math.max(0, Math.min(100, Math.round(props.score)));
+  const tone = score >= 76 ? 'good' : score >= 50 ? 'mid' : 'bad';
+  const size = 72;
+  const stroke = 7;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    setProgress(0);
+    const frame = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => setProgress(score));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [score]);
+
+  const offset = circumference - (progress / 100) * circumference;
+
+  return (
+    <div className={`train-report-score-gauge sa-call-report-gauge--${tone}`} aria-label={`Балл ${score}`}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
+        <circle
+          className="sa-call-report-gauge-track"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+        />
+        <circle
+          className="sa-call-report-gauge-fill"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <div className="train-report-score-gauge-center">
+        <strong>{score}</strong>
+      </div>
+    </div>
+  );
+}
+
+function TrainerSuccessCelebration(props: {
+  title?: string;
+  onClose: () => void;
+}) {
+  return createPortal(
+    <div className="theme-brutal train-streak-celebration-backdrop" role="dialog" aria-modal aria-labelledby="train-success-title">
+      <section className="train-streak-celebration train-success-celebration">
+        <div className="train-hub-status-circle train-hub-status-circle--done train-success-check-circle" aria-hidden>
+          <LetsIcon name="done-light" size={30} strokeWidth={2} />
+        </div>
+        <h2 id="train-success-title" className="train-streak-celebration-title">Готово</h2>
+        <p className="train-streak-celebration-scenario">{props.title || 'Тренировка завершена'}</p>
+        <button type="button" className="sa-btn-brutal-3d train-streak-celebration-btn" onClick={props.onClose}>
+          Продолжить
+        </button>
+      </section>
+    </div>,
+    document.body,
+  );
+}
+
 function TrainerStreakCelebration(props: {
   previousStreak: number;
   newStreak: number;
-  scenarioName: string;
   onClose: () => void;
 }) {
   const [displayStreak, setDisplayStreak] = useState(props.previousStreak);
@@ -478,7 +538,7 @@ function TrainerStreakCelebration(props: {
           setPopped(true);
         }
       }, 380);
-    }, 700);
+    }, 500);
 
     return () => {
       cancelled = true;
@@ -487,41 +547,26 @@ function TrainerStreakCelebration(props: {
     };
   }, [props.previousStreak, props.newStreak]);
 
-  return (
-    <div className="train-streak-celebration-backdrop" role="dialog" aria-modal aria-labelledby="train-streak-title">
+  return createPortal(
+    <div className="theme-brutal train-streak-celebration-backdrop" role="dialog" aria-modal aria-labelledby="train-streak-title">
       <section className="train-streak-celebration">
-        <div className="train-streak-celebration-confetti" aria-hidden>
-          {Array.from({ length: 12 }).map((_, index) => (
-            <span key={index} className="train-streak-confetti-piece" style={{ ['--i' as string]: index }} />
-          ))}
-        </div>
-        <div className="train-streak-celebration-kicker">Поздравляем!</div>
-        <h2 id="train-streak-title" className="train-streak-celebration-title">Диалог завершён</h2>
-        <p className="train-streak-celebration-scenario">{props.scenarioName}</p>
+        <div className="train-streak-celebration-kicker">Стрик</div>
+        <h2 id="train-streak-title" className="train-streak-celebration-title">Первая тренировка дня</h2>
         <div className={`train-streak-celebration-streak ${popped ? 'train-streak-celebration-streak--pop' : ''}`}>
-          <span className="train-streak-celebration-label">Стрик</span>
           <span className="train-streak-celebration-value" key={displayStreak}>{displayStreak}</span>
           <span className="train-streak-celebration-unit">дн.</span>
         </div>
-        <p className="train-streak-celebration-hint">Продолжайте в том же духе — завтра стрик может вырасти ещё</p>
         <button type="button" className="sa-btn-brutal-3d train-streak-celebration-btn" onClick={props.onClose}>
           Отлично!
         </button>
       </section>
-    </div>
-  );
-}
-
-function TrainModalBackdrop(props: { children: React.ReactNode; onClose: () => void }) {
-  return createPortal(
-    <div className="train-modal-backdrop" onClick={props.onClose} role="presentation">
-      {props.children}
     </div>,
     document.body,
   );
 }
 
 function NewSessionModal(props: {
+  open: boolean;
   scenarios: TrainerScenario[];
   scenarioId: string;
   difficulty: 'easy' | 'medium' | 'hard';
@@ -534,303 +579,91 @@ function NewSessionModal(props: {
   onClose: () => void;
 }) {
   return (
-    <TrainModalBackdrop onClose={props.onClose}>
-      <section className="train-new-modal" onClick={(event) => event.stopPropagation()}>
-        <header className="train-report-header">
-          <div>
-            <div className="train-report-kicker">Новая тренировка</div>
-            <h2>Свободная тренировка</h2>
-          </div>
-          <button type="button" className="sa-btn-brutal-3d train-close-button" onClick={props.onClose}>×</button>
-        </header>
-        <div className="train-controls train-controls-modal">
-          <label>
-            <span>Сценарий</span>
-            <BrutalSelect
-              value={props.scenarioId}
-              options={props.scenarios.map((scenario) => ({ value: scenario.id, label: scenario.name }))}
-              placeholder="Выберите сценарий"
-              disabled={props.busy}
-              onChange={props.onScenarioChange}
-            />
-          </label>
-          <label>
-            <span>Сложность</span>
-            <BrutalSelect
-              value={props.difficulty}
-              options={Object.entries(difficultyLabels).map(([value, label]) => ({ value, label }))}
-              disabled={props.busy}
-              onChange={(value) => props.onDifficultyChange(value as 'easy' | 'medium' | 'hard')}
-            />
-          </label>
-          <label>
-            <span>Тип клиента</span>
-            <BrutalSelect
-              value={props.clientType}
-              options={[
-                { value: 'random', label: 'Случайный' },
-                { value: 'careful', label: 'Внимательный' },
-                { value: 'price_sensitive', label: 'Цена важна' },
-              ]}
-              disabled={props.busy}
-              onChange={props.onClientTypeChange}
-            />
-          </label>
-        </div>
-        <button type="button" className="sa-btn-brutal-3d train-modal-submit" disabled={props.busy || !props.scenarioId} onClick={props.onStart}>
-          Начать тренировку
-        </button>
-      </section>
-    </TrainModalBackdrop>
-  );
-}
-
-function ReportPanel(props: { report: TrainerReport; onClose: () => void }) {
-  const recommendations = props.report.topRecommendations.slice(0, 3).map((item) => {
-    if (typeof item === 'string') return item;
-    return String(item.title || item.recommendation || item.description || 'Рекомендация');
-  });
-  const checklist = props.report.checklist.slice(0, 6);
-  return (
-    <TrainModalBackdrop onClose={props.onClose}>
-      <section className="train-report train-report-modal" onClick={(event) => event.stopPropagation()}>
-        <header className="train-report-header">
-          <div>
-            <div className="train-report-kicker">{props.report.type === 'plan' ? 'План дня' : 'Свободная тренировка'}</div>
-            <h2>{props.report.scenarioName}</h2>
-          </div>
-          <button type="button" className="sa-btn-brutal-3d train-close-button" onClick={props.onClose}>×</button>
-        </header>
-        <div className="train-report-score">
-          <strong>{props.report.score ?? 0}</strong>
-          <span>{scoreLabel(props.report.score)}</span>
-          <small>{props.report.finalPoints ?? 0} очков · ×{props.report.multiplier}</small>
-        </div>
-        <div className="train-report-grid">
-          <div>
-            <h3>Чек-лист</h3>
-            {checklist.length === 0 ? (
-              <p className="train-muted">Данные появятся после оценки сессии.</p>
-            ) : (
-              checklist.map((item, index) => (
-                <div className="train-report-row" key={index}>
-                  <span>{String(item.comment || item.code || item.expectedAnswer || `Пункт ${index + 1}`)}</span>
-                  <b>{checklistStatusLabel(item.status ?? item.score)}</b>
-                </div>
-              ))
-            )}
-          </div>
-          <div>
-            <h3>Рекомендации</h3>
-            {recommendations.length === 0 ? (
-              <p className="train-muted">Пока нет рекомендаций.</p>
-            ) : (
-              recommendations.map((item, index) => <p className="train-recommendation" key={index}>{item}</p>)
-            )}
-          </div>
-        </div>
-      </section>
-    </TrainModalBackdrop>
-  );
-}
-
-function InlineSessionAnalytics(props: { report: TrainerReport }) {
-  const planCriteriaRaw = props.report.evaluation?.plan_criteria && typeof props.report.evaluation.plan_criteria === 'object'
-    ? props.report.evaluation.plan_criteria as Record<string, unknown>
-    : null;
-  const planCriteriaItems = Array.isArray(planCriteriaRaw?.items)
-    ? planCriteriaRaw.items.map((raw) => {
-      const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
-      const maxScore = Number(item.maxScore ?? 0);
-      const score = Number(item.score ?? 0);
-      return {
-        expectedAnswer: String(item.expectedAnswer || item.title || item.name || item.question || 'Критерий скрипта'),
-        maxScore: Number.isFinite(maxScore) ? maxScore : 0,
-        score: Number.isFinite(score) ? score : 0,
-        evidence: String(item.evidence || item.comment || item.reason || ''),
-      };
-    })
-    : [];
-  const recommendations = props.report.topRecommendations.slice(0, 3).map((item) => {
-    if (typeof item === 'string') return item;
-    return String(item.title || item.recommendation || item.description || 'Рекомендация');
-  });
-  const checklist = props.report.checklist.slice(0, 6);
-  const score = Number(planCriteriaRaw?.percent ?? props.report.score ?? 0);
-  const criteriaChecklist = planCriteriaItems.length > 0
-    ? planCriteriaItems.map((item) => {
-      const ratio = item.maxScore > 0 ? item.score / item.maxScore : 0;
-      return {
-        label: item.expectedAnswer,
-        result: ratio >= 0.8 ? 'pass' : ratio >= 0.4 ? 'warn' : 'fail',
-        quote: item.evidence || `Баллы: ${item.score} из ${item.maxScore}`,
-      };
-    })
-    : checklist.map((item, index) => {
-      const status = String(item.status ?? item.result ?? '').toUpperCase();
-      return {
-        label: String(item.comment || item.code || item.expectedAnswer || `Пункт ${index + 1}`),
-        result: status === 'YES' || status === 'PASS' ? 'pass' : status === 'PARTIAL' || status === 'WARN' ? 'warn' : 'fail',
-        quote: String(item.evidence || item.comment || ''),
-      };
-    });
-  const checklistStats = criteriaChecklist.reduce((acc, item) => {
-    if (item.result === 'pass') acc.pass += 1;
-    else if (item.result === 'warn') acc.warn += 1;
-    else acc.fail += 1;
-    return acc;
-  }, { pass: 0, warn: 0, fail: 0 });
-  const dimensionsSource = props.report.dimensions && typeof props.report.dimensions === 'object'
-    ? props.report.dimensions
-    : (props.report.evaluation?.dimension_scores && typeof props.report.evaluation.dimension_scores === 'object'
-      ? props.report.evaluation.dimension_scores as Record<string, unknown>
-      : {});
-  const dimensions = Object.entries(dimensionsSource)
-    .map(([key, value]) => {
-      const raw = typeof value === 'number'
-        ? value
-        : typeof value === 'object' && value !== null
-          ? Number((value as Record<string, unknown>).score ?? (value as Record<string, unknown>).value)
-          : Number(value);
-      return {
-        label: key.replace(/_/g, ' '),
-        score: Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : 0,
-      };
-    })
-    .filter((item) => item.score > 0)
-    .slice(0, 4);
-  const scriptIssueItems = planCriteriaItems
-    .filter((item) => item.maxScore <= 0 || item.score / item.maxScore < 0.8)
-    .map((item) => ({
-      title: item.expectedAnswer,
-      severity: item.maxScore > 0 && item.score / item.maxScore >= 0.4 ? 'MEDIUM' : 'HIGH',
-      evidence: item.evidence || `Баллы: ${item.score} из ${item.maxScore}`,
-    }));
-  const issueItems = (scriptIssueItems.length > 0 ? scriptIssueItems : props.report.objectionsAnalysis
-    .map((item) => ({
-      title: String(item.recommendation || item.issue_type || item.issue || item.title || 'Ошибка'),
-      severity: String(item.severity || '').toUpperCase(),
-      evidence: String(item.evidence || item.comment || ''),
-    }))
-    .filter((item) => item.title.trim())
-  ).slice(0, 5);
-  return (
-    <section className="train-inline-report train-audit-report train-audit-report-brutal sa-page-enter">
-      <div className="train-report-complete-banner">Сессия завершена</div>
-      <div className="sa-card sa-brutal-card sa-audit-summary train-report-summary-card">
-        <div className="sa-audit-summary-score-wrap">
-          <div className={`sa-audit-summary-score ${ratingClass(score)}`}>{score}</div>
-          <div className="sa-audit-summary-score-label">Общий балл</div>
-        </div>
-        <div className="sa-audit-summary-body">
-          <div className="sa-audit-summary-verdict">{scoreLabel(props.report.score)}</div>
-          <div className="sa-audit-summary-meta">
-            <span className="sa-metric-chip">Сценарий: {props.report.scenarioName}</span>
-            <span className="sa-metric-chip">Очки: {props.report.finalPoints ?? 0}</span>
-            <span className="sa-metric-chip">Множитель: ×{props.report.multiplier}</span>
-          </div>
-          {props.report.failureReason && (
-            <div className="sa-audit-fail-reason">
-              <strong>Причина провала:</strong> {props.report.failureReason}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="sa-kpi-grid sa-kpi-grid-audit">
-        <div className="sa-card sa-brutal-card sa-kpi-card train-report-kpi-card">
-          <div className="sa-kpi-label">Общий балл</div>
-          <div className={`sa-kpi-value ${ratingClass(score)}`}>{score}</div>
-        </div>
-        <div className="sa-card sa-brutal-card sa-kpi-card train-report-kpi-card">
-          <div className="sa-kpi-label">Очки</div>
-          <div className="sa-kpi-value">{props.report.finalPoints ?? 0}</div>
-        </div>
-        <div className="sa-card sa-brutal-card sa-kpi-card train-report-kpi-card">
-          <div className="sa-kpi-label">Да / Частично / Нет</div>
-          <div className="sa-kpi-value">{checklistStats.pass}/{checklistStats.warn}/{checklistStats.fail}</div>
-        </div>
-      </div>
-
-      {dimensions.length > 0 && (
-        <div className="sa-card sa-brutal-card train-report-block-card">
-          <div className="sa-chart-wrap">
-            <h3 className="sa-chart-title">Оценка по блокам</h3>
-            <div className="sa-hbar-list">
-              {dimensions.map((item) => (
-                <div className="sa-hbar-row" key={item.label}>
-                  <span className="sa-hbar-label">{item.label}</span>
-                  <div className="sa-hbar-track">
-                    <div className="sa-hbar-fill" style={{ width: `${item.score}%`, background: scoreBarColor(item.score) }} />
-                  </div>
-                  <span className={`sa-hbar-score ${ratingClass(item.score)}`}>{item.score}</span>
-                </div>
-              ))}
-            </div>
+    <BrutalModal
+      open={props.open}
+      onClose={props.onClose}
+      title="Новая тренировка"
+      subtitle="Свободная тренировка с виртуальным клиентом"
+      width="medium"
+      footer={(
+        <div className="sa-modal-footer-row">
+          <span />
+          <div className="sa-modal-footer-row__right">
+            <button type="button" className="sa-btn-outline" disabled={props.busy} onClick={props.onClose}>
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="sa-btn-primary"
+              disabled={props.busy || !props.scenarioId}
+              onClick={props.onStart}
+            >
+              Начать тренировку
+            </button>
           </div>
         </div>
       )}
-
-      <div className="sa-card sa-brutal-card train-report-block-card">
-        <h3 className="sa-card-heading train-report-section-title">Чек-лист</h3>
-        {criteriaChecklist.length === 0 ? (
-          <div className="sa-chart-empty">Нет данных чек-листа</div>
-        ) : (
-          <div className="sa-checklist">
-            {criteriaChecklist.map((item, index) => {
-              const resultClass = item.result === 'pass' ? 'sa-check-pass' : item.result === 'warn' ? 'sa-check-warn' : 'sa-check-fail';
-              const resultLabel = item.result === 'pass' ? 'Да' : item.result === 'warn' ? 'Частично' : 'Нет';
-              return (
-                <div className={`sa-checklist-item ${resultClass}`} key={index}>
-                  <span className="sa-checklist-icon">{resultLabel}</span>
-                  <div className="sa-checklist-content">
-                    <div className="sa-checklist-label">{item.label}</div>
-                    {item.quote && <div className="sa-checklist-quote">{item.quote}</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+    >
+      <div className="train-controls train-controls-modal">
+        <label>
+          <span>Сценарий</span>
+          <BrutalSelect
+            value={props.scenarioId}
+            options={props.scenarios.map((scenario) => ({ value: scenario.id, label: scenario.name }))}
+            placeholder="Выберите сценарий"
+            disabled={props.busy}
+            onChange={props.onScenarioChange}
+          />
+        </label>
+        <label>
+          <span>Сложность</span>
+          <BrutalSelect
+            value={props.difficulty}
+            options={Object.entries(difficultyLabels).map(([value, label]) => ({ value, label }))}
+            disabled={props.busy}
+            onChange={(value) => props.onDifficultyChange(value as 'easy' | 'medium' | 'hard')}
+          />
+        </label>
+        <label>
+          <span>Тип клиента</span>
+          <BrutalSelect
+            value={props.clientType}
+            options={[
+              { value: 'random', label: 'Случайный' },
+              { value: 'careful', label: 'Внимательный' },
+              { value: 'price_sensitive', label: 'Цена важна' },
+            ]}
+            disabled={props.busy}
+            onChange={props.onClientTypeChange}
+          />
+        </label>
       </div>
+    </BrutalModal>
+  );
+}
 
-      <div className="sa-detail-insights train-report-insights">
-        <div className="sa-card sa-brutal-card train-report-block-card" style={{ flex: 1 }}>
-          <h3 className="sa-card-heading train-report-section-title">ТОП-ошибки</h3>
-          {issueItems.length === 0 ? (
-            <div className="sa-chart-empty">Критичных ошибок не найдено</div>
-          ) : (
-            <ul className="sa-issue-list">
-              {issueItems.map((item, index) => (
-                <li className="sa-issue-item" key={index}>
-                  <span className="sa-issue-name">{item.title}</span>
-                  <span className="sa-issue-pct">{item.severity || index + 1}</span>
-                  <div className="sa-issue-bar"><div className="sa-issue-bar-fill" style={{ width: `${item.severity === 'HIGH' ? 100 : item.severity === 'MEDIUM' ? 70 : 45}%` }} /></div>
-                  {item.evidence && <div className="sa-meta">{item.evidence}</div>}
-                </li>
-              ))}
-            </ul>
-          )}
+function ReportDrawer(props: {
+  open: boolean;
+  detail: AuditDetailItem | null;
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <SlideOver open={props.open} title="Отчёт тренировки" width="xl" onClose={props.onClose}>
+      {props.loading ? (
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка отчёта...</div>
+      ) : props.error ? (
+        <div className="sa-card" style={{ padding: 20 }}>
+          <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть отчёт</div>
+          <div className="sa-meta" style={{ marginTop: 8 }}>{props.error}</div>
         </div>
-        <div className="sa-card sa-brutal-card train-report-block-card" style={{ flex: 1 }}>
-          <h3 className="sa-card-heading train-report-section-title">Рекомендации</h3>
-          {recommendations.length === 0 ? (
-            <div className="sa-chart-empty">Нет рекомендаций</div>
-          ) : (
-            <div className="sa-training-list">
-              {recommendations.map((item, index) => (
-                <div className="sa-training-item" key={index}>
-                  <div>
-                    <div style={{ fontWeight: 600, marginBottom: 2 }}>{item}</div>
-                    <div className="sa-meta">Отработать в следующей тренировке</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </section>
+      ) : props.detail ? (
+        <AuditAnalyticsReport detail={props.detail} />
+      ) : (
+        <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите тренировку.</div>
+      )}
+    </SlideOver>
   );
 }
 
@@ -896,6 +729,13 @@ function pcm16FromFloat32(input: Float32Array): Uint8Array {
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
   return bytes;
+}
+
+function float32Rms(input: Float32Array): number {
+  if (input.length === 0) return 0;
+  let sum = 0;
+  for (let index = 0; index < input.length; index += 1) sum += input[index] * input[index];
+  return Math.sqrt(sum / input.length);
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -1009,19 +849,49 @@ function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
+  const estimated = estimateDurationFromAudioUrl(props.message.audioUrl);
+  const [resolvedDuration, setResolvedDuration] = useState<number | null>(
+    props.message.durationSec ?? estimated,
+  );
+  const durationSec = resolvedDuration ?? props.message.durationSec ?? estimated;
+  const barCount = voiceBarCountForDuration(durationSec);
   const waveform = useVoiceWaveform(
     props.message.audioUrl,
-    VOICE_BAR_COUNT,
+    barCount,
     `${props.message.id}:${props.message.audioUrl || props.message.textFallback || ''}`,
   );
   useEffect(() => {
-    if (!props.message.autoPlay || !audioRef.current) return;
-    audioRef.current.play().catch(() => {});
-  }, [props.message.autoPlay]);
-  const durationLabel = props.message.durationSec
-    ? `0:${String(Math.min(59, props.message.durationSec)).padStart(2, '0')}`
+    setResolvedDuration(props.message.durationSec ?? estimateDurationFromAudioUrl(props.message.audioUrl));
+  }, [props.message.durationSec, props.message.id, props.message.audioUrl]);
+
+  useEffect(() => {
+    if (!props.message.autoPlay || !props.message.audioUrl) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    let cancelled = false;
+    const tryPlay = () => {
+      if (cancelled) return;
+      audio.play().catch(() => {});
+    };
+    tryPlay();
+    audio.addEventListener('canplay', tryPlay);
+    audio.addEventListener('loadeddata', tryPlay);
+    const retry = window.setTimeout(tryPlay, 180);
+    const retry2 = window.setTimeout(tryPlay, 600);
+    return () => {
+      cancelled = true;
+      audio.removeEventListener('canplay', tryPlay);
+      audio.removeEventListener('loadeddata', tryPlay);
+      window.clearTimeout(retry);
+      window.clearTimeout(retry2);
+    };
+  }, [props.message.autoPlay, props.message.audioUrl, props.message.id]);
+
+  const durationLabel = durationSec != null
+    ? `0:${String(Math.min(59, Math.max(0, Math.round(durationSec)))).padStart(2, '0')}`
     : '0:00';
-  const filledBars = Math.round((progress / 100) * VOICE_BAR_COUNT);
+  const filledBars = Math.round((progress / 100) * barCount);
+  const bubbleWidth = props.message.audioUrl ? voiceBubbleWidthPx(durationSec) : undefined;
   function toggleAudio() {
     const audio = audioRef.current;
     if (!audio) return;
@@ -1029,7 +899,10 @@ function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
     else audio.pause();
   }
   return (
-    <div className={`train-audio-bubble ${props.message.role === 'client' ? 'train-audio-client' : 'train-audio-manager'}`}>
+    <div
+      className={`train-audio-bubble ${props.message.role === 'client' ? 'train-audio-client' : 'train-audio-manager'}`}
+      style={bubbleWidth ? { width: `${bubbleWidth}px`, maxWidth: 'min(420px, 92%)' } : undefined}
+    >
       {props.message.audioUrl ? (
         <div className="train-voice-row">
           <button className="train-voice-play" type="button" onClick={toggleAudio} aria-label={playing ? 'Пауза' : 'Проиграть'}>
@@ -1053,7 +926,19 @@ function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
           <audio
             ref={audioRef}
             src={props.message.audioUrl}
-            preload="metadata"
+            preload="auto"
+            onLoadedMetadata={(event) => {
+              const audioDuration = event.currentTarget.duration;
+              if (Number.isFinite(audioDuration) && audioDuration > 0 && audioDuration < 600) {
+                setResolvedDuration(Math.max(1, Math.round(audioDuration)));
+              }
+            }}
+            onDurationChange={(event) => {
+              const audioDuration = event.currentTarget.duration;
+              if (Number.isFinite(audioDuration) && audioDuration > 0 && audioDuration < 600) {
+                setResolvedDuration(Math.max(1, Math.round(audioDuration)));
+              }
+            }}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onTimeUpdate={(event) => {
@@ -1070,9 +955,6 @@ function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
       ) : (
         <div className="train-voice-pending">{props.message.textFallback || 'Голосовое сообщение'}</div>
       )}
-      {props.message.textFallback && props.message.audioUrl && (
-        <p className="train-message-transcript">{props.message.textFallback}</p>
-      )}
     </div>
   );
 }
@@ -1081,28 +963,36 @@ function SessionPreview(props: {
   session: TrainerSessionSummary;
   initialMessage: TrainerInitialMessage | null;
   transcript?: TrainerInitialMessage['transcript'];
-  report?: TrainerReport | null;
   clientTitle: string;
   embedded?: boolean;
-  onClose: () => void;
+  onClose: () => void | Promise<void>;
+  onOpenReport?: () => void;
   onSessionUpdate: (session: TrainerSessionSummary) => void;
+  onSessionFinished: (session: TrainerSessionSummary) => void | Promise<void>;
 }) {
   const buildInitialMessages = (): ChatMessage[] => {
     if (props.transcript?.length) {
+      const lastClientIndex = [...props.transcript]
+        .map((turn, index) => (turn.role === 'client' && turn.audioBase64 ? index : -1))
+        .filter((index) => index >= 0)
+        .pop() ?? -1;
       return props.transcript.map((turn, index) => ({
         id: index + 1,
         role: turn.role,
         audioUrl: audioDataUrl(turn.audioBase64, turn.audioMimeType),
-        durationSec: turn.durationSec,
+        durationSec: turn.durationSec ?? estimateDurationFromAudioUrl(audioDataUrl(turn.audioBase64, turn.audioMimeType)),
         textFallback: turn.text || (turn.role === 'client' ? 'Сообщение клиента' : 'Сообщение менеджера'),
+        autoPlay: props.session.status === 'in_progress' && index === lastClientIndex,
       }));
     }
     const first = props.initialMessage;
     if (!first?.clientMessage) return [];
+    const audioUrl = audioDataUrl(first.audioBase64, first.audioMimeType);
     return [{
       id: 1,
       role: 'client',
-      audioUrl: audioDataUrl(first.audioBase64, first.audioMimeType),
+      audioUrl,
+      durationSec: estimateDurationFromAudioUrl(audioUrl),
       textFallback: first.clientMessage,
       autoPlay: Boolean(first.audioBase64),
     }];
@@ -1112,7 +1002,14 @@ function SessionPreview(props: {
   const [recording, setRecording] = useState(false);
   const [recordLevels, setRecordLevels] = useState<number[]>(() => Array.from({ length: RECORD_LEVEL_BARS }, () => 0.12));
   const [ended, setEnded] = useState(props.session.status === 'completed' || props.session.status === 'failed');
+  const [completionPhase, setCompletionPhase] = useState<'idle' | 'dialog' | 'report' | 'ready'>(
+    props.session.status === 'completed' || props.session.status === 'failed'
+      ? (props.session.reportReady ? 'ready' : 'report')
+      : 'idle',
+  );
   const [error, setError] = useState<string | null>(null);
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -1120,17 +1017,21 @@ function SessionPreview(props: {
   const pcmChunksRef = useRef<Float32Array[]>([]);
   const recordStartedAtRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const finishAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => {
     processorRef.current?.disconnect();
     sourceRef.current?.disconnect();
     audioContextRef.current?.close().catch(() => {});
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    finishAbortRef.current?.abort();
   }, []);
 
   useEffect(() => {
     setMessages(buildInitialMessages());
-    setEnded(props.session.status === 'completed' || props.session.status === 'failed');
+    const isEnded = props.session.status === 'completed' || props.session.status === 'failed';
+    setEnded(isEnded);
+    setCompletionPhase(isEnded ? (props.session.reportReady ? 'ready' : 'report') : 'idle');
     setError(null);
     setSending(false);
     setRecording(false);
@@ -1138,8 +1039,69 @@ function SessionPreview(props: {
   }, [props.session.id]);
 
   useEffect(() => {
+    // Hydrate first bot voice when it arrives after async session init.
+    setMessages((current) => {
+      if (current.length > 0) return current;
+      const next = buildInitialMessages();
+      return next.length > 0 ? next : current;
+    });
+  }, [props.transcript, props.initialMessage]);
+
+  useEffect(() => {
+    if (!(props.session.status === 'completed' || props.session.status === 'failed')) return;
+    if (props.session.reportReady) return;
+    if (finishAbortRef.current) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    (async () => {
+      setCompletionPhase('report');
+      try {
+        const readySession = await waitForTrainerReport(props.session.id, { signal: controller.signal });
+        if (cancelled) return;
+        setCompletionPhase('ready');
+        props.onSessionUpdate(readySession);
+      } catch {
+        if (!cancelled) setCompletionPhase('ready');
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [props.session.id, props.session.status, props.session.reportReady]);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ block: 'end' });
-  }, [messages, sending, error, ended]);
+  }, [messages, sending, error, ended, completionPhase]);
+
+  async function finishConversation(session: TrainerSessionSummary) {
+    setEnded(true);
+    setCompletionPhase('dialog');
+    props.onSessionUpdate(session);
+    finishAbortRef.current?.abort();
+    const controller = new AbortController();
+    finishAbortRef.current = controller;
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 900));
+      if (controller.signal.aborted) return;
+      setCompletionPhase('report');
+      const readySession = session.reportReady
+        ? session
+        : await waitForTrainerReport(session.id, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setCompletionPhase('ready');
+      props.onSessionUpdate(readySession);
+      await props.onSessionFinished(readySession);
+    } catch (finishError) {
+      if (controller.signal.aborted) return;
+      setCompletionPhase('ready');
+      setError(finishError instanceof Error ? finishError.message : 'Не удалось сформировать отчёт.');
+      props.onSessionUpdate(session);
+      await props.onSessionFinished(session);
+    } finally {
+      if (finishAbortRef.current === controller) finishAbortRef.current = null;
+    }
+  }
 
   async function sendVoiceAudio(params: {
     audioBase64: string;
@@ -1162,21 +1124,27 @@ function SessionPreview(props: {
         mimeType: params.mimeType,
         durationSec: params.durationSec,
       });
+      const clientAudioUrl = audioDataUrl(data.audioBase64, data.audioMimeType);
+      if (!clientAudioUrl) {
+        throw new Error('Клиент ответил без аудио. Попробуйте отправить сообщение ещё раз.');
+      }
       setMessages((prev) => prev.map((message) => message.id === idBase + 1
         ? {
           id: idBase + 1,
           role: 'client',
-          audioUrl: audioDataUrl(data.audioBase64, data.audioMimeType),
+          audioUrl: clientAudioUrl,
+          durationSec: estimateDurationFromAudioUrl(clientAudioUrl),
           textFallback: data.clientMessage,
-          autoPlay: Boolean(data.audioBase64),
+          autoPlay: true,
         }
         : message));
-      setEnded(data.endConversation);
-      props.onSessionUpdate(data.session);
+      if (data.endConversation) {
+        await finishConversation(data.session);
+      } else {
+        props.onSessionUpdate(data.session);
+      }
     } catch (sendError) {
-      setMessages((prev) => prev.map((message) => message.id === idBase + 1
-        ? { ...message, textFallback: 'Не удалось получить ответ клиента.', audioUrl: null }
-        : message));
+      setMessages((prev) => prev.filter((message) => message.id !== idBase + 1));
       setError(sendError instanceof Error ? sendError.message : 'Не удалось отправить голосовое сообщение.');
     } finally {
       setSending(false);
@@ -1194,19 +1162,26 @@ function SessionPreview(props: {
     setRecording(false);
     setRecordLevels(Array.from({ length: RECORD_LEVEL_BARS }, () => 0.12));
 
-    const durationSec = Math.max(1, Math.round((Date.now() - recordStartedAtRef.current) / 1000));
+    const durationSec = Math.max(0, Math.round((Date.now() - recordStartedAtRef.current) / 1000));
     const inputRate = audioContext?.sampleRate || 48000;
     await audioContext?.close().catch(() => {});
     audioContextRef.current = null;
     const samples = downsampleTo16k(concatFloat32(pcmChunksRef.current), inputRate);
     pcmChunksRef.current = [];
-    if (samples.length === 0) return;
+    if (samples.length < 1600 || durationSec < 1) {
+      setError('Слишком короткое сообщение. Удерживайте запись хотя бы 1 секунду.');
+      return;
+    }
+    if (float32Rms(samples) < 0.008) {
+      setError('Речь почти не слышна. Проверьте микрофон и запишите ещё раз.');
+      return;
+    }
     const pcm = pcm16FromFloat32(samples);
     const wavBlob = wavBlobFromPcm16(pcm);
     await sendVoiceAudio({
       audioBase64: bytesToBase64(pcm),
       mimeType: 'audio/pcm;rate=16000',
-      durationSec,
+      durationSec: Math.max(1, durationSec),
       managerAudioUrl: URL.createObjectURL(wavBlob),
     });
   }
@@ -1248,27 +1223,90 @@ function SessionPreview(props: {
     }
   }
 
+  function requestLeave() {
+    if (ended || props.session.status !== 'in_progress') {
+      props.onClose();
+      return;
+    }
+    setLeaveConfirmOpen(true);
+  }
+
+  async function confirmLeave() {
+    if (leaving) return;
+    setLeaving(true);
+    try {
+      await props.onClose();
+    } finally {
+      setLeaving(false);
+      setLeaveConfirmOpen(false);
+    }
+  }
+
   return (
     <section className={`train-chat-shell ${props.embedded ? 'train-chat-shell-embedded' : ''}`}>
       <header className="train-chat-header">
-        <button type="button" className="sa-btn-brutal-3d train-back-button" onClick={props.onClose} title="К тренажёру" aria-label="К тренажёру">←</button>
-        <div className="train-client-avatar">AI</div>
-        <div>
-          <strong>{props.clientTitle}</strong>
-          <span>{props.session.scenarioName}</span>
+        <div className="train-chat-header-main">
+          <div className="train-client-avatar">AI</div>
+          <div className="train-chat-header-copy">
+            <strong>{props.clientTitle}</strong>
+            <span>{trainerSessionLabel(props.session)}</span>
+          </div>
         </div>
+        <button
+          type="button"
+          className="sa-btn-brutal-3d train-close-button"
+          onClick={requestLeave}
+          title="Закрыть тренировку"
+          aria-label="Закрыть тренировку"
+        >
+          <LetsIcon name="close-round-light" size={18} strokeWidth={2} />
+        </button>
       </header>
       <div className="train-chat-body">
-          <div className={`train-chat-thread ${ended ? 'train-chat-thread--ended' : ''}`}>
+        <div className={`train-chat-thread ${ended ? 'train-chat-thread--ended' : ''}`}>
           {messages.length === 0 ? (
             <div className="train-chat-status">Клиент подключается...</div>
           ) : (
             messages.map((message) => <AudioBubble key={message.id} message={message} />)
           )}
-          {sending && <div className="train-chat-status">Клиент отвечает...</div>}
           {error && <div className="train-chat-error">{error}</div>}
-          {ended && !props.report && <div className="train-chat-status">Сессия завершена. Отчёт появится в истории.</div>}
-          {ended && props.report && <InlineSessionAnalytics report={props.report} />}
+          {ended && completionPhase === 'dialog' && (
+            <div className="train-report-ready train-report-ready--status">
+              <div className="train-report-ready-copy">
+                <strong>Диалог завершён</strong>
+                <span>Сохраняем переписку…</span>
+              </div>
+            </div>
+          )}
+          {ended && completionPhase === 'report' && (
+            <div className="train-report-ready train-report-ready--status train-report-ready--generating">
+              <div className="train-report-ai-icon" aria-hidden>
+                <span className="train-report-ai-orbit" />
+                <span className="train-report-ai-orbit train-report-ai-orbit--slow" />
+                <span className="train-report-ai-core">
+                  <LetsIcon name="star" size={20} strokeWidth={2} />
+                </span>
+              </div>
+              <div className="train-report-ready-copy">
+                <strong>Формируем отчёт</strong>
+                <span>Разбираем реплики и собираем оценку…</span>
+              </div>
+            </div>
+          )}
+          {ended && completionPhase === 'ready' && (
+            <div className="train-report-ready">
+              {props.session.score != null && (
+                <TrainMiniScoreGauge score={props.session.score} />
+              )}
+              <div className="train-report-ready-copy">
+                <strong>Отчёт готов</strong>
+                <span>Откройте разбор тренировки в боковой панели.</span>
+              </div>
+              <button type="button" className="sa-btn-brutal-3d sa-btn-sm" onClick={props.onOpenReport}>
+                Открыть отчёт
+              </button>
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -1289,7 +1327,7 @@ function SessionPreview(props: {
             <button
               className={`train-record-button ${recording ? 'train-record-button-active' : ''}`}
               title="Записать голосовое сообщение"
-              disabled={sending}
+              disabled={sending || leaving}
               onClick={toggleRecording}
             >
               <span className="train-record-button-core" />
@@ -1299,6 +1337,38 @@ function SessionPreview(props: {
           </div>
         </footer>
       )}
+
+      <BrutalModal
+        open={leaveConfirmOpen}
+        nested
+        hideClose
+        onClose={() => { if (!leaving) setLeaveConfirmOpen(false); }}
+        title="Прервать тренировку?"
+        subtitle="Результаты и отчёт не сохранятся."
+        width="narrow"
+        footer={(
+          <div className="sa-unsaved-actions">
+            <button
+              type="button"
+              className="sa-btn-outline"
+              onClick={() => setLeaveConfirmOpen(false)}
+              disabled={leaving}
+            >
+              Остаться
+            </button>
+            <button
+              type="button"
+              className="sa-btn-danger"
+              onClick={() => { void confirmLeave(); }}
+              disabled={leaving}
+            >
+              {leaving ? 'Выходим…' : 'Выйти'}
+            </button>
+          </div>
+        )}
+      >
+        {null}
+      </BrutalModal>
     </section>
   );
 }
@@ -1313,7 +1383,6 @@ export function TrainPage(props: { embedded?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<TrainerProfile | null>(null);
   const [scenarios, setScenarios] = useState<TrainerScenario[]>([]);
-  const [planItems, setPlanItems] = useState<TrainerPlanItem[]>([]);
   const [history, setHistory] = useState<TrainerSessionSummary[]>([]);
   const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
   const [clientType, setClientType] = useState('random');
@@ -1322,17 +1391,20 @@ export function TrainPage(props: { embedded?: boolean }) {
   const [activeSession, setActiveSession] = useState<TrainerSessionSummary | null>(null);
   const [activeInitialMessage, setActiveInitialMessage] = useState<TrainerInitialMessage | null>(null);
   const [activeTranscript, setActiveTranscript] = useState<TrainerInitialMessage['transcript']>([]);
-  const [activeReport, setActiveReport] = useState<TrainerReport | null>(null);
   const [activeCaseContext, setActiveCaseContext] = useState<Record<string, unknown> | null>(null);
-  const [report, setReport] = useState<TrainerReport | null>(null);
+  const [reportDrawerOpen, setReportDrawerOpen] = useState(false);
+  const [reportDrawerLoading, setReportDrawerLoading] = useState(false);
+  const [reportDrawerError, setReportDrawerError] = useState<string | null>(null);
+  const [reportDrawerDetail, setReportDrawerDetail] = useState<AuditDetailItem | null>(null);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
-  const [streakCelebration, setStreakCelebration] = useState<{
+  const [celebration, setCelebration] = useState<{
+    phase: 'success' | 'streak';
     previousStreak: number;
     newStreak: number;
-    scenarioName: string;
+    title: string;
+    showStreak: boolean;
   } | null>(null);
 
-  const completedPlanCount = useMemo(() => planItems.filter((item) => item.status === 'completed').length, [planItems]);
   const firstScenarioId = selectedScenarioId || scenarios[0]?.id || '';
 
   const load = useCallback(async (options?: { silent?: boolean }) => {
@@ -1341,15 +1413,13 @@ export function TrainPage(props: { embedded?: boolean }) {
       setError(null);
     }
     try {
-      const [profileData, scenarioData, planData, historyData] = await Promise.all([
+      const [profileData, scenarioData, historyData] = await Promise.all([
         fetchTrainerProfile(),
         fetchTrainerScenarios(),
-        fetchTrainerTodayPlan(),
         fetchTrainerHistory(),
       ]);
       setProfile(profileData);
       setScenarios(scenarioData);
-      setPlanItems(planData.sessions);
       setHistory(historyData);
       setSelectedScenarioId((current) => current || scenarioData[0]?.id || '');
       setLoadState('ready');
@@ -1364,11 +1434,24 @@ export function TrainPage(props: { embedded?: boolean }) {
   }, [load]);
 
   useEffect(() => {
+    if (selectedSessionId) return;
+    const hasPendingEvaluation = history.some((item) => (
+      (item.status === 'completed' || item.status === 'failed')
+      && item.score == null
+      && !item.reportReady
+    ));
+    if (!hasPendingEvaluation) return;
+    const timer = window.setInterval(() => {
+      void load({ silent: true });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [history, load, selectedSessionId]);
+
+  useEffect(() => {
     if (!selectedSessionId) {
       setActiveSession(null);
       setActiveInitialMessage(null);
       setActiveTranscript([]);
-      setActiveReport(null);
       setActiveCaseContext(null);
       setError(null);
       return;
@@ -1378,17 +1461,22 @@ export function TrainPage(props: { embedded?: boolean }) {
       setBusy(true);
       setError(null);
       try {
-        const dialog = await fetchTrainerDialog(selectedSessionId as string);
-        if (cancelled) return;
-        setActiveSession(dialog.session);
-        setActiveInitialMessage(null);
-        setActiveTranscript(dialog.transcript);
-        setActiveCaseContext(dialog.caseContext);
-        if (dialog.session.status === 'completed' || dialog.session.status === 'failed') {
-          const sessionReport = await fetchTrainerReport(dialog.session.id);
-          if (!cancelled) setActiveReport(sessionReport);
-        } else {
-          setActiveReport(null);
+        const startedAt = Date.now();
+        while (!cancelled) {
+          const dialog = await fetchTrainerDialog(selectedSessionId as string);
+          if (cancelled) return;
+          setActiveSession(dialog.session);
+          setActiveCaseContext(dialog.caseContext);
+          setActiveInitialMessage(null);
+          setActiveTranscript(dialog.transcript);
+          const hasMessages = dialog.transcript.length > 0;
+          const ended = dialog.session.status !== 'in_progress';
+          if (hasMessages || ended || Date.now() - startedAt > 90_000) {
+            break;
+          }
+          // Show chat shell while first client voice is still generating.
+          setBusy(false);
+          await new Promise((resolve) => window.setTimeout(resolve, 700));
         }
       } catch (selectedError) {
         if (!cancelled) setError(selectedError instanceof Error ? selectedError.message : 'Не удалось открыть тренировку.');
@@ -1396,37 +1484,11 @@ export function TrainPage(props: { embedded?: boolean }) {
         if (!cancelled) setBusy(false);
       }
     }
-    loadSelectedSession();
+    void loadSelectedSession();
     return () => {
       cancelled = true;
     };
   }, [selectedSessionId]);
-
-  async function startPlan(item: TrainerPlanItem) {
-    setBusy(true);
-    setError(null);
-    try {
-      const data = await startTrainerSession({
-        sessionType: 'plan',
-        planItemId: item.id,
-        scenarioId: item.scenarioId,
-        difficulty: 'medium',
-        clientType: 'random',
-      });
-      setActiveSession(data.session);
-      setActiveInitialMessage(data.initialMessage);
-      setActiveTranscript(data.initialMessage?.transcript ?? []);
-      setActiveReport(null);
-      setActiveCaseContext(data.caseContext);
-      setNewSessionOpen(false);
-      navigate(buildTrainerSessionPath(data.session.id));
-      await load({ silent: true });
-    } catch (startError) {
-      setError(startError instanceof Error ? startError.message : 'Не удалось начать тренировку.');
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function startFree() {
     if (!firstScenarioId) return;
@@ -1440,13 +1502,12 @@ export function TrainPage(props: { embedded?: boolean }) {
         clientType,
       });
       setActiveSession(data.session);
-      setActiveInitialMessage(data.initialMessage);
-      setActiveTranscript(data.initialMessage?.transcript ?? []);
-      setActiveReport(null);
+      setActiveInitialMessage(null);
+      setActiveTranscript([]);
       setActiveCaseContext(data.caseContext);
       setNewSessionOpen(false);
       navigate(buildTrainerSessionPath(data.session.id));
-      await load({ silent: true });
+      void load({ silent: true });
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : 'Не удалось начать тренировку.');
     } finally {
@@ -1454,19 +1515,34 @@ export function TrainPage(props: { embedded?: boolean }) {
     }
   }
 
+  function closeReportDrawer() {
+    setReportDrawerOpen(false);
+    setReportDrawerError(null);
+    setReportDrawerDetail(null);
+    setReportDrawerLoading(false);
+  }
+
   async function openReport(id: string) {
-    setBusy(true);
-    setError(null);
+    setReportDrawerOpen(true);
+    setReportDrawerLoading(true);
+    setReportDrawerError(null);
+    setReportDrawerDetail(null);
     try {
-      setReport(await fetchTrainerReport(id));
+      const detail = await fetchTrainerAuditDetail(id);
+      setReportDrawerDetail(detail);
     } catch (reportError) {
-      setError(reportError instanceof Error ? reportError.message : 'Не удалось открыть отчёт.');
+      setReportDrawerError(reportError instanceof Error ? reportError.message : 'Не удалось открыть отчёт.');
     } finally {
-      setBusy(false);
+      setReportDrawerLoading(false);
     }
   }
 
-  const rootClassName = `train-app theme-brutal${embedded ? ' train-app-embedded' : ''}`;
+  const rootClassName = [
+    'train-app',
+    'theme-brutal',
+    embedded ? 'train-app-embedded' : '',
+    selectedSessionId ? 'train-app--session' : '',
+  ].filter(Boolean).join(' ');
 
   return (
     <div className={rootClassName}>
@@ -1486,40 +1562,41 @@ export function TrainPage(props: { embedded?: boolean }) {
               session={activeSession}
               initialMessage={activeInitialMessage}
               transcript={activeTranscript}
-              report={activeReport}
               clientTitle={clientProfileTitle(activeCaseContext)}
               embedded
+              onOpenReport={() => { void openReport(activeSession.id); }}
               onClose={async () => {
                 if (activeSession?.status === 'in_progress') {
                   try {
                     await abandonTrainerSession(activeSession.id);
-                    await load({ silent: true });
                   } catch {
                     // ignore — user is leaving anyway
                   }
                 }
+                await load({ silent: true });
                 navigate(buildTrainerSessionPath());
               }}
-              onSessionUpdate={async (session) => {
+              onSessionUpdate={(session) => {
                 setActiveSession(session);
-                if (session.status === 'completed' || session.status === 'failed') {
-                  const previousStreak = profile?.currentStreak ?? 0;
-
+              }}
+              onSessionFinished={async (session) => {
+                if (session.status === 'failed') {
                   await load({ silent: true });
-                  if (session.status === 'failed') {
-                    setActiveReport(await fetchTrainerReport(session.id));
-                    return;
-                  }
-
-                  setActiveReport(await fetchTrainerReport(session.id));
-                  const freshProfile = await fetchTrainerProfile();
-                  setProfile(freshProfile);
-                  setStreakCelebration({
-                    previousStreak,
-                    newStreak: freshProfile.currentStreak,
-                    scenarioName: session.scenarioName || 'Тренировка',
-                  });
+                  void openReport(session.id);
+                  return;
                 }
+                const previousStreak = profile?.currentStreak ?? 0;
+                const wasFirstOfDay = profile?.lastActiveDate !== localPlanDate();
+                await load({ silent: true });
+                const freshProfile = await fetchTrainerProfile();
+                setProfile(freshProfile);
+                setCelebration({
+                  phase: 'success',
+                  previousStreak,
+                  newStreak: freshProfile.currentStreak,
+                  title: trainerSessionLabel(session),
+                  showStreak: wasFirstOfDay,
+                });
               }}
             />
           ) : error ? (
@@ -1534,41 +1611,55 @@ export function TrainPage(props: { embedded?: boolean }) {
       ) : (
         <TrainerHub
           profile={profile}
-          planItems={planItems}
           history={history}
-          completedPlanCount={completedPlanCount}
           busy={busy}
           error={error}
           canStartFree={Boolean(firstScenarioId)}
           onNewSession={() => setNewSessionOpen(true)}
-          onStartPlan={startPlan}
           onOpenSession={(sessionId) => navigate(buildTrainerSessionPath(sessionId))}
+          onOpenReport={(sessionId) => { void openReport(sessionId); }}
         />
       )}
 
-      {streakCelebration && (
+      {celebration?.phase === 'success' && (
+        <TrainerSuccessCelebration
+          title={celebration.title}
+          onClose={() => {
+            if (celebration.showStreak) {
+              setCelebration({ ...celebration, phase: 'streak' });
+              return;
+            }
+            setCelebration(null);
+          }}
+        />
+      )}
+      {celebration?.phase === 'streak' && (
         <TrainerStreakCelebration
-          previousStreak={streakCelebration.previousStreak}
-          newStreak={streakCelebration.newStreak}
-          scenarioName={streakCelebration.scenarioName}
-          onClose={() => setStreakCelebration(null)}
+          previousStreak={celebration.previousStreak}
+          newStreak={celebration.newStreak}
+          onClose={() => setCelebration(null)}
         />
       )}
-      {report && <ReportPanel report={report} onClose={() => setReport(null)} />}
-      {newSessionOpen && (
-        <NewSessionModal
-          scenarios={scenarios}
-          scenarioId={firstScenarioId}
-          difficulty={difficulty}
-          clientType={clientType}
-          busy={busy}
-          onScenarioChange={setSelectedScenarioId}
-          onDifficultyChange={setDifficulty}
-          onClientTypeChange={setClientType}
-          onStart={startFree}
-          onClose={() => setNewSessionOpen(false)}
-        />
-      )}
+      <ReportDrawer
+        open={reportDrawerOpen}
+        detail={reportDrawerDetail}
+        loading={reportDrawerLoading}
+        error={reportDrawerError}
+        onClose={closeReportDrawer}
+      />
+      <NewSessionModal
+        open={newSessionOpen}
+        scenarios={scenarios}
+        scenarioId={firstScenarioId}
+        difficulty={difficulty}
+        clientType={clientType}
+        busy={busy}
+        onScenarioChange={setSelectedScenarioId}
+        onDifficultyChange={setDifficulty}
+        onClientTypeChange={setClientType}
+        onStart={startFree}
+        onClose={() => setNewSessionOpen(false)}
+      />
     </div>
   );
 }

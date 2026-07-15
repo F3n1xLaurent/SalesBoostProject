@@ -167,6 +167,7 @@ export interface AuditDetailItem {
       text: string;
       mark: 'positive' | 'normal' | 'negative' | null;
       comment: string | null;
+      betterExample?: string | null;
     }>;
     recommendations: Array<{
       text: string;
@@ -1390,6 +1391,14 @@ export async function updatePhoneNumberType(
   return data.item as PhoneNumberTypeItem;
 }
 
+export async function deletePhoneNumberType(typeId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/phone-number-types/${typeId}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить тип номера.');
+}
+
 export async function fetchDealershipPhoneNumbers(dealershipId: string): Promise<PhoneNumberItem[]> {
   const res = await apiFetch(`${API_BASE}/api/admin/dealerships/${dealershipId}/phone-numbers`);
   if (!res.ok) return [];
@@ -1637,6 +1646,12 @@ export async function updateCallPlan(id: string, payload: Omit<CallPlanItem, 'id
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось обновить план прозвона.');
   return data.item as CallPlanItem;
+}
+
+export async function deleteCallPlan(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить план прозвона.');
 }
 
 export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; callId: string; batchId: string; totalJobs: number }> {

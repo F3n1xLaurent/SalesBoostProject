@@ -5,6 +5,7 @@ import {
   type TrainerProfile,
   type TrainerSessionSummary,
 } from '../../../shared/api/trainer';
+import { ratingClass, scoreBarColor } from '../../../shared/lib/admin-panel/utils';
 import { BrutalCard } from '../../../shared/ui/brutal-card';
 import {
   Card,
@@ -49,19 +50,6 @@ type WebTestHistoryItem = {
 
 const STAFF_WEB_HISTORY_STORAGE_KEY = 'staff_web_test_history_v1';
 
-function uniqueNonEmpty(values: Array<string | null | undefined>, limit: number) {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of values) {
-    const value = raw?.trim();
-    if (!value || seen.has(value)) continue;
-    seen.add(value);
-    out.push(value);
-    if (out.length >= limit) break;
-  }
-  return out;
-}
-
 function trainerQualityTag(score: number | null) {
   if (score == null) return null;
   if (score >= 85) return 'Отлично';
@@ -102,13 +90,114 @@ function staffScoreClass(score: number): 'sa-score-green' | 'sa-score-orange' | 
   return 'sa-score-red';
 }
 
-function staffChartBarClass(score: number): string {
-  if (score >= 76) return 'sa-staff-chart-bar--green';
-  if (score >= 50) return 'sa-staff-chart-bar--orange';
-  return 'sa-staff-chart-bar--red';
+function StaffScoreTrendChart(props: {
+  points: Array<{ date: string; avgScore: number; count: number }>;
+}) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const points = props.points;
+  if (points.length === 0) return null;
+
+  const W = 960;
+  const H = 168;
+  const pad = { top: 16, right: 20, bottom: 28, left: 36 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+  const step = points.length <= 1 ? 0 : cw / (points.length - 1);
+  const xs = points.map((_, i) => pad.left + i * step);
+  const ys = points.map((p) => pad.top + ch - (Math.max(0, Math.min(100, p.avgScore)) / 100) * ch);
+  const pathD = points.map((_, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${ys[i]}`).join(' ');
+  const stroke = 'var(--tb-ink)';
+
+  return (
+    <div className="sa-chart-wrap sa-chart-wrap-full sa-staff-trend-chart">
+      <div className="sa-chart-plot">
+        <svg
+          className="sa-trend-chart-svg"
+          width="100%"
+          height={H}
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="xMidYMid meet"
+          onMouseLeave={() => setHoverIdx(null)}
+        >
+          <defs>
+            <linearGradient id="staffTrendFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={stroke} stopOpacity="0.14" />
+              <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          {[0, 25, 50, 75, 100].map((v) => {
+            const y = pad.top + ch - (v / 100) * ch;
+            return (
+              <g key={v}>
+                <line x1={pad.left} y1={y} x2={pad.left + cw} y2={y} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
+                <text x={pad.left - 8} y={y + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{v}</text>
+              </g>
+            );
+          })}
+          {points.map((p, i) => (
+            <text key={`${p.date}-${i}`} x={xs[i]} y={H - 6} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">
+              {p.date.slice(5)}
+            </text>
+          ))}
+          <path d={`${pathD} L ${xs[xs.length - 1]} ${pad.top + ch} L ${xs[0]} ${pad.top + ch} Z`} fill="url(#staffTrendFill)" />
+          <path d={pathD} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          {points.map((_, i) => (
+            <rect
+              key={`h-${i}`}
+              x={xs[i] - (step || 40) / 2}
+              y={pad.top}
+              width={step || 40}
+              height={ch}
+              fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)}
+            />
+          ))}
+          {hoverIdx !== null && (
+            <line
+              x1={xs[hoverIdx]}
+              y1={pad.top}
+              x2={xs[hoverIdx]}
+              y2={pad.top + ch}
+              stroke="var(--sa-text-secondary)"
+              strokeWidth="1"
+              strokeDasharray="3"
+              opacity="0.4"
+            />
+          )}
+          {points.map((p, i) => (
+            <circle
+              key={`${p.date}-dot-${i}`}
+              cx={xs[i]}
+              cy={ys[i]}
+              r={hoverIdx === i ? 5.5 : 4}
+              fill={hoverIdx === i ? '#fff' : stroke}
+              stroke={stroke}
+              strokeWidth={hoverIdx === i ? 2.5 : 0}
+              style={{ transition: 'r .15s, fill .15s', cursor: 'pointer' }}
+            />
+          ))}
+        </svg>
+        {hoverIdx !== null && (() => {
+          const p = points[hoverIdx];
+          const leftPct = (xs[hoverIdx] / W) * 100;
+          const topPct = (ys[hoverIdx] / H) * 100;
+          const placeBelow = topPct < 28;
+          return (
+            <div
+              className={`sa-chart-hover-tooltip${placeBelow ? ' sa-chart-hover-tooltip-below' : ''}`}
+              style={{ left: `${leftPct}%`, top: `${topPct}%` }}
+            >
+              <div className="sa-chart-hover-tooltip-row">Дата: {p.date}</div>
+              <div className="sa-chart-hover-tooltip-row is-strong">Балл: {p.avgScore.toFixed(0)}</div>
+            </div>
+          );
+        })()}
+      </div>
+    </div>
+  );
 }
 
-function StaffProfileKpi(props: { label: string; value: string; valueClass?: string }) {
+function StaffProfileKpi(props: { label: string; value: string; hint?: string; valueClass?: string }) {
   return (
     <div className="sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card sa-staff-kpi-card">
       <div className="sa-kpi-card-top">
@@ -117,6 +206,7 @@ function StaffProfileKpi(props: { label: string; value: string; valueClass?: str
       <div className="sa-kpi-card-spacer" aria-hidden />
       <div className="sa-kpi-card-bottom">
         <div className={`sa-kpi-value sa-kpi-value-large ${props.valueClass ?? ''}`.trim()}>{props.value}</div>
+        {props.hint ? <div className="sa-kpi-desc">{props.hint}</div> : null}
       </div>
     </div>
   );
@@ -165,32 +255,40 @@ export function StaffProfileContent() {
   );
   const stats = useMemo(() => {
     const scores = scoredHistory.map((item) => Number(item.score));
-    const avgScore = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0;
-    const bestScore = scores.length ? Math.max(...scores) : 0;
-    const passRate = scores.length ? Math.round((scores.filter((score) => score >= 76).length / scores.length) * 100) : 0;
-    const recentScores = scoredHistory.slice(0, 10).map((item) => Math.round(Number(item.score))).reverse();
-    const strengths = uniqueNonEmpty(
-      scoredHistory
-        .filter((item) => Number(item.score) >= 85)
-        .map((item) => item.scenarioName),
-      3,
-    );
-    const weaknesses = uniqueNonEmpty(
-      scoredHistory
-        .filter((item) => Number(item.score) < 76)
-        .map((item) => trainerFailureReasonLabel(item.failureReason) || item.scenarioName),
-      3,
-    );
+    const avgScore = profile?.avgScore ?? (scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : 0);
+    const fallbackTrend = [...scoredHistory]
+      .slice(0, 10)
+      .reverse()
+      .map((item) => ({
+        date: (item.completedAt || item.startedAt || '').slice(0, 10),
+        avgScore: Math.round(Number(item.score)),
+        count: 1,
+      }))
+      .filter((item) => item.date);
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const testsLast7d = profile?.testsLast7d ?? completedHistory.filter((item) => {
+      const stamp = Date.parse(item.completedAt || item.startedAt || '');
+      return Number.isFinite(stamp) && stamp >= weekAgo;
+    }).length;
+    const categoryScores = profile?.categoryScores ?? [
+      { name: 'Контакт', score: 0, comment: 'Нет данных из тренажёра.', hint: 'Нет данных по категории «Контакт»' },
+      { name: 'Диагностика', score: 0, comment: 'Нет данных из тренажёра.', hint: 'Нет данных по категории «Диагностика»' },
+      { name: 'Продукт', score: 0, comment: 'Нет данных из тренажёра.', hint: 'Нет данных по категории «Продукт»' },
+      { name: 'Закрытие', score: 0, comment: 'Нет данных из тренажёра.', hint: 'Нет данных по категории «Закрытие»' },
+      { name: 'Коммуникация', score: 0, comment: 'Нет данных из тренажёра.', hint: 'Нет данных по категории «Коммуникация»' },
+    ];
     return {
-      totalTests: profile?.sessionsTotal ?? completedHistory.length,
       avgScore,
-      bestScore,
-      passRate,
-      recentScores,
-      strengths,
-      weaknesses,
+      testsLast7d,
+      sessions30d: profile?.sessions30d ?? 0,
+      sessionsTotal: profile?.sessionsTotal ?? completedHistory.length,
+      currentStreak: profile?.currentStreak ?? 0,
+      longestStreak: profile?.longestStreak ?? 0,
+      totalPoints: profile?.totalPoints ?? 0,
+      categoryScores,
+      scoreTrend: (profile?.scoreTrend && profile.scoreTrend.length > 0) ? profile.scoreTrend : fallbackTrend,
     };
-  }, [completedHistory.length, profile?.sessionsTotal, scoredHistory]);
+  }, [completedHistory, profile, scoredHistory]);
 
   const locationLabel = profile
     ? [profile.branchName, profile.city].filter(Boolean).join(', ')
@@ -215,117 +313,74 @@ export function StaffProfileContent() {
               : 'Нет данных о сотруднике'}
           </p>
         </div>
-        <div className="sa-staff-profile-points">
-          <span className="sa-staff-profile-points-label">AI-баллы</span>
-          <span className="sa-kpi-value sa-kpi-value-large">{profile?.totalPoints ?? 0}</span>
-        </div>
       </header>
 
-      <div className="sa-kpi-grid sa-staff-kpi-grid">
-        <StaffProfileKpi label="Всего тестов" value={String(stats.totalTests)} />
-        <StaffProfileKpi label="Средний балл" value={stats.avgScore.toFixed(1)} valueClass={stats.avgScore ? staffScoreClass(stats.avgScore) : undefined} />
-        <StaffProfileKpi label="Лучший балл" value={String(stats.bestScore)} valueClass={stats.bestScore ? staffScoreClass(stats.bestScore) : undefined} />
-        <StaffProfileKpi label="% прохождения" value={`${stats.passRate}%`} />
-      </div>
+      <section className="sa-section sa-staff-profile-section">
+        <h2 className="sa-section-title">Ключевые метрики</h2>
+        <div className="sa-kpi-grid sa-staff-kpi-grid">
+          <StaffProfileKpi
+            label="Средний балл"
+            value={stats.avgScore ? stats.avgScore.toFixed(1) : '—'}
+            hint="По всем тренировкам"
+            valueClass={stats.avgScore ? staffScoreClass(stats.avgScore) : undefined}
+          />
+          <StaffProfileKpi
+            label="Стрик"
+            value={String(stats.currentStreak)}
+            hint={`Рекорд ${stats.longestStreak} дн.`}
+          />
+          <StaffProfileKpi
+            label="AI-баллы"
+            value={String(stats.totalPoints)}
+            hint="За всё время"
+          />
+          <StaffProfileKpi
+            label="Сессии"
+            value={String(stats.sessions30d)}
+            hint={`${stats.testsLast7d} за 7 дней`}
+          />
+        </div>
+      </section>
 
-      <div className="sa-staff-profile-insights">
-        <BrutalCard title="Лучшие сценарии">
-          {stats.strengths.length === 0 ? (
-            <p className="sa-staff-profile-empty">Появятся после тренировок с высоким баллом.</p>
-          ) : (
-            <ul className="sa-staff-insight-list">
-              {stats.strengths.map((item) => (
-                <li key={item} className="sa-staff-insight-item sa-staff-insight-item--good">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          )}
-        </BrutalCard>
+      <section className="sa-section sa-staff-profile-section">
+        <h2 className="sa-section-title">Навыки по категориям</h2>
+        <div className="sa-card sa-brutal-card sa-staff-skills-card">
+          <div className="sa-brutal-card-body">
+            {stats.categoryScores.every((item) => item.score === 0) && scoredHistory.length === 0 ? (
+              <p className="sa-staff-profile-empty">Появятся после первых оценённых тренировок.</p>
+            ) : (
+              <div className="sa-staff-skills-grid">
+                {stats.categoryScores.map((item) => (
+                  <div key={item.name} className="sa-staff-skill-card" title={item.hint}>
+                    <div className="sa-staff-skill-top">
+                      <strong>{item.name}</strong>
+                      <span className={ratingClass(item.score)}>{item.score}</span>
+                    </div>
+                    <div className="sa-staff-skill-bar">
+                      <i
+                        style={{
+                          width: `${item.score <= 0 ? 5 : Math.max(item.score, 4)}%`,
+                          background: scoreBarColor(item.score),
+                        }}
+                      />
+                    </div>
+                    <p className="sa-staff-skill-comment">{item.comment || item.hint}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
 
-        <BrutalCard title="Зоны роста">
-          {stats.weaknesses.length === 0 ? (
-            <p className="sa-staff-profile-empty">Пока нет сессий ниже проходного порога.</p>
-          ) : (
-            <ul className="sa-staff-insight-list">
-              {stats.weaknesses.map((item) => (
-                <li key={item} className="sa-staff-insight-item sa-staff-insight-item--warn">
-                  {item}
-                </li>
-              ))}
-            </ul>
-          )}
-        </BrutalCard>
-      </div>
-
-      <BrutalCard title="Динамика баллов · последние 10 тестов" className="sa-staff-chart-card">
-        {stats.recentScores.length === 0 ? (
+      <section className="sa-section sa-staff-profile-section">
+        <h2 className="sa-section-title">Динамика баллов</h2>
+        {stats.scoreTrend.length === 0 ? (
           <p className="sa-staff-profile-empty">Нет завершённых тренировок с оценкой.</p>
         ) : (
-          <div className="sa-staff-chart" role="img" aria-label="Динамика баллов за последние тесты">
-            {stats.recentScores.map((score, index) => (
-              <div key={`${score}-${index}`} className="sa-staff-chart-col">
-                <span className="sa-staff-chart-value">{score}</span>
-                <div className="sa-staff-chart-track">
-                  <div
-                    className={`sa-staff-chart-bar ${staffChartBarClass(score)}`}
-                    style={{ height: `${Math.max(12, score)}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </BrutalCard>
-
-      <section className="sa-staff-recent-section">
-        <h2 className="sa-section-title sa-staff-recent-title">Последние тренировки</h2>
-        {loading ? (
-          <p className="sa-staff-profile-empty">Загрузка…</p>
-        ) : history.length === 0 ? (
-          <p className="sa-staff-profile-empty">Нет данных о тренировках.</p>
-        ) : (
-          <div className="sa-companies-table-wrap">
-            <table className="sa-table">
-              <thead>
-                <tr>
-                  <th>Сценарий</th>
-                  <th>Дата</th>
-                  <th>Оценка</th>
-                  <th>Балл</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.slice(0, 5).map((item) => {
-                  const score = item.score;
-                  const finishedAt = item.completedAt ?? item.startedAt;
-                  const qualityTag = trainerQualityTag(score);
-                  return (
-                    <tr key={item.id}>
-                      <td>{item.scenarioName || 'Тренировка'}</td>
-                      <td className="sa-meta">
-                        {finishedAt ? new Date(finishedAt).toLocaleDateString('ru-RU') : '—'}
-                      </td>
-                      <td>
-                        {qualityTag ? (
-                          <span className={staffScoreClass(score ?? 0)}>{qualityTag}</span>
-                        ) : (
-                          <span className="sa-meta">—</span>
-                        )}
-                      </td>
-                      <td>
-                        {score != null ? (
-                          <span className={`sa-kpi-value ${staffScoreClass(score)}`}>{score.toFixed(0)}</span>
-                        ) : (
-                          <span className="sa-meta">Н/Д</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <BrutalCard title="Последние 10 тестов" className="sa-staff-chart-card">
+            <StaffScoreTrendChart points={stats.scoreTrend} />
+          </BrutalCard>
         )}
       </section>
     </div>

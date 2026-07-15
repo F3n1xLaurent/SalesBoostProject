@@ -1,4 +1,5 @@
 import { apiJson } from '../../entities/session';
+import type { AuditDetailItem } from './adminPanel';
 
 const API_BASE = '';
 
@@ -19,6 +20,12 @@ export interface TrainerProfile {
   lastActiveDate: string | null;
   sessionsTotal: number;
   sessions30d: number;
+  avgScore?: number;
+  testsLast7d?: number;
+  strongestCategory?: { name: string; score: number } | null;
+  weakestCategory?: { name: string; score: number } | null;
+  categoryScores?: Array<{ name: string; score: number; comment?: string; hint: string }>;
+  scoreTrend?: Array<{ date: string; avgScore: number; count: number }>;
 }
 
 export interface TrainerScenario {
@@ -52,11 +59,14 @@ export interface TrainerSessionSummary {
   status: TrainerSessionStatus;
   scenarioId: string | null;
   scenarioName: string;
+  title?: string | null;
+  displayName?: string;
   score: number | null;
   finalPoints: number | null;
   failureReason: string | null;
   startedAt: string;
   completedAt: string | null;
+  reportReady?: boolean;
 }
 
 export interface TrainerReport extends TrainerSessionSummary {
@@ -91,6 +101,7 @@ export interface TrainerInitialMessage {
 export interface TrainerTurnResponse {
   clientMessage: string;
   endConversation: boolean;
+  reportReady?: boolean;
   audioBase64: string | null;
   audioMimeType?: string | null;
   managerTranscript: string;
@@ -135,6 +146,31 @@ export async function startTrainerSession(payload: {
 
 export async function fetchTrainerReport(id: string): Promise<TrainerReport> {
   const data = await apiJson<{ item: TrainerReport }>(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/report`);
+  return data.item;
+}
+
+export async function waitForTrainerReport(
+  id: string,
+  options?: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal },
+): Promise<TrainerSessionSummary> {
+  const timeoutMs = options?.timeoutMs ?? 120_000;
+  const intervalMs = options?.intervalMs ?? 1_400;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (options?.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const report = await fetchTrainerReport(id);
+    if (report.reportReady || report.evaluation || report.score != null) {
+      return report;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+  }
+  throw new Error('Отчёт не готов вовремя.');
+}
+
+export async function fetchTrainerAuditDetail(id: string): Promise<AuditDetailItem> {
+  const data = await apiJson<{ item: AuditDetailItem }>(
+    `${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/audit-detail`,
+  );
   return data.item;
 }
 
