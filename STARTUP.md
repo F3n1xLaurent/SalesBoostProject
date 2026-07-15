@@ -75,3 +75,5 @@ git push origin feature/<task-name>
 - Не коммитить `.env`, `prisma/dev.db`, `dist/`.
 - Если меняется схема БД: коммитить только `prisma/schema.prisma` и `prisma/migrations/*`.
 - Не коммитить локальный файл базы `prisma/dev.db`.
+
+<!-- npm run seed-ai-call -- --email test@mail.ru -->

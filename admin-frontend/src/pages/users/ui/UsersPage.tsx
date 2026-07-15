@@ -438,7 +438,7 @@ function SearchableSelect(props: {
           className="theme-brutal"
           style={{
             position: 'fixed',
-            zIndex: 1500,
+            zIndex: 1600,
             top: dropdownRect.bottom + 6,
             left: dropdownRect.left,
             width: Math.max(dropdownRect.width, 240),

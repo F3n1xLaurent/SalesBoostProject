@@ -11,8 +11,7 @@ import { loadCar } from '../data/carLoader';
 import { getDefaultState } from '../state/defaultState';
 import { evaluateSessionV2 } from '../llm/evaluatorV2';
 import { getTranscriptFromVoxLog } from './voxLogTranscript';
-import { buildConversationPairs, generateCallSummary, generateReplyImprovements } from './callSummary';
-import { generateUnifiedCallReport } from './unifiedCallReport';
+import { generateCallAnalyticsBundle } from './callAnalyticsBundle';
 
 export type VoxWebhookEvent = 'progress' | 'connected' | 'disconnected' | 'failed' | 'busy' | 'no_answer';
 
@@ -56,6 +55,10 @@ function parseWebhookDate(value: unknown, fallback = new Date()): Date {
 
 function secondsBetween(from: Date, to: Date): number {
   return Math.max(0, Math.round((to.getTime() - from.getTime()) / 1000));
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.round(performance.now() - startedAt);
 }
 
 function dialogHistoryFromTranscript(transcript: TranscriptTurn[]): Array<{ role: 'client' | 'manager'; content: string }> {
@@ -402,6 +405,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
     const car = loadCar();
     const state = getDefaultState('normal');
     const dialogHistory = dialogHistoryFromTranscript(transcript);
+    const evaluationStartedAt = performance.now();
     console.log('[voice/session] evaluation start', { callId, turns: transcript.length });
     const { evaluation } = await evaluateSessionV2({
       dialogHistory,
@@ -410,53 +414,44 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       earlyFail: false,
       behaviorSignals: [],
     });
+    console.log('[voice/session] evaluation base done', { callId, ms: elapsedMs(evaluationStartedAt) });
 
     // ---- Extended call summary (team-summary style) + per-answer improvements ----
     let callSummary: unknown = null;
     let replyImprovements: unknown = null;
     let unifiedCallReport: unknown = null;
+    let planCriteria: unknown = null;
     try {
       const checklist = Array.isArray((evaluation as any).checklist) ? (evaluation as any).checklist : [];
       const issues = Array.isArray((evaluation as any).issues) ? (evaluation as any).issues : [];
       const recommendations = Array.isArray((evaluation as any).recommendations) ? (evaluation as any).recommendations : [];
       const dimensionScores = (evaluation as any).dimension_scores ?? null;
-
-      callSummary = await generateCallSummary({
-        transcript,
-        outcome,
-        totalScore: evaluation.overall_score_0_100 ?? null,
-        dimensionScores: dimensionScores && typeof dimensionScores === 'object' ? dimensionScores : null,
-        issues,
-        checklist,
-        recommendations,
-      });
-
-      const pairs = buildConversationPairs(transcript);
-      if (pairs.length > 0) {
-        const improvements = await generateReplyImprovements({
-          pairs,
-          limit: 12,
-          issues,
-        });
-        replyImprovements = improvements;
-      }
+      const analyticsStartedAt = performance.now();
+      const [analyticsBundle, criteria] = await Promise.all([
+        generateCallAnalyticsBundle({
+          transcript,
+          outcome,
+          totalScore: evaluation.overall_score_0_100 ?? null,
+          evaluation: {
+            ...evaluation,
+            dimension_scores: dimensionScores && typeof dimensionScores === 'object' ? dimensionScores : undefined,
+            checklist,
+            issues,
+            recommendations,
+          },
+        }),
+        evaluatePlanCriteria(callId, transcript),
+      ]);
+      callSummary = analyticsBundle.callSummary;
+      replyImprovements = analyticsBundle.replyImprovements;
+      unifiedCallReport = analyticsBundle.unifiedCallReport;
+      planCriteria = criteria;
+      console.log('[voice/session] analytics bundle done', { callId, ms: elapsedMs(analyticsStartedAt) });
     } catch (err) {
-      console.warn('[voice/session] callSummary generation failed:', err instanceof Error ? err.message : err);
-    }
-
-    try {
-      unifiedCallReport = await generateUnifiedCallReport({
-        transcript,
-        outcome,
-        totalScore: evaluation.overall_score_0_100 ?? null,
-        evaluation: {
-          ...evaluation,
-          call_summary: callSummary,
-          reply_improvements: replyImprovements,
-        },
-      });
-    } catch (err) {
-      console.warn('[voice/session] unified call report generation failed:', err instanceof Error ? err.message : err);
+      console.warn('[voice/session] analytics bundle generation failed:', err instanceof Error ? err.message : err);
+      const criteriaStartedAt = performance.now();
+      planCriteria = await evaluatePlanCriteria(callId, transcript);
+      console.log('[voice/session] plan criteria done after bundle failure', { callId, ms: elapsedMs(criteriaStartedAt) });
     }
 
     const evaluationJson = JSON.stringify({
@@ -464,7 +459,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       call_summary: callSummary,
       reply_improvements: replyImprovements,
       unified_call_report: unifiedCallReport,
-      plan_criteria: await evaluatePlanCriteria(callId, transcript),
+      plan_criteria: planCriteria,
     });
     const evaluationForPlan = JSON.parse(evaluationJson);
     const analyticsFields = extractAnalyticsEvaluationFields(evaluationForPlan);
