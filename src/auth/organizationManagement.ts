@@ -336,28 +336,6 @@ async function generateUniqueDirectionCode(tx: Prisma.TransactionClient, holding
   }
 }
 
-async function ensureDefaultDealershipDirections(tx: Prisma.TransactionClient = prisma): Promise<void> {
-  const holdings = await tx.holding.findMany({ select: { id: true } });
-  for (const holding of holdings) {
-    const defaults = [
-      { name: 'Новые автомобили', code: 'new_cars' },
-      { name: 'Автомобили с пробегом', code: 'used_cars' },
-    ];
-    for (const item of defaults) {
-      await tx.dealershipDirection.upsert({
-        where: { holdingId_code: { holdingId: holding.id, code: item.code } },
-        update: {},
-        create: {
-          holdingId: holding.id,
-          name: item.name,
-          code: item.code,
-          isActive: true,
-        },
-      });
-    }
-  }
-}
-
 async function getHoldingsSnapshot() {
   return prisma.holding.findMany({
     include: {
@@ -463,7 +441,7 @@ export async function syncMockOrganization(): Promise<{
             name: seed.name,
             code: seed.code,
             type: 'own',
-            directionsJson: JSON.stringify(['new_cars', 'used_cars']),
+            directionsJson: JSON.stringify([]),
             city: seed.city,
             address: seed.address,
             workingHoursFrom: DEFAULT_WORKING_HOURS_FROM,
@@ -479,7 +457,7 @@ export async function syncMockOrganization(): Promise<{
             name: seed.name,
             code: seed.code,
             type: 'own',
-            directionsJson: JSON.stringify(['new_cars', 'used_cars']),
+            directionsJson: JSON.stringify([]),
             city: seed.city,
             address: seed.address,
             workingHoursFrom: DEFAULT_WORKING_HOURS_FROM,
@@ -841,8 +819,6 @@ export async function handleListDealershipDirections(req: Request, res: Response
   const activeOnly = activeRaw === 'true' ? true : null;
 
   try {
-    await ensureDefaultDealershipDirections();
-
     const where: Prisma.DealershipDirectionWhereInput = {};
     if (activeOnly != null) where.isActive = activeOnly;
 
