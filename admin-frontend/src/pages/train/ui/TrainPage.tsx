@@ -569,12 +569,8 @@ function NewSessionModal(props: {
   open: boolean;
   scenarios: TrainerScenario[];
   scenarioId: string;
-  difficulty: 'easy' | 'medium' | 'hard';
-  clientType: string;
   busy: boolean;
   onScenarioChange: (value: string) => void;
-  onDifficultyChange: (value: 'easy' | 'medium' | 'hard') => void;
-  onClientTypeChange: (value: string) => void;
   onStart: () => void;
   onClose: () => void;
 }) {
@@ -613,28 +609,6 @@ function NewSessionModal(props: {
             placeholder="Выберите сценарий"
             disabled={props.busy}
             onChange={props.onScenarioChange}
-          />
-        </label>
-        <label>
-          <span>Сложность</span>
-          <BrutalSelect
-            value={props.difficulty}
-            options={Object.entries(difficultyLabels).map(([value, label]) => ({ value, label }))}
-            disabled={props.busy}
-            onChange={(value) => props.onDifficultyChange(value as 'easy' | 'medium' | 'hard')}
-          />
-        </label>
-        <label>
-          <span>Тип клиента</span>
-          <BrutalSelect
-            value={props.clientType}
-            options={[
-              { value: 'random', label: 'Случайный' },
-              { value: 'careful', label: 'Внимательный' },
-              { value: 'price_sensitive', label: 'Цена важна' },
-            ]}
-            disabled={props.busy}
-            onChange={props.onClientTypeChange}
           />
         </label>
       </div>
@@ -1651,12 +1625,8 @@ export function TrainPage(props: { embedded?: boolean }) {
         open={newSessionOpen}
         scenarios={scenarios}
         scenarioId={firstScenarioId}
-        difficulty={difficulty}
-        clientType={clientType}
         busy={busy}
         onScenarioChange={setSelectedScenarioId}
-        onDifficultyChange={setDifficulty}
-        onClientTypeChange={setClientType}
         onStart={startFree}
         onClose={() => setNewSessionOpen(false)}
       />
