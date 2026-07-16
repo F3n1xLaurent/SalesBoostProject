@@ -382,30 +382,33 @@ function ScriptTextModal(props: {
   }
 
   return (
-    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-medium">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 22 }}>{props.title}</h2>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </div>
-        <form onSubmit={save} style={{ display: 'grid', gap: 12 }}>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span>{props.firstLabel}</span>
-            <textarea className="sa-input" rows={3} value={first} placeholder={props.firstPlaceholder} onChange={(event) => setFirst(event.target.value)} autoFocus required />
-          </label>
-          {props.secondLabel && (
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>{props.secondLabel}</span>
-              <input className="sa-input" value={second} placeholder={props.secondPlaceholder} onChange={(event) => setSecond(event.target.value)} />
-            </label>
-          )}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+    <BrutalModal
+      open={props.open}
+      onClose={props.onClose}
+      title={props.title}
+      width="medium"
+      footer={(
+        <div className="sa-modal-footer-row">
+          <div className="sa-modal-footer-row__right">
             <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={!first.trim()}>Добавить</button>
+            <button type="submit" form="call-script-objection-modal-form" className="sa-btn-primary" disabled={!first.trim()}>Добавить</button>
           </div>
-        </form>
-    </ModalPortal>
+        </div>
+      )}
+    >
+      <form id="call-script-objection-modal-form" onSubmit={save} style={{ display: 'grid', gap: 14 }}>
+        <label className="sa-form-field">
+          <span>{props.firstLabel}</span>
+          <textarea className="sa-input" rows={3} value={first} placeholder={props.firstPlaceholder} onChange={(event) => setFirst(event.target.value)} autoFocus required />
+        </label>
+        {props.secondLabel && (
+          <label className="sa-form-field">
+            <span>{props.secondLabel}</span>
+            <input className="sa-input" value={second} placeholder={props.secondPlaceholder} onChange={(event) => setSecond(event.target.value)} />
+          </label>
+        )}
+      </form>
+    </BrutalModal>
   );
 }
 
@@ -432,35 +435,38 @@ function QuestionModal(props: {
   }
 
   return (
-    <ModalPortal open={props.open} onClose={props.onClose} modalClassName="sa-modal-medium">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 22 }}>Добавить вопрос</h2>
-          <button type="button" className="sa-btn-outline sa-btn-icon" onClick={props.onClose} aria-label="Закрыть">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
-          </button>
-        </div>
-        <form onSubmit={save} style={{ display: 'grid', gap: 12 }}>
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span>Вопрос</span>
-            <textarea className="sa-input" rows={3} value={text} onChange={(event) => setText(event.target.value)} autoFocus required />
-          </label>
-          <button
-            type="button"
-            className="sa-toggle-field"
-            aria-pressed={required}
-            onClick={() => setRequired((current) => !current)}
-          >
-            <span className="sa-toggle-field__text">{required ? 'Обязательный' : 'Не обязательный'}</span>
-            <span className="sa-toggle-field__control" aria-hidden="true">
-              <span className="sa-toggle-field__thumb" />
-            </span>
-          </button>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+    <BrutalModal
+      open={props.open}
+      onClose={props.onClose}
+      title="Добавить вопрос"
+      width="medium"
+      footer={(
+        <div className="sa-modal-footer-row">
+          <div className="sa-modal-footer-row__right">
             <button type="button" className="sa-btn-outline" onClick={props.onClose}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={!text.trim()}>Добавить</button>
+            <button type="submit" form="call-script-question-modal-form" className="sa-btn-primary" disabled={!text.trim()}>Добавить</button>
           </div>
-        </form>
-    </ModalPortal>
+        </div>
+      )}
+    >
+      <form id="call-script-question-modal-form" onSubmit={save} style={{ display: 'grid', gap: 14 }}>
+        <label className="sa-form-field">
+          <span>Вопрос</span>
+          <textarea className="sa-input" rows={3} value={text} onChange={(event) => setText(event.target.value)} autoFocus required />
+        </label>
+        <button
+          type="button"
+          className="sa-toggle-field"
+          aria-pressed={required}
+          onClick={() => setRequired((current) => !current)}
+        >
+          <span className="sa-toggle-field__text">{required ? 'Обязательный' : 'Не обязательный'}</span>
+          <span className="sa-toggle-field__control" aria-hidden="true">
+            <span className="sa-toggle-field__thumb" />
+          </span>
+        </button>
+      </form>
+    </BrutalModal>
   );
 }
 
