@@ -2137,7 +2137,7 @@ export function CallSettingsPage() {
   const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
   const [planDeleteConfirm, setPlanDeleteConfirm] = useState(false);
   const { showToast } = useToast();
-  const canManageVoices = auth.status === 'authenticated' && auth.user.allowedRoles.includes('super');
+  const isSuperAdmin = auth.status === 'authenticated' && auth.user.allowedRoles.includes('super');
 
   useEffect(() => {
     if (location.pathname === '/call-settings') {
@@ -2856,7 +2856,7 @@ export function CallSettingsPage() {
           />
         </div>
         <div className="sa-toolbar-actions">
-          {activeTab === 'profiles' && canManageVoices && (
+          {activeTab === 'profiles' && isSuperAdmin && (
             <button type="button" className="sa-btn-brutal-3d" onClick={() => setVoicesModalOpen(true)}>
               <LetsIcon name="sound-light" size={16} bold />
               Голоса
@@ -3014,15 +3014,15 @@ export function CallSettingsPage() {
                 <th style={{ width: 180 }}>Скрипт</th>
                 <th style={{ width: 150 }}>Частотность</th>
                 <th style={{ width: 140 }}>Время</th>
-                <th className="sa-text-right sa-holdings-actions-col" style={{ width: 88 }}>Действия</th>
+                {isSuperAdmin && <th className="sa-text-right sa-holdings-actions-col" style={{ width: 88 }}>Действия</th>}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={6} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
+                <tr><td colSpan={isSuperAdmin ? 6 : 5} className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</td></tr>
               ) : sortedPlans.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="sa-empty-state">
+                  <td colSpan={isSuperAdmin ? 6 : 5} className="sa-empty-state">
                     Планов прозвона пока нет
                   </td>
                 </tr>
@@ -3051,22 +3051,24 @@ export function CallSettingsPage() {
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
                       <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
                       <td>{plan.frequency === 'manual' ? '—' : `${formatPlanWeekdays(plan.weekdays)} · ${plan.callTimeFrom} - ${plan.callTimeTo}`}</td>
-                      <td className="sa-holdings-actions-cell sa-text-right" onClick={(event) => event.stopPropagation()}>
-                        <button
-                          type="button"
-                          className="sa-btn-outline sa-btn-icon"
-                          onClick={() => openPromptPreview(plan)}
-                          aria-label="Тест промпта"
-                          title="Тест промпта"
-                          disabled={promptPreviewLoadingId === plan.id}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                            <path d="M10 2v6L5 19a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3L14 8V2" />
-                            <path d="M8 2h8" />
-                            <path d="M7 16h10" />
-                          </svg>
-                        </button>
-                      </td>
+                      {isSuperAdmin && (
+                        <td className="sa-holdings-actions-cell sa-text-right" onClick={(event) => event.stopPropagation()}>
+                          <button
+                            type="button"
+                            className="sa-btn-outline sa-btn-icon"
+                            onClick={() => openPromptPreview(plan)}
+                            aria-label="Тест промпта"
+                            title="Тест промпта"
+                            disabled={promptPreviewLoadingId === plan.id}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                              <path d="M10 2v6L5 19a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3L14 8V2" />
+                              <path d="M8 2h8" />
+                              <path d="M7 16h10" />
+                            </svg>
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })

@@ -20,9 +20,12 @@ const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['manual', 'daily', 'we
 const WEEKDAYS = new Set<CallPlanWeekday>([0, 1, 2, 3, 4, 5, 6]);
 const TIME_RE = /^([01]\d|2[0-2]):([0-5]\d)$/;
 const DEFAULT_PLAN_WEEKDAYS: CallPlanWeekday[] = [1, 2, 3, 4, 5, 6, 0];
-const CALL_PLAN_SCHEDULER_INTERVAL_MS = 60_000;
-let callPlanSchedulerTimer: NodeJS.Timeout | null = null;
-let callPlanSchedulerRunning = false;
+const CALL_PLAN_DUE_RUNNER_INTERVAL_MS = 60_000;
+const CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS = 30 * 60_000;
+let callPlanDueRunnerTimer: NodeJS.Timeout | null = null;
+let callPlanScheduleCheckerTimer: NodeJS.Timeout | null = null;
+let callPlanDueRunnerRunning = false;
+let callPlanScheduleCheckerRunning = false;
 
 function parseString(value: unknown): string | null {
   const parsed = String(value ?? '').trim();
@@ -1046,9 +1049,9 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
   }
 }
 
-async function runCallPlanSchedulerTick(): Promise<void> {
-  if (callPlanSchedulerRunning) return;
-  callPlanSchedulerRunning = true;
+async function runCallPlanScheduleChecker(): Promise<void> {
+  if (callPlanScheduleCheckerRunning) return;
+  callPlanScheduleCheckerRunning = true;
   try {
     const today = new Date();
     const plans = await prisma.callPlan.findMany({ where: { frequency: { in: ['daily', 'weekly'] } } });
@@ -1063,7 +1066,17 @@ async function runCallPlanSchedulerTick(): Promise<void> {
         });
       }
     }
+  } catch (error) {
+    console.error('[call-plan-scheduler] schedule check failed:', error instanceof Error ? error.message : error);
+  } finally {
+    callPlanScheduleCheckerRunning = false;
+  }
+}
 
+async function runCallPlanDueRunner(): Promise<void> {
+  if (callPlanDueRunnerRunning) return;
+  callPlanDueRunnerRunning = true;
+  try {
     const now = new Date();
     const due = await prisma.callPlanCall.findMany({
       where: {
@@ -1085,19 +1098,26 @@ async function runCallPlanSchedulerTick(): Promise<void> {
       await launchScheduledPlanCall(call);
     }
   } catch (error) {
-    console.error('[call-plan-scheduler] tick failed:', error instanceof Error ? error.message : error);
+    console.error('[call-plan-scheduler] due runner failed:', error instanceof Error ? error.message : error);
   } finally {
-    callPlanSchedulerRunning = false;
+    callPlanDueRunnerRunning = false;
   }
 }
 
 export function startCallPlanScheduler(): void {
-  if (callPlanSchedulerTimer) return;
-  void runCallPlanSchedulerTick();
-  callPlanSchedulerTimer = setInterval(() => {
-    void runCallPlanSchedulerTick();
-  }, CALL_PLAN_SCHEDULER_INTERVAL_MS);
-  console.log('[call-plan-scheduler] started');
+  if (callPlanDueRunnerTimer || callPlanScheduleCheckerTimer) return;
+  void runCallPlanScheduleChecker();
+  void runCallPlanDueRunner();
+  callPlanScheduleCheckerTimer = setInterval(() => {
+    void runCallPlanScheduleChecker();
+  }, CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS);
+  callPlanDueRunnerTimer = setInterval(() => {
+    void runCallPlanDueRunner();
+  }, CALL_PLAN_DUE_RUNNER_INTERVAL_MS);
+  console.log('[call-plan-scheduler] started', {
+    scheduleCheckIntervalMs: CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS,
+    dueRunnerIntervalMs: CALL_PLAN_DUE_RUNNER_INTERVAL_MS,
+  });
 }
 
 export async function handleInitiateCallPlan(req: Request, res: Response): Promise<void> {
