@@ -41,7 +41,7 @@ import { buildDealershipFromCar } from './llm/virtualClient';
 import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
 import { evaluateSessionV2 } from './llm/evaluatorV2';
-import { generateSpeechBuffer } from './voice/tts';
+import { generateSpeechBuffer, generateSpeechElevenLabsVoice } from './voice/tts';
 import { buildCustomerScenarioPromptCore } from './voice/customerScenarioPrompt';
 import {
   closeElevenLabsAgentConversation,
@@ -515,9 +515,29 @@ function ttsVoiceName(voice: TtsVoice | null | undefined): string {
   return voice === 'female' ? 'женский голос' : 'мужской голос';
 }
 
+async function pickTrainerImportedSampleForScript(script: Prisma.CallScriptGetPayload<{}>) {
+  const dataCondition = safeJsonParseLocal<{ tags?: string[] }>(script.dataConditionJson, { tags: [] });
+  const tags = Array.isArray(dataCondition.tags) ? dataCondition.tags.map(String).filter(Boolean) : [];
+  const candidates = await prisma.importedItem.findMany({
+    where: { importSource: { holdingId: script.holdingId } },
+    orderBy: { updatedAt: 'desc' },
+    take: 500,
+  });
+  if (candidates.length === 0) return null;
+  const pool = tags.length
+    ? candidates.filter((item) => {
+      const itemTags = safeJsonParseLocal<string[]>(item.tagsJson, []);
+      return tags.every((tag) => itemTags.includes(tag));
+    })
+    : candidates;
+  const source = pool.length ? pool : candidates;
+  return source[Math.floor(Math.random() * source.length)] ?? null;
+}
+
 function buildTrainerCaseContext(params: {
   sessionType: 'plan' | 'free';
   scenario: { id: string; name: string; context: string; objectionsJson: string; questionsJson: string; successCriteriaJson: string } | null;
+  importedItem?: { id: string; title: string; description: string | null } | null;
   manager: { id: string; fullName: string; dealership?: { id: string; name: string; city: string | null; holdingId: string | null } | null };
   difficulty: string;
   clientType: string;
@@ -580,6 +600,11 @@ function buildTrainerCaseContext(params: {
       objections,
       questions,
       successCriteria,
+    } : null,
+    importedItem: params.importedItem ? {
+      id: params.importedItem.id,
+      title: params.importedItem.title,
+      description: params.importedItem.description,
     } : null,
   };
 }
@@ -1737,6 +1762,9 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
   const clientProfile = caseContext.clientProfile && typeof caseContext.clientProfile === 'object'
     ? caseContext.clientProfile as Record<string, unknown>
     : {};
+  const importedItem = caseContext.importedItem && typeof caseContext.importedItem === 'object'
+    ? caseContext.importedItem as Record<string, unknown>
+    : {};
   const age = Number(clientProfile.age);
   const ageLabel = Number.isFinite(age) ? String(Math.round(age)) : '';
   const voiceName = String(clientProfile.voiceName || '').trim() || ttsVoiceName(ttsVoice);
@@ -1756,27 +1784,69 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     replyLength: String(clientProfile.replyLength || ''),
     communicationStyle: String(clientProfile.communicationStyle || ''),
     context: String(scenario.context || ''),
-    itemTitle: String(scenario.name || ''),
-    itemDescription: String(company.branchName || company.name || ''),
+    itemTitle: String(importedItem.title || scenario.name || ''),
+    itemDescription: String(importedItem.description || company.branchName || company.name || ''),
     voiceName,
     questions: scenarioQuestions,
     objections: scenarioObjections,
     criteria: scenarioCriteria,
-    includeFirstMessage: false,
   });
   const previous = transcript.length
     ? transcript.map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`).join('\n')
     : 'Диалог только начинается.';
+  const companyName = String(company.name || company.branchName || 'Компания').trim();
+  const companyDescription = String(company.description || company.branchDescription || '').trim() || 'Описание не указано.';
 
   return [
-    'Ты играешь роль клиента в тренажере продаж автосалона. Говори только от лица клиента.',
-    'Твоя задача: реалистично отвечать менеджеру, задавать вопросы, возражать и проверять, насколько менеджер ведет разговор по сценарию.',
-    'Не оценивай менеджера вслух и не раскрывай правила тренажера. Отвечай естественно на русском языке и соблюдай длину реплик из профиля клиента.',
-    `Сценарий: ${String(scenario.name || 'Свободная тренировка')}`,
-    `Компания/точка: ${String(company.branchName || 'автосалон')}, город: ${String(company.city || clientProfile.city || 'не указан')}`,
-    `Сложность: ${String(caseContext.difficulty || 'medium')}`,
+    '=== РОЛЬ (КРИТИЧНО) ===',
+    'Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ сотруднику компании по конкретному предложению/данным из выборки. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы, отрабатывает возражения и доводит до следующего шага.',
+    'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы по предложению, условиям, деталям и следующему шагу.',
+    'Формируй ответы не как письменный текст, а как текст, предназначенный для озвучивания. Если слово может быть неправильно произнесено TTS - напиши его в фонетически более удобной форме для сохранения естественного звучания (например, ударение пишется большой буквой, скажем "перспектИва"). Задавая вопросы формулируй их по разному, чтобы звучало как реальный диалог, а не как анкета.',
+    '',
+    '=== ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК (КРИТИЧНО) ===',
+    'Если в начале разговора или в любой момент становится понятно, что на другом конце не живой сотрудник, а голосовой помощник, автоответчик, виртуальный ассистент или сервис записи сообщений, НЕ продолжай обычный сценарий диалога.',
+    '',
+    'К признакам относятся, например:',
+    '- собеседник сообщает, что абонент занят или недоступен;',
+    '- предлагает оставить сообщение;',
+    '- говорит, что может записать информацию;',
+    '- представляется голосовым помощником, виртуальным ассистентом или секретарём;',
+    '- просит говорить после сигнала или обещает передать сообщение владельцу.',
+    '',
+    'В этом случае:',
+    '',
+    '1. Один раз произнеси ровно:',
+    '   "Прошу прощения, до свидания."',
+    '',
+    '2. Сразу после этого вызови:',
+    '   end_call({ "reason": "voicemail" })',
+    '',
+    'После обнаружения голосового помощника запрещено:',
+    '- продолжать разговор;',
+    '- задавать вопросы;',
+    '- повторять первую реплику;',
+    '- пытаться пройти сценарий продажи;',
+    '- вызывать end_call с любой другой причиной.',
+    '',
+    'Исключение: если обнаружен голосовой помощник или автоответчик, не выполняй обычный сценарий завершения разговора. Вместо этого используй только сценарий "ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК".',
+    '',
+    '=== ИНФОРМАЦИЯ О КОМПАНИИ ===',
+    `Название компании: ${companyName}`,
+    `Описание компании: ${companyDescription}`,
+    '',
     scenarioCore,
-    `История диалога:\n${previous}`,
+    '',
+    '=== ЗАВЕРШЕНИЕ ДИАЛОГА ===',
+    'Завершай разговор, когда договорились о следующем шаге, разговор естественно исчерпан, или сотрудник ведёт себя грубо/неадекватно. В конце чётко скажи прощание: «До свидания», «Хорошо, тогда на этом закончим», «Спасибо, до свидания».',
+    'После завершения диалога вызови функцию end_call.',
+    '',
+    '=== ТЕХНИЧЕСКИЙ СИГНАЛ ДЛЯ ЗАВЕРШЕНИЯ ЗВОНКА ===',
+    'После своей последней фразы прощания обязательно один раз вызови функцию end_call с краткой причиной: { "reason": "next_step_scheduled" }, { "reason": "will_think" }, { "reason": "bad_tone" } или другой короткой причиной. Не вызывай end_call раньше последней реплики и не вызывай дважды. Вызови только в конце реплики завершения разговора.',
+    '',
+    '=== ЯЗЫК И СТИЛЬ ===',
+    'Язык: только русский. Тон: реалистичный клиент, не поддакивающий. Длина: 1–3 предложения на реплику. Без эмодзи, без мета-комментариев. Не выходи из роли.',
+    '',
+    `=== ИСТОРИЯ ДИАЛОГА ===\n${previous}`,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -1790,15 +1860,17 @@ function trainerInitialClientMessage(caseContext: Record<string, unknown>): stri
   const clientProfile = caseContext.clientProfile && typeof caseContext.clientProfile === 'object'
     ? caseContext.clientProfile as Record<string, unknown>
     : {};
-  const questions = Array.isArray(scenario.questions) ? scenario.questions : [];
-  const firstQuestion = questions
-    .map((item) => typeof item === 'string' ? item : String((item as Record<string, unknown>)?.question || (item as Record<string, unknown>)?.text || ''))
-    .find((item) => item.trim());
+  const importedItem = caseContext.importedItem && typeof caseContext.importedItem === 'object'
+    ? caseContext.importedItem as Record<string, unknown>
+    : {};
+  const itemTitle = String(importedItem.title || '').trim();
   const scenarioName = String(scenario.name || '').trim();
   const city = String(company.city || clientProfile.city || '').trim();
-  if (firstQuestion) return firstQuestion.trim();
+  if (itemTitle) {
+    return `Да, здравствуйте. Я звоню по поводу ${itemTitle}. Скажите, он еще в наличии и предложение актуально?`;
+  }
   if (scenarioName) {
-    return `Здравствуйте. Я смотрю ${scenarioName.toLowerCase()}${city ? ` в городе ${city}` : ''}. Можете подсказать по условиям?`;
+    return `Да, здравствуйте. Я звоню по поводу ${scenarioName.toLowerCase()}${city ? ` в городе ${city}` : ''}. Скажите, предложение еще актуально?`;
   }
   return `Здравствуйте. Я выбираю автомобиль${city ? ` в городе ${city}` : ''} и хочу уточнить несколько моментов.`;
 }
@@ -1811,6 +1883,8 @@ type TrainerRuntimeContext = {
   behaviorSignals: BehaviorSignal[];
   elevenLabsConversationId?: string | null;
 };
+
+const USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER = false;
 
 function getTrainerRuntime(caseContext: Record<string, unknown>): TrainerRuntimeContext {
   const runtime = caseContext.runtime && typeof caseContext.runtime === 'object'
@@ -1839,33 +1913,47 @@ function withTrainerRuntime(caseContext: Record<string, unknown>, runtime: Train
   };
 }
 
-async function ttsBase64(text: string, replyMode: 'text' | 'text+voice', ttsVoice: TtsVoice): Promise<string | null> {
+async function ttsBase64(
+  text: string,
+  replyMode: 'text' | 'text+voice',
+  ttsVoice: TtsVoice,
+  elevenLabsVoiceId?: string | null,
+): Promise<string | null> {
   if (replyMode !== 'text+voice' || !text.trim()) return null;
-  try {
-    const buf = await generateSpeechBuffer(text, ttsVoice);
-    return buf.length ? buf.toString('base64') : null;
-  } catch (error) {
-    console.error('[trainer] TTS error:', error);
-    return null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const buf = elevenLabsVoiceId?.trim()
+        ? await generateSpeechElevenLabsVoice(text, elevenLabsVoiceId.trim())
+        : await generateSpeechBuffer(text, ttsVoice);
+      return buf.length ? buf.toString('base64') : null;
+    } catch (error) {
+      console.error(`[trainer] TTS error attempt=${attempt}:`, error);
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 700));
+      }
+    }
   }
+  return null;
 }
 
-/** Trainer client replies must always be voice bubbles — never text-only. */
+/** Prefer voice bubbles, but keep the trainer flow alive if TTS is temporarily unavailable. */
 async function ensureTrainerClientAudio(params: {
   text: string;
   ttsVoice: TtsVoice;
+  elevenLabsVoiceId?: string | null;
   audioBase64?: string | null;
   audioMimeType?: string | null;
-}): Promise<{ audioBase64: string; audioMimeType: string | null }> {
+}): Promise<{ audioBase64: string | null; audioMimeType: string | null }> {
   if (params.audioBase64) {
     return {
       audioBase64: params.audioBase64,
       audioMimeType: params.audioMimeType ?? null,
     };
   }
-  const audioBase64 = await ttsBase64(params.text, 'text+voice', params.ttsVoice);
+  const audioBase64 = await ttsBase64(params.text, 'text+voice', params.ttsVoice, params.elevenLabsVoiceId);
   if (!audioBase64) {
-    throw new Error('Не удалось синтезировать голос клиента. Попробуйте отправить сообщение ещё раз.');
+    console.warn('[trainer] TTS unavailable, returning text-only client message');
+    return { audioBase64: null, audioMimeType: null };
   }
   return { audioBase64, audioMimeType: 'audio/mpeg' };
 }
@@ -2125,6 +2213,7 @@ async function initializeTrainerDialog(params: {
     const ensured = await ensureTrainerClientAudio({
       text: input.clientMessage,
       ttsVoice: params.ttsVoice,
+      elevenLabsVoiceId,
       audioBase64,
       audioMimeType,
     });
@@ -2182,7 +2271,7 @@ async function initializeTrainerDialog(params: {
     };
   };
 
-  if (isElevenLabsAgentEnabled()) {
+  if (USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
     try {
       const firstMessage = trainerInitialClientMessage(caseContext);
       const agentOut = await runElevenLabsAgentTurn({
@@ -2215,25 +2304,13 @@ async function initializeTrainerDialog(params: {
     ...runtime.state,
     strictnessState: { strictness: runtime.strictness, max_client_turns: maxClientTurns },
   };
-  const out = await getVirtualClientReply({
-    car: runtime.car,
-    dealership: buildDealershipFromCar(runtime.car),
-    state,
-    manager_last_message: '',
-    dialog_history: [],
-    strictness: runtime.strictness,
-    max_client_turns: maxClientTurns,
-  });
   const nextState = {
     ...state,
-    stage: out.update_state.stage,
-    checklist: { ...state.checklist, ...out.update_state.checklist },
-    notes: out.update_state.notes,
-    client_turns: out.update_state.client_turns,
+    client_turns: 1,
   };
   const nextRuntime = { ...runtime, state: nextState };
   return finalizeFirstTurn({
-    clientMessage: out.client_message,
+    clientMessage: trainerInitialClientMessage(caseContext),
     audioBase64: null,
     caseContext: withTrainerRuntime(caseContext, nextRuntime),
   });
@@ -2258,6 +2335,7 @@ async function runTrainerSessionTurn(params: {
   const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
   const runtime = getTrainerRuntime(caseContext);
   const transcriptBefore = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+  const phoneScenarioPrompt = trainerScenarioPrompt(caseContext, transcriptBefore, params.ttsVoice);
   const historyBefore = transcriptBefore.map((turn) => ({ role: turn.role, content: turn.text }));
   const history = [...historyBefore, { role: 'manager' as const, content: params.managerText }];
   const state = { ...runtime.state };
@@ -2296,13 +2374,13 @@ async function runTrainerSessionTurn(params: {
       nextHistory = [...history, { role: 'client', content: clientMessage }];
       result = buildWebTrainingResult(state, nextHistory, behaviorSignals, true, lowQualityStreak >= 2 ? 'REPEATED_LOW_QUALITY' : 'REPEATED_LOW_EFFORT');
       endConversation = true;
-    } else if (isElevenLabsAgentEnabled()) {
+    } else if (USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
       try {
         console.log(`[trainer] ElevenLabs agent turn start session=${session.id}`);
         const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
         const agentOut = await runElevenLabsAgentTurn({
           sessionId: session.id,
-          prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore, params.ttsVoice) : null,
+          prompt: shouldSendPrompt ? phoneScenarioPrompt : null,
           managerText: params.managerText,
           elevenLabsVoiceId,
         });
@@ -2329,6 +2407,7 @@ async function runTrainerSessionTurn(params: {
           strictness: runtime.strictness,
           max_client_turns: maxClientTurns,
           behaviorSignal: behavior,
+          scenarioPrompt: phoneScenarioPrompt,
           maxResponseTokens: 220,
         });
         clientMessage = out.client_message;
@@ -2346,6 +2425,7 @@ async function runTrainerSessionTurn(params: {
         strictness: runtime.strictness,
         max_client_turns: maxClientTurns,
         behaviorSignal: behavior,
+        scenarioPrompt: phoneScenarioPrompt,
         maxResponseTokens: 220,
       });
 
@@ -2389,6 +2469,7 @@ async function runTrainerSessionTurn(params: {
   const clientAudio = await ensureTrainerClientAudio({
     text: clientMessage,
     ttsVoice: params.ttsVoice,
+    elevenLabsVoiceId,
     audioBase64: clientAudioBase64,
     audioMimeType: clientAudioMimeType,
   });
@@ -2493,6 +2574,7 @@ async function runTrainerSessionAudioTurn(params: {
   const clientAudio = await ensureTrainerClientAudio({
     text: clientMessage,
     ttsVoice: params.ttsVoice,
+    elevenLabsVoiceId,
     audioBase64: agentOut.audioBase64,
     audioMimeType: agentOut.audioMimeType,
   });
@@ -3454,6 +3536,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
       return res.status(400).json({ error: 'Для компании не найден доступный сценарий.' });
     }
 
+    const importedItem = await pickTrainerImportedSampleForScript(scenario);
     const scriptProfileIds = safeJsonParseLocal<string[]>(scenario.profileIdsJson, []);
     const scriptProfiles = scriptProfileIds.length
       ? await prisma.callCustomerProfile.findMany({
@@ -3484,6 +3567,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
     const caseContext = buildTrainerCaseContext({
       sessionType,
       scenario,
+      importedItem,
       manager,
       difficulty,
       clientType,
@@ -3582,7 +3666,7 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
 
     const isPcm = String(mimeType || '').toLowerCase().includes('audio/pcm');
 
-    if (isPcm && isElevenLabsAgentEnabled()) {
+    if (USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER && isPcm && isElevenLabsAgentEnabled()) {
       try {
         const out = await runTrainerSessionAudioTurn({
           sessionId: session.id,
@@ -7308,14 +7392,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         where: {
           AND: [
             trainerScopeWhere,
-            {
-              status: { in: ['completed', 'failed'] },
-              OR: [
-                { score: { not: null } },
-                { evaluationJson: { not: null } },
-                { failureReason: { not: null } },
-              ],
-            },
+            { status: { in: ['completed', 'failed'] } },
           ],
         },
         include: {
@@ -7375,10 +7452,11 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
 
     const auditFromTrainer = (s: typeof trainerSessions[number]) => {
       const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(s.evaluationJson, null);
-      const score = scoreFromEvaluation(evaluation, s.score);
+      const hasScore = s.score !== null || evaluation !== null;
+      const score = hasScore ? scoreFromEvaluation(evaluation, s.score) : null;
       const branch = s.branch ?? s.employee?.dealership ?? null;
       const company = s.company ?? branch?.holding ?? s.employee?.dealership?.holding ?? null;
-      const auditStatus = s.status === 'failed' || !!s.failureReason || score < 50
+      const auditStatus = s.status === 'failed' || !!s.failureReason || (score !== null && score < 50)
         ? 'failed' as const
         : 'completed' as const;
       return {
@@ -7392,11 +7470,11 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         city: branch?.city ?? null,
         employeeId: s.employeeId,
         date: (s.completedAt ?? s.startedAt).toISOString(),
-        aiScore: Math.round(score * 10) / 10,
-        status: score >= 76 ? 'Good' as const : score >= 50 ? 'Medium' as const : 'Bad' as const,
+        aiScore: score === null ? null : Math.round(score * 10) / 10,
+        status: score === null ? 'Medium' as const : score >= 76 ? 'Good' as const : score >= 50 ? 'Medium' as const : 'Bad' as const,
         auditStatus,
         durationSec: s.durationSec ?? 0,
-        verdict: auditStatus === 'failed' ? 'Нуждается в разборе' : 'Оценено',
+        verdict: score === null ? 'Аналитика считается' : auditStatus === 'failed' ? 'Нуждается в разборе' : 'Оценено',
         communicationFlag: communicationFlagFromSessions([s as unknown as AnalyticsSession]),
         reportIssues: extractReportIssuesFromSession(s, catalog),
         userName: s.employee?.fullName ?? null,

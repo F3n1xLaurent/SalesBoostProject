@@ -99,7 +99,7 @@ export interface AuditItem {
   city?: string | null;
   employeeId?: string | null;
   date: string;
-  aiScore: number;
+  aiScore: number | null;
   status: 'Good' | 'Medium' | 'Bad';
   auditStatus?: 'completed' | 'failed' | 'interrupted';
   durationSec?: number | null;

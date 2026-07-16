@@ -42,6 +42,8 @@ export interface VirtualClientInput {
   strictness?: Strictness;
   max_client_turns?: number;
   behaviorSignal?: BehaviorSignal;
+  /** Full phone scenario prompt used by outbound-call agents. */
+  scenarioPrompt?: string;
   /** For voice: use lower max_tokens so the model answers shorter and faster. */
   maxResponseTokens?: number;
 }
@@ -411,6 +413,8 @@ max_client_turns: ${maxClientTurns}
 === BEHAVIOR ALERT (react to this!) ===
 ${behaviorAlert}
 
+${input.scenarioPrompt ? `=== PHONE SCENARIO PROMPT (PRIORITY) ===\n${input.scenarioPrompt}\n` : ''}
+
 === TOPIC STATUS ===
 ${topicSummary(input.state)}
 
@@ -423,6 +427,8 @@ ${input.manager_last_message ? `"${input.manager_last_message}"` : '(first messa
 ${historyStr ? `=== CONVERSATION HISTORY ===\n${historyStr}\n` : ''}
 INSTRUCTIONS:
 - If client_turns >= ${maxClientTurns}, set end_conversation=true.
+- If PHONE SCENARIO PROMPT is provided, follow it as the primary dialog script. Generic phase rules only fill gaps.
+- In this JSON environment, never include end_call(...) in client_message; use end_conversation=true and reason instead.
 - Progress through phases naturally. Current phase: ${input.state.phase}.
 - In phase money_and_objections, trigger objection type: ${objType}.
 - REACT TO BEHAVIOR ALERT: if toxic/low_effort/evasion, respond firmly per the rules.

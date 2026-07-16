@@ -43,8 +43,9 @@ function buildTtsText(fullText: string): string {
   return slice + '…';
 }
 
-async function generateSpeechElevenLabs(text: string): Promise<Buffer> {
-  if (!config.elevenLabsApiKey || !config.elevenLabsVoiceId) {
+async function generateSpeechElevenLabs(text: string, voiceId = config.elevenLabsVoiceId): Promise<Buffer> {
+  const resolvedVoiceId = String(voiceId || '').trim();
+  if (!config.elevenLabsApiKey || !resolvedVoiceId) {
     throw new Error('ElevenLabs is not configured');
   }
 
@@ -57,7 +58,7 @@ async function generateSpeechElevenLabs(text: string): Promise<Buffer> {
     hostname: 'api.elevenlabs.io',
     port: 443,
     path: `/v1/text-to-speech/${encodeURIComponent(
-      config.elevenLabsVoiceId
+      resolvedVoiceId
     )}?output_format=opus_48000_128`,
     method: 'POST',
     headers: {
@@ -88,6 +89,12 @@ async function generateSpeechElevenLabs(text: string): Promise<Buffer> {
     req.write(body);
     req.end();
   });
+}
+
+export async function generateSpeechElevenLabsVoice(text: string, voiceId: string): Promise<Buffer> {
+  const trimmed = text.trim();
+  if (!trimmed) return Buffer.alloc(0);
+  return generateSpeechElevenLabs(trimmed, voiceId);
 }
 
 /** OpenAI opus = OGG/Opus, suitable for Telegram sendVoice (voice message). */

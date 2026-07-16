@@ -1099,17 +1099,14 @@ function SessionPreview(props: {
         durationSec: params.durationSec,
       });
       const clientAudioUrl = audioDataUrl(data.audioBase64, data.audioMimeType);
-      if (!clientAudioUrl) {
-        throw new Error('Клиент ответил без аудио. Попробуйте отправить сообщение ещё раз.');
-      }
       setMessages((prev) => prev.map((message) => message.id === idBase + 1
         ? {
           id: idBase + 1,
           role: 'client',
           audioUrl: clientAudioUrl,
-          durationSec: estimateDurationFromAudioUrl(clientAudioUrl),
+          durationSec: clientAudioUrl ? estimateDurationFromAudioUrl(clientAudioUrl) : null,
           textFallback: data.clientMessage,
-          autoPlay: true,
+          autoPlay: Boolean(clientAudioUrl),
         }
         : message));
       if (data.endConversation) {
