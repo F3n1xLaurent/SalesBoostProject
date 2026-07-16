@@ -485,6 +485,8 @@ export const ADMIN_API_PERMISSION_MAP = {
   '/api/admin/call-settings/plans/:id/initiate': [PERMISSIONS.callBatch.create, PERMISSIONS.settings.edit],
   '/api/admin/call-settings/plans/:id/prompt-preview': [PERMISSIONS.settings.view],
   '/api/admin/call-settings/plans/:id/calls': [PERMISSIONS.settings.view],
+  '/api/admin/call-settings/plans/:id/schedule': [PERMISSIONS.settings.view],
+  '/api/admin/call-settings/plans/:id/schedule/:callId/recreate': [PERMISSIONS.settings.view, PERMISSIONS.settings.edit],
   '/api/admin/analytics/overview': [PERMISSIONS.analytics.view],
   '/api/admin/analytics/comparison-summary': [PERMISSIONS.analytics.view],
   '/api/admin/analytics/holdings': [PERMISSIONS.analytics.view],

@@ -99,7 +99,7 @@ export interface AuditItem {
   city?: string | null;
   employeeId?: string | null;
   date: string;
-  aiScore: number;
+  aiScore: number | null;
   status: 'Good' | 'Medium' | 'Bad';
   auditStatus?: 'completed' | 'failed' | 'interrupted';
   durationSec?: number | null;
@@ -711,6 +711,7 @@ export interface CallScriptItem {
 
 export type CallPlanTargetType = 'employees' | 'dealerships';
 export type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
+export type CallPlanWeekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface CallPlanItem {
   id: string;
@@ -721,6 +722,7 @@ export interface CallPlanItem {
   scriptId: string;
   phoneNumberTypeId: string;
   frequency: CallPlanFrequency;
+  weekdays: CallPlanWeekday[];
   callTimeFrom: string;
   callTimeTo: string;
   lastInitiatedAt: string | null;
@@ -795,6 +797,7 @@ export interface CallPlanCallItem {
   importedItemId: string | null;
   status: string;
   outcome: string | null;
+  scheduledAt: string | null;
   startedAt: string;
   endedAt: string | null;
   answerTimeSec: number | null;
@@ -1673,6 +1676,24 @@ export async function fetchCallPlanCalls(id: string): Promise<CallPlanCallItem[]
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить историю прозвона.');
   return Array.isArray(data.items) ? data.items as CallPlanCallItem[] : [];
+}
+
+export async function fetchCallPlanSchedule(id: string, date: string): Promise<{ date: string; items: CallPlanCallItem[] }> {
+  const query = new URLSearchParams({ date });
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/schedule?${query.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить расписание прозвона.');
+  return {
+    date: String(data.date || date),
+    items: Array.isArray(data.items) ? data.items as CallPlanCallItem[] : [],
+  };
+}
+
+export async function recreateCallPlanScheduleCall(planId: string, callId: string): Promise<CallPlanCallItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${planId}/schedule/${callId}/recreate`, { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось пересоздать расписание прозвона.');
+  return data.item as CallPlanCallItem;
 }
 
 export async function fetchVoiceDashboard(): Promise<PlatformVoice | null> {

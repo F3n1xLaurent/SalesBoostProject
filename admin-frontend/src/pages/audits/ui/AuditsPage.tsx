@@ -36,7 +36,7 @@ type AuditListRow = {
   dealershipId: string;
   dealershipName: string;
   city: string;
-  totalScore: number;
+  totalScore: number | null;
   verdict: string;
   status: AuditStatus;
   duration: number;
@@ -85,7 +85,7 @@ function comparator(key: SortKey, dir: SortDir) {
     if (key === 'dateTime') {
       cmp = a.dateTime.localeCompare(b.dateTime);
     } else if (key === 'totalScore') {
-      cmp = a.totalScore - b.totalScore;
+      cmp = (a.totalScore ?? -1) - (b.totalScore ?? -1);
     } else if (key === 'status') {
       cmp = STATUS_SORT_ORDER[a.status] - STATUS_SORT_ORDER[b.status];
     } else if (key === 'type') {
@@ -154,7 +154,7 @@ const COLUMNS: { key: SortKey; label: string; align?: 'right' }[] = [
 const AUDITS_PAGE_SIZE = 10;
 
 function auditItemToRow(item: AuditItem): AuditListRow {
-  const score = Number.isFinite(item.aiScore) ? item.aiScore : 0;
+  const score = Number.isFinite(item.aiScore) ? item.aiScore : null;
   const type: AuditType = item.type === 'trainer' || item.type === 'training' ? 'trainer' : 'call';
   const status: AuditStatus = item.auditStatus
     ?? (item.status === 'Bad' ? 'failed' : 'completed');
@@ -168,7 +168,7 @@ function auditItemToRow(item: AuditItem): AuditListRow {
     dealershipId: item.dealershipId ?? '',
     dealershipName: item.dealershipName || item.dealer || 'Без точки',
     city: item.city || '—',
-    totalScore: Math.round(score * 10) / 10,
+    totalScore: score === null ? null : Math.round(score * 10) / 10,
     verdict: item.verdict || (status === 'failed' ? 'Нуждается в разборе' : status === 'interrupted' ? 'Звонок не завершён' : 'Оценено'),
     status,
     duration: item.durationSec ?? 0,
@@ -383,7 +383,7 @@ export function Audits({
     if (filterStatus !== 'all') list = list.filter((r) => r.status === filterStatus);
     if (filterCity.size > 0) list = list.filter((r) => filterCity.has(r.city));
     if (filterDealership.size > 0) list = list.filter((r) => filterDealership.has(r.dealershipId));
-    if (filterScoreBands.size > 0) list = list.filter((r) => filterScoreBands.has(scoreBand(r.totalScore)));
+    if (filterScoreBands.size > 0) list = list.filter((r) => r.totalScore !== null && filterScoreBands.has(scoreBand(r.totalScore)));
     if (filterProblems.size > 0) list = list.filter((r) => r.reportIssues.some((issue) => filterProblems.has(issue)));
 
     list.sort(comparator(sortKey, sortDir));
@@ -619,7 +619,9 @@ export function Audits({
                     <div className="sa-cell-city">{r.city}</div>
                   </td>
                   <td className="sa-text-right">
-                    <span className={ratingClass(r.totalScore)}>{r.totalScore}</span>
+                    {r.totalScore === null
+                      ? <span className="sa-muted">—</span>
+                      : <span className={ratingClass(r.totalScore)}>{r.totalScore}</span>}
                   </td>
                   <td>
                     <span className={`sa-status-badge ${AUDIT_STATUS_CLASS[r.status]}`}>
@@ -645,7 +647,9 @@ export function Audits({
                 <div className="sa-cell-name">{r.employeeName}</div>
                 <div className="sa-cell-city">{r.dealershipName} · {r.city}</div>
               </div>
-              <span className={`sa-mobile-rating ${ratingClass(r.totalScore)}`}>{r.totalScore}</span>
+              {r.totalScore === null
+                ? <span className="sa-mobile-rating sa-muted">—</span>
+                : <span className={`sa-mobile-rating ${ratingClass(r.totalScore)}`}>{r.totalScore}</span>}
             </div>
             <div className="sa-mobile-chips">
               <span className="sa-metric-chip">{formatDateTime(r.dateTime)}</span>

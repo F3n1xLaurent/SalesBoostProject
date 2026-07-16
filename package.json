@@ -23,6 +23,7 @@
     "backfill-training": "tsx scripts/backfill-training-assessments.ts",
     "generate-mock": "tsx scripts/generate-mock-data.ts",
     "delete-mock": "tsx scripts/delete-mock-data.ts",
+    "seed-ai-call": "tsx scripts/seed-ai-call-for-user.ts",
     "check-openai": "tsx scripts/check-openai.ts",
     "demo-reports:generate": "tsx scripts/generate-demo-example-reports.ts",
     "tunnel": "lt --port 3000 --subdomain salesboost",

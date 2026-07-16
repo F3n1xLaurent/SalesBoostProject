@@ -10,13 +10,22 @@ type CustomerPatience = 'low' | 'medium' | 'high';
 type ReplyLength = 'short' | 'medium' | 'detailed';
 type CallPlanTargetType = 'employees' | 'dealerships';
 type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
+type CallPlanWeekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 const TEMPERAMENTS = new Set<CustomerTemperament>(['calm', 'doubtful', 'irritated', 'hurried']);
 const PATIENCE = new Set<CustomerPatience>(['low', 'medium', 'high']);
 const REPLY_LENGTHS = new Set<ReplyLength>(['short', 'medium', 'detailed']);
 const CALL_PLAN_TARGET_TYPES = new Set<CallPlanTargetType>(['employees', 'dealerships']);
 const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['manual', 'daily', 'weekly']);
+const WEEKDAYS = new Set<CallPlanWeekday>([0, 1, 2, 3, 4, 5, 6]);
 const TIME_RE = /^([01]\d|2[0-2]):([0-5]\d)$/;
+const DEFAULT_PLAN_WEEKDAYS: CallPlanWeekday[] = [1, 2, 3, 4, 5, 6, 0];
+const CALL_PLAN_DUE_RUNNER_INTERVAL_MS = 60_000;
+const CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS = 30 * 60_000;
+let callPlanDueRunnerTimer: NodeJS.Timeout | null = null;
+let callPlanScheduleCheckerTimer: NodeJS.Timeout | null = null;
+let callPlanDueRunnerRunning = false;
+let callPlanScheduleCheckerRunning = false;
 
 function parseString(value: unknown): string | null {
   const parsed = String(value ?? '').trim();
@@ -26,6 +35,16 @@ function parseString(value: unknown): string | null {
 function parseStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function parseWeekdays(value: unknown, frequency: CallPlanFrequency): CallPlanWeekday[] {
+  if (frequency === 'manual') return [];
+  const raw = Array.isArray(value) ? value : [];
+  const unique = Array.from(new Set(raw
+    .map((item) => Number(item))
+    .filter((item): item is CallPlanWeekday => Number.isInteger(item) && WEEKDAYS.has(item as CallPlanWeekday))));
+  if (frequency === 'weekly') return unique.slice(0, 1);
+  return unique.length ? unique : DEFAULT_PLAN_WEEKDAYS;
 }
 
 function safeJsonParse<T>(value: string | null | undefined, fallback: T): T {
@@ -176,6 +195,7 @@ function normalizePlan(plan: Prisma.CallPlanGetPayload<{}>) {
     scriptId: plan.scriptId,
     phoneNumberTypeId: plan.phoneNumberTypeId,
     frequency: plan.frequency,
+    weekdays: safeJsonParse<CallPlanWeekday[]>(plan.weekdaysJson, DEFAULT_PLAN_WEEKDAYS),
     callTimeFrom: plan.callTimeFrom,
     callTimeTo: plan.callTimeTo,
     lastInitiatedAt: plan.lastInitiatedAt,
@@ -206,6 +226,7 @@ function normalizePlanCall(
     importedItemId: call.importedItemId,
     status: call.status,
     outcome: call.outcome,
+    scheduledAt: call.scheduledAt,
     startedAt: call.startedAt,
     endedAt: call.endedAt,
     answerTimeSec: timing?.answerTimeSec ?? null,
@@ -314,6 +335,41 @@ function timeToMinutes(value: string): number {
   return Number(hours) * 60 + Number(minutes);
 }
 
+function dateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function endOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+}
+
+function parseDateKey(value: unknown): Date | null {
+  const text = parseString(value);
+  if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const [year, month, day] = text.split('-').map(Number);
+  const date = new Date(year, month - 1, day, 0, 0, 0, 0);
+  return Number.isNaN(date.getTime()) || dateKey(date) !== text ? null : date;
+}
+
+function localDateTimeFromMinutes(day: Date, minutes: number): Date {
+  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), Math.floor(minutes / 60), minutes % 60, 0, 0);
+}
+
+function randomIntInclusive(min: number, max: number): number {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function scheduledCallId(planId: string, employeeId: string, day: Date): string {
+  return `scheduled:${planId}:${employeeId}:${dateKey(day)}`;
+}
+
 function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
   const targetType = parseString(body.targetType) as CallPlanTargetType | null;
   const frequency = parseString(body.frequency) as CallPlanFrequency | null;
@@ -327,12 +383,15 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
   if (!scriptId) throw new Error('Выберите скрипт.');
   if (!phoneNumberTypeId) throw new Error('Выберите тип номера.');
   if (!frequency || !CALL_PLAN_FREQUENCIES.has(frequency)) throw new Error('Выберите частотность.');
+  const weekdays = parseWeekdays(body.weekdays, frequency);
   if (frequency !== 'manual') {
+    if (weekdays.length === 0) throw new Error('Выберите рабочие дни прозвона.');
+    if (frequency === 'weekly' && weekdays.length !== 1) throw new Error('Для еженедельного прозвона выберите один день недели.');
     if (!TIME_RE.test(callTimeFrom) || !TIME_RE.test(callTimeTo)) throw new Error('Укажите время звонка с 09:00 до 22:00.');
     const fromMinutes = timeToMinutes(callTimeFrom);
     const toMinutes = timeToMinutes(callTimeTo);
-    if (fromMinutes < 9 * 60 || toMinutes > 22 * 60 || toMinutes - fromMinutes < 15) {
-      throw new Error('Диапазон времени должен быть с 09:00 до 22:00, минимум 15 минут.');
+    if (fromMinutes < 9 * 60 || toMinutes > 22 * 60 || toMinutes < fromMinutes) {
+      throw new Error('Диапазон времени должен быть с 09:00 до 22:00.');
     }
   }
   return {
@@ -342,6 +401,7 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
     scriptId,
     phoneNumberTypeId,
     frequency,
+    weekdaysJson: JSON.stringify(weekdays),
     callTimeFrom,
     callTimeTo,
     holdingId,
@@ -623,6 +683,7 @@ export async function handleUpdateCallPlan(req: Request, res: Response): Promise
     const data = parsePlanPayload((req.body || {}) as Record<string, unknown>, holdingId);
     await assertPlanReferences(holdingId, data);
     const updated = await prisma.callPlan.update({ where: { id }, data });
+    await rebuildPendingCallPlanSchedule(updated);
     res.json({ item: normalizePlan(updated) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось обновить план прозвона.';
@@ -740,6 +801,7 @@ function buildCallPlanRealtimePrompt(input: {
     '=== РОЛЬ (КРИТИЧНО) ===',
     'Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ сотруднику компании по конкретному предложению/данным из выборки. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы, отрабатывает возражения и доводит до следующего шага.',
     'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы по предложению, условиям, деталям и следующему шагу.',
+    'Формируй ответы не как письменный текст, а как текст, предназначенный для озвучивания. Если слово может быть неправильно произнесено TTS - напиши его в фонетически более удобной форме для сохранения естественного звучания (например, ударение пишется большой буквой, скажем "перспектИва"). Задавая вопросы формулируй их по разному, чтобы звучало как реальный диалог, а не как анкета.',
     '',
     '=== ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК (КРИТИЧНО) ===',
     'Если в начале разговора или в любой момент становится понятно, что на другом конце не живой сотрудник, а голосовой помощник, автоответчик, виртуальный ассистент или сервис записи сообщений, НЕ продолжай обычный сценарий диалога.',
@@ -776,6 +838,7 @@ function buildCallPlanRealtimePrompt(input: {
     '',
     '=== ЗАВЕРШЕНИЕ ДИАЛОГА ===',
     'Завершай разговор, когда договорились о следующем шаге, разговор естественно исчерпан, или сотрудник ведёт себя грубо/неадекватно. В конце чётко скажи прощание: «До свидания», «Хорошо, тогда на этом закончим», «Спасибо, до свидания».',
+    'После завершения диалога вызови функцию end_call.',
     '',
     '=== ТЕХНИЧЕСКИЙ СИГНАЛ ДЛЯ ЗАВЕРШЕНИЯ ЗВОНКА ===',
     'После своей последней фразы прощания обязательно один раз вызови функцию end_call с краткой причиной: { "reason": "next_step_scheduled" }, { "reason": "will_think" }, { "reason": "bad_tone" } или другой короткой причиной. Не вызывай end_call раньше последней реплики и не вызывай дважды. Вызови только в конце реплики завершения разговора.',
@@ -790,6 +853,270 @@ async function resolveCustomerVoiceForProfile(profile: Prisma.CallCustomerProfil
   return prisma.callCustomerVoice.findFirst({
     where: { id: profile.voiceId, isDeleted: false, isEnabled: true },
     select: { id: true, name: true, elevenLabsCode: true },
+  });
+}
+
+async function buildScheduledCallContext(plan: Prisma.CallPlanGetPayload<{}>) {
+  const holding = await prisma.holding.findUnique({ where: { id: plan.holdingId }, select: { name: true, description: true } });
+  if (!holding) throw new Error('Компания плана не найдена.');
+  const script = await prisma.callScript.findFirst({ where: { id: plan.scriptId, holdingId: plan.holdingId } });
+  if (!script) throw new Error('Скрипт плана не найден.');
+  const profileIds = safeJsonParse<string[]>(script.profileIdsJson, []);
+  const profiles = profileIds.length
+    ? await prisma.callCustomerProfile.findMany({ where: { id: { in: profileIds }, holdingId: plan.holdingId } })
+    : [];
+  const importedItem = await pickImportedSampleForScript(script);
+  const criteria = safeJsonParse(script.successCriteriaJson, []);
+  return { holding, script, profiles, importedItem, criteria };
+}
+
+async function ensureCallPlanScheduleForDate(plan: Prisma.CallPlanGetPayload<{}>, day: Date, options: { allowPastWindow?: boolean } = {}): Promise<number> {
+  if (plan.frequency === 'manual') return 0;
+  const weekdays = safeJsonParse<CallPlanWeekday[]>(plan.weekdaysJson, DEFAULT_PLAN_WEEKDAYS);
+  if (!weekdays.includes(day.getDay() as CallPlanWeekday)) return 0;
+
+  const dayStart = startOfLocalDay(day);
+  const dayEnd = endOfLocalDay(day);
+  const todayKey = dateKey(new Date());
+  const targetKey = dateKey(day);
+  const now = new Date();
+  const fromMinutes = timeToMinutes(plan.callTimeFrom);
+  const toMinutes = timeToMinutes(plan.callTimeTo);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+  if (!options.allowPastWindow && targetKey === todayKey && nowMinutes > toMinutes) return 0;
+
+  const existing = await prisma.callPlanCall.findMany({
+    where: { planId: plan.id, scheduledAt: { gte: dayStart, lte: dayEnd } },
+    select: { employeeId: true },
+  });
+  const existingEmployeeIds = new Set(existing.map((item) => item.employeeId).filter(Boolean) as string[]);
+  const targets = (await buildCallPlanTargets(plan)).filter((target) => !existingEmployeeIds.has(target.employee.id));
+  if (targets.length === 0) return 0;
+
+  const context = await buildScheduledCallContext(plan);
+  let minMinutes = fromMinutes;
+  if (!options.allowPastWindow && targetKey === todayKey) {
+    minMinutes = Math.max(fromMinutes, nowMinutes + 1);
+  }
+  if (minMinutes > toMinutes) return 0;
+
+  let created = 0;
+  for (const target of targets) {
+    await createScheduledPlanCall(plan, target, context, day, minMinutes, toMinutes).catch((error) => {
+      if (error instanceof Error && error.message.includes('Unique constraint')) return;
+      throw error;
+    });
+    created += 1;
+  }
+  return created;
+}
+
+async function createScheduledPlanCall(
+  plan: Prisma.CallPlanGetPayload<{}>,
+  target: Awaited<ReturnType<typeof buildCallPlanTargets>>[number],
+  context: Awaited<ReturnType<typeof buildScheduledCallContext>>,
+  day: Date,
+  minMinutes: number,
+  toMinutes: number,
+): Promise<Prisma.CallPlanCallGetPayload<{}>> {
+  const profile = pickRandom(context.profiles);
+  const customerVoice = await resolveCustomerVoiceForProfile(profile);
+  const prompt = buildCallPlanRealtimePrompt({
+    script: context.script,
+    profile,
+    importedItem: context.importedItem,
+    customerVoiceName: customerVoice?.name ?? null,
+    holding: context.holding,
+  });
+  const scheduledAt = localDateTimeFromMinutes(day, randomIntInclusive(minMinutes, toMinutes));
+  return prisma.callPlanCall.create({
+    data: {
+      planId: plan.id,
+      callId: scheduledCallId(plan.id, target.employee.id, day),
+      employeeId: target.employee.id,
+      employeeName: target.employee.fullName,
+      dealershipId: target.dealershipId,
+      dealershipName: target.dealershipName,
+      phone: '+' + String(target.phoneNumber.phone).replace(/\D/g, ''),
+      phoneNumberTypeId: plan.phoneNumberTypeId,
+      scriptId: context.script.id,
+      profileId: profile?.id ?? null,
+      importedItemId: context.importedItem?.id ?? null,
+      promptText: prompt,
+      criteriaJson: JSON.stringify(context.criteria),
+      status: 'scheduled',
+      scheduledAt,
+      startedAt: scheduledAt,
+    },
+  });
+}
+
+async function rebuildPendingCallPlanSchedule(plan: Prisma.CallPlanGetPayload<{}>): Promise<void> {
+  const today = startOfLocalDay(new Date());
+  await prisma.callPlanCall.deleteMany({
+    where: {
+      planId: plan.id,
+      status: 'scheduled',
+      scheduledAt: { gte: today },
+    },
+  });
+  await ensureCallPlanScheduleForDate(plan, today);
+}
+
+async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ include: { plan: true } }>): Promise<void> {
+  console.log('[call-plan-scheduler] launch scheduled call', {
+    callPlanCallId: call.id,
+    planId: call.planId,
+    employeeId: call.employeeId,
+    phone: call.phone,
+    scheduledAt: call.scheduledAt,
+  });
+  const claimed = await prisma.callPlanCall.updateMany({
+    where: { id: call.id, status: 'scheduled' },
+    data: { status: 'running', startedAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    console.log('[call-plan-scheduler] scheduled call already claimed', { callPlanCallId: call.id });
+    return;
+  }
+
+  try {
+    const result = await startVoiceCall(call.phone, {
+      scenario: 'realtime_pure',
+      instructions: call.promptText,
+    });
+    if ('error' in result) throw new Error(result.error);
+    addCall(result.callId, call.phone);
+    if (result.callSessionHistoryId) setVoxSessionId(result.callId, result.callSessionHistoryId);
+    const startedAt = new Date(result.startedAt);
+    await prisma.$transaction([
+      prisma.callPlanCall.update({
+        where: { id: call.id },
+        data: {
+          callId: result.callId,
+          status: 'running',
+          startedAt,
+          failureReason: null,
+        },
+      }),
+      prisma.voiceCallSession.create({
+        data: {
+          callId: result.callId,
+          to: call.phone,
+          scenario: result.scenario ?? 'realtime_pure',
+          source: 'scheduled',
+          dealershipId: call.dealershipId,
+          managerId: call.employeeId,
+          planId: call.planId,
+          caseContextJson: JSON.stringify({
+            planId: call.planId,
+            scriptId: call.scriptId,
+            profileId: call.profileId ?? null,
+            importedItemId: call.importedItemId ?? null,
+            scheduledAt: call.scheduledAt?.toISOString() ?? null,
+          }),
+          startedAt,
+        },
+      }),
+      prisma.callPlan.update({
+        where: { id: call.planId },
+        data: { lastInitiatedAt: startedAt, lastBatchId: result.callId },
+      }),
+    ]);
+    console.log('[call-plan-scheduler] scheduled call started', {
+      callPlanCallId: call.id,
+      planId: call.planId,
+      callId: result.callId,
+      phone: call.phone,
+    });
+  } catch (error) {
+    console.error('[call-plan-scheduler] scheduled call failed', {
+      callPlanCallId: call.id,
+      planId: call.planId,
+      phone: call.phone,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    await prisma.callPlanCall.update({
+      where: { id: call.id },
+      data: {
+        status: 'failed',
+        outcome: 'failed',
+        endedAt: new Date(),
+        failureReason: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+      },
+    });
+  }
+}
+
+async function runCallPlanScheduleChecker(): Promise<void> {
+  if (callPlanScheduleCheckerRunning) return;
+  callPlanScheduleCheckerRunning = true;
+  try {
+    const today = new Date();
+    const plans = await prisma.callPlan.findMany({ where: { frequency: { in: ['daily', 'weekly'] } } });
+    for (const plan of plans) {
+      const created = await ensureCallPlanScheduleForDate(plan, today);
+      if (created > 0) {
+        console.log('[call-plan-scheduler] schedule created', {
+          planId: plan.id,
+          planName: plan.name,
+          date: dateKey(today),
+          created,
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[call-plan-scheduler] schedule check failed:', error instanceof Error ? error.message : error);
+  } finally {
+    callPlanScheduleCheckerRunning = false;
+  }
+}
+
+async function runCallPlanDueRunner(): Promise<void> {
+  if (callPlanDueRunnerRunning) return;
+  callPlanDueRunnerRunning = true;
+  try {
+    const now = new Date();
+    const due = await prisma.callPlanCall.findMany({
+      where: {
+        status: 'scheduled',
+        scheduledAt: { lte: now },
+      },
+      include: { plan: true },
+      orderBy: { scheduledAt: 'asc' },
+      take: 10,
+    });
+    if (due.length > 0) {
+      console.log('[call-plan-scheduler] due scheduled calls', {
+        now,
+        count: due.length,
+        ids: due.map((call) => call.id),
+      });
+    }
+    for (const call of due) {
+      await launchScheduledPlanCall(call);
+    }
+  } catch (error) {
+    console.error('[call-plan-scheduler] due runner failed:', error instanceof Error ? error.message : error);
+  } finally {
+    callPlanDueRunnerRunning = false;
+  }
+}
+
+export function startCallPlanScheduler(): void {
+  if (callPlanDueRunnerTimer || callPlanScheduleCheckerTimer) return;
+  void runCallPlanScheduleChecker();
+  void runCallPlanDueRunner();
+  callPlanScheduleCheckerTimer = setInterval(() => {
+    void runCallPlanScheduleChecker();
+  }, CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS);
+  callPlanDueRunnerTimer = setInterval(() => {
+    void runCallPlanDueRunner();
+  }, CALL_PLAN_DUE_RUNNER_INTERVAL_MS);
+  console.log('[call-plan-scheduler] started', {
+    scheduleCheckIntervalMs: CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS,
+    dueRunnerIntervalMs: CALL_PLAN_DUE_RUNNER_INTERVAL_MS,
   });
 }
 
@@ -862,6 +1189,7 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
         promptText: prompt,
         criteriaJson: JSON.stringify(criteria),
         status: 'running',
+        scheduledAt: new Date(result.startedAt),
         startedAt: new Date(result.startedAt),
       },
     });
@@ -932,6 +1260,93 @@ export async function handleListCallPlanCalls(req: Request, res: Response): Prom
     res.json({ items: items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null, timings.get(item.callId) ?? null)) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось загрузить историю прозвона.';
+    res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
+  }
+}
+
+export async function handleGetCallPlanSchedule(req: Request, res: Response): Promise<void> {
+  try {
+    const id = String(req.params.id || '').trim();
+    await assertCanAccessPlan(req, id);
+    const requestedDate = parseDateKey(req.query.date);
+    if (!requestedDate) throw new Error('Некорректная дата расписания.');
+    const today = startOfLocalDay(new Date());
+    if (requestedDate.getTime() > today.getTime()) throw new Error('Нельзя смотреть расписание будущих дат.');
+
+    const plan = await prisma.callPlan.findUnique({ where: { id } });
+    if (!plan) throw new Error('План прозвона не найден.');
+    if (dateKey(requestedDate) === dateKey(today)) {
+      await ensureCallPlanScheduleForDate(plan, requestedDate);
+    }
+
+    const items = await prisma.callPlanCall.findMany({
+      where: {
+        planId: id,
+        scheduledAt: { gte: startOfLocalDay(requestedDate), lte: endOfLocalDay(requestedDate) },
+      },
+      orderBy: [{ scheduledAt: 'asc' }, { employeeName: 'asc' }],
+    });
+    res.json({
+      date: dateKey(requestedDate),
+      items: items.map((item) => normalizePlanCall(item)),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось загрузить расписание.';
+    res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
+  }
+}
+
+export async function handleRecreateCallPlanScheduleCall(req: Request, res: Response): Promise<void> {
+  try {
+    const planId = String(req.params.id || '').trim();
+    const callPlanCallId = String(req.params.callId || '').trim();
+    await assertCanAccessPlan(req, planId);
+
+    const existing = await prisma.callPlanCall.findFirst({ where: { id: callPlanCallId, planId } });
+    if (!existing) throw new Error('Запись расписания не найдена.');
+    if (!existing.employeeId) throw new Error('У записи расписания не указан сотрудник.');
+    if (existing.status === 'running') throw new Error('Нельзя пересоздать звонок, который уже выполняется.');
+
+    const sourceDate = existing.scheduledAt ?? existing.startedAt;
+    const today = startOfLocalDay(new Date());
+    const day = startOfLocalDay(sourceDate);
+    if (day.getTime() !== today.getTime()) {
+      throw new Error('Пересоздать расписание можно только за сегодняшнюю дату.');
+    }
+
+    const plan = await prisma.callPlan.findUnique({ where: { id: planId } });
+    if (!plan) throw new Error('План прозвона не найден.');
+    if (plan.frequency === 'manual') throw new Error('У ручного плана нет автоматического расписания.');
+
+    const weekdays = safeJsonParse<CallPlanWeekday[]>(plan.weekdaysJson, DEFAULT_PLAN_WEEKDAYS);
+    if (!weekdays.includes(day.getDay() as CallPlanWeekday)) throw new Error('Сегодня не выбран как рабочий день плана.');
+
+    const fromMinutes = timeToMinutes(plan.callTimeFrom);
+    const toMinutes = timeToMinutes(plan.callTimeTo);
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const minMinutes = Math.max(fromMinutes, nowMinutes + 1);
+    if (minMinutes > toMinutes) throw new Error('Диапазон звонков на сегодня уже закончился.');
+
+    const target = (await buildCallPlanTargets(plan)).find((item) => item.employee.id === existing.employeeId);
+    if (!target) throw new Error('Сотрудник больше не входит в аудиторию плана или у него нет подходящего номера.');
+
+    const context = await buildScheduledCallContext(plan);
+    await prisma.callPlanCall.deleteMany({
+      where: {
+        planId,
+        employeeId: existing.employeeId,
+        status: { not: 'running' },
+        OR: [
+          { scheduledAt: { gte: day, lte: endOfLocalDay(day) } },
+          { startedAt: { gte: day, lte: endOfLocalDay(day) } },
+        ],
+      },
+    });
+    const created = await createScheduledPlanCall(plan, target, context, day, minMinutes, toMinutes);
+    res.json({ item: normalizePlanCall(created) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось пересоздать расписание.';
     res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
   }
 }
