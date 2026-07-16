@@ -424,6 +424,13 @@ function extractPlanCriteriaEvaluation(evaluation: Record<string, unknown> | nul
   };
 }
 
+function scoreFromUnifiedReport(evaluation: Record<string, unknown> | null | undefined): number | null {
+  const report = evaluation?.unified_call_report;
+  if (!report || typeof report !== 'object') return null;
+  const score = numberOrNull((report as Record<string, unknown>).totalScore);
+  return score === null ? null : Math.max(0, Math.min(100, round1(score)));
+}
+
 async function evaluateScriptCriteria(criteriaInput: unknown, transcript: TrainerTranscriptTurn[]): Promise<unknown | null> {
   const criteria = Array.isArray(criteriaInput) ? criteriaInput as Array<{ expectedAnswer?: string; score?: number }> : [];
   const meaningfulCriteria = criteria.filter((item) => String(item.expectedAnswer || '').trim());
@@ -476,9 +483,10 @@ async function evaluateScriptCriteria(criteriaInput: unknown, transcript: Traine
 }
 
 function scoreFromEvaluation(evaluation: Record<string, unknown> | null | undefined, directScore: number | null | undefined): number {
+  const unifiedScore = scoreFromUnifiedReport(evaluation);
   const planCriteria = extractPlanCriteriaEvaluation(evaluation);
   const genericScore = numberOrNull(evaluation?.overall_score_0_100);
-  return round1(planCriteria?.percent ?? directScore ?? genericScore ?? 0);
+  return round1(unifiedScore ?? directScore ?? genericScore ?? planCriteria?.percent ?? 0);
 }
 
 function jsonStringify(value: unknown): string {
@@ -667,12 +675,13 @@ function scoreFromSessions(sessions: AnalyticsSession[]): number {
 }
 
 function scoreFromAnalyticsSession(session: Pick<AnalyticsSession, 'totalScore' | 'evaluationJson'>): number | null {
-  if (typeof session.totalScore === 'number') return session.totalScore;
   const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+  const unifiedScore = scoreFromUnifiedReport(evaluation);
+  if (unifiedScore !== null) return unifiedScore;
+  if (typeof session.totalScore === 'number') return session.totalScore;
   const planCriteria = extractPlanCriteriaEvaluation(evaluation);
-  if (planCriteria) return planCriteria.percent;
   const genericScore = numberOrNull(evaluation?.overall_score_0_100);
-  return genericScore;
+  return genericScore ?? planCriteria?.percent ?? null;
 }
 
 function isFranchisedSession(session: Pick<AnalyticsSession, 'dealership'>): boolean {
