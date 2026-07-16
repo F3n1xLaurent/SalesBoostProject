@@ -60,6 +60,7 @@ import {
   handleDeleteCallPlan,
   handleDeleteCallScript,
   handleGetCallPlanOptions,
+  handleGetCallPlanSchedule,
   handleInitiateCallPlan,
   handleListCallPlanCalls,
   handleListCallCustomerProfiles,
@@ -67,10 +68,12 @@ import {
   handleListCallPlans,
   handleListCallScripts,
   handlePreviewCallPlanPrompt,
+  handleRecreateCallPlanScheduleCall,
   handleUpdateCallCustomerProfile,
   handleUpdateCallCustomerVoice,
   handleUpdateCallPlan,
   handleUpdateCallScript,
+  startCallPlanScheduler,
 } from './voice/callSettingsManagement';
 import type { TtsVoice } from './state/userPreferences';
 import { transcribeVoice, transcribeVoiceFast } from './voice/stt';
@@ -3931,6 +3934,20 @@ app.get('/api/admin/call-settings/plans/:id/calls', (req, res) => {
   handleListCallPlanCalls(req, res).catch((error) => {
     console.error('List call plan calls error:', error);
     res.status(500).json({ error: 'Не удалось загрузить историю прозвона.' });
+  });
+});
+
+app.get('/api/admin/call-settings/plans/:id/schedule', (req, res) => {
+  handleGetCallPlanSchedule(req, res).catch((error) => {
+    console.error('Get call plan schedule error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить расписание прозвона.' });
+  });
+});
+
+app.post('/api/admin/call-settings/plans/:id/schedule/:callId/recreate', (req, res) => {
+  handleRecreateCallPlanScheduleCall(req, res).catch((error) => {
+    console.error('Recreate call plan schedule call error:', error);
+    res.status(500).json({ error: 'Не удалось пересоздать расписание прозвона.' });
   });
 });
 
@@ -8007,6 +8024,7 @@ export function startServer(): Promise<void> {
 
     const onListen = () => {
       startCallBatchOrchestrator();
+      startCallPlanScheduler();
       startImportScheduler();
       resolve();
     };

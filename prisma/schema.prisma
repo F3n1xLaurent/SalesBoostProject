@@ -232,7 +232,8 @@ model CallPlan {
   targetIdsJson       String   @default("[]")
   scriptId            String
   phoneNumberTypeId   String
-  frequency           String   // "daily" | "weekly"
+  frequency           String   // "manual" | "daily" | "weekly"
+  weekdaysJson        String   @default("[1,2,3,4,5,6,0]")
   callTimeFrom        String
   callTimeTo          String
   lastInitiatedAt     DateTime?
@@ -265,6 +266,7 @@ model CallPlanCall {
   criteriaJson        String   @default("[]")
   status              String   @default("running")
   outcome             String?
+  scheduledAt         DateTime?
   startedAt           DateTime @default(now())
   endedAt             DateTime?
   transcriptJson      String?
@@ -277,6 +279,8 @@ model CallPlanCall {
   plan                CallPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
 
   @@index([planId, startedAt])
+  @@index([planId, scheduledAt])
+  @@index([status, scheduledAt])
   @@map("call_plan_calls")
 }
 

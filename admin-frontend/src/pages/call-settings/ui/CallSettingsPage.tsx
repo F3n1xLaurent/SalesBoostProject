@@ -14,6 +14,7 @@ import {
   fetchCallPlanOptions,
   fetchCallPlans,
   fetchCallPlanCalls,
+  fetchCallPlanSchedule,
   fetchCallCustomerProfiles,
   fetchCallCustomerVoices,
   fetchCallScripts,
@@ -22,6 +23,7 @@ import {
   fetchImportedTags,
   initiateCallPlan,
   previewCallPlanPrompt,
+  recreateCallPlanScheduleCall,
   updateCallCustomerProfile,
   updateCallCustomerVoice,
   updateCallPlan,
@@ -34,6 +36,7 @@ import {
   type CallPlanOptions,
   type CallPlanPromptPreview,
   type CallPlanTargetType,
+  type CallPlanWeekday,
   type CallCustomerProfileItem,
   type CallCustomerVoiceItem,
   type CallScriptItem,
@@ -47,7 +50,7 @@ import {
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { $auth } from '../../../entities/session';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
-import { EditIcon, PhoneIcon, RefreshIcon, TrashIcon } from '../../../shared/ui/icons/ActionIcons';
+import { CalendarIcon, EditIcon, PhoneIcon, RefreshIcon, TrashIcon } from '../../../shared/ui/icons/ActionIcons';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { BrutalModal } from '../../../shared/ui/brutal-modal';
 import { BrutalSelect } from '../../../shared/ui/BrutalSelect';
@@ -106,6 +109,18 @@ const PLAN_FREQUENCIES: Array<{ value: CallPlanFrequency; label: string }> = [
   { value: 'weekly', label: 'Раз в неделю' },
 ];
 
+const PLAN_WEEKDAYS: Array<{ value: CallPlanWeekday; label: string; short: string }> = [
+  { value: 1, label: 'Понедельник', short: 'Пн' },
+  { value: 2, label: 'Вторник', short: 'Вт' },
+  { value: 3, label: 'Среда', short: 'Ср' },
+  { value: 4, label: 'Четверг', short: 'Чт' },
+  { value: 5, label: 'Пятница', short: 'Пт' },
+  { value: 6, label: 'Суббота', short: 'Сб' },
+  { value: 0, label: 'Воскресенье', short: 'Вс' },
+];
+
+const DEFAULT_PLAN_WEEKDAYS: CallPlanWeekday[] = [1, 2, 3, 4, 5, 6, 0];
+
 const CALL_SETTINGS_PATHS: Record<CallSettingsTab, string> = {
   profiles: '/call-settings/profiles',
   scripts: '/call-settings/scripts',
@@ -127,11 +142,21 @@ function formatPlanCallStatus(outcome: string | null | undefined, status: string
   if (value === 'busy') return 'Занято';
   if (value === 'failed') return 'Ошибка';
   if (value === 'voicemail') return 'Автоответчик';
+  if (value === 'scheduled') return 'Не совершен';
   if (value === 'running' || value === 'dialing' || value === 'in_progress' || value === 'progress') return 'В работе';
   if (value === 'retry_wait') return 'Ожидает повтора';
   if (value === 'queued') return 'В очереди';
   if (value === 'cancelled' || value === 'canceled') return 'Отменено';
   return value || '—';
+}
+
+function formatPlanWeekdays(days: CallPlanWeekday[] | undefined): string {
+  const values = Array.isArray(days) ? days : [];
+  if (!values.length) return 'Дни не выбраны';
+  return PLAN_WEEKDAYS
+    .filter((day) => values.includes(day.value))
+    .map((day) => day.short)
+    .join(', ');
 }
 
 function planCallStatusClass(outcome: string | null | undefined, status: string | null | undefined): string {
@@ -1602,6 +1627,7 @@ function CallPlanEditor(props: {
   const [scriptId, setScriptId] = useState(props.initialPlan?.scriptId || '');
   const [phoneNumberTypeId, setPhoneNumberTypeId] = useState(props.initialPlan?.phoneNumberTypeId || '');
   const [frequency, setFrequency] = useState<CallPlanFrequency>(props.initialPlan?.frequency || 'daily');
+  const [weekdays, setWeekdays] = useState<CallPlanWeekday[]>(props.initialPlan?.weekdays?.length ? props.initialPlan.weekdays : DEFAULT_PLAN_WEEKDAYS);
   const [callTimeFrom, setCallTimeFrom] = useState(props.initialPlan?.callTimeFrom || '09:00');
   const [callTimeTo, setCallTimeTo] = useState(props.initialPlan?.callTimeTo || '09:15');
   const [deleteConfirm, setDeleteConfirm] = useState(false);
@@ -1617,6 +1643,7 @@ function CallPlanEditor(props: {
       scriptId: props.initialPlan?.scriptId || '',
       phoneNumberTypeId: props.initialPlan?.phoneNumberTypeId || '',
       frequency: props.initialPlan?.frequency || 'daily' as CallPlanFrequency,
+      weekdays: props.initialPlan?.weekdays?.length ? props.initialPlan.weekdays : DEFAULT_PLAN_WEEKDAYS,
       callTimeFrom: props.initialPlan?.callTimeFrom || '09:00',
       callTimeTo: props.initialPlan?.callTimeTo || '09:15',
     };
@@ -1626,6 +1653,7 @@ function CallPlanEditor(props: {
     setScriptId(next.scriptId);
     setPhoneNumberTypeId(next.phoneNumberTypeId);
     setFrequency(next.frequency);
+    setWeekdays(next.weekdays);
     setCallTimeFrom(next.callTimeFrom);
     setCallTimeTo(next.callTimeTo);
     setInitialSnapshot(JSON.stringify(next));
@@ -1666,6 +1694,24 @@ function CallPlanEditor(props: {
     setTargetIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   }
 
+  function changeFrequency(next: CallPlanFrequency) {
+    setFrequency(next);
+    setWeekdays((current) => {
+      if (next === 'manual') return [];
+      if (next === 'weekly') return [current[0] ?? 1];
+      return current.length ? current : DEFAULT_PLAN_WEEKDAYS;
+    });
+  }
+
+  function toggleWeekday(day: CallPlanWeekday) {
+    setWeekdays((current) => {
+      if (frequency === 'weekly') return [day];
+      return current.includes(day)
+        ? current.filter((item) => item !== day)
+        : [...current, day].sort((a, b) => PLAN_WEEKDAYS.findIndex((item) => item.value === a) - PLAN_WEEKDAYS.findIndex((item) => item.value === b));
+    });
+  }
+
   function save(event: React.FormEvent) {
     event.preventDefault();
     setAttempted(true);
@@ -1678,6 +1724,7 @@ function CallPlanEditor(props: {
       scriptId,
       phoneNumberTypeId,
       frequency,
+      weekdays,
       callTimeFrom,
       callTimeTo,
     };
@@ -1688,6 +1735,7 @@ function CallPlanEditor(props: {
       scriptId,
       phoneNumberTypeId,
       frequency,
+      weekdays,
       callTimeFrom,
       callTimeTo,
     }) === initialSnapshot) return;
@@ -1701,6 +1749,7 @@ function CallPlanEditor(props: {
     scriptId,
     phoneNumberTypeId,
     frequency,
+    weekdays,
     callTimeFrom,
     callTimeTo,
   });
@@ -1828,20 +1877,47 @@ function CallPlanEditor(props: {
                 value={frequency}
                 options={PLAN_FREQUENCIES.map((item) => ({ value: item.value, label: item.label }))}
                 aria-label="Частотность"
-                onChange={(value) => setFrequency(value as CallPlanFrequency)}
+                onChange={(value) => changeFrequency(value as CallPlanFrequency)}
               />
             </div>
           </div>
           {!isManualFrequency && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span>Время звонка c</span>
-                <input className="sa-input" type="time" min="09:00" max="21:45" step={900} value={callTimeFrom} onChange={(event) => setCallTimeFrom(event.target.value)} required />
-              </label>
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span>Время звонка до</span>
-                <input className="sa-input" type="time" min="09:15" max="22:00" step={900} value={callTimeTo} onChange={(event) => setCallTimeTo(event.target.value)} required />
-              </label>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <div style={{ display: 'grid', gap: 8 }}>
+                <span>Рабочие дни прозвона</span>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {PLAN_WEEKDAYS.map((day) => {
+                    const active = weekdays.includes(day.value);
+                    return (
+                      <button
+                        key={day.value}
+                        type="button"
+                        className={active ? 'sa-btn-primary' : 'sa-btn-outline'}
+                        title={day.label}
+                        onClick={() => toggleWeekday(day.value)}
+                        style={{ minWidth: 44, paddingInline: 12 }}
+                      >
+                        {day.short}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="sa-meta">
+                  {frequency === 'weekly'
+                    ? 'Для еженедельного прозвона выбирается только один день.'
+                    : 'В эти дни план будет автоматически распределять звонки по выбранному диапазону.'}
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span>Время звонка c</span>
+                  <input className="sa-input" type="time" min="09:00" max="22:00" value={callTimeFrom} onChange={(event) => setCallTimeFrom(event.target.value)} required />
+                </label>
+                <label style={{ display: 'grid', gap: 6 }}>
+                  <span>Время звонка до</span>
+                  <input className="sa-input" type="time" min="09:00" max="22:00" value={callTimeTo} onChange={(event) => setCallTimeTo(event.target.value)} required />
+                </label>
+              </div>
             </div>
           )}
         </section>
@@ -1914,6 +1990,111 @@ function PromptPreviewModal(props: {
   );
 }
 
+function todayInputValue(): string {
+  const date = new Date();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function formatScheduleTime(value: string | null | undefined): string {
+  if (!value) return '—';
+  return new Date(value).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function CallPlanScheduleModal(props: {
+  open: boolean;
+  plan: CallPlan | null;
+  date: string;
+  items: CallPlanCallItem[];
+  loading: boolean;
+  error: string | null;
+  recreatingId: string | null;
+  onDateChange: (date: string) => void;
+  onRecreate: (item: CallPlanCallItem) => void;
+  onClose: () => void;
+}) {
+  if (!props.open || !props.plan) return null;
+  return (
+    <BrutalModal
+      open={props.open}
+      onClose={props.onClose}
+      title="Расписание"
+      subtitle={props.plan.name}
+      width="wide"
+      footer={(
+        <div className="sa-modal-footer-row">
+          <div className="sa-modal-footer-row__right">
+            <button type="button" className="sa-btn-outline" onClick={props.onClose}>
+              Закрыть
+            </button>
+          </div>
+        </div>
+      )}
+    >
+      <div style={{ display: 'grid', gap: 18 }}>
+        <label className="sa-form-field" style={{ maxWidth: 260 }}>
+          <span>Дата</span>
+          <input
+            className="sa-search-input"
+            type="date"
+            value={props.date}
+            max={todayInputValue()}
+            onChange={(event) => props.onDateChange(event.target.value)}
+          />
+        </label>
+        {props.error && <div className="sa-batch-live-error">{props.error}</div>}
+        {props.loading ? (
+          <div className="sa-meta" style={{ padding: 28, textAlign: 'center' }}>Загрузка расписания...</div>
+        ) : props.items.length === 0 ? (
+          <div className="sa-empty-state">На выбранную дату звонки не запланированы.</div>
+        ) : (
+          <div className="sa-companies-table-wrap">
+            <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+              <thead>
+                <tr>
+                  <th>Пользователь</th>
+                  <th style={{ width: 220 }}>Планируемое время звонка</th>
+                  <th style={{ width: 170 }}>Статус</th>
+                  <th className="sa-text-right" style={{ width: 96 }}>Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {props.items.map((item) => (
+                  <tr key={item.id}>
+                    <td>
+                      <div className="sa-cell-name">{item.employeeName || 'Не назначен'}</div>
+                      <div className="sa-meta" style={{ marginTop: 3 }}>{item.dealershipName || item.phone}</div>
+                    </td>
+                    <td>{formatScheduleTime(item.scheduledAt)}</td>
+                    <td>
+                      <span className={`sa-batch-state sa-batch-state-${item.status}`}>
+                        {formatPlanCallStatus(item.outcome, item.status)}
+                      </span>
+                    </td>
+                    <td className="sa-text-right">
+                      <button
+                        type="button"
+                        className="sa-btn-outline sa-btn-icon"
+                        onClick={() => props.onRecreate(item)}
+                        disabled={props.recreatingId === item.id || item.status === 'running'}
+                        aria-label="Пересоздать"
+                        title={item.status === 'running' ? 'Звонок уже выполняется' : 'Пересоздать'}
+                      >
+                        <RefreshIcon />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </BrutalModal>
+  );
+}
+
 export function CallSettingsPage() {
   const auth = useUnit($auth);
   const location = useLocation();
@@ -1943,6 +2124,13 @@ export function CallSettingsPage() {
   const [selectedPlan, setSelectedPlan] = useState<CallPlan | null>(null);
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [schedulePlan, setSchedulePlan] = useState<CallPlan | null>(null);
+  const [scheduleDate, setScheduleDate] = useState(todayInputValue());
+  const [scheduleItems, setScheduleItems] = useState<CallPlanCallItem[]>([]);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [scheduleRecreatingId, setScheduleRecreatingId] = useState<string | null>(null);
   const [analyticsDrawerOpen, setAnalyticsDrawerOpen] = useState(false);
   const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
   const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
@@ -2295,6 +2483,57 @@ export function CallSettingsPage() {
     }
   }
 
+  async function loadPlanSchedule(plan: CallPlan, date: string) {
+    setScheduleLoading(true);
+    setScheduleError(null);
+    try {
+      const result = await fetchCallPlanSchedule(plan.id, date);
+      setScheduleItems(result.items);
+      setScheduleDate(result.date);
+    } catch (scheduleLoadError) {
+      const message = scheduleLoadError instanceof Error ? scheduleLoadError.message : 'Не удалось загрузить расписание.';
+      setScheduleError(message);
+      setScheduleItems([]);
+    } finally {
+      setScheduleLoading(false);
+    }
+  }
+
+  function openPlanSchedule(plan: CallPlan) {
+    const date = todayInputValue();
+    setSchedulePlan(plan);
+    setScheduleDate(date);
+    setScheduleItems([]);
+    setScheduleModalOpen(true);
+    void loadPlanSchedule(plan, date);
+  }
+
+  function changeScheduleDate(date: string) {
+    setScheduleDate(date);
+    if (schedulePlan) void loadPlanSchedule(schedulePlan, date);
+  }
+
+  async function recreateScheduleCall(item: CallPlanCallItem) {
+    if (!schedulePlan) return;
+    setScheduleRecreatingId(item.id);
+    setScheduleError(null);
+    try {
+      await recreateCallPlanScheduleCall(schedulePlan.id, item.id);
+      await loadPlanSchedule(schedulePlan, scheduleDate);
+      showToast({
+        type: 'success',
+        title: 'Расписание пересоздано',
+        description: 'Для сотрудника назначено новое время звонка.',
+      });
+    } catch (recreateError) {
+      const message = recreateError instanceof Error ? recreateError.message : 'Не удалось пересоздать расписание.';
+      setScheduleError(message);
+      showToast({ type: 'error', title: 'Не удалось пересоздать', description: message });
+    } finally {
+      setScheduleRecreatingId(null);
+    }
+  }
+
   function closeAnalyticsDrawer() {
     setAnalyticsDrawerOpen(false);
     setAnalyticsDrawerLoading(false);
@@ -2399,6 +2638,10 @@ export function CallSettingsPage() {
               <RefreshIcon />
               Обновить
             </button>
+            <button type="button" className="sa-btn-outline" onClick={() => openPlanSchedule(selectedPlan)}>
+              <CalendarIcon />
+              Расписание
+            </button>
             <button type="button" className="sa-btn-outline" onClick={() => navigate(`/call-settings/plans/${encodeURIComponent(selectedPlan.id)}/edit`)}>
               <EditIcon />
               Редактировать
@@ -2435,7 +2678,9 @@ export function CallSettingsPage() {
             <div className="sa-meta">Расписание</div>
             <div style={{ marginTop: 8, fontSize: 15, fontWeight: 650, lineHeight: 1.3 }}>{scheduleLabel}</div>
             {selectedPlan.frequency !== 'manual' && (
-              <div className="sa-meta" style={{ marginTop: 4 }}>{selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}</div>
+              <div className="sa-meta" style={{ marginTop: 4 }}>
+                {formatPlanWeekdays(selectedPlan.weekdays)} · {selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}
+              </div>
             )}
           </div>
         </div>
@@ -2574,6 +2819,23 @@ export function CallSettingsPage() {
             setPlanDeleteConfirm(false);
             void removePlan(selectedPlan);
           }}
+        />
+        <CallPlanScheduleModal
+          open={scheduleModalOpen}
+          plan={schedulePlan}
+          date={scheduleDate}
+          items={scheduleItems}
+          loading={scheduleLoading}
+          error={scheduleError}
+          recreatingId={scheduleRecreatingId}
+          onDateChange={changeScheduleDate}
+          onRecreate={recreateScheduleCall}
+          onClose={() => setScheduleModalOpen(false)}
+        />
+        <PromptPreviewModal
+          preview={promptPreview}
+          onClose={() => setPromptPreview(null)}
+          onCopy={copyPromptPreview}
         />
       </div>
     );
@@ -2788,7 +3050,7 @@ export function CallSettingsPage() {
                       <td>{plan.targetType === 'employees' ? `Сотрудники: ${targetCount}` : `Точки: ${plan.targetIds.length} · сотрудников: ${targetCount}`}</td>
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
                       <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
-                      <td>{plan.frequency === 'manual' ? '—' : `${plan.callTimeFrom} - ${plan.callTimeTo}`}</td>
+                      <td>{plan.frequency === 'manual' ? '—' : `${formatPlanWeekdays(plan.weekdays)} · ${plan.callTimeFrom} - ${plan.callTimeTo}`}</td>
                       <td className="sa-holdings-actions-cell sa-text-right" onClick={(event) => event.stopPropagation()}>
                         <button
                           type="button"
@@ -2831,6 +3093,18 @@ export function CallSettingsPage() {
         onCreate={saveNewVoice}
         onUpdate={saveExistingVoice}
         onDelete={removeVoice}
+      />
+      <CallPlanScheduleModal
+        open={scheduleModalOpen}
+        plan={schedulePlan}
+        date={scheduleDate}
+        items={scheduleItems}
+        loading={scheduleLoading}
+        error={scheduleError}
+        recreatingId={scheduleRecreatingId}
+        onDateChange={changeScheduleDate}
+        onRecreate={recreateScheduleCall}
+        onClose={() => setScheduleModalOpen(false)}
       />
       <PromptPreviewModal
         preview={promptPreview}
