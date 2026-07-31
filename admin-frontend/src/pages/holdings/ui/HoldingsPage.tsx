@@ -22,6 +22,7 @@ import { STATUS_LABELS } from '../../../shared/lib/admin-panel/mockData';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { EditIcon } from '../../../shared/ui/icons/ActionIcons';
 import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
+import { EfficiencyActivityChart } from '../../../shared/ui/efficiency-activity-chart/EfficiencyActivityChart';
 import { ComparisonAISummary } from '../../../shared/ui/comparison-ai-summary/ComparisonAISummary';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
 import { SlideOver } from '../../../shared/ui/slide-over';
@@ -106,95 +107,6 @@ function HoldingIssueBars({ items }: { items: { issue: string; percent: number }
           )}
         </div>
       ))}
-    </div>
-  );
-}
-
-function HoldingTrendChart({ points }: { points: { date: string; avgScore: number; count: number }[] }) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-  if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
-  const W = 1100, H = 320;
-  const pad = { top: 18, right: 18, bottom: 34, left: 42 };
-  const cw = W - pad.left - pad.right;
-  const ch = H - pad.top - pad.bottom;
-  const step = points.length <= 1 ? 0 : cw / (points.length - 1);
-  const xs = points.map((_, index) => pad.left + index * step);
-  const y = (score: number) => pad.top + ch - (Math.max(0, Math.min(score, 100)) / 100) * ch;
-  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(point.avgScore)}`).join(' ');
-  return (
-    <div className="sa-chart-wrap sa-chart-wrap-full">
-      <svg
-        width="100%"
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="xMidYMid meet"
-        className="sa-trend-chart-svg"
-        style={{ display: 'block', height: 'auto' }}
-        onMouseLeave={() => setHoverIdx(null)}
-      >
-        {[0, 25, 50, 75, 100].map((value) => {
-          const gy = y(value);
-          return (
-            <g key={value}>
-              <line x1={pad.left} y1={gy} x2={pad.left + cw} y2={gy} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
-              <text x={pad.left - 8} y={gy + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{value}</text>
-            </g>
-          );
-        })}
-        <path d={path} fill="none" stroke="var(--tb-ink)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-        {points.map((_, index) => (
-          <rect
-            key={`hit-${index}`}
-            x={xs[index] - (step || 40) / 2}
-            y={pad.top}
-            width={step || 40}
-            height={ch}
-            fill="transparent"
-            onMouseEnter={() => setHoverIdx(index)}
-          />
-        ))}
-        {hoverIdx !== null && (
-          <line
-            x1={xs[hoverIdx]}
-            y1={pad.top}
-            x2={xs[hoverIdx]}
-            y2={pad.top + ch}
-            stroke="var(--sa-text-secondary)"
-            strokeWidth="1"
-            strokeDasharray="3"
-            opacity="0.4"
-          />
-        )}
-        {points.map((point, index) => (
-          <g key={point.date}>
-            <circle
-              cx={xs[index]}
-              cy={y(point.avgScore)}
-              r={hoverIdx === index ? 5.5 : 4}
-              fill={hoverIdx === index ? '#fff' : 'var(--tb-ink)'}
-              stroke="var(--tb-ink)"
-              strokeWidth={hoverIdx === index ? 2.5 : 0}
-              style={{ transition: 'r 0.15s ease, fill 0.15s ease' }}
-            />
-            <text x={xs[index]} y={H - 10} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">{point.date.slice(5)}</text>
-          </g>
-        ))}
-      </svg>
-      {hoverIdx !== null && (() => {
-        const point = points[hoverIdx];
-        const leftPct = (xs[hoverIdx] / W) * 100;
-        const topPct = (y(point.avgScore) / H) * 100;
-        const placeBelow = topPct < 28;
-        return (
-          <div
-            className={`sa-chart-hover-tooltip${placeBelow ? ' sa-chart-hover-tooltip-below' : ''}`}
-            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
-          >
-            <div className="sa-chart-hover-tooltip-row">Дата: {point.date}</div>
-            <div className="sa-chart-hover-tooltip-row is-strong">Средний балл: {point.avgScore.toFixed(1)}</div>
-            <div className="sa-chart-hover-tooltip-row">Проверок: {point.count}</div>
-          </div>
-        );
-      })()}
     </div>
   );
 }
@@ -304,27 +216,32 @@ function HoldingMetricCard({
   description,
   valueClass,
   valueSuffix,
+  variant = 'default',
+  numeric = false,
 }: {
   label: string;
   value: React.ReactNode;
   description?: string;
   valueClass?: string;
   valueSuffix?: string;
+  variant?: 'default' | 'comparison';
+  numeric?: boolean;
 }) {
+  const isComparison = variant === 'comparison';
   return (
-    <div className="sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card">
+    <div className={`sa-card sa-kpi-card sa-kpi-card-air sa-brutal-card${isComparison ? ' sa-comparison-summary-card' : ''}`}>
       <div className="sa-kpi-card-top">
         <div className="sa-kpi-card-heading">{label}</div>
       </div>
-      <div className="sa-kpi-card-spacer" aria-hidden />
+      {!isComparison && <div className="sa-kpi-card-spacer" aria-hidden />}
       <div className="sa-kpi-card-bottom">
         {valueSuffix ? (
           <div className="sa-kpi-value-row">
-            <span className={`sa-kpi-value sa-kpi-value-large ${valueClass ?? ''}`}>{value}</span>
+            <span className={`sa-kpi-value ${isComparison ? 'sa-comparison-summary-value' : 'sa-kpi-value-large'} ${numeric ? 'is-numeric' : ''} ${valueClass ?? ''}`}>{value}</span>
             <span className="sa-kpi-value-suffix">{valueSuffix}</span>
           </div>
         ) : (
-          <div className={`sa-kpi-value sa-kpi-value-large ${valueClass ?? ''}`}>{value}</div>
+          <div className={`sa-kpi-value ${isComparison ? 'sa-comparison-summary-value' : 'sa-kpi-value-large'} ${numeric ? 'is-numeric' : ''} ${valueClass ?? ''}`}>{value}</div>
         )}
         {description && <div className="sa-kpi-desc">{description}</div>}
       </div>
@@ -355,11 +272,11 @@ function HoldingComparisonModal({
       width="wide"
     >
       <div className="sa-comparison-modal">
-        <div className="sa-kpi-grid">
-          <HoldingMetricCard label="Лидер" value={leader.name} valueClass={ratingClass(leader.score)} />
-          <HoldingMetricCard label="Нужна фокусировка" value={lagger.name} valueClass={ratingClass(lagger.score)} />
-          <HoldingMetricCard label="Макс. звонков" value={bestCalls} />
-          <HoldingMetricCard label="Макс. недозвонов" value={worstNoAnswers} />
+        <div className="sa-comparison-summary-grid">
+          <HoldingMetricCard variant="comparison" label="Лидер" value={leader.name} valueClass={ratingClass(leader.score)} />
+          <HoldingMetricCard variant="comparison" label="Нужна фокусировка" value={lagger.name} valueClass={ratingClass(lagger.score)} />
+          <HoldingMetricCard variant="comparison" label="Макс. звонков" value={bestCalls} numeric />
+          <HoldingMetricCard variant="comparison" label="Макс. недозвонов" value={worstNoAnswers} numeric />
         </div>
 
         <div className="sa-comparison-table-panel">
@@ -628,45 +545,6 @@ function HoldingAnalyticsDetail({
       </section>
 
       <section className="sa-section">
-        <h2 className="sa-section-title">Динамика эффективности</h2>
-        <div className="sa-card sa-holding-detail-block" style={{ padding: 18, marginBottom: 12 }}>
-          <HoldingTrendChart points={detail.timeSeries ?? []} />
-        </div>
-      </section>
-
-      <section className="sa-section">
-        <h2 className="sa-section-title">Аналитика по ошибкам</h2>
-        <div className="sa-detail-insights sa-holding-detail-insights">
-          <div className="sa-card">
-            <h3 className="sa-card-heading">Проблемные блоки</h3>
-            {detail.topIssues.length === 0 ? (
-              <div className="sa-meta">Нет выраженных проблем.</div>
-            ) : (
-              <HoldingIssueBars items={detail.topIssues.slice(0, 5)} />
-            )}
-          </div>
-          <div className="sa-card">
-            <h3 className="sa-card-heading">Распределение по категориям</h3>
-            {detail.scriptCompliance.length === 0 ? (
-              <div className="sa-meta">Нет рассчитанных категорий.</div>
-            ) : (
-              <div className="sa-hbar-list sa-hbar-list-thin">
-                {detail.scriptCompliance.slice(0, 5).map((block) => (
-                  <div key={block.block} className="sa-hbar-row">
-                    <span className="sa-hbar-label" title={block.block}>{block.block}</span>
-                    <div className="sa-hbar-track">
-                      <div className="sa-hbar-fill" style={{ width: `${block.rate}%`, background: scoreBarColor(block.rate) }} />
-                    </div>
-                    <span className={`sa-hbar-score ${ratingClass(block.rate)}`}>{block.rate}%</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-
-      <section className="sa-section">
         <h2 className="sa-section-title">Точки компании</h2>
         <div className="sa-table-wrap sa-holding-detail-points-table">
           <table className="sa-table">
@@ -717,6 +595,53 @@ function HoldingAnalyticsDetail({
               ))}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section className="sa-section">
+        <h2 className="sa-section-title">Динамика эффективности</h2>
+        <div className="sa-card sa-holding-detail-block sa-holding-activity-block" style={{ padding: 18, marginBottom: 12 }}>
+          {detail.activitySeries ? (
+            <EfficiencyActivityChart
+              series={detail.activitySeries}
+              dealershipSeries={detail.dealershipActivitySeries}
+              dealershipRows={detail.dealershipRows}
+            />
+          ) : (
+            <div className="sa-chart-empty">Нет данных за выбранный период</div>
+          )}
+        </div>
+      </section>
+
+      <section className="sa-section">
+        <h2 className="sa-section-title">Аналитика по ошибкам</h2>
+        <div className="sa-detail-insights sa-holding-detail-insights">
+          <div className="sa-card">
+            <h3 className="sa-card-heading">Проблемные блоки</h3>
+            {detail.topIssues.length === 0 ? (
+              <div className="sa-meta">Нет выраженных проблем.</div>
+            ) : (
+              <HoldingIssueBars items={detail.topIssues.slice(0, 5)} />
+            )}
+          </div>
+          <div className="sa-card">
+            <h3 className="sa-card-heading">Распределение по категориям</h3>
+            {detail.scriptCompliance.length === 0 ? (
+              <div className="sa-meta">Нет рассчитанных категорий.</div>
+            ) : (
+              <div className="sa-hbar-list sa-hbar-list-thin">
+                {detail.scriptCompliance.slice(0, 5).map((block) => (
+                  <div key={block.block} className="sa-hbar-row">
+                    <span className="sa-hbar-label" title={block.block}>{block.block}</span>
+                    <div className="sa-hbar-track">
+                      <div className="sa-hbar-fill" style={{ width: `${block.rate}%`, background: scoreBarColor(block.rate) }} />
+                    </div>
+                    <span className={`sa-hbar-score ${ratingClass(block.rate)}`}>{block.rate}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </section>
 

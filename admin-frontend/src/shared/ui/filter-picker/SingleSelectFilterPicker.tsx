@@ -7,9 +7,42 @@ export type FilterPickerOption<T extends string = string> = {
   label: string;
 };
 
-function filterPickerWidth(labels: string[], min = 120, max = 480): number {
-  const longest = labels.reduce((maxLabel, label) => (label.length > maxLabel.length ? label : maxLabel), '');
-  const width = Math.ceil(longest.length * 8 + 56);
+const FILTER_PICKER_FONT = '13px Inter, system-ui, sans-serif';
+const FILTER_PICKER_PAD_RIGHT = 34;
+const FILTER_PICKER_PAD_LEFT = 12;
+const FILTER_PICKER_COMPACT_PAD_X = FILTER_PICKER_PAD_LEFT + FILTER_PICKER_PAD_RIGHT;
+
+let measureContext: CanvasRenderingContext2D | null = null;
+
+function measurePickerLabelWidth(label: string): number {
+  if (!label) return 0;
+  if (typeof document === 'undefined') return label.length * 7.5;
+  if (!measureContext) {
+    const canvas = document.createElement('canvas');
+    measureContext = canvas.getContext('2d');
+  }
+  if (!measureContext) return label.length * 7.5;
+  measureContext.font = FILTER_PICKER_FONT;
+  return measureContext.measureText(label).width;
+}
+
+function filterPickerWidth(
+  labels: string[],
+  {
+    min = 120,
+    max = 480,
+    padLeft = FILTER_PICKER_PAD_LEFT,
+    padRight = FILTER_PICKER_PAD_RIGHT,
+  }: {
+    min?: number;
+    max?: number;
+    padLeft?: number;
+    padRight?: number;
+  } = {},
+): number {
+  if (!labels.length) return min;
+  const textWidth = Math.max(...labels.map(measurePickerLabelWidth));
+  const width = Math.ceil(textWidth + padLeft + padRight + 2);
   return Math.min(Math.max(width, min), max);
 }
 
@@ -19,6 +52,10 @@ type Props<T extends string> = {
   placeholder?: string;
   disabled?: boolean;
   zIndex?: number;
+  compact?: boolean;
+  fitSelected?: boolean;
+  /** Extra left padding beyond the default 12px (e.g. calendar icon slot). */
+  leadingPad?: number;
   onChange: (value: T) => void;
 };
 
@@ -32,10 +69,15 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
     (option) => !normalizedQuery || option.label.toLowerCase().includes(normalizedQuery),
   );
 
-  const pickerWidth = useMemo(
-    () => filterPickerWidth(props.options.map((option) => option.label)),
-    [props.options],
-  );
+  const pickerWidth = useMemo(() => {
+    const labels = props.fitSelected && selectedOption
+      ? [selectedOption.label]
+      : props.options.map((option) => option.label);
+    const padLeft = FILTER_PICKER_PAD_LEFT + (props.leadingPad ?? 0);
+    const padRight = props.compact ? 26 : FILTER_PICKER_PAD_RIGHT;
+    const min = props.fitSelected ? 96 : props.compact ? 108 : 120;
+    return filterPickerWidth(labels, { min, max: 480, padLeft, padRight });
+  }, [props.compact, props.fitSelected, props.leadingPad, props.options, selectedOption]);
 
   function openPicker() {
     if (props.disabled) return;
@@ -57,7 +99,7 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
   return (
     <div
       ref={pickerRef}
-      className={`sa-tag-filter-picker${open ? ' sa-tag-filter-picker--open' : ''}`}
+      className={`sa-tag-filter-picker${open ? ' sa-tag-filter-picker--open' : ''}${props.compact ? ' sa-tag-filter-picker--compact' : ''}`}
       style={{ width: pickerWidth }}
     >
       <FilterPickerField open={open} onActivate={openPicker}>

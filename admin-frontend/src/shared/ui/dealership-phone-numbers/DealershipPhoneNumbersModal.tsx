@@ -533,7 +533,7 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
         open={open}
         onClose={onClose}
         title="Номера телефонов"
-        subtitle="Номера, привязанные к этому пользователю."
+        subtitle="Номера, привязанные к этому сотруднику."
         width="wide"
         headerActions={(
           <button
@@ -549,12 +549,12 @@ export function UserPhoneNumbersModal({ accountId, open, onClose }: {
       >
         {holdings.length === 0 && !holdingsLoading && (
           <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-            Перед добавлением номера пользователя добавьте компанию.
+            Перед добавлением номера сотрудника добавьте компанию.
           </div>
         )}
         {selectedHoldingId && types.length === 0 && !loading && (
           <div style={{ padding: 12, borderRadius: 14, background: 'var(--tb-status-orange-bg)', color: '#92400e', fontSize: 14, marginBottom: 12 }}>
-            Сначала создайте активный тип номера с принадлежностью “Для пользователей” в выбранной компании.
+            Сначала создайте активный тип номера с принадлежностью “Для сотрудников” в выбранной компании.
           </div>
         )}
         {error && !addOpen && !editItem && (

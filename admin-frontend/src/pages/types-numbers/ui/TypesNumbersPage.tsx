@@ -35,7 +35,7 @@ const TYPE_FORM_ID = 'phone-type-modal-form';
 
 const OWNERSHIP_LABELS: Record<PhoneNumberOwnership, string> = {
   dealership: 'Для точек',
-  user: 'Для пользователей',
+  user: 'Для сотрудников',
 };
 
 const OWNERSHIP_OPTIONS = [

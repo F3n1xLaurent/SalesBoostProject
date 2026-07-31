@@ -11,6 +11,7 @@ type Props<T extends string> = {
   onChange: (value: T) => void;
   ariaLabel?: string;
   className?: string;
+  compact?: boolean;
 };
 
 export function BrutalSegmented<T extends string>({
@@ -19,10 +20,11 @@ export function BrutalSegmented<T extends string>({
   onChange,
   ariaLabel,
   className,
+  compact = false,
 }: Props<T>) {
   return (
     <div
-      className={['sa-segmented', className].filter(Boolean).join(' ')}
+      className={['sa-segmented', compact ? 'sa-segmented--compact' : '', className].filter(Boolean).join(' ')}
       role="tablist"
       aria-label={ariaLabel}
     >
