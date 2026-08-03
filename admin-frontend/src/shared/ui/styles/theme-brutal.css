@@ -697,11 +697,13 @@
 .theme-brutal .sa-heatmap-grid-12 {
   gap: 8px;
   padding: 4px 0 8px;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
 }
 
 .theme-brutal .sa-heatmap-cell {
   border-radius: 10px;
   min-height: 58px;
+  min-width: 0;
   border: 1px solid transparent;
 }
 
@@ -1480,7 +1482,7 @@
 
 .theme-brutal .sa-filters-panel .sa-tag-filter-picker-wrap {
   width: 100%;
-  max-width: 420px;
+  max-width: 100%;
 }
 
 .theme-brutal .sa-filters-panel .sa-tag-filter-picker {
@@ -1915,6 +1917,7 @@
   justify-content: space-between;
   gap: 16px;
   min-height: 40px;
+  overflow: visible;
 }
 
 .theme-brutal .sa-holding-activity-toolbar {
@@ -1934,6 +1937,7 @@
   gap: 8px;
   flex-shrink: 0;
   min-height: 40px;
+  overflow: visible;
 }
 
 .theme-brutal .sa-holding-activity-dealership,
@@ -1954,6 +1958,10 @@
   color: var(--sa-text-secondary);
   pointer-events: none;
   transform: translateY(-50%);
+}
+
+.theme-brutal .sa-holding-activity-period-picker:has(.sa-tag-filter-picker--open) .sa-holding-activity-period-picker__icon {
+  z-index: 1201;
 }
 
 .theme-brutal .sa-holding-activity-period-picker .sa-tag-filter-picker .sa-input {
@@ -1983,6 +1991,7 @@
   position: relative;
   min-height: 320px;
   width: 100%;
+  contain: layout style;
 }
 
 .theme-brutal .sa-holding-activity-empty {
@@ -2037,10 +2046,7 @@
   scrollbar-gutter: stable;
   -webkit-overflow-scrolling: touch;
   width: 100%;
-}
-
-.theme-brutal .sa-holding-activity-scroll:not(.is-scrollable) {
-  overflow-x: hidden;
+  contain: layout style;
 }
 
 .theme-brutal .sa-chart-hover-tooltip-row.is-score {
@@ -2293,10 +2299,7 @@
   border: none;
   border-radius: 12px;
   box-shadow: 0 1px 4px rgba(22, 22, 19, 0.05), 0 4px 16px rgba(22, 22, 19, 0.04);
-}
-
-.theme-brutal .sa-tag-filter-menu--portal {
-  box-shadow: 0 8px 28px rgba(22, 22, 19, 0.12), 0 2px 8px rgba(22, 22, 19, 0.06);
+  max-width: min(480px, calc(100vw - 24px));
 }
 
 .theme-brutal .sa-tag-filter-option:hover {
@@ -4539,8 +4542,17 @@
   }
 }
 
+.theme-brutal .sa-toolbar {
+  overflow: visible;
+}
+
+.theme-brutal .sa-toolbar-filters {
+  overflow: visible;
+}
+
 .theme-brutal .sa-page-enter {
   animation: tb-fade-up 0.42s ease both;
+  overflow: visible;
 }
 
 .theme-brutal .sa-dashboard-root > div:first-child {
@@ -4596,6 +4608,10 @@
 .theme-brutal .train-brutal-select-trigger:hover:not(:disabled) {
   border-color: rgba(22, 22, 19, 0.28);
   box-shadow: 0 0 0 3px rgba(22, 22, 19, 0.05);
+}
+
+.theme-brutal .train-brutal-select--open {
+  z-index: 1200;
 }
 
 .theme-brutal .train-brutal-select--open .train-brutal-select-trigger,
@@ -4896,8 +4912,8 @@
   }
 }
 
-@media (max-width: 820px) {
-  .theme-brutal .super-admin-sidebar {
+@media (max-width: 1280px) {
+  .theme-brutal .super-admin-sidebar:not(.super-admin-sidebar--drawer) {
     display: none !important;
   }
 
@@ -4905,7 +4921,8 @@
     margin-left: 0 !important;
     margin-right: 0 !important;
     width: 100% !important;
-    padding: 12px !important;
+    padding-top: 0 !important;
+    padding-bottom: 12px !important;
   }
 
   .theme-brutal .super-admin-content {

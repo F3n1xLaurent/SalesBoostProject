@@ -27,7 +27,7 @@ export function BrutalSelect(props: Props) {
     function handleDocumentMouseDown(event: MouseEvent) {
       const target = event.target as Node;
       if (rootRef.current?.contains(target)) return;
-      const menu = document.querySelector('.train-brutal-select-menu');
+      const menu = rootRef.current?.querySelector('.train-brutal-select-menu');
       if (menu?.contains(target)) return;
       setOpen(false);
     }
@@ -67,7 +67,7 @@ export function BrutalSelect(props: Props) {
           </svg>
         </span>
       </button>
-      <FilterPickerMenu open={open} anchorRef={rootRef} role="listbox" menuClassName="train-brutal-select-menu" zIndex={1500}>
+      <FilterPickerMenu open={open} role="listbox" menuClassName="train-brutal-select-menu" zIndex={1500}>
         {props.options.map((option) => {
           const isSelected = option.value === props.value;
           return (

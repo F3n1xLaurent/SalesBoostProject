@@ -100,6 +100,8 @@ export function EfficiencyActivityChart({
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const [plotWidth, setPlotWidth] = useState(0);
   const plotRef = useRef<HTMLDivElement>(null);
+  const plotWidthRef = useRef(0);
+  const scrollableRef = useRef(false);
 
   const resolvedDealershipSeries = useMemo(() => {
     if (dealershipSeries.length) return dealershipSeries;
@@ -128,15 +130,30 @@ export function EfficiencyActivityChart({
   useLayoutEffect(() => {
     const node = plotRef.current;
     if (!node) return;
-    const update = () => setPlotWidth(node.clientWidth);
+
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const nextWidth = node.clientWidth;
+        if (Math.abs(nextWidth - plotWidthRef.current) < 2) return;
+        plotWidthRef.current = nextWidth;
+        setPlotWidth(nextWidth);
+      });
+    };
+
     update();
     const observer = new ResizeObserver(update);
     observer.observe(node);
-    return () => observer.disconnect();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, []);
 
   useEffect(() => {
     setHoverIdx(null);
+    scrollableRef.current = false;
   }, [period, dealershipId, metric]);
 
   const hasCallsInPeriod = points.some((point) => point.totalCalls > 0 || point.missedCalls > 0);
@@ -157,7 +174,16 @@ export function EfficiencyActivityChart({
   const fillChartWidth = plotWidth > 0 ? Math.max(plotWidth - pad.left - pad.right, 0) : minChartWidth;
   const cw = Math.max(fillChartWidth, minChartWidth);
   const W = pad.left + cw + pad.right;
-  const scrollable = cw > fillChartWidth && plotWidth > 0;
+
+  if (plotWidth > 0) {
+    if (minChartWidth > fillChartWidth + 2) {
+      scrollableRef.current = true;
+    } else if (minChartWidth <= fillChartWidth - 18) {
+      scrollableRef.current = false;
+    }
+  }
+
+  const scrollable = scrollableRef.current && plotWidth > 0;
   const ch = H - pad.top - pad.bottom;
   const groupStep = cw / groupCount;
   const barWidth = Math.min(18, Math.max(8, groupStep * 0.28));
@@ -223,7 +249,7 @@ export function EfficiencyActivityChart({
     </div>
   ) : (
     <>
-      <div className={`sa-holding-activity-scroll${scrollable ? ' is-scrollable' : ''}`}>
+      <div className="sa-holding-activity-scroll">
         <svg
           width={scrollable ? W : '100%'}
           height={H}

@@ -73,9 +73,22 @@ type Props = {
   hasActiveBatch?: boolean;
   onLogout: () => void;
   allowedRoles: AdminRole[];
+  className?: string;
+  isDrawer?: boolean;
 };
 
-export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange, hasActiveBatch = false, onLogout, allowedRoles }: Props) {
+export function AdminSidebar({
+  activeTab,
+  onTab,
+  role,
+  profileName,
+  onRoleChange,
+  hasActiveBatch = false,
+  onLogout,
+  allowedRoles,
+  className,
+  isDrawer = false,
+}: Props) {
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -101,17 +114,23 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
 
   return (
     <aside
-      className="super-admin-sidebar"
+      className={['super-admin-sidebar', className].filter(Boolean).join(' ')}
       style={{
         position: 'fixed',
         left: 0,
         top: 0,
         bottom: 0,
-        zIndex: 40,
+        zIndex: isDrawer ? 1 : 40,
         overflowY: 'auto',
         padding: '24px 16px',
         display: 'flex',
         flexDirection: 'column',
+        ...(isDrawer
+          ? {
+              background: '#F2F2F2',
+              boxShadow: '8px 0 32px rgba(22, 22, 19, 0.14)',
+            }
+          : null),
       }}
     >
       <div className="sa-sidebar-brand-wrap" style={{ marginBottom: 24 }}>

@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { lockBodyScroll, unlockBodyScroll } from '../../../shared/lib/body-scroll-lock';
+import { useMobileAdminNav } from '../../../shared/lib/use-mobile-admin-nav';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
-import { AdminSidebar, SIDEBAR_WIDTH } from '../../admin-sidebar/ui/AdminSidebar';
+import '../../../shared/ui/styles/admin-responsive.css';
+import { AdminSidebar } from '../../admin-sidebar/ui/AdminSidebar';
 import type { AdminTab, AdminRole } from '../../admin-sidebar/ui/AdminSidebar';
+import sidebarLogo from '../../../assets/logo.png';
 import { Dashboard } from '../../../pages/dashboard/ui/DashboardPage';
 import { HoldingsPage } from '../../../pages/holdings/ui/HoldingsPage';
 import { Companies } from '../../../pages/companies/ui/CompaniesPage';
@@ -139,6 +144,8 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   const [dataLoading, setDataLoading] = useState(true);
   const [backendNotRunning, setBackendNotRunning] = useState(false);
   const [hasActiveBatch, setHasActiveBatch] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const isMobileAdminNav = useMobileAdminNav();
   const isSuperOrCompany = role === 'super' || role === 'company';
   const isDealerAudits = role === 'dealer' && activeTab === 'audits';
   const shouldLoadAuditData = isSuperOrCompany || isDealerAudits;
@@ -302,31 +309,78 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
     setHasActiveBatch(has);
   }, [isSuperOrCompany, callBatches]);
 
+  useEffect(() => {
+    if (!isMobileAdminNav) setMobileNavOpen(false);
+  }, [isMobileAdminNav]);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!mobileNavOpen || !isMobileAdminNav) return;
+    lockBodyScroll();
+    return () => unlockBodyScroll();
+  }, [mobileNavOpen, isMobileAdminNav]);
+
+  const handleMobileTabChange = (tab: AdminTab) => {
+    handleTabChange(tab);
+    setMobileNavOpen(false);
+  };
+
+  const sidebarProps = {
+    activeTab,
+    role,
+    profileName,
+    onRoleChange: handleRoleChange,
+    hasActiveBatch,
+    onLogout,
+    allowedRoles,
+  };
+
   return (
     <div className={`super-admin-app theme-brutal${trainerSessionActive ? ' super-admin-app--trainer-focus' : ''}`}>
-      {!trainerSessionActive && (
-        <AdminSidebar
-          activeTab={activeTab}
-          onTab={handleTabChange}
-          role={role}
-          profileName={profileName}
-          onRoleChange={handleRoleChange}
-          hasActiveBatch={hasActiveBatch}
-          onLogout={onLogout}
-          allowedRoles={allowedRoles}
-        />
+      {!trainerSessionActive && !isMobileAdminNav && (
+        <AdminSidebar {...sidebarProps} onTab={handleTabChange} />
       )}
-      <main
-        className="super-admin-main"
-        style={{
-          marginLeft: trainerSessionActive ? 0 : SIDEBAR_WIDTH,
-          minHeight: '100vh',
-          paddingTop: trainerSessionActive ? 0 : 32,
-          paddingBottom: trainerSessionActive ? 0 : 48,
-        }}
-      >
+      {!trainerSessionActive && isMobileAdminNav && mobileNavOpen && createPortal(
+        <div className="sa-admin-mobile-nav-portal theme-brutal">
+          <div
+            className="sa-admin-mobile-backdrop"
+            role="presentation"
+            onClick={() => setMobileNavOpen(false)}
+            aria-hidden="true"
+          />
+          <AdminSidebar
+            {...sidebarProps}
+            onTab={handleMobileTabChange}
+            className="super-admin-sidebar--drawer is-open"
+            isDrawer
+          />
+        </div>,
+        document.body,
+      )}
+      <main className={`super-admin-main${trainerSessionActive ? ' super-admin-main--trainer-focus' : ''}`}>
+        {!trainerSessionActive && (
+          <header className="sa-admin-mobile-topbar">
+            <img src={sidebarLogo} alt="Red Button" className="sa-admin-mobile-topbar-logo" />
+            <button
+              type="button"
+              className="sa-admin-mobile-menu-btn"
+              aria-label="Открыть меню"
+              aria-expanded={mobileNavOpen}
+              onClick={() => setMobileNavOpen((open) => !open)}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <path d="M4 7h16" />
+                <path d="M4 12h16" />
+                <path d="M4 17h16" />
+              </svg>
+            </button>
+          </header>
+        )}
         <div className={`super-admin-content${trainerSessionActive ? ' super-admin-content--trainer-focus' : ''}`}>
-          <div key={location.pathname} className="sa-page-enter">
+          <div className="sa-page-enter">
           {backendNotRunning && shouldLoadAuditData && (
             <StatusNotice tone="warning">
               <strong>Нет данных: бэкенд не запущен.</strong>

@@ -114,7 +114,7 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
           onClick={openPicker}
           onBlur={(event) => {
             const next = event.relatedTarget as Node | null;
-            const menu = document.querySelector('.sa-tag-filter-menu--portal');
+            const menu = pickerRef.current?.querySelector('.sa-tag-filter-menu');
             if (menu?.contains(next)) return;
             window.setTimeout(closePicker, 160);
           }}
@@ -124,7 +124,7 @@ export function SingleSelectFilterPicker<T extends string>(props: Props<T>) {
           aria-expanded={open}
         />
       </FilterPickerField>
-      <FilterPickerMenu open={open} anchorRef={pickerRef} role="listbox" zIndex={props.zIndex}>
+      <FilterPickerMenu open={open} role="listbox" zIndex={props.zIndex}>
         {filteredOptions.length ? filteredOptions.map((option) => {
           const selected = props.value === option.value;
           return (
