@@ -30,6 +30,7 @@ import { EfficiencyActivityChart, type EfficiencyActivitySeries } from '../../..
 import { BrutalCard } from '../../../shared/ui/brutal-card';
 import { AnsweredMissedDonut } from '../../../shared/ui/answered-missed-donut';
 import { AnswerRateByHour } from '../../../shared/ui/answer-rate-by-hour';
+import { PlanParticipationTable } from '../../../shared/ui/plan-participation-table';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { CallOutcomeBreakdown } from '../../../shared/ui/call-outcome-breakdown';
@@ -105,62 +106,6 @@ function DealershipMetricCard({
 
 function dealershipTypeLabel(type?: DealershipType | null): string {
   return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
-}
-
-function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
-  if (value === 'manual') return 'Вручную';
-  return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
-}
-
-function planTargetLabel(plan: AnalyticsPlanParticipation): string {
-  if (plan.targetMatch === 'dealership') return 'Точка целиком';
-  return plan.targetsCount === 1 ? '1 сотрудник точки' : `${plan.targetsCount} сотрудников точки`;
-}
-
-function PlanParticipationList({
-  plans,
-  excludingPlanId,
-  onOpenPlan,
-  onExcludePlan,
-  readOnly = false,
-}: {
-  plans: AnalyticsPlanParticipation[];
-  excludingPlanId: string | null;
-  onOpenPlan: (id: string) => void;
-  onExcludePlan: (plan: AnalyticsPlanParticipation) => void;
-  readOnly?: boolean;
-}) {
-  if (plans.length === 0) {
-    return <div className="sa-meta" style={{ padding: 18 }}>Нет активных расписаний</div>;
-  }
-  return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      {plans.map((plan) => (
-        <div key={plan.id} className="sa-card" style={{ padding: 14, display: 'flex', gap: 14, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-          <div style={{ minWidth: 220 }}>
-            <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
-            <div className="sa-meta" style={{ marginTop: 4 }}>
-              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)}
-              {plan.frequency !== 'manual' ? ` · ${plan.callTimeFrom}-${plan.callTimeTo}` : ''}
-              {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
-            </div>
-          </div>
-          {!readOnly && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="sa-btn-outline sa-btn-sm" onClick={() => onOpenPlan(plan.id)}>Настроить</button>
-              <button
-                className="sa-btn-outline sa-btn-sm"
-                disabled={excludingPlanId === plan.id}
-                onClick={() => onExcludePlan(plan)}
-              >
-                {excludingPlanId === plan.id ? 'Исключаем...' : 'Исключить'}
-              </button>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function buildFallbackDetail(dealership: DealershipItem): DealershipAnalyticsDetail {
@@ -707,12 +652,13 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           )}
         </div>
         {planActionStatus && <div className="sa-meta" style={{ marginBottom: 10 }}>{planActionStatus}</div>}
-        <PlanParticipationList
+        <PlanParticipationTable
           plans={planParticipation}
           excludingPlanId={excludingPlanId}
           onOpenPlan={(id) => navigate(`/call-settings/plans/${encodeURIComponent(id)}/edit`)}
           onExcludePlan={handleExcludePlan}
           readOnly={isDealerDashboard}
+          variant="dealership"
         />
       </section>
 

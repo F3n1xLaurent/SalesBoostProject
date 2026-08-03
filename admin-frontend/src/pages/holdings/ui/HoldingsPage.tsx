@@ -200,7 +200,7 @@ function ModalFrame(props: {
       onClose={props.onClose}
       title={props.title}
       subtitle={props.subtitle}
-      width={props.width ?? 'wide'}
+      width={props.width ?? 'medium'}
       footer={props.footer}
     >
       {props.children}
@@ -1406,7 +1406,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
 
       {renderDeleteHoldingModal()}
       {renderUnsavedHoldingModal()}
-      <ModalFrame title={activeHolding ? `Точки компании ${activeHolding.name}` : 'Точки компании'} open={holdingDealershipsOpen && !!activeHolding} onClose={() => setHoldingDealershipsOpen(false)}>
+      <ModalFrame title={activeHolding ? `Точки компании ${activeHolding.name}` : 'Точки компании'} width="wide" open={holdingDealershipsOpen && !!activeHolding} onClose={() => setHoldingDealershipsOpen(false)}>
         {activeHolding && (
           <div style={{ display: 'grid', gap: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
@@ -1433,7 +1433,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         )}
       </ModalFrame>
 
-      <ModalFrame title={activeHolding ? `Привязать точки к ${activeHolding.name}` : 'Привязать точки'} open={attachDealershipOpen && !!activeHolding} onClose={() => setAttachDealershipOpen(false)}>
+      <ModalFrame title={activeHolding ? `Привязать точки к ${activeHolding.name}` : 'Привязать точки'} width="wide" open={attachDealershipOpen && !!activeHolding} onClose={() => setAttachDealershipOpen(false)}>
         {activeHolding && (
           <div style={{ display: 'grid', gap: 12 }}>
             <input
