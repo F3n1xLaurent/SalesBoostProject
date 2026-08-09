@@ -26,7 +26,11 @@ import {
   type CallBatchSnapshot,
   type DealershipBatchSummary,
 } from '../../../shared/lib/admin-panel/batchUtils';
-import { MetricComparisonModal } from '../../../shared/ui/metric-comparison-modal';
+import { EfficiencyActivityChart, type EfficiencyActivitySeries } from '../../../shared/ui/efficiency-activity-chart/EfficiencyActivityChart';
+import { BrutalCard } from '../../../shared/ui/brutal-card';
+import { AnsweredMissedDonut } from '../../../shared/ui/answered-missed-donut';
+import { AnswerRateByHour } from '../../../shared/ui/answer-rate-by-hour';
+import { PlanParticipationTable } from '../../../shared/ui/plan-participation-table';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { CallOutcomeBreakdown } from '../../../shared/ui/call-outcome-breakdown';
@@ -58,6 +62,7 @@ type DealershipOutcomeBreakdown = {
 type DealershipAnalyticsDetail = Detail & {
   aiSummary?: AnalyticsAISummary;
   noAnswers?: number;
+  activitySeries?: EfficiencyActivitySeries;
   outcomeBreakdown?: DealershipOutcomeBreakdown;
   communicationBreakdown?: { label: string; percent: number; color: string }[];
   scriptCompliance?: { block: string; rate: number; hint?: string }[];
@@ -103,62 +108,6 @@ function dealershipTypeLabel(type?: DealershipType | null): string {
   return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
 }
 
-function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
-  if (value === 'manual') return 'Вручную';
-  return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
-}
-
-function planTargetLabel(plan: AnalyticsPlanParticipation): string {
-  if (plan.targetMatch === 'dealership') return 'Точка целиком';
-  return plan.targetsCount === 1 ? '1 сотрудник точки' : `${plan.targetsCount} сотрудников точки`;
-}
-
-function PlanParticipationList({
-  plans,
-  excludingPlanId,
-  onOpenPlan,
-  onExcludePlan,
-  readOnly = false,
-}: {
-  plans: AnalyticsPlanParticipation[];
-  excludingPlanId: string | null;
-  onOpenPlan: (id: string) => void;
-  onExcludePlan: (plan: AnalyticsPlanParticipation) => void;
-  readOnly?: boolean;
-}) {
-  if (plans.length === 0) {
-    return <div className="sa-meta" style={{ padding: 18 }}>Нет активных расписаний</div>;
-  }
-  return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      {plans.map((plan) => (
-        <div key={plan.id} className="sa-card" style={{ padding: 14, display: 'flex', gap: 14, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-          <div style={{ minWidth: 220 }}>
-            <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
-            <div className="sa-meta" style={{ marginTop: 4 }}>
-              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)}
-              {plan.frequency !== 'manual' ? ` · ${plan.callTimeFrom}-${plan.callTimeTo}` : ''}
-              {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
-            </div>
-          </div>
-          {!readOnly && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="sa-btn-outline sa-btn-sm" onClick={() => onOpenPlan(plan.id)}>Настроить</button>
-              <button
-                className="sa-btn-outline sa-btn-sm"
-                disabled={excludingPlanId === plan.id}
-                onClick={() => onExcludePlan(plan)}
-              >
-                {excludingPlanId === plan.id ? 'Исключаем...' : 'Исключить'}
-              </button>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function buildFallbackDetail(dealership: DealershipItem): DealershipAnalyticsDetail {
   return {
     id: dealership.id,
@@ -184,121 +133,6 @@ function buildFallbackDetail(dealership: DealershipItem): DealershipAnalyticsDet
     communicationBreakdown: [],
     scriptCompliance: [],
   };
-}
-
-/* ────────────────────── Performance Trend (line chart) ────────────────────── */
-
-function TrendChart({ points }: { points: { date: string; avgScore: number; count: number }[] }) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-
-  if (points.length === 0) return <div className="sa-chart-empty">Нет данных за период</div>;
-
-  const W = 560, H = 240;
-  const pad = { top: 20, right: 20, bottom: 36, left: 44 };
-  const cw = W - pad.left - pad.right;
-  const ch = H - pad.top - pad.bottom;
-  const step = points.length <= 1 ? 0 : cw / (points.length - 1);
-  const xs = points.map((_, i) => pad.left + i * step);
-  const ys = points.map((p) => pad.top + ch - (p.avgScore / 100) * ch);
-  const pathD = points.map((_, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${ys[i]}`).join(' ');
-  const stroke = 'var(--tb-ink)';
-
-  return (
-    <div className="sa-chart-wrap">
-      <div className="sa-chart-plot">
-      <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" onMouseLeave={() => setHoverIdx(null)}>
-        <defs>
-          <linearGradient id="dtFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={stroke} stopOpacity="0.14" />
-            <stop offset="100%" stopColor={stroke} stopOpacity="0.02" />
-          </linearGradient>
-        </defs>
-        {[0, 25, 50, 75, 100].map((v) => {
-          const y = pad.top + ch - (v / 100) * ch;
-          return (
-            <g key={v}>
-              <line x1={pad.left} y1={y} x2={pad.left + cw} y2={y} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
-              <text x={pad.left - 8} y={y + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{v}</text>
-            </g>
-          );
-        })}
-        {points.map((p, i) => (
-          <text key={p.date} x={xs[i]} y={H - 6} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">
-            {p.date.slice(5)}
-          </text>
-        ))}
-        <path d={`${pathD} L ${xs[xs.length - 1]} ${pad.top + ch} L ${xs[0]} ${pad.top + ch} Z`} fill="url(#dtFill)" />
-        <path d={pathD} fill="none" stroke={stroke} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        {points.map((_, i) => (
-          <rect key={`hit-${i}`} x={xs[i] - step / 2} y={pad.top} width={step || 40} height={ch} fill="transparent" onMouseEnter={() => setHoverIdx(i)} />
-        ))}
-        {hoverIdx !== null && <line x1={xs[hoverIdx]} y1={pad.top} x2={xs[hoverIdx]} y2={pad.top + ch} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.4" />}
-        {points.map((p, i) => (
-          <circle key={p.date} cx={xs[i]} cy={ys[i]} r={hoverIdx === i ? 5.5 : 4} fill={hoverIdx === i ? '#fff' : stroke} stroke={stroke} strokeWidth={hoverIdx === i ? 2.5 : 0} style={{ transition: 'r .15s, fill .15s', cursor: 'pointer' }} />
-        ))}
-      </svg>
-      {hoverIdx !== null && (() => {
-        const p = points[hoverIdx];
-        const leftPct = (xs[hoverIdx] / W) * 100;
-        const topPct = (ys[hoverIdx] / H) * 100;
-        const placeBelow = topPct < 28;
-        return (
-          <div
-            className={`sa-chart-hover-tooltip${placeBelow ? ' sa-chart-hover-tooltip-below' : ''}`}
-            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
-          >
-            <div className="sa-chart-hover-tooltip-row">Дата: {p.date}</div>
-            <div className="sa-chart-hover-tooltip-row is-strong">Балл: {p.avgScore.toFixed(1)}</div>
-            <div className="sa-chart-hover-tooltip-row">Проверок: {p.count}</div>
-          </div>
-        );
-      })()}
-      </div>
-    </div>
-  );
-}
-
-/* ────────────────────── Heatmap ────────────────────── */
-
-/** Matches --tb-status-green (#2D9B5E) — same as dashboard «Дозвон по часам» */
-const TB_STATUS_GREEN_RGB = '45, 155, 94';
-const CLOSED_HOURS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 21, 22, 23]);
-
-function Heatmap({ hourly }: { hourly: number[] }) {
-  const [hover, setHover] = useState<number | null>(null);
-  if (!hourly || hourly.length === 0) return <div className="sa-chart-empty">Нет данных</div>;
-  const working = hourly.filter((_, h) => !CLOSED_HOURS.has(h));
-  const mx = Math.max(...working, 1);
-  return (
-    <div className="sa-chart-wrap sa-heatmap-fill">
-      <h3 className="sa-chart-title">Дозвон по часам</h3>
-      <div className="sa-heatmap-grid-12" onMouseLeave={() => setHover(null)}>
-        {hourly.slice(0, 24).map((pct, h) => {
-          const closed = CLOSED_HOURS.has(h);
-          const hasData = !closed && pct > 0;
-          const opacity = hasData ? 0.15 + (pct / mx) * 0.85 : 0;
-          const bg = hasData ? `rgba(${TB_STATUS_GREEN_RGB}, ${opacity})` : 'rgba(22, 22, 19, 0.05)';
-          const fillStrength = !hasData ? 'none' : opacity >= 0.42 ? 'strong' : 'light';
-          return (
-            <div
-              key={h}
-              className={`sa-heatmap-cell sa-heatmap-cell-${fillStrength} ${hover === h ? 'sa-heatmap-cell-hover' : ''} ${!hasData ? 'sa-heatmap-closed' : ''}`}
-              style={{ backgroundColor: bg }}
-              onMouseEnter={() => setHover(h)}
-            >
-              <span className="sa-heatmap-label">{h}</span>
-              {hover === h && (
-                <div className="sa-heatmap-tooltip">
-                  <div>Час: {h}:00</div>
-                  {closed ? <div>Точка закрыта</div> : hasData ? <div>Дозвон: {pct.toFixed(0)}%</div> : <div>Нет звонков</div>}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 function CommunicationBreakdown({ data }: { data?: { label: string; percent: number; color: string }[] }) {
@@ -711,6 +545,8 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const deltaText = detail.deltaRating !== null ? `${deltaSign}${detail.deltaRating}` : '—';
   const dealershipNoAnswers = detail.noAnswers ?? detail.outcomeBreakdown?.no_answer ?? 0;
   const dealershipCalls = detail.auditsCount || Object.values(detail.outcomeBreakdown ?? {}).reduce((sum, value) => sum + value, 0);
+  const dealershipAnswerRate = detail.answerRate ?? 0;
+  const hourlyAnswerRate = detail.hourlyAnswerRate?.length === 24 ? detail.hourlyAnswerRate : [];
 
   return (
     <div className="sa-detail-root sa-dealership-detail">
@@ -816,25 +652,40 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
           )}
         </div>
         {planActionStatus && <div className="sa-meta" style={{ marginBottom: 10 }}>{planActionStatus}</div>}
-        <PlanParticipationList
+        <PlanParticipationTable
           plans={planParticipation}
           excludingPlanId={excludingPlanId}
           onOpenPlan={(id) => navigate(`/call-settings/plans/${encodeURIComponent(id)}/edit`)}
           onExcludePlan={handleExcludePlan}
           readOnly={isDealerDashboard}
+          variant="dealership"
         />
       </section>
 
       {/* Charts row */}
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Динамика эффективности</h2>
+        <div className="sa-card sa-holding-detail-block sa-holding-activity-block" style={{ padding: 18, marginBottom: 12 }}>
+          {detail.activitySeries ? (
+            <EfficiencyActivityChart
+              series={detail.activitySeries}
+              showDealershipFilter={false}
+            />
+          ) : (
+            <div className="sa-chart-empty">Нет данных за выбранный период</div>
+          )}
+        </div>
         <div className="sa-dashboard-grid">
-          <div className="sa-card sa-grid-card sa-chart-equal">
-            <TrendChart points={detail.timeSeries} />
-          </div>
-          <div className="sa-card sa-grid-card sa-chart-equal">
-            <Heatmap hourly={detail.hourlyAnswerRate} />
-          </div>
+          <BrutalCard title="Принятые и пропущенные" className="sa-grid-card sa-donut-card">
+            <AnsweredMissedDonut
+              rate={dealershipCalls > 0 ? dealershipAnswerRate : 0}
+              totalCalls={dealershipCalls}
+              embedded
+            />
+          </BrutalCard>
+          <BrutalCard title="Дозвон по часам" className="sa-grid-card sa-chart-equal">
+            <AnswerRateByHour hourly={hourlyAnswerRate} embedded />
+          </BrutalCard>
         </div>
       </section>
 

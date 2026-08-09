@@ -14,6 +14,7 @@ type Props = {
   loading?: boolean;
   placeholder?: string;
   emptyLabel?: string;
+  compact?: boolean;
 };
 
 export function HoldingSelectPicker(props: Props) {
@@ -31,6 +32,7 @@ export function HoldingSelectPicker(props: Props) {
         value={props.value}
         onChange={props.onChange}
         disabled={isDisabled}
+        compact={props.compact}
         placeholder={props.holdings.length === 0 ? (props.emptyLabel ?? 'Нет компаний') : (props.placeholder ?? 'Компания')}
       />
     </div>

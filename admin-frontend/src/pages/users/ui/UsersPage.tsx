@@ -154,7 +154,7 @@ const PERMISSION_GROUPS = [
   },
   {
     id: 'people',
-    title: 'Пользователи и сотрудники',
+    title: 'Сотрудники',
     description: 'Web-аккаунты, менеджеры, роли и карточки сотрудников.',
     match: (key: string) => key.startsWith('user.') || key.startsWith('manager.') || key.startsWith('ux.users.') || key.startsWith('ux.employees.'),
   },
@@ -204,13 +204,13 @@ const PERMISSION_LABELS: Record<string, string> = {
   'manager.view': 'Просмотр сотрудников',
   'manager.edit': 'Редактирование сотрудников',
   'user.view': 'Просмотр web-аккаунтов',
-  'user.create': 'Создание пользователей',
-  'user.edit': 'Редактирование пользователей',
-  'user.delete': 'Удаление пользователей',
+  'user.create': 'Создание сотрудников',
+  'user.edit': 'Редактирование сотрудников',
+  'user.delete': 'Удаление сотрудников',
   'permission_template.view': 'Просмотр шаблонов прав',
   'permission_template.create': 'Создание шаблонов прав',
   'permission_template.edit': 'Редактирование шаблонов прав',
-  'permission_template.assign': 'Назначение шаблонов пользователям',
+  'permission_template.assign': 'Назначение шаблонов сотрудникам',
   'permission_template.delete': 'Удаление шаблонов прав',
   'audit.view': 'Просмотр проверок',
   'audit.export': 'Экспорт проверок',
@@ -239,7 +239,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   'ux.dealerships.list': 'Список точек',
   'ux.dealerships.detail': 'Карточка точки',
   'ux.phone_number_types.view': 'Страница “Типы номеров”',
-  'ux.users.view': 'Страница “Пользователи”',
+  'ux.users.view': 'Страница “Сотрудники”',
   'ux.employees.list': 'Список сотрудников',
   'ux.employees.detail': 'Карточка сотрудника',
   'ux.audits.employees.view': 'Проверки по сотрудникам',
@@ -604,7 +604,7 @@ function CreateUserModal(props: {
 
   return (
     <ModalFrame
-      title="Новый пользователь"
+      title="Новый сотрудник"
       subtitle="Создание аккаунта вынесено в отдельное модальное окно."
       open={props.open}
       onClose={props.onClose}
@@ -615,7 +615,7 @@ function CreateUserModal(props: {
               Отмена
             </button>
             <button type="submit" form={CREATE_USER_FORM_ID} className="sa-btn-primary" disabled={props.saving}>
-              {props.saving ? 'Сохраняем...' : 'Создать пользователя'}
+              {props.saving ? 'Сохраняем...' : 'Создать сотрудника'}
             </button>
           </div>
         </div>
@@ -651,7 +651,7 @@ function CreateUserModal(props: {
           />
         </label>
         <div>
-          <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ пользователя</div>
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ сотрудника</div>
           <div style={{ display: 'grid', gap: 12 }}>
             {form.memberships.map((membership, index) => {
               const dealerships = availableDealerships(membership);
@@ -677,7 +677,7 @@ function CreateUserModal(props: {
                     value={props.canManageGlobalUsers ? membership.role : 'manager'}
                     disabled={!props.canManageGlobalUsers}
                     options={roleOptions}
-                    placeholder="Выберите права пользователя"
+                    placeholder="Выберите права сотрудника"
                     onChange={(value) => updateMembershipRole(index, value)}
                   />
                   {membership.role === 'holding_admin' && (
@@ -1124,7 +1124,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     if (mode === 'create') {
       return createUser({ ...payload, password: form.password });
     }
-    if (!activeUserId) throw new Error('Пользователь не выбран.');
+    if (!activeUserId) throw new Error('Сотрудник не выбран.');
     return updateUser(activeUserId, payload);
   }
 
@@ -1137,9 +1137,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       await reloadUsers();
       if (saved) setActiveUserId(saved.id);
       setCreateUserOpen(false);
-      setNotice('Пользователь создан.');
+      setNotice('Сотрудник создан.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось создать пользователя.');
+      setError(err instanceof Error ? err.message : 'Не удалось создать сотрудника.');
     } finally {
       setSavingUser(false);
     }
@@ -1155,10 +1155,10 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       setEditUserOpen(false);
       setEditDeleteConfirm(false);
       setUserUnsavedOpen(false);
-      setNotice('Пользователь обновлён.');
+      setNotice('Сотрудник обновлён.');
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось обновить пользователя.');
+      setError(err instanceof Error ? err.message : 'Не удалось обновить сотрудника.');
       return false;
     } finally {
       setSavingUser(false);
@@ -1196,9 +1196,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       setEditUserOpen(false);
       setUserUnsavedOpen(false);
       setActiveUserId(null);
-      setNotice('Пользователь удалён.');
+      setNotice('Сотрудник удалён.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось удалить пользователя.');
+      setError(err instanceof Error ? err.message : 'Не удалось удалить сотрудника.');
     } finally {
       setSavingUser(false);
     }
@@ -1306,7 +1306,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           </div>
         )}
         <div>
-          <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ пользователя</div>
+          <div style={{ fontWeight: 700, marginBottom: 10 }}>Доступ сотрудника</div>
           <div style={{ display: 'grid', gap: 12 }}>
             {userForm.memberships.map((membership, index) => {
               const dealerships = availableDealerships(membership);
@@ -1332,7 +1332,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                     value={canManageGlobalUsers ? membership.role : 'manager'}
                     disabled={!canManageGlobalUsers}
                     options={roleOptions}
-                    placeholder="Выберите права пользователя"
+                    placeholder="Выберите права сотрудника"
                     onChange={(value) => updateMembershipRole(index, value)}
                   />
                   {membership.role === 'holding_admin' && (
@@ -1383,7 +1383,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     return (
       <div className="sa-modal-footer-row">
         <button type="button" className="sa-btn-danger" onClick={() => setEditDeleteConfirm(true)}>
-          Удалить пользователя
+          Удалить сотрудника
         </button>
         <div className="sa-modal-footer-row__right">
           <button type="button" className="sa-btn-outline" onClick={requestCloseEditUserModal} disabled={savingUser}>
@@ -1461,7 +1461,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
 
           <input
             className="sa-input"
-            placeholder="Найти право: звонки, пользователи, дашборд..."
+            placeholder="Найти право: звонки, сотрудники, дашборд..."
             value={permissionSearch}
             onChange={(event) => setPermissionSearch(event.target.value)}
           />
@@ -1559,7 +1559,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         null
       ) : (
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
-          <h1 className="sa-page-title" style={{ marginBottom: 0 }}>Пользователи</h1>
+          <h1 className="sa-page-title" style={{ marginBottom: 0 }}>Сотрудники</h1>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <HoldingSelectPicker
               holdings={meta?.holdings || []}
@@ -1629,11 +1629,11 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       ) : employeeId ? (
         <div className="sa-card" style={{ padding: 24 }}>
           <button type="button" className="sa-btn-text" onClick={() => onBackToUsers?.()} style={{ marginBottom: 16 }}>
-            Назад к пользователям
+            Назад к сотрудникам
           </button>
           <h2 className="sa-card-heading">Профиль менеджера не привязан</h2>
           <p className="sa-meta" style={{ margin: 0 }}>
-            У этого web-аккаунта пока нет профиля для звонков. Добавьте точку в назначениях пользователя, чтобы открыть аналитику.
+            У этого web-аккаунта пока нет профиля для звонков. Добавьте точку в назначениях сотрудника, чтобы открыть аналитику.
           </p>
         </div>
       ) : (
@@ -1644,7 +1644,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           className={`sa-dialog-tab ${tab === 'users' ? 'sa-dialog-tab-active' : ''}`}
           onClick={() => setTab('users')}
         >
-          Списки пользователей
+          Списки сотрудников
         </button>
         {canManageTemplates && (
           <button
@@ -1687,7 +1687,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 }}
               >
                 <LetsIcon name="add-light" size={16} bold />
-                Новый пользователь
+                Новый сотрудник
               </button>
             </div>
           </div>
@@ -1704,7 +1704,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 setOwnershipFilter('all');
               }}
             >
-              <FilterGroup label="Данные пользователя">
+              <FilterGroup label="Данные сотрудника">
                 <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={fullNameFilter} onChange={(event) => setFullNameFilter(event.target.value)} placeholder="ФИО" />
                 <input className="sa-input" style={{ minWidth: 0, flex: '1 1 180px' }} value={emailFilter} onChange={(event) => setEmailFilter(event.target.value)} placeholder="Электронная почта" />
                 <input className="sa-input" style={{ minWidth: 0, flex: '1 1 160px' }} value={phoneFilter} onChange={(event) => setPhoneFilter(event.target.value)} placeholder="Телефон" />
@@ -1815,7 +1815,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                   <tr><td colSpan={8} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
                 ) : userEmployeeRows.length === 0 ? (
                   <tr><td colSpan={8} className="sa-meta" style={{ padding: 32 }}>
-                    Нет пользователей по выбранным фильтрам
+                    Нет сотрудников по выбранным фильтрам
                     <br /><span style={{ fontSize: 12, opacity: 0.7 }}>Сбросьте фильтры или измените поиск</span>
                   </td></tr>
                 ) : (
@@ -1880,7 +1880,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
             {loading ? (
               <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка...</div>
                 ) : userEmployeeRows.length === 0 ? (
-              <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Нет пользователей по выбранным фильтрам</div>
+              <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Нет сотрудников по выбранным фильтрам</div>
             ) : (
               userEmployeeRows.map((row) => {
                 const analytics = row.user.analytics;
@@ -2000,8 +2000,8 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       />
 
       <ModalFrame
-        title="Просмотр пользователя"
-        subtitle="Детальная карточка пользователя без режима редактирования."
+        title="Просмотр сотрудника"
+        subtitle="Детальная карточка сотрудника без режима редактирования."
         open={viewUserOpen && !!activeUser}
         onClose={() => setViewUserOpen(false)}
         width={760}
@@ -2047,8 +2047,8 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       </ModalFrame>
 
       <ModalFrame
-        title="Редактировать пользователя"
-        subtitle="Изменение пользователя выполняется через отдельное модальное окно."
+        title="Редактировать сотрудника"
+        subtitle="Изменение сотрудника выполняется через отдельное модальное окно."
         open={editUserOpen}
         onClose={requestCloseEditUserModal}
         footer={renderEditUserFormFooter()}
@@ -2070,7 +2070,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
 
       <DeleteConfirmModal
         open={editDeleteConfirm && editUserOpen}
-        title="Удалить пользователя?"
+        title="Удалить сотрудника?"
         saving={savingUser}
         onCancel={() => setEditDeleteConfirm(false)}
         onConfirm={() => { void handleDeleteUserConfirm(); }}

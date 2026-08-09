@@ -1,18 +1,29 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { BrutalCard } from '../../../shared/ui/brutal-card';
+import { AnsweredMissedDonut } from '../../../shared/ui/answered-missed-donut';
+import { AnswerRateByHour } from '../../../shared/ui/answer-rate-by-hour';
 import type { AdminTab } from '../../../entities/session/model/types';
 import { tabToPath } from '../../../shared/routing/adminRoutes';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
-import { fetchDashboardOverview, fetchHoldings, type DashboardOverview, type HoldingItem, type TimeSeriesPoint } from '../../../shared/api/adminPanel';
+import {
+  fetchDashboardOverview,
+  fetchDealershipDirections,
+  fetchHoldings,
+  type DashboardOverview,
+  type DealershipDirectionItem,
+  type HoldingItem,
+  type TimeSeriesPoint,
+} from '../../../shared/api/adminPanel';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/SingleSelectFilterPicker';
 
 const SECTION_GAP = 10;
+type DashboardOwnershipFilter = 'all' | 'own' | 'franchised';
+type DashboardDirectionFilter = 'all' | string;
 /** Neutral chart ink — trend line, duration bars (not score-colored) */
 const TB_CHART_INK = 'var(--tb-ink)';
-/** Matches --tb-status-green (#2D9B5E) — same green as KPI «Дозвон» and tables */
-const TB_STATUS_GREEN_RGB = '45, 155, 94';
 
 type DashboardProps = {
   loading: boolean;
@@ -105,7 +116,15 @@ function KPICard({
 }
 
 /* ─── Performance Trend Chart ─── */
-function PerformanceTrendChart({ points, embedded = false }: { points: TimeSeriesPoint[]; embedded?: boolean }) {
+function PerformanceTrendChart({
+  points,
+  embedded = false,
+  ownershipFilter = 'all',
+}: {
+  points: TimeSeriesPoint[];
+  embedded?: boolean;
+  ownershipFilter?: DashboardOwnershipFilter;
+}) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   if (points.length === 0) {
@@ -127,16 +146,20 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
   const ownPathD = points.map((point, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${y(point.ownScore ?? point.avgScore)}`).join(' ');
   const franchisePathD = points.map((point, i) => `${i === 0 ? 'M' : 'L'} ${xs[i]} ${y(point.franchiseScore ?? point.avgScore)}`).join(' ');
   const hasTypedSeries = points.some((point) => (point.ownCount ?? 0) > 0 || (point.franchiseCount ?? 0) > 0);
+  const showOwn = ownershipFilter !== 'franchised';
+  const showFranchise = ownershipFilter !== 'own';
   const ownColor = 'var(--tb-status-green)';
   const franchiseColor = 'var(--tb-status-orange)';
 
   return (
     <div className="sa-chart-wrap">
       {!embedded && <h3 className="sa-chart-title">Динамика эффективности</h3>}
-      <div className="sa-chart-legend">
-        <span><i style={{ background: ownColor }} /> Свои салоны</span>
-        <span><i style={{ background: franchiseColor }} /> Салоны франчайзи</span>
-      </div>
+      {(showOwn && showFranchise) && (
+        <div className="sa-chart-legend">
+          <span><i style={{ background: ownColor }} /> Свои салоны</span>
+          <span><i style={{ background: franchiseColor }} /> Салоны франчайзи</span>
+        </div>
+      )}
       <div className="sa-chart-plot">
       <svg
         width="100%"
@@ -165,14 +188,18 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
             {p.date.slice(5)}
           </text>
         ))}
-        {hasTypedSeries && (
+        {hasTypedSeries && showOwn && (
           <path
             d={`${ownPathD} L ${xs[xs.length - 1]} ${padding.top + chartHeight} L ${xs[0]} ${padding.top + chartHeight} Z`}
             fill="url(#trendFillGrad)"
           />
         )}
-        <path d={ownPathD} fill="none" stroke={ownColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        <path d={franchisePathD} fill="none" stroke={franchiseColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        {showOwn && (
+          <path d={ownPathD} fill="none" stroke={ownColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        )}
+        {showFranchise && (
+          <path d={franchisePathD} fill="none" stroke={franchiseColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+        )}
         {points.map((_, i) => (
           <rect
             key={`hit-${i}`}
@@ -192,24 +219,28 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
           const franchiseScore = p.franchiseScore ?? p.avgScore;
           return (
             <React.Fragment key={p.date}>
-              <circle
-                cx={xs[i]}
-                cy={y(ownScore)}
-                r={hoverIdx === i ? 5.5 : 4}
-                fill={hoverIdx === i ? '#fff' : ownColor}
-                stroke={ownColor}
-                strokeWidth={hoverIdx === i ? 2.5 : 0}
-                style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
-              />
-              <circle
-                cx={xs[i]}
-                cy={y(franchiseScore)}
-                r={hoverIdx === i ? 5.5 : 4}
-                fill={hoverIdx === i ? '#fff' : franchiseColor}
-                stroke={franchiseColor}
-                strokeWidth={hoverIdx === i ? 2.5 : 0}
-                style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
-              />
+              {showOwn && (
+                <circle
+                  cx={xs[i]}
+                  cy={y(ownScore)}
+                  r={hoverIdx === i ? 5.5 : 4}
+                  fill={hoverIdx === i ? '#fff' : ownColor}
+                  stroke={ownColor}
+                  strokeWidth={hoverIdx === i ? 2.5 : 0}
+                  style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
+                />
+              )}
+              {showFranchise && (
+                <circle
+                  cx={xs[i]}
+                  cy={y(franchiseScore)}
+                  r={hoverIdx === i ? 5.5 : 4}
+                  fill={hoverIdx === i ? '#fff' : franchiseColor}
+                  stroke={franchiseColor}
+                  strokeWidth={hoverIdx === i ? 2.5 : 0}
+                  style={{ transition: 'r 0.15s ease, fill 0.15s ease', cursor: 'pointer' }}
+                />
+              )}
             </React.Fragment>
           );
         })}
@@ -219,7 +250,11 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
         const tx = xs[hoverIdx];
         const ownScore = p.ownScore ?? p.avgScore;
         const franchiseScore = p.franchiseScore ?? p.avgScore;
-        const ty = Math.min(y(ownScore), y(franchiseScore));
+        const visibleScores = [
+          ...(showOwn ? [ownScore] : []),
+          ...(showFranchise ? [franchiseScore] : []),
+        ];
+        const ty = visibleScores.length ? Math.min(...visibleScores.map((score) => y(score))) : padding.top;
         const leftPct = (tx / width) * 100;
         const topPct = (ty / height) * 100;
         const placeBelow = topPct < 28;
@@ -229,8 +264,12 @@ function PerformanceTrendChart({ points, embedded = false }: { points: TimeSerie
             style={{ left: `${leftPct}%`, top: `${topPct}%` }}
           >
             <div className="sa-chart-hover-tooltip-row">Дата: {p.date}</div>
-            <div className="sa-chart-hover-tooltip-row is-strong">Свои: {ownScore.toFixed(1)} ({p.ownCount ?? p.count})</div>
-            <div className="sa-chart-hover-tooltip-row is-strong">Франчайзи: {franchiseScore.toFixed(1)} ({p.franchiseCount ?? p.count})</div>
+            {showOwn && (
+              <div className="sa-chart-hover-tooltip-row is-strong">Свои: {ownScore.toFixed(1)} ({p.ownCount ?? p.count})</div>
+            )}
+            {showFranchise && (
+              <div className="sa-chart-hover-tooltip-row is-strong">Франчайзи: {franchiseScore.toFixed(1)} ({p.franchiseCount ?? p.count})</div>
+            )}
           </div>
         );
       })()}
@@ -384,106 +423,6 @@ function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: stri
   );
 }
 
-function AnswerRateByHour({ hourly, embedded = false }: { hourly: number[]; embedded?: boolean }) {
-  const [hoverHour, setHoverHour] = useState<number | null>(null);
-
-  if (!hourly || hourly.length === 0) {
-    return (
-      <div className="sa-chart-wrap">
-        {!embedded && <h3 className="sa-chart-title">Дозвон по часам</h3>}
-        <div className="sa-heatmap-empty">Нет данных за выбранный период</div>
-      </div>
-    );
-  }
-
-  const maxVal = Math.max(...hourly, 1);
-
-  return (
-    <div className="sa-chart-wrap sa-heatmap-fill">
-      {!embedded && <h3 className="sa-chart-title">Дозвон по часам</h3>}
-      <div className="sa-heatmap-grid-12" onMouseLeave={() => setHoverHour(null)}>
-        {hourly.slice(0, 24).map((pct, hour) => {
-          const hasData = pct > 0;
-          const opacity = hasData ? 0.15 + (pct / maxVal) * 0.85 : 0;
-          const bg = hasData ? `rgba(${TB_STATUS_GREEN_RGB}, ${opacity})` : 'rgba(22, 22, 19, 0.05)';
-          const fillStrength = !hasData ? 'none' : opacity >= 0.42 ? 'strong' : 'light';
-          return (
-            <div
-              key={hour}
-              className={`sa-heatmap-cell sa-heatmap-cell-${fillStrength} ${hoverHour === hour ? 'sa-heatmap-cell-hover' : ''} ${!hasData ? 'sa-heatmap-closed' : ''}`}
-              style={{ backgroundColor: bg }}
-              onMouseEnter={() => setHoverHour(hour)}
-            >
-              <span className="sa-heatmap-label">{hour}</span>
-              {hoverHour === hour && (
-                <div className="sa-heatmap-tooltip">
-                  <div>Час: {hour}:00</div>
-                  <div>{hasData ? `Дозвон: ${pct.toFixed(0)}%` : 'Нет звонков'}</div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ─── Answered vs Missed Donut ─── */
-function AnsweredMissedDonut({ rate, totalCalls, embedded = false }: { rate: number; totalCalls: number; embedded?: boolean }) {
-  const [hover, setHover] = useState<'answered' | 'missed' | null>(null);
-  const answered = Math.round((rate / 100) * totalCalls);
-  const missed = totalCalls - answered;
-
-  return (
-    <div className="sa-donut-section">
-      {!embedded && <h3 className="sa-chart-title">Принятые и пропущенные</h3>}
-      <div className="sa-donut-wrap-v2">
-        <div
-          className="sa-donut-v2"
-          onMouseEnter={() => setHover('answered')}
-          onMouseLeave={() => setHover(null)}
-        >
-          <svg viewBox="0 0 120 120" className="sa-donut-svg">
-            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--tb-status-red-bg)" strokeWidth="14" />
-            <circle
-              cx="60" cy="60" r="52"
-              fill="none"
-              stroke={hover === 'missed' ? 'var(--tb-status-red)' : 'var(--tb-status-green)'}
-              strokeWidth="14"
-              strokeDasharray={`${(rate / 100) * 326.73} 326.73`}
-              strokeLinecap="round"
-              transform="rotate(-90 60 60)"
-              style={{ transition: 'stroke 0.2s ease' }}
-            />
-          </svg>
-          <div className="sa-donut-center">
-            <span className="sa-donut-center-num">{rate.toFixed(0)}%</span>
-            <span className="sa-donut-center-label">Дозвон</span>
-          </div>
-          {hover && (
-            <div className="sa-donut-tooltip">
-              <div>Принятые: {answered}</div>
-              <div>Пропущенные: {missed}</div>
-              <div>Всего: {totalCalls}</div>
-            </div>
-          )}
-        </div>
-        <div className="sa-donut-legend-v2">
-          <div className="sa-donut-legend-item">
-            <span className="sa-dot sa-dot-answered" />
-            Принятые {rate.toFixed(0)}%
-          </div>
-          <div className="sa-donut-legend-item">
-            <span className="sa-dot sa-dot-missed-v2" />
-            Пропущенные {(100 - rate).toFixed(0)}%
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ─── Main Dashboard ─── */
 export function Dashboard({ loading }: DashboardProps) {
   const navigate = useNavigate();
@@ -494,6 +433,26 @@ export function Dashboard({ loading }: DashboardProps) {
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
+  const [directionOptions, setDirectionOptions] = useState<DealershipDirectionItem[]>([]);
+  const [directionFilter, setDirectionFilter] = useState<DashboardDirectionFilter>('all');
+  const [ownershipFilter, setOwnershipFilter] = useState<DashboardOwnershipFilter>('all');
+
+  const directionSelectOptions = useMemo(
+    () => [
+      { value: 'all' as const, label: 'Все направления' },
+      ...directionOptions.map((direction) => ({ value: direction.id, label: direction.name })),
+    ],
+    [directionOptions],
+  );
+
+  const ownershipSelectOptions = useMemo(
+    () => [
+      { value: 'all' as const, label: 'Все' },
+      { value: 'own' as const, label: 'Свои' },
+      { value: 'franchised' as const, label: 'Франшиза' },
+    ],
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -514,6 +473,36 @@ export function Dashboard({ loading }: DashboardProps) {
   }, []);
 
   useEffect(() => {
+    if (holdingsLoading || !selectedHoldingId) {
+      setDirectionOptions([]);
+      setDirectionFilter('all');
+      return;
+    }
+    let cancelled = false;
+    fetchDealershipDirections({ holdingId: selectedHoldingId, active: true })
+      .then((items) => {
+        if (cancelled) return;
+        setDirectionOptions(items);
+        setDirectionFilter((current) => (
+          current === 'all' || items.some((item) => item.id === current) ? current : 'all'
+        ));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDirectionOptions([]);
+          setDirectionFilter('all');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [holdingsLoading, selectedHoldingId]);
+
+  useEffect(() => {
+    setOwnershipFilter('all');
+  }, [selectedHoldingId]);
+
+  useEffect(() => {
     if (holdingsLoading) return;
     if (!selectedHoldingId) {
       setOverview(null);
@@ -524,7 +513,11 @@ export function Dashboard({ loading }: DashboardProps) {
     let cancelled = false;
     setDashboardLoading(true);
     setDashboardError(null);
-    fetchDashboardOverview({ holdingId: selectedHoldingId })
+    fetchDashboardOverview({
+      holdingId: selectedHoldingId,
+      directionId: directionFilter === 'all' ? null : directionFilter,
+      dealershipType: ownershipFilter === 'all' ? null : ownershipFilter,
+    })
       .then((next) => {
         if (!cancelled) setOverview(next);
       })
@@ -540,7 +533,7 @@ export function Dashboard({ loading }: DashboardProps) {
     return () => {
       cancelled = true;
     };
-  }, [holdingsLoading, selectedHoldingId]);
+  }, [holdingsLoading, selectedHoldingId, directionFilter, ownershipFilter]);
 
   const isLoading = loading || holdingsLoading || dashboardLoading;
   const platformAvgScore = overview?.avgScore ?? 0;
@@ -573,17 +566,44 @@ export function Dashboard({ loading }: DashboardProps) {
 
 
   const dashboardHeader = (
-    <div className="sa-page-header" style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
+    <div className="sa-page-header sa-dashboard-page-header" style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 12 }}>
       <div>
         <h1 className="sa-page-title" style={{ marginBottom: 6 }}>Дашборд</h1>
       </div>
-      <HoldingSelectPicker
-        holdings={holdings}
-        value={selectedHoldingId}
-        onChange={setSelectedHoldingId}
-        disabled={holdingsLoading || holdings.length === 0}
-        loading={holdingsLoading}
-      />
+      <div className="sa-dashboard-header-filters">
+        <div className="sa-tag-filter-picker-wrap">
+          <HoldingSelectPicker
+            holdings={holdings}
+            value={selectedHoldingId}
+            onChange={setSelectedHoldingId}
+            disabled={holdingsLoading || holdings.length === 0}
+            loading={holdingsLoading}
+            compact
+          />
+        </div>
+        {selectedHoldingId && directionSelectOptions.length > 1 && (
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={directionSelectOptions}
+              value={directionFilter}
+              onChange={setDirectionFilter}
+              placeholder="Направление"
+              compact
+            />
+          </div>
+        )}
+        {selectedHoldingId && (
+          <div className="sa-tag-filter-picker-wrap">
+            <SingleSelectFilterPicker
+              options={ownershipSelectOptions}
+              value={ownershipFilter}
+              onChange={setOwnershipFilter}
+              placeholder="Тип точки"
+              compact
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 
@@ -607,6 +627,16 @@ export function Dashboard({ loading }: DashboardProps) {
       <section className="sa-section sa-section-metrics" style={{ marginBottom: SECTION_GAP }}>
         <h2 className="sa-section-title">Ключевые метрики</h2>
         <div className="sa-kpi-grid">
+          <KPICard
+            label="Рейтинг"
+            value={isLoading ? '—' : String(scoreInt)}
+            valueSuffix="из 100"
+            description="Среднее по всем проверкам"
+            loading={isLoading}
+            valueClass={!isLoading ? scoreColorClass(platformAvgScore) : ''}
+            navigateTo="analytics"
+            onNavigate={handleKpiNavigate}
+          />
           <KPICard
             label="Точки"
             value={totalSalons}
@@ -634,16 +664,6 @@ export function Dashboard({ loading }: DashboardProps) {
             onNavigate={handleKpiNavigate}
           />
           <KPICard
-            label="AI рейтинг"
-            value={isLoading ? '—' : String(scoreInt)}
-            valueSuffix="из 100"
-            description="Среднее по всем проверкам"
-            loading={isLoading}
-            valueClass={!isLoading ? scoreColorClass(platformAvgScore) : ''}
-            navigateTo="analytics"
-            onNavigate={handleKpiNavigate}
-          />
-          <KPICard
             label="Дозвон"
             value={isLoading ? '—' : `${answerRate.toFixed(1)}%`}
             description="Доля принятых звонков"
@@ -656,11 +676,15 @@ export function Dashboard({ loading }: DashboardProps) {
       <section className="sa-section sa-section-analytics" style={{ marginBottom: SECTION_GAP }}>
         <h2 className="sa-section-title">Аналитика</h2>
         <div className="sa-dashboard-grid">
-          <BrutalCard title="Динамика эффективности" className="sa-grid-card sa-chart-equal">
-            <PerformanceTrendChart points={displayTimeSeries} embedded />
+          <BrutalCard title="Принятые и пропущенные" className="sa-grid-card sa-donut-card">
+            <AnsweredMissedDonut
+              rate={totalCalls > 0 ? answerRate : 0}
+              totalCalls={totalCalls}
+              embedded
+            />
           </BrutalCard>
-          <BrutalCard title="Дозвон по часам" className="sa-grid-card sa-chart-equal">
-            <AnswerRateByHour hourly={hourly.length === 24 ? hourly : []} embedded />
+          <BrutalCard title="Динамика эффективности" className="sa-grid-card sa-chart-equal">
+            <PerformanceTrendChart points={displayTimeSeries} embedded ownershipFilter={ownershipFilter} />
           </BrutalCard>
 
           <BrutalCard title="Лучшие точки" className="sa-grid-card">
@@ -670,12 +694,8 @@ export function Dashboard({ loading }: DashboardProps) {
             <SalonTable rows={worstSalons} emptyLabel="Нет данных" />
           </BrutalCard>
 
-          <BrutalCard title="Принятые и пропущенные" className="sa-grid-card sa-donut-card">
-            <AnsweredMissedDonut
-              rate={totalCalls > 0 ? answerRate : 0}
-              totalCalls={totalCalls}
-              embedded
-            />
+          <BrutalCard title="Дозвон по часам" className="sa-grid-card sa-chart-equal">
+            <AnswerRateByHour hourly={hourly.length === 24 ? hourly : []} embedded />
           </BrutalCard>
           <BrutalCard title="Средняя длительность звонка" className="sa-grid-card">
             <AverageAnswerTimeChart data={answerTimeByCompany} embedded />

@@ -1025,6 +1025,126 @@ function timeSeriesFromSessions(sessions: AnalyticsSession[], days = 14): { date
   }));
 }
 
+const MONTH_SHORT_LABELS = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+
+function isMissedCallOutcome(outcome: string | null | undefined): boolean {
+  return outcome === 'no_answer';
+}
+
+function callActivitySeriesFromSessions(
+  sessions: AnalyticsSession[],
+  buckets: Array<{ key: string; label: string; match: (date: Date) => boolean }>,
+): { key: string; label: string; totalCalls: number; missedCalls: number; avgScore: number | null }[] {
+  const stats = buckets.map((bucket) => ({
+    key: bucket.key,
+    label: bucket.label,
+    totalCalls: 0,
+    missedCalls: 0,
+    scoreSum: 0,
+    scoreCount: 0,
+  }));
+
+  for (const session of sessions) {
+    const bucketIndex = buckets.findIndex((bucket) => bucket.match(session.startedAt));
+    if (bucketIndex < 0) continue;
+    stats[bucketIndex].totalCalls += 1;
+    if (isMissedCallOutcome(session.outcome)) stats[bucketIndex].missedCalls += 1;
+    const score = scoreFromAnalyticsSession(session);
+    if (typeof score === 'number') {
+      stats[bucketIndex].scoreSum += score;
+      stats[bucketIndex].scoreCount += 1;
+    }
+  }
+
+  return stats.map((bucket) => ({
+    key: bucket.key,
+    label: bucket.label,
+    totalCalls: bucket.totalCalls,
+    missedCalls: bucket.missedCalls,
+    avgScore: bucket.scoreCount ? round1(bucket.scoreSum / bucket.scoreCount) : null,
+  }));
+}
+
+function callActivitySeriesMonth(sessions: AnalyticsSession[], days = 30) {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - (days - 1));
+  start.setHours(0, 0, 0, 0);
+  const buckets = Array.from({ length: days }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    const key = localDateKey(date);
+    return {
+      key,
+      label: `${date.getDate()}.${String(date.getMonth() + 1).padStart(2, '0')}`,
+      match: (startedAt: Date) => localDateKey(startedAt) === key,
+    };
+  });
+  return callActivitySeriesFromSessions(sessions, buckets);
+}
+
+function callActivitySeriesAllTime(sessions: AnalyticsSession[]) {
+  if (!sessions.length) return [];
+
+  let minTime = sessions[0].startedAt.getTime();
+  let maxTime = sessions[0].startedAt.getTime();
+  for (const session of sessions) {
+    const time = session.startedAt.getTime();
+    if (time < minTime) minTime = time;
+    if (time > maxTime) maxTime = time;
+  }
+  maxTime = Math.max(maxTime, Date.now());
+
+  const start = new Date(minTime);
+  start.setDate(1);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(maxTime);
+  end.setDate(1);
+
+  const multiYear = start.getFullYear() !== end.getFullYear();
+  const buckets: Array<{ key: string; label: string; match: (date: Date) => boolean }> = [];
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    const year = cursor.getFullYear();
+    const month = cursor.getMonth();
+    const key = `${year}-${String(month + 1).padStart(2, '0')}`;
+    const monthLabel = MONTH_SHORT_LABELS[month] ?? `${month + 1}`;
+    buckets.push({
+      key,
+      label: multiYear ? `${monthLabel} ${String(year).slice(-2)}` : monthLabel,
+      match: (startedAt: Date) => startedAt.getFullYear() === year && startedAt.getMonth() === month,
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  return callActivitySeriesFromSessions(sessions, buckets);
+}
+
+function parseDealershipDirectionsJson(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.map((item) => String(item || '').trim()).filter(Boolean))];
+  } catch {
+    return [];
+  }
+}
+
+function dealershipMatchesDashboardFilters(
+  dealership: { type: string; directionsJson: string },
+  filters: { dealershipType?: string; direction?: { id: string; code: string | null } | null },
+): boolean {
+  if (filters.dealershipType && dealership.type !== filters.dealershipType) return false;
+  if (filters.direction) {
+    const dirs = parseDealershipDirectionsJson(dealership.directionsJson);
+    const { id, code } = filters.direction;
+    const has = dirs.includes(id) || (code ? dirs.includes(code) : false);
+    if (!has) return false;
+  }
+  return true;
+}
+
 function typeTimeSeriesFromSessions(sessions: AnalyticsSession[], days = 7): {
   date: string;
   avgScore: number;
@@ -5068,7 +5188,22 @@ app.get('/api/admin/summary', async (req, res) => {
 app.get('/api/admin/dashboard/overview', async (req, res) => {
   try {
     const holdingId = typeof req.query.holdingId === 'string' ? req.query.holdingId.trim() : '';
+    const directionId = typeof req.query.directionId === 'string' ? req.query.directionId.trim() : '';
+    const dealershipTypeRaw = typeof req.query.dealershipType === 'string' ? req.query.dealershipType.trim() : '';
+    const dealershipType = dealershipTypeRaw === 'own' || dealershipTypeRaw === 'franchised' ? dealershipTypeRaw : '';
     const days = 7;
+
+    let directionMeta: { id: string; code: string | null } | null = null;
+    if (directionId) {
+      const direction = await prisma.dealershipDirection.findFirst({
+        where: {
+          id: directionId,
+          ...(holdingId ? { holdingId } : {}),
+        },
+        select: { id: true, code: true },
+      });
+      if (direction) directionMeta = direction;
+    }
 
     const [dealerships, sessions, attempts, trainingSessions] = await Promise.all([
       prisma.dealership.findMany({
@@ -5115,7 +5250,11 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
           totalScore: { not: null },
           ...(holdingId ? { user: { managerProfile: { is: { dealership: { holdingId } } } } } : {}),
         },
-        select: { finishedAt: true, totalScore: true },
+        select: {
+          finishedAt: true,
+          totalScore: true,
+          user: { select: { managerProfile: { select: { dealershipId: true } } } },
+        },
       }),
       prisma.trainingSession.findMany({
         where: {
@@ -5126,9 +5265,35 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
             { evaluationJson: { not: null } },
           ],
         },
-        select: { completedAt: true, totalScore: true, evaluationJson: true, assessmentScore: true },
+        select: {
+          completedAt: true,
+          totalScore: true,
+          evaluationJson: true,
+          assessmentScore: true,
+          user: { select: { managerProfile: { select: { dealershipId: true } } } },
+        },
       }),
     ]);
+
+    const filteredDealerships = dealerships.filter((dealership) =>
+      dealershipMatchesDashboardFilters(dealership, {
+        dealershipType: dealershipType || undefined,
+        direction: directionMeta,
+      }),
+    );
+    const allowedDealershipIds = new Set(filteredDealerships.map((dealership) => dealership.id));
+
+    const filteredSessions = sessions.filter(
+      (session) => session.dealershipId && allowedDealershipIds.has(session.dealershipId),
+    );
+    const filteredAttempts = attempts.filter((attempt) => {
+      const dealershipId = attempt.user?.managerProfile?.dealershipId;
+      return Boolean(dealershipId && allowedDealershipIds.has(dealershipId));
+    });
+    const filteredTrainingSessions = trainingSessions.filter((session) => {
+      const dealershipId = session.user?.managerProfile?.dealershipId;
+      return Boolean(dealershipId && allowedDealershipIds.has(dealershipId));
+    });
 
     const trainingScore = (session: { totalScore: number | null; assessmentScore: number | null; evaluationJson: string | null }) => {
       if (typeof session.totalScore === 'number') return session.totalScore;
@@ -5139,9 +5304,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
     };
 
     const scoredValues = [
-      ...attempts.map((attempt) => attempt.totalScore ?? null),
-      ...trainingSessions.map(trainingScore),
-      ...sessions.map(scoreFromAnalyticsSession),
+      ...filteredAttempts.map((attempt) => attempt.totalScore ?? null),
+      ...filteredTrainingSessions.map(trainingScore),
+      ...filteredSessions.map(scoreFromAnalyticsSession),
     ].filter((score): score is number => typeof score === 'number');
 
     const avgScore = scoredValues.length
@@ -5149,7 +5314,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       : 0;
 
     const checklistCounts = new Map<string, { count: number; total: number }>();
-    for (const session of sessions) {
+    for (const session of filteredSessions) {
       const checklist = extractChecklistFromSession(session);
       for (const item of checklist) {
         const key = item.comment || item.code || 'Неизвестный блок';
@@ -5164,8 +5329,8 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       .sort((a, b) => b[1].count - a[1].count)
       .map(([weakness, value]) => ({ weakness, count: value.count, percent: percent(value.count, value.total) }))[0] ?? null;
 
-    const dealershipRows = dealerships.map((dealership) => {
-      const dealershipSessions = sessions.filter((session) => session.dealershipId === dealership.id);
+    const dealershipRows = filteredDealerships.map((dealership) => {
+      const dealershipSessions = filteredSessions.filter((session) => session.dealershipId === dealership.id);
       const scored = dealershipSessions
         .map((session) => ({ ...session, resolvedScore: scoreFromAnalyticsSession(session) }))
         .filter((session) => typeof session.resolvedScore === 'number');
@@ -5200,30 +5365,30 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
     });
 
     const hourlyAnswerRate = Array.from({ length: 24 }, (_, hour) => {
-      const hourly = sessions.filter((session) => session.startedAt.getHours() === hour);
+      const hourly = filteredSessions.filter((session) => session.startedAt.getHours() === hour);
       return answerRateFromSessions(hourly) ?? 0;
     });
 
-    const noAnswers = sessions.filter((session) => session.outcome === 'no_answer').length;
+    const noAnswers = filteredSessions.filter((session) => session.outcome === 'no_answer').length;
     const lowDealerships = dealershipRows.filter((row) => row.totalAudits > 0 && row.avgAiScore < 50);
 
     res.json({
       aiSummary: await generateAnalyticsAISummary({
         level: 'network',
         score: avgScore,
-        calls: sessions.length,
+        calls: filteredSessions.length,
         noAnswers,
         topIssue: topWeakness?.weakness ?? null,
         topIssuePercent: topWeakness?.percent ?? null,
         lowDealerships: lowDealerships.length,
       }),
       avgScore,
-      totalAudits: attempts.length + trainingSessions.length + sessions.length,
-      totalDealerships: dealerships.length,
-      totalEmployees: dealerships.reduce((sum, dealership) => sum + dealership.managerProfiles.filter((manager) => manager.status === 'active').length, 0),
-      answerRate: answerRateFromSessions(sessions) ?? 0,
-      totalCalls: sessions.length,
-      timeSeries: typeTimeSeriesFromSessions(sessions, days),
+      totalAudits: filteredAttempts.length + filteredTrainingSessions.length + filteredSessions.length,
+      totalDealerships: filteredDealerships.length,
+      totalEmployees: filteredDealerships.reduce((sum, dealership) => sum + dealership.managerProfiles.filter((manager) => manager.status === 'active').length, 0),
+      answerRate: answerRateFromSessions(filteredSessions) ?? 0,
+      totalCalls: filteredSessions.length,
+      timeSeries: typeTimeSeriesFromSessions(filteredSessions, days),
       hourlyAnswerRate,
       answerTimeByCompany: dealershipRows
         .filter((row) => row.avgAnswerTimeSec > 0)
@@ -6635,6 +6800,21 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
       }),
       dealershipRows: dealershipRows.sort((a, b) => b.calls - a.calls || a.score - b.score),
       timeSeries: timeSeriesFromSessions(sessions, 14),
+      activitySeries: {
+        month: callActivitySeriesMonth(sessions, 30),
+        all: callActivitySeriesAllTime(sessions),
+      },
+      dealershipActivitySeries: holding.dealerships.map((dealership) => {
+        const dealershipSessions = sessions.filter((session) => session.dealershipId === dealership.id);
+        return {
+          id: dealership.id,
+          name: dealership.name,
+          series: {
+            month: callActivitySeriesMonth(dealershipSessions, 30),
+            all: callActivitySeriesAllTime(dealershipSessions),
+          },
+        };
+      }),
       topIssues: topIssues.map((issue) => ({ issue: issue.issue, percent: issue.percent })),
       scriptCompliance,
       audits: [
@@ -6676,7 +6856,7 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
       ].sort((a, b) => +new Date(b.date) - +new Date(a.date)).slice(0, 200),
       meta: {
         linkedCalls: sessions.length,
-        scoredCalls: sessions.filter((session) => session.totalScore !== null).length,
+        scoredCalls: sessions.filter((session) => scoreFromAnalyticsSession(session) !== null).length,
       },
     };
 
@@ -6967,6 +7147,10 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
         }),
       ].sort((a, b) => +new Date(b.date) - +new Date(a.date)).slice(0, 200),
       timeSeries: timeSeriesFromSessions(sessions),
+      activitySeries: {
+        month: callActivitySeriesMonth(sessions, 30),
+        all: callActivitySeriesAllTime(sessions),
+      },
       hourlyAnswerRate: Array.from({ length: 24 }, (_, hour) => {
         const hourly = sessions.filter((session) => session.startedAt.getHours() === hour);
         const rate = answerRateFromSessions(hourly);

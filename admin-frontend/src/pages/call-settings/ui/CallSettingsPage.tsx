@@ -2059,7 +2059,7 @@ function CallPlanScheduleModal(props: {
             <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
               <thead>
                 <tr>
-                  <th>Пользователь</th>
+                  <th>Сотрудник</th>
                   <th style={{ width: 220 }}>Планируемое время звонка</th>
                   <th style={{ width: 170 }}>Статус</th>
                   <th className="sa-text-right" style={{ width: 96 }}>Действия</th>

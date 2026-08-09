@@ -292,7 +292,7 @@ function MultiSelectFilterPicker(props: {
           disabled={isDisabled}
         />
       </FilterPickerField>
-      <FilterPickerMenu open={open && !props.loading} anchorRef={pickerRef}>
+      <FilterPickerMenu open={open && !props.loading}>
         {filteredOptions.length ? filteredOptions.map((option) => {
           const selected = props.selected.includes(option.value);
           return (

@@ -24,21 +24,34 @@ function getProfileInitials(name: string): string {
 }
 
 type NavItem = { id: AdminTab; label: string; icon: string };
+type NavEntry = NavItem | { type: 'separator' };
 
-const SUPER_NAV: NavItem[] = [
+const SUPER_NAV_MAIN: NavItem[] = [
   { id: 'dashboard', label: 'Дашборд', icon: 'chart' },
+  { id: 'analytics', label: 'Аналитика', icon: 'pie-chart' },
   { id: 'holdings', label: 'Компании', icon: 'shop' },
   { id: 'companies', label: 'Точки', icon: 'pin' },
-  { id: 'dealershipDirections', label: 'Направления точек', icon: 'filter' },
-  { id: 'imports', label: 'Данные', icon: 'database' },
-  { id: 'typesNumbers', label: 'Типы номеров', icon: 'phone' },
-  { id: 'users', label: 'Пользователи', icon: 'user' },
+  { id: 'users', label: 'Сотрудники', icon: 'user' },
   { id: 'audits', label: 'Проверки', icon: 'check-ring' },
-  { id: 'analytics', label: 'Аналитика', icon: 'pie-chart' },
+];
+
+const SUPER_NAV_SECONDARY: NavItem[] = [
+  { id: 'imports', label: 'Данные', icon: 'database' },
+  { id: 'dealershipDirections', label: 'Направления точек', icon: 'filter' },
+  { id: 'typesNumbers', label: 'Типы номеров', icon: 'phone' },
   { id: 'callSettings', label: 'Настройки обзвона', icon: 'setting-alt-line' },
 ];
 
-const COMPANY_NAV: NavItem[] = SUPER_NAV.filter((item) => item.id !== 'holdings' && item.id !== 'typesNumbers');
+function buildNav(main: NavItem[], secondary: NavItem[]): NavEntry[] {
+  return [...main, { type: 'separator' }, ...secondary];
+}
+
+const SUPER_NAV: NavEntry[] = buildNav(SUPER_NAV_MAIN, SUPER_NAV_SECONDARY);
+
+const COMPANY_NAV: NavEntry[] = buildNav(
+  SUPER_NAV_MAIN.filter((item) => item.id !== 'holdings'),
+  SUPER_NAV_SECONDARY.filter((item) => item.id !== 'typesNumbers'),
+);
 
 const DEALER_NAV: NavItem[] = [
   { id: 'dealer-companies', label: 'Дашборд', icon: 'chart' },
@@ -60,9 +73,22 @@ type Props = {
   hasActiveBatch?: boolean;
   onLogout: () => void;
   allowedRoles: AdminRole[];
+  className?: string;
+  isDrawer?: boolean;
 };
 
-export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange, hasActiveBatch = false, onLogout, allowedRoles }: Props) {
+export function AdminSidebar({
+  activeTab,
+  onTab,
+  role,
+  profileName,
+  onRoleChange,
+  hasActiveBatch = false,
+  onLogout,
+  allowedRoles,
+  className,
+  isDrawer = false,
+}: Props) {
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -88,17 +114,23 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
 
   return (
     <aside
-      className="super-admin-sidebar"
+      className={['super-admin-sidebar', className].filter(Boolean).join(' ')}
       style={{
         position: 'fixed',
         left: 0,
         top: 0,
         bottom: 0,
-        zIndex: 40,
+        zIndex: isDrawer ? 1 : 40,
         overflowY: 'auto',
         padding: '24px 16px',
         display: 'flex',
         flexDirection: 'column',
+        ...(isDrawer
+          ? {
+              background: '#F2F2F2',
+              boxShadow: '8px 0 32px rgba(22, 22, 19, 0.14)',
+            }
+          : null),
       }}
     >
       <div className="sa-sidebar-brand-wrap" style={{ marginBottom: 24 }}>
@@ -106,12 +138,17 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
       </div>
 
       <nav style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
-        {navItems.map((item) => (
+        {navItems.map((item, index) => {
+          if ('type' in item && item.type === 'separator') {
+            return <div key={`sep-${index}`} className="sa-sidebar-nav-separator" aria-hidden />;
+          }
+          const navItem = item as NavItem;
+          return (
           <button
-            key={item.id}
+            key={navItem.id}
             type="button"
-            className={`nav-item ${activeTab === item.id ? 'active' : ''}`}
-            onClick={() => onTab(item.id)}
+            className={`nav-item ${activeTab === navItem.id ? 'active' : ''}`}
+            onClick={() => onTab(navItem.id)}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -122,15 +159,16 @@ export function AdminSidebar({ activeTab, onTab, role, profileName, onRoleChange
               textAlign: 'left',
             }}
           >
-            <span className={`sa-sidebar-nav-icon ${activeTab === item.id ? 'sa-sidebar-nav-icon-active' : ''}`}>
-              <LetsIcon name={item.icon} size={NAV_ICON_SIZE} strokeWidth={1.5} />
+            <span className={`sa-sidebar-nav-icon ${activeTab === navItem.id ? 'sa-sidebar-nav-icon-active' : ''}`}>
+              <LetsIcon name={navItem.icon} size={NAV_ICON_SIZE} strokeWidth={1.5} />
             </span>
             <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              {item.label}
-              {item.id === 'audits' && hasActiveBatch && <span className="sa-batch-tray-dot" />}
+              {navItem.label}
+              {navItem.id === 'audits' && hasActiveBatch && <span className="sa-batch-tray-dot" />}
             </span>
           </button>
-        ))}
+          );
+        })}
       </nav>
 
       <div className="sa-sidebar-profile" ref={profileRef} style={{ position: 'relative' }}>

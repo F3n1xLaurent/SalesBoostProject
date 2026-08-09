@@ -198,7 +198,7 @@ function defaultProfileName(params: { displayName?: string | null; email: string
   const displayName = params.displayName?.trim();
   if (displayName) return displayName;
   const emailName = params.email.split('@')[0]?.trim();
-  return emailName || params.email || 'Пользователь';
+  return emailName || params.email || 'Сотрудник';
 }
 
 async function expandManagerProfilesForDealershipMemberships(
@@ -389,9 +389,9 @@ function prismaUserUpdateErrorMessage(error: unknown): string | null {
     if (field.includes('dealershipId')) return 'Указанная точка не найдена или недоступна.';
     if (field.includes('holdingId')) return 'Указанная компания не найдена или недоступна.';
     if (field.includes('templateId')) return 'Указанный шаблон прав не найден.';
-    return 'Некорректная привязка пользователя к компании, точке или шаблону прав.';
+    return 'Некорректная привязка сотрудника к компании, точке или шаблону прав.';
   }
-  if (candidate.code === 'P2025') return 'Пользователь, компания, точка или шаблон прав не найдены.';
+  if (candidate.code === 'P2025') return 'Сотрудник, компания, точка или шаблон прав не найдены.';
   return null;
 }
 
@@ -555,7 +555,7 @@ async function assertAccountInScope(account: ScopedAccount, targetAccountId: str
     },
   });
 
-  if (!target) throw new Error('Пользователь не найден.');
+  if (!target) throw new Error('Сотрудник не найден.');
 
   const inScope = target.memberships.some(
     (membership) =>
@@ -785,7 +785,7 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
   try {
     const existing = await prisma.account.findUnique({ where: { email }, select: { id: true } });
     if (existing) {
-      res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
+      res.status(409).json({ error: 'Сотрудник с таким email уже существует.' });
       return;
     }
 
@@ -856,7 +856,7 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
     res.status(201).json({ item: normalizeAccountResponse(created) });
   } catch (error) {
     if (isUniqueEmailError(error)) {
-      res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
+      res.status(409).json({ error: 'Сотрудник с таким email уже существует.' });
       return;
     }
     const message = prismaUserUpdateErrorMessage(error);
@@ -1005,7 +1005,7 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
     res.json({ item: updated ? normalizeAccountResponse(updated) : null });
   } catch (error) {
     if (isUniqueEmailError(error)) {
-      res.status(409).json({ error: 'Пользователь с таким email уже существует.' });
+      res.status(409).json({ error: 'Сотрудник с таким email уже существует.' });
       return;
     }
     const message = prismaUserUpdateErrorMessage(error);

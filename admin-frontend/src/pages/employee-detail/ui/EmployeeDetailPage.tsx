@@ -18,6 +18,7 @@ import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { CallOutcomeBreakdown } from '../../../shared/ui/call-outcome-breakdown';
 import { AuditHistoryBlock } from '../../../shared/ui/audit-history-block';
+import { PlanParticipationTable } from '../../../shared/ui/plan-participation-table';
 
 type Props = {
   employeeId: string;
@@ -127,58 +128,6 @@ function EmployeeMetricCard({
   );
 }
 
-function planFrequencyLabel(value: AnalyticsPlanParticipation['frequency']): string {
-  if (value === 'manual') return 'Вручную';
-  return value === 'weekly' ? 'Еженедельно' : 'Ежедневно';
-}
-
-function planTargetLabel(plan: AnalyticsPlanParticipation): string {
-  return plan.targetMatch === 'dealership' ? 'Через расписание точки' : 'Лично в расписании';
-}
-
-function PlanParticipationList({
-  plans,
-  excludingPlanId,
-  onOpenPlan,
-  onExcludePlan,
-}: {
-  plans: AnalyticsPlanParticipation[];
-  excludingPlanId: string | null;
-  onOpenPlan: (id: string) => void;
-  onExcludePlan: (plan: AnalyticsPlanParticipation) => void;
-}) {
-  if (plans.length === 0) {
-    return <div className="sa-meta" style={{ padding: 18 }}>Нет активных расписаний</div>;
-  }
-  return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      {plans.map((plan) => (
-        <div key={plan.id} className="sa-card" style={{ padding: 14, display: 'flex', gap: 14, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-          <div style={{ minWidth: 220 }}>
-            <div style={{ fontWeight: 700, color: 'var(--sa-text-primary)' }}>{plan.name}</div>
-            <div className="sa-meta" style={{ marginTop: 4 }}>
-              {planTargetLabel(plan)} · {planFrequencyLabel(plan.frequency)}
-              {plan.frequency !== 'manual' ? ` · ${plan.callTimeFrom}-${plan.callTimeTo}` : ''}
-              {plan.lastInitiatedAt ? ` · последний запуск ${new Date(plan.lastInitiatedAt).toLocaleDateString('ru-RU')}` : ''}
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button className="sa-btn-outline sa-btn-sm" onClick={() => onOpenPlan(plan.id)}>Настроить</button>
-            <button
-              className="sa-btn-outline sa-btn-sm"
-              disabled={plan.targetMatch === 'dealership' || excludingPlanId === plan.id}
-              title={plan.targetMatch === 'dealership' ? 'Менеджер участвует через расписание всей точки. Откройте настройки плана.' : undefined}
-              onClick={() => onExcludePlan(plan)}
-            >
-              {excludingPlanId === plan.id ? 'Исключаем...' : 'Исключить'}
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /* ────────────────────── Trend Chart ────────────────────── */
 
 function TrendChart({
@@ -275,13 +224,13 @@ function ComparisonTrendChart({ points }: { points?: { date: string; managerScor
     .join(' ');
   const series = [
     { key: 'managerScore' as const, label: 'Менеджер', color: 'var(--tb-ink)' },
-    { key: 'dealershipScore' as const, label: 'Салон', color: 'var(--tb-status-green)' },
-    { key: 'networkScore' as const, label: 'Сеть', color: 'var(--tb-status-orange)' },
+    { key: 'dealershipScore' as const, label: 'Точка', color: 'var(--tb-status-green)' },
+    { key: 'networkScore' as const, label: 'Компания', color: 'var(--tb-status-orange)' },
   ];
 
   return (
     <div className="sa-chart-wrap sa-chart-wrap-full">
-      <h3 className="sa-chart-title">Менеджер vs салон vs сеть</h3>
+      <h3 className="sa-chart-title">Менеджер · Точка · Компания</h3>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
         {series.map((item) => (
           <span key={item.key} className="sa-meta" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -321,8 +270,8 @@ function ComparisonTrendChart({ points }: { points?: { date: string; managerScor
               <rect x={tx} y={ty} width={tw} height={th} rx="8" fill="#1F2937" opacity="0.92" />
               <text x={tx + 12} y={ty + 18} fontSize="11" fill="#D1D5DB">Дата: {point.date}</text>
               <text x={tx + 12} y={ty + 36} fontSize="11" fill="#F9FAFB">Менеджер: {point.managerScore}</text>
-              <text x={tx + 12} y={ty + 52} fontSize="11" fill="#D1D5DB">Салон: {point.dealershipScore}</text>
-              <text x={tx + 12} y={ty + 68} fontSize="11" fill="#D1D5DB">Сеть: {point.networkScore}</text>
+              <text x={tx + 12} y={ty + 52} fontSize="11" fill="#D1D5DB">Точка: {point.dealershipScore}</text>
+              <text x={tx + 12} y={ty + 68} fontSize="11" fill="#D1D5DB">Компания: {point.networkScore}</text>
             </g>
           );
         })()}
@@ -803,7 +752,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
             description="Процент принятых звонков"
           />
           <EmployeeMetricCard
-            label="Место в салоне"
+            label="Место в точке"
             value={rankValue}
             valueSuffix={rankSuffix}
             description={detail.dealershipRank ? 'Среди сотрудников точки' : 'Недостаточно данных'}
@@ -820,11 +769,12 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           </button>
         </div>
         {planActionStatus && <div className="sa-meta" style={{ marginBottom: 10 }}>{planActionStatus}</div>}
-        <PlanParticipationList
+        <PlanParticipationTable
           plans={planParticipation}
           excludingPlanId={excludingPlanId}
           onOpenPlan={(id) => navigate(`/call-settings/plans/${encodeURIComponent(id)}/edit`)}
           onExcludePlan={handleExcludePlan}
+          variant="employee"
         />
       </section>
 

@@ -317,10 +317,30 @@ export interface AnalyticsHoldingDealershipRow {
   status: AnalyticsDealershipStatus;
 }
 
+export interface HoldingActivityPoint {
+  key: string;
+  label: string;
+  totalCalls: number;
+  missedCalls: number;
+  avgScore: number | null;
+}
+
 export interface AnalyticsHoldingDetail extends AnalyticsHoldingRow {
   aiSummary?: AnalyticsAISummary;
   dealershipRows: AnalyticsHoldingDealershipRow[];
   timeSeries: { date: string; avgScore: number; count: number }[];
+  activitySeries?: {
+    month: HoldingActivityPoint[];
+    all: HoldingActivityPoint[];
+  };
+  dealershipActivitySeries?: Array<{
+    id: string;
+    name: string;
+    series: {
+      month: HoldingActivityPoint[];
+      all: HoldingActivityPoint[];
+    };
+  }>;
   topIssues: { issue: string; percent: number }[];
   scriptCompliance: { block: string; rate: number }[];
   audits: Array<{
@@ -367,6 +387,10 @@ export interface AnalyticsDealershipDetail extends AnalyticsDealershipRow {
     verdict?: string;
   }>;
   timeSeries: { date: string; avgScore: number; count: number }[];
+  activitySeries?: {
+    month: HoldingActivityPoint[];
+    all: HoldingActivityPoint[];
+  };
   hourlyAnswerRate: number[];
   topIssues: { issue: string; percent: number }[];
   topQuestions: string[];
@@ -955,9 +979,15 @@ export async function fetchSummary(): Promise<PlatformSummary | null> {
   return data as PlatformSummary;
 }
 
-export async function fetchDashboardOverview(filters?: { holdingId?: string | null }): Promise<DashboardOverview | null> {
+export async function fetchDashboardOverview(filters?: {
+  holdingId?: string | null;
+  directionId?: string | null;
+  dealershipType?: 'own' | 'franchised' | null;
+}): Promise<DashboardOverview | null> {
   const params = new URLSearchParams();
   if (filters?.holdingId) params.set('holdingId', filters.holdingId);
+  if (filters?.directionId) params.set('directionId', filters.directionId);
+  if (filters?.dealershipType) params.set('dealershipType', filters.dealershipType);
   const suffix = params.toString() ? `?${params.toString()}` : '';
   const res = await apiFetch(`${API_BASE}/api/admin/dashboard/overview${suffix}`);
   if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
@@ -1890,7 +1920,7 @@ export async function fetchUsers(search = ''): Promise<{ items: UserAccountItem[
   const suffix = search.trim() ? `?search=${encodeURIComponent(search.trim())}` : '';
   const res = await apiFetch(`${API_BASE}/api/admin/users${suffix}`);
   if (res.status === 404) throw new Error('BACKEND_NOT_RUNNING');
-  if (!res.ok) throw new Error('Не удалось загрузить пользователей');
+  if (!res.ok) throw new Error('Не удалось загрузить сотрудников');
   return (await res.json()) as { items: UserAccountItem[]; canManageTemplates: boolean };
 }
 
@@ -1901,7 +1931,7 @@ export async function createUser(payload: Record<string, unknown>): Promise<User
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось создать пользователя');
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать сотрудника');
   return data.item as UserAccountItem;
 }
 
@@ -1912,7 +1942,7 @@ export async function updateUser(accountId: string, payload: Record<string, unkn
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить пользователя');
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить сотрудника');
   return (data.item ?? null) as UserAccountItem | null;
 }
 
@@ -1933,7 +1963,7 @@ export async function changeUserPassword(accountId: string, password: string): P
     body: JSON.stringify({ password }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось изменить пароль пользователя');
+  if (!res.ok) throw new Error(data?.error || 'Не удалось изменить пароль сотрудника');
 }
 
 export async function deleteUser(accountId: string): Promise<void> {
@@ -1941,7 +1971,7 @@ export async function deleteUser(accountId: string): Promise<void> {
     method: 'DELETE',
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить пользователя');
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить сотрудника');
 }
 
 export async function fetchPermissionTemplates(): Promise<PermissionTemplateItem[]> {
