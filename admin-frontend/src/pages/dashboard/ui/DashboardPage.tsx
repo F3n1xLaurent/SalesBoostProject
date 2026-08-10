@@ -4,7 +4,7 @@ import { BrutalCard } from '../../../shared/ui/brutal-card';
 import { AnsweredMissedDonut } from '../../../shared/ui/answered-missed-donut';
 import { AnswerRateByHour } from '../../../shared/ui/answer-rate-by-hour';
 import type { AdminTab } from '../../../entities/session/model/types';
-import { tabToPath } from '../../../shared/routing/adminRoutes';
+import { buildDealershipPath, tabToPath } from '../../../shared/routing/adminRoutes';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import {
   fetchDashboardOverview,
@@ -282,9 +282,11 @@ function PerformanceTrendChart({
 function SalonTable({
   rows,
   emptyLabel,
+  onOpenDealership,
 }: {
-  rows: { rank: number; name: string; avgScore: number; answerRate: number; totalAudits: string }[];
+  rows: { id: string; rank: number; name: string; avgScore: number; answerRate: number; totalAudits: string }[];
   emptyLabel: string;
+  onOpenDealership: (id: string) => void;
 }) {
   if (rows.length === 0) {
     return <div className="sa-table-empty">{emptyLabel}</div>;
@@ -303,7 +305,19 @@ function SalonTable({
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.rank}>
+            <tr
+              key={r.id}
+              className="sa-row-clickable"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenDealership(r.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onOpenDealership(r.id);
+                }
+              }}
+            >
               <td>{r.rank}</td>
               <td>{shortName(r.name)}</td>
               <td><span className={scoreColorClass(r.avgScore)}>{r.avgScore.toFixed(1)}</span></td>
@@ -548,6 +562,7 @@ export function Dashboard({ loading }: DashboardProps) {
 
   const topSalons = (overview?.topDealerships ?? [])
     .map((c, i) => ({
+      id: c.id,
       rank: i + 1,
       name: c.name,
       avgScore: c.avgAiScore,
@@ -557,6 +572,7 @@ export function Dashboard({ loading }: DashboardProps) {
 
   const worstSalons = (overview?.lowDealerships ?? [])
     .map((c, i) => ({
+      id: c.id,
       rank: i + 1,
       name: c.name,
       avgScore: c.avgAiScore,
@@ -688,10 +704,18 @@ export function Dashboard({ loading }: DashboardProps) {
           </BrutalCard>
 
           <BrutalCard title="Лучшие точки" className="sa-grid-card">
-            <SalonTable rows={topSalons} emptyLabel="Нет данных" />
+            <SalonTable
+              rows={topSalons}
+              emptyLabel="Нет данных"
+              onOpenDealership={(id) => navigate(buildDealershipPath(id))}
+            />
           </BrutalCard>
           <BrutalCard title="Точки с низким результатом" className="sa-grid-card">
-            <SalonTable rows={worstSalons} emptyLabel="Нет данных" />
+            <SalonTable
+              rows={worstSalons}
+              emptyLabel="Нет данных"
+              onOpenDealership={(id) => navigate(buildDealershipPath(id))}
+            />
           </BrutalCard>
 
           <BrutalCard title="Дозвон по часам" className="sa-grid-card sa-chart-equal">

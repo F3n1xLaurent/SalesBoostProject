@@ -1076,7 +1076,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
   function renderHoldingFormFooter(options: { mode: 'create' | 'edit'; submitLabel: string; onRequestClose: () => void }) {
     const isCreate = options.mode === 'create';
     const isDirty = JSON.stringify(normalizeHoldingForm(holdingForm)) !== JSON.stringify(normalizeHoldingForm(initialHoldingForm));
-    const isSubmitDisabled = savingHolding || (!isCreate && !isDirty);
+    const isSubmitDisabled = savingHolding || !holdingForm.name.trim() || (!isCreate && !isDirty);
     return (
       <div className={`sa-modal-footer-row${isCreate ? '' : ''}`}>
         {!isCreate && (

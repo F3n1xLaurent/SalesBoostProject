@@ -368,9 +368,16 @@ function SearchableSelect(props: {
   disabled?: boolean;
   onChange: (value: string) => void;
 }) {
+  type DropdownPosition = {
+    top?: number;
+    bottom?: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  };
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [dropdownRect, setDropdownRect] = useState<DOMRect | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<DropdownPosition | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const selected = props.options.find((option) => option.value === props.value) || null;
@@ -394,17 +401,39 @@ function SearchableSelect(props: {
   useEffect(() => {
     if (!open) return;
 
-    const updateRect = () => {
+    const updatePosition = () => {
       if (!rootRef.current) return;
-      setDropdownRect(rootRef.current.getBoundingClientRect());
+      const rect = rootRef.current.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const viewportMargin = 8;
+      const triggerGap = 6;
+      const availableBelow = viewportHeight - rect.bottom - triggerGap - viewportMargin;
+      const availableAbove = rect.top - triggerGap - viewportMargin;
+      const openAbove = availableBelow < 240 && availableAbove > availableBelow;
+      const maxHeight = Math.max(120, Math.min(320, openAbove ? availableAbove : availableBelow));
+      const width = Math.min(Math.max(rect.width, 240), viewportWidth - viewportMargin * 2);
+      const left = Math.min(
+        Math.max(viewportMargin, rect.left),
+        Math.max(viewportMargin, viewportWidth - width - viewportMargin),
+      );
+
+      setDropdownPosition({
+        ...(openAbove
+          ? { bottom: viewportHeight - rect.top + triggerGap }
+          : { top: rect.bottom + triggerGap }),
+        left,
+        width,
+        maxHeight,
+      });
     };
 
-    updateRect();
-    window.addEventListener('resize', updateRect);
-    window.addEventListener('scroll', updateRect, true);
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
     return () => {
-      window.removeEventListener('resize', updateRect);
-      window.removeEventListener('scroll', updateRect, true);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
     };
   }, [open]);
 
@@ -433,18 +462,24 @@ function SearchableSelect(props: {
           </svg>
         </span>
       </button>
-      {open && !props.disabled && dropdownRect && createPortal(
+      {open && !props.disabled && dropdownPosition && createPortal(
         <div
           className="theme-brutal"
           style={{
             position: 'fixed',
             zIndex: 1600,
-            top: dropdownRect.bottom + 6,
-            left: dropdownRect.left,
-            width: Math.max(dropdownRect.width, 240),
+            top: dropdownPosition.top,
+            bottom: dropdownPosition.bottom,
+            left: dropdownPosition.left,
+            width: dropdownPosition.width,
+            maxWidth: 'calc(100vw - 16px)',
           }}
         >
-          <div ref={dropdownRef} className="sa-searchable-select__menu">
+          <div
+            ref={dropdownRef}
+            className="sa-searchable-select__menu"
+            style={{ maxHeight: dropdownPosition.maxHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+          >
             <input
               className="sa-input sa-searchable-select__search"
               value={query}
@@ -452,7 +487,11 @@ function SearchableSelect(props: {
               placeholder="Поиск..."
               onChange={(event) => setQuery(event.target.value)}
             />
-            <div className="sa-searchable-select__options" role="listbox">
+            <div
+              className="sa-searchable-select__options"
+              role="listbox"
+              style={{ maxHeight: Math.max(64, dropdownPosition.maxHeight - 66) }}
+            >
               {props.value && (
                 <button
                   type="button"
@@ -541,6 +580,18 @@ function CreateUserModal(props: {
   const emailInvalid = attempted && !form.email.trim();
   const passwordInvalid = attempted && !form.password.trim();
   const nameInvalid = attempted && !form.managerFullName.trim();
+  const membershipsFilled = form.memberships.length > 0 && form.memberships.every((membership) => {
+    if (membership.role === 'platform_superadmin') return true;
+    if (membership.role === 'holding_admin') return Boolean(membership.holdingId);
+    if (membership.role === 'dealership_admin' || membership.role === 'manager') return Boolean(membership.dealershipId);
+    return false;
+  });
+  const requiredFieldsFilled = Boolean(
+    form.email.trim()
+    && form.password.trim()
+    && form.managerFullName.trim()
+    && membershipsFilled,
+  );
 
   useEffect(() => {
     if (!props.open) return;
@@ -598,7 +649,7 @@ function CreateUserModal(props: {
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setAttempted(true);
-    if (!form.email.trim() || !form.password.trim() || !form.managerFullName.trim()) return;
+    if (!requiredFieldsFilled) return;
     await props.onSubmit(form);
   }
 
@@ -614,7 +665,7 @@ function CreateUserModal(props: {
             <button type="button" className="sa-btn-outline" onClick={props.onClose} disabled={props.saving}>
               Отмена
             </button>
-            <button type="submit" form={CREATE_USER_FORM_ID} className="sa-btn-primary" disabled={props.saving}>
+            <button type="submit" form={CREATE_USER_FORM_ID} className="sa-btn-primary" disabled={props.saving || !requiredFieldsFilled}>
               {props.saving ? 'Сохраняем...' : 'Создать сотрудника'}
             </button>
           </div>
@@ -736,6 +787,8 @@ function KeyValueList(props: { items: Array<{ label: string; value: React.ReactN
   );
 }
 
+const USERS_PAGE_SIZE = 10;
+
 export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, onOpenDealership, onOpenCompanies, sourceDealership }: Props) {
   const [tab, setTab] = useState<PageTab>('users');
   const [meta, setMeta] = useState<RbacMeta | null>(null);
@@ -752,6 +805,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [userSortKey, setUserSortKey] = useState<UserSortKey>('aiRating');
   const [userSortDir, setUserSortDir] = useState<SortDir>('desc');
   const [showUserFilters, setShowUserFilters] = useState(false);
+  const [userPage, setUserPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -900,6 +954,30 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     dealershipFilter,
     ownershipFilter !== 'all' ? ownershipFilter : '',
   ].filter(Boolean).length;
+  const userTotalPages = Math.max(1, Math.ceil(userEmployeeRows.length / USERS_PAGE_SIZE));
+  const currentUserPage = Math.min(userPage, userTotalPages);
+  const userPageStart = (currentUserPage - 1) * USERS_PAGE_SIZE;
+  const visibleUserRows = userEmployeeRows.slice(userPageStart, userPageStart + USERS_PAGE_SIZE);
+
+  useEffect(() => {
+    setUserPage(1);
+  }, [
+    search,
+    fullNameFilter,
+    emailFilter,
+    phoneFilter,
+    roleFilter,
+    holdingFilter,
+    dealershipFilter,
+    ownershipFilter,
+    selectedGlobalHoldingId,
+    userSortKey,
+    userSortDir,
+  ]);
+
+  useEffect(() => {
+    setUserPage((current) => Math.min(current, userTotalPages));
+  }, [userTotalPages]);
 
   const groupedTemplatePermissions = useMemo(() => {
     const q = permissionSearch.trim().toLowerCase();
@@ -1534,6 +1612,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     onClose: () => void;
     onSubmit: () => void;
   }) {
+    const requiredFieldsFilled = Boolean(templateForm.name.trim());
     return (
       <div className="sa-modal-footer-row">
         <div className="sa-modal-footer-row__right">
@@ -1543,7 +1622,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
           <button
             type="button"
             className="sa-btn-primary"
-            disabled={savingTemplate}
+            disabled={savingTemplate || !requiredFieldsFilled}
             onClick={options.onSubmit}
           >
             {savingTemplate ? 'Сохраняем...' : options.submitLabel}
@@ -1819,7 +1898,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                     <br /><span style={{ fontSize: 12, opacity: 0.7 }}>Сбросьте фильтры или измените поиск</span>
                   </td></tr>
                 ) : (
-                  userEmployeeRows.map((row) => {
+                  visibleUserRows.map((row) => {
                     const actionUser = row.user;
                     const analytics = row.user.analytics;
                     const delta = deltaDisplay(analytics.deltaRating);
@@ -1882,7 +1961,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 ) : userEmployeeRows.length === 0 ? (
               <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Нет сотрудников по выбранным фильтрам</div>
             ) : (
-              userEmployeeRows.map((row) => {
+              visibleUserRows.map((row) => {
                 const analytics = row.user.analytics;
                 const delta = deltaDisplay(analytics.deltaRating);
                 const actionUser = row.user;
@@ -1922,6 +2001,35 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                 );
               })
             )}
+          </div>
+
+          <div className={`sa-audit-history-pagination${userEmployeeRows.length > USERS_PAGE_SIZE ? '' : ' is-empty'}`}>
+            {userEmployeeRows.length > USERS_PAGE_SIZE ? (
+              <>
+                <span className="sa-meta">
+                  Показаны {userPageStart + 1}-{Math.min(userPageStart + USERS_PAGE_SIZE, userEmployeeRows.length)} из {userEmployeeRows.length}
+                </span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="sa-btn-field sa-btn-sm"
+                    disabled={currentUserPage === 1}
+                    onClick={() => setUserPage((current) => Math.max(1, current - 1))}
+                  >
+                    Назад
+                  </button>
+                  <span className="sa-metric-chip">Стр. {currentUserPage} из {userTotalPages}</span>
+                  <button
+                    type="button"
+                    className="sa-btn-field sa-btn-sm"
+                    disabled={currentUserPage === userTotalPages}
+                    onClick={() => setUserPage((current) => Math.min(userTotalPages, current + 1))}
+                  >
+                    Вперёд
+                  </button>
+                </div>
+              </>
+            ) : null}
           </div>
         </>
       )}

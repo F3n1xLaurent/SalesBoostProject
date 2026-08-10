@@ -5205,7 +5205,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       if (direction) directionMeta = direction;
     }
 
-    const [dealerships, sessions, attempts, trainingSessions] = await Promise.all([
+    const [dealerships, sessions, attempts, trainingSessions, trainerSessions] = await Promise.all([
       prisma.dealership.findMany({
         where: {
           isActive: true,
@@ -5213,7 +5213,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         },
         include: {
           holding: true,
-          managerProfiles: { select: { id: true, status: true } },
+          managerProfiles: { select: { id: true, accountId: true, status: true } },
         },
         orderBy: { name: 'asc' },
       }),
@@ -5273,6 +5273,25 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
           user: { select: { managerProfile: { select: { dealershipId: true } } } },
         },
       }),
+      prisma.trainerSession.findMany({
+        where: {
+          status: { in: ['completed', 'failed'] },
+          ...(holdingId ? {
+            OR: [
+              { companyId: holdingId },
+              { branch: { holdingId } },
+              { employee: { dealership: { holdingId } } },
+            ],
+          } : {}),
+        },
+        select: {
+          completedAt: true,
+          score: true,
+          evaluationJson: true,
+          branchId: true,
+          employee: { select: { dealershipId: true } },
+        },
+      }),
     ]);
 
     const filteredDealerships = dealerships.filter((dealership) =>
@@ -5282,6 +5301,11 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       }),
     );
     const allowedDealershipIds = new Set(filteredDealerships.map((dealership) => dealership.id));
+    const uniqueEmployeeKeys = new Set(
+      filteredDealerships.flatMap((dealership) => dealership.managerProfiles
+        .filter((manager) => manager.status === 'active')
+        .map((manager) => manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`)),
+    );
 
     const filteredSessions = sessions.filter(
       (session) => session.dealershipId && allowedDealershipIds.has(session.dealershipId),
@@ -5294,6 +5318,10 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       const dealershipId = session.user?.managerProfile?.dealershipId;
       return Boolean(dealershipId && allowedDealershipIds.has(dealershipId));
     });
+    const filteredTrainerSessions = trainerSessions.filter((session) => {
+      const dealershipId = session.branchId ?? session.employee.dealershipId;
+      return allowedDealershipIds.has(dealershipId);
+    });
 
     const trainingScore = (session: { totalScore: number | null; assessmentScore: number | null; evaluationJson: string | null }) => {
       if (typeof session.totalScore === 'number') return session.totalScore;
@@ -5302,10 +5330,17 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       const score = evaluation?.overall_score_0_100;
       return typeof score === 'number' ? score : null;
     };
+    const trainerScore = (session: { score: number | null; evaluationJson: string | null }) => {
+      if (typeof session.score === 'number') return session.score;
+      const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+      if (!evaluation) return null;
+      return scoreFromEvaluation(evaluation, null);
+    };
 
     const scoredValues = [
       ...filteredAttempts.map((attempt) => attempt.totalScore ?? null),
       ...filteredTrainingSessions.map(trainingScore),
+      ...filteredTrainerSessions.map(trainerScore),
       ...filteredSessions.map(scoreFromAnalyticsSession),
     ].filter((score): score is number => typeof score === 'number');
 
@@ -5331,6 +5366,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
 
     const dealershipRows = filteredDealerships.map((dealership) => {
       const dealershipSessions = filteredSessions.filter((session) => session.dealershipId === dealership.id);
+      const dealershipTrainerSessions = filteredTrainerSessions.filter(
+        (session) => (session.branchId ?? session.employee.dealershipId) === dealership.id,
+      );
       const scored = dealershipSessions
         .map((session) => ({ ...session, resolvedScore: scoreFromAnalyticsSession(session) }))
         .filter((session) => typeof session.resolvedScore === 'number');
@@ -5353,10 +5391,12 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       return {
         id: dealership.id,
         name: dealership.name,
-        managersCount: dealership.managerProfiles.filter((manager) => manager.status === 'active').length,
+        managersCount: new Set(dealership.managerProfiles
+          .filter((manager) => manager.status === 'active')
+          .map((manager) => manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`)).size,
         avgAiScore: scoreFromSessions(dealershipSessions),
         answerRate: answerRateFromSessions(dealershipSessions) ?? 0,
-        totalAudits: dealershipSessions.length,
+        totalAudits: dealershipSessions.length + dealershipTrainerSessions.length,
         avgDurationSec: durations.length ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length) : 0,
         avgAnswerTimeSec: avgAnswerTimeSec ?? 0,
         lastAudit: dealershipSessions[0]?.startedAt.toISOString() ?? null,
@@ -5383,9 +5423,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         lowDealerships: lowDealerships.length,
       }),
       avgScore,
-      totalAudits: filteredAttempts.length + filteredTrainingSessions.length + filteredSessions.length,
+      totalAudits: filteredAttempts.length + filteredTrainingSessions.length + filteredTrainerSessions.length + filteredSessions.length,
       totalDealerships: filteredDealerships.length,
-      totalEmployees: filteredDealerships.reduce((sum, dealership) => sum + dealership.managerProfiles.filter((manager) => manager.status === 'active').length, 0),
+      totalEmployees: uniqueEmployeeKeys.size,
       answerRate: answerRateFromSessions(filteredSessions) ?? 0,
       totalCalls: filteredSessions.length,
       timeSeries: typeTimeSeriesFromSessions(filteredSessions, days),

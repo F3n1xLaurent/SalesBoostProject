@@ -585,7 +585,7 @@ function ProfileModal(props: {
                 type="submit"
                 form={PROFILE_FORM_ID}
                 className="sa-btn-primary"
-                disabled={props.saving || (isEdit && !isDirty) || activeVoices.length === 0}
+                disabled={props.saving || !form.name.trim() || activeVoices.length === 0 || (isEdit && !isDirty)}
               >
                 {props.saving ? 'Сохраняем...' : isEdit ? 'Сохранить' : 'Создать профиль'}
               </button>

@@ -767,7 +767,7 @@ function ImportEditModal(props: {
             </button>
             <div className="sa-modal-footer-row__right">
               <button type="button" className="sa-btn-outline" onClick={props.onClose} disabled={busy}>Отмена</button>
-              <button type="button" className="sa-btn-primary" disabled={busy} onClick={() => void save()}>
+              <button type="button" className="sa-btn-primary" disabled={busy || !name.trim() || !url.trim()} onClick={() => void save()}>
                 {busy ? 'Сохраняем...' : 'Сохранить'}
               </button>
             </div>
@@ -1073,7 +1073,7 @@ function ImportWizard(props: {
               </select>
             </label>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button type="submit" className="sa-btn-primary" disabled={busy}>
+              <button type="submit" className="sa-btn-primary" disabled={busy || !name.trim() || !holdingId || !url.trim()}>
                 {busy ? 'Анализируем...' : 'Проанализировать источник'}
               </button>
             </div>
@@ -1149,7 +1149,7 @@ function ImportWizard(props: {
             <TagRulesEditor availableFields={availableFields} tagRules={tagRules} onChange={setTagRules} />
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
               <button className="sa-btn-outline" onClick={() => setStep(2)}>Назад</button>
-              <button className="sa-btn-primary" disabled={busy} onClick={() => void saveImport()}>{busy ? 'Сохраняем...' : 'Сохранить импорт'}</button>
+              <button className="sa-btn-primary" disabled={busy || !name.trim() || !holdingId || !url.trim()} onClick={() => void saveImport()}>{busy ? 'Сохраняем...' : 'Сохранить импорт'}</button>
             </div>
           </div>
         )}

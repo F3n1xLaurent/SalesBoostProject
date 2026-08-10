@@ -76,6 +76,7 @@ function TypeModal(props: {
     [form, props.initial],
   );
   const nameInvalid = attempted && !form.name.trim();
+  const requiredFieldsFilled = Boolean(form.name.trim());
 
   useEffect(() => {
     if (props.open && !wasOpenRef.current) {
@@ -138,7 +139,7 @@ function TypeModal(props: {
                 type="submit"
                 form={TYPE_FORM_ID}
                 className="sa-btn-primary"
-                disabled={props.saving || (!isCreate && !isDirty)}
+                disabled={props.saving || !requiredFieldsFilled || (!isCreate && !isDirty)}
               >
                 {props.saving ? 'Сохраняем...' : props.submitLabel}
               </button>

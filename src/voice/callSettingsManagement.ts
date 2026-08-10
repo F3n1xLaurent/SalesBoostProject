@@ -20,6 +20,11 @@ const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['manual', 'daily', 'we
 const WEEKDAYS = new Set<CallPlanWeekday>([0, 1, 2, 3, 4, 5, 6]);
 const TIME_RE = /^([01]\d|2[0-2]):([0-5]\d)$/;
 const DEFAULT_PLAN_WEEKDAYS: CallPlanWeekday[] = [1, 2, 3, 4, 5, 6, 0];
+
+function managerIdentityKey(manager: { id: string; accountId: string | null }): string {
+  return manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`;
+}
+
 const CALL_PLAN_DUE_RUNNER_INTERVAL_MS = 60_000;
 const CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS = 30 * 60_000;
 let callPlanDueRunnerTimer: NodeJS.Timeout | null = null;
@@ -606,25 +611,41 @@ export async function handleGetCallPlanOptions(req: Request, res: Response): Pro
           dealership: true,
           account: { include: { phoneNumbers: { include: { type: true }, where: { isActive: true } } } },
         },
-        orderBy: { fullName: 'asc' },
+        orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
       }),
       prisma.dealership.findMany({
         where: { holdingId, isActive: true },
-        include: { managerProfiles: { where: { status: 'active' }, select: { id: true } } },
+        include: { managerProfiles: { where: { status: 'active' }, select: { id: true, accountId: true } } },
         orderBy: { name: 'asc' },
       }),
       prisma.phoneNumberType.findMany({ where: { ownership: 'user', isActive: true }, orderBy: { name: 'asc' } }),
       prisma.callScript.findMany({ where: { holdingId }, orderBy: { name: 'asc' } }),
     ]);
+    const uniqueEmployees = new Map<string, {
+      employee: typeof employees[number];
+      dealershipNames: Set<string>;
+    }>();
+    for (const employee of employees) {
+      const key = managerIdentityKey(employee);
+      const existing = uniqueEmployees.get(key);
+      if (existing) {
+        existing.dealershipNames.add(employee.dealership.name);
+      } else {
+        uniqueEmployees.set(key, {
+          employee,
+          dealershipNames: new Set([employee.dealership.name]),
+        });
+      }
+    }
     res.json({
-      employees: employees.map((employee) => ({
+      employees: [...uniqueEmployees.values()].map(({ employee, dealershipNames }) => ({
         id: employee.id,
         accountId: employee.accountId,
-        fullName: employee.fullName,
-        email: employee.email,
+        fullName: employee.account?.displayName?.trim() || employee.fullName,
+        email: employee.account?.email || employee.email,
         phone: employee.phone,
         dealershipId: employee.dealershipId,
-        dealershipName: employee.dealership.name,
+        dealershipName: [...dealershipNames].sort((a, b) => a.localeCompare(b, 'ru')).join(', '),
         phoneNumbers: employee.account?.phoneNumbers.map((phoneNumber) => ({
           id: phoneNumber.id,
           typeId: phoneNumber.typeId,
@@ -637,7 +658,7 @@ export async function handleGetCallPlanOptions(req: Request, res: Response): Pro
         name: dealership.name,
         city: dealership.city,
         address: dealership.address,
-        employeesCount: dealership.managerProfiles.length,
+        employeesCount: new Set(dealership.managerProfiles.map(managerIdentityKey)).size,
       })),
       phoneNumberTypes: phoneNumberTypes.map((type) => ({
         id: type.id,
@@ -721,9 +742,15 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
         },
       },
     },
-    orderBy: { fullName: 'asc' },
+    orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
   });
-  return employees.flatMap((employee) => (employee.account?.phoneNumbers ?? []).map((phoneNumber) => ({
+  const uniqueEmployeesByIdentity = new Map<string, typeof employees[number]>();
+  for (const employee of employees) {
+    const key = managerIdentityKey(employee);
+    if (!uniqueEmployeesByIdentity.has(key)) uniqueEmployeesByIdentity.set(key, employee);
+  }
+  const uniqueEmployees = [...uniqueEmployeesByIdentity.values()];
+  return uniqueEmployees.flatMap((employee) => (employee.account?.phoneNumbers ?? []).map((phoneNumber) => ({
     employee,
     phoneNumber,
     dealershipId: employee.dealershipId,

@@ -40,6 +40,11 @@ const EMPTY_ANALYTICS: AnalyticsOverview = {
 
 type ComparableDealership = NonNullable<AnalyticsOverview['dealershipRows']>[number];
 
+function formatSignedHundredths(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return `${rounded > 0 ? '+' : ''}${rounded.toFixed(2)}`;
+}
+
 function NetworkTrendChart({ points }: { points: TimeSeriesPoint[] }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
@@ -496,7 +501,7 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
                     <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
                     <td className="sa-text-right">{row.dealershipsCount}</td>
                     <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                    <td className="sa-text-right">{row.score - data.avgScore > 0 ? '+' : ''}{row.score - data.avgScore}</td>
+                    <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
                     <td className="sa-text-right">{row.calls}</td>
                     <td className="sa-text-right">{row.noAnswers}</td>
                     <td className="sa-text-right">{row.lowDealerships}</td>
@@ -580,7 +585,7 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
                     <td>{row.dealer}</td>
                     <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
                     <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                    <td className="sa-text-right">{row.score - data.avgScore > 0 ? '+' : ''}{row.score - data.avgScore}</td>
+                    <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
                     <td className="sa-text-right">{row.delta > 0 ? '+' : ''}{row.delta}</td>
                     <td className="sa-text-right">{row.calls}</td>
                     <td className="sa-text-right">{row.noAnswers}</td>

@@ -295,6 +295,8 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
   const [form, setForm] = useState<DealershipFormState>(EMPTY_FORM);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [directions, setDirections] = useState<DealershipDirectionItem[]>([]);
+  const [directionsLoading, setDirectionsLoading] = useState(false);
+  const [directionsError, setDirectionsError] = useState('');
   const [saving, setSaving] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [unsavedOpen, setUnsavedOpen] = useState(false);
@@ -314,7 +316,22 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
   const nameInvalid = attempted && !form.name.trim();
   const cityInvalid = attempted && !form.city.trim();
   const holdingInvalid = attempted && mode === 'create' && !lockedHoldingId && !form.holdingId;
+  const directionsInvalid = attempted && mode === 'create' && form.directions.length === 0;
   const hoursInvalid = attempted && form.workingHoursTo < form.workingHoursFrom;
+  const requiredFieldsFilled = Boolean(
+    form.name.trim()
+    && form.city.trim()
+    && form.workingHoursFrom
+    && form.workingHoursTo
+    && form.workingHoursTo >= form.workingHoursFrom
+    && (mode === 'edit' || (
+      form.holdingId
+      && form.directions.length > 0
+      && directions.length > 0
+      && !directionsLoading
+      && !directionsError
+    )),
+  );
 
   useEffect(() => {
     if (open && !wasOpenRef.current) {
@@ -339,10 +356,14 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
   useEffect(() => {
     if (!open || !form.holdingId) {
       setDirections([]);
+      setDirectionsLoading(false);
+      setDirectionsError('');
       if (open) setForm((current) => current.directions.length ? { ...current, directions: [] } : current);
       return;
     }
     let cancelled = false;
+    setDirectionsLoading(true);
+    setDirectionsError('');
     fetchDealershipDirections({ holdingId: form.holdingId, active: true })
       .then((items) => {
         if (cancelled) return;
@@ -354,7 +375,13 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
         }));
       })
       .catch(() => {
-        if (!cancelled) setDirections([]);
+        if (!cancelled) {
+          setDirections([]);
+          setDirectionsError('Не удалось загрузить направления. Попробуйте ещё раз.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDirectionsLoading(false);
       });
     return () => { cancelled = true; };
   }, [form.holdingId, open]);
@@ -386,6 +413,28 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
     if (mode === 'create' && !form.holdingId) {
       setAttempted(true);
       showToast({ type: 'error', title: 'Не удалось создать точку', description: 'Перед созданием точки выберите компанию.' });
+      return false;
+    }
+    if (mode === 'create' && directionsLoading) {
+      showToast({ type: 'error', title: 'Не удалось создать точку', description: 'Дождитесь загрузки направлений.' });
+      return false;
+    }
+    if (mode === 'create' && directionsError) {
+      showToast({ type: 'error', title: 'Не удалось создать точку', description: directionsError });
+      return false;
+    }
+    if (mode === 'create' && form.holdingId && directions.length === 0) {
+      setAttempted(true);
+      showToast({
+        type: 'error',
+        title: 'Невозможно создать точку',
+        description: 'У выбранной компании нет активных направлений. Необходимо сначала их добавить.',
+      });
+      return false;
+    }
+    if (mode === 'create' && form.directions.length === 0) {
+      setAttempted(true);
+      showToast({ type: 'error', title: 'Не удалось создать точку', description: 'Выберите хотя бы одно направление.' });
       return false;
     }
     setSaving(true);
@@ -479,7 +528,7 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
                 type="submit"
                 form={FORM_ID}
                 className="sa-btn-primary"
-                disabled={saving || (mode === 'edit' && !isDirty)}
+                disabled={saving || !requiredFieldsFilled || (mode === 'edit' && !isDirty)}
               >
                 {saving ? 'Сохраняем...' : submitLabel}
               </button>
@@ -543,17 +592,28 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
             />
           </div>
 
-          <div style={{ display: 'grid', gap: 8 }}>
-            <span>Направления</span>
+          <div
+            className={directionsInvalid ? 'sa-field-invalid' : undefined}
+            style={{ display: 'grid', gap: 8, padding: directionsInvalid ? 8 : 0, border: '1px solid transparent', borderRadius: 8 }}
+          >
+            <span>Направления{mode === 'create' ? ' *' : ''}</span>
             <div style={{ display: 'grid', gap: 8 }}>
               {!form.holdingId && (
                 <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>
                   Сначала выберите компанию.
                 </div>
               )}
-              {form.holdingId && directions.length === 0 && (
+              {form.holdingId && directionsLoading && (
                 <div style={{ color: 'var(--sa-text-secondary)', fontSize: 13 }}>
-                  У выбранной компании пока нет активных направлений.
+                  Загрузка направлений...
+                </div>
+              )}
+              {form.holdingId && !directionsLoading && directionsError && (
+                <div style={{ color: 'var(--tb-brutal-red)', fontSize: 13 }}>{directionsError}</div>
+              )}
+              {form.holdingId && !directionsLoading && !directionsError && directions.length === 0 && (
+                <div style={{ color: 'var(--tb-brutal-red)', fontSize: 13 }}>
+                  У выбранной компании нет активных направлений. Необходимо сначала их добавить.
                 </div>
               )}
               {directions.map((option) => {

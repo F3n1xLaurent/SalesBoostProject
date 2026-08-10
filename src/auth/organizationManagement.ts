@@ -582,13 +582,6 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
     return;
   }
 
-  try {
-    assertSuperadmin(account);
-  } catch (error) {
-    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
-    return;
-  }
-
   const body = (req.body || {}) as Record<string, unknown>;
   const name = parseString(body.name);
   const code = parseString(body.code);
@@ -1037,6 +1030,14 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
     res.status(400).json({ error: 'Название точки обязательно.' });
     return;
   }
+  if (!holdingId) {
+    res.status(400).json({ error: 'Перед созданием точки выберите компанию.' });
+    return;
+  }
+  if (!isPlatformSuperadmin(account) && !canManageHoldingForAccount(account, holdingId)) {
+    res.status(403).json({ error: 'Нет доступа к созданию точки в этой компании.' });
+    return;
+  }
   if ((body.workingHoursFrom != null && !parseTime(body.workingHoursFrom)) || (body.workingHoursTo != null && !parseTime(body.workingHoursTo))) {
     res.status(400).json({ error: 'Укажите время работы точки в формате 00:00.' });
     return;
@@ -1047,6 +1048,24 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   }
 
   try {
+    const activeDirections = await prisma.dealershipDirection.findMany({
+      where: { holdingId, isActive: true },
+      select: { id: true, code: true },
+    });
+    if (activeDirections.length === 0) {
+      res.status(400).json({ error: 'У выбранной компании нет активных направлений. Необходимо сначала их добавить.' });
+      return;
+    }
+    if (directions.length === 0) {
+      res.status(400).json({ error: 'Выберите хотя бы одно направление.' });
+      return;
+    }
+    const allowedDirections = new Set(activeDirections.flatMap((direction) => [direction.id, direction.code].filter(Boolean)));
+    if (directions.some((direction) => !allowedDirections.has(direction))) {
+      res.status(400).json({ error: 'Выбрано недоступное или неактивное направление.' });
+      return;
+    }
+
     const resolvedCode = code ?? await generateUniqueDealershipCode(name);
     const created = await prisma.dealership.create({
       data: {

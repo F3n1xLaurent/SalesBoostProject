@@ -61,6 +61,7 @@ function PhoneNumberFormModal(props: {
   );
   const typeInvalid = attempted && !form.typeId;
   const phoneInvalid = attempted && !form.phone.trim();
+  const requiredFieldsFilled = Boolean(form.typeId && form.phone.trim());
   const typeOptions = useMemo(
     () => props.types.map((type) => ({ value: type.id, label: type.name })),
     [props.types],
@@ -112,7 +113,7 @@ function PhoneNumberFormModal(props: {
                 type="submit"
                 form={PHONE_FORM_ID}
                 className="sa-btn-primary"
-                disabled={props.saving || (!!props.requireChanges && !isDirty)}
+                disabled={props.saving || !requiredFieldsFilled || (!!props.requireChanges && !isDirty)}
               >
                 {props.saving ? 'Сохраняем...' : props.submitLabel}
               </button>
