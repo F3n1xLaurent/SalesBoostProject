@@ -84,8 +84,17 @@ export interface DashboardOverview {
   answerTimeByCompany: { id: string; name: string; avgSec: number; totalCalls: number }[];
   topDealerships: DashboardDealershipRow[];
   lowDealerships: DashboardDealershipRow[];
+  topEmployees: DashboardEmployeeRatingRow[];
+  lowEmployees: DashboardEmployeeRatingRow[];
   topWeakness: { weakness: string; count: number } | null;
   riskLabel: string | null;
+}
+
+export interface DashboardEmployeeRatingRow {
+  id: string;
+  name: string;
+  auditsCount: number;
+  aiRating: number;
 }
 
 export interface AuditItem {

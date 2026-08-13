@@ -11,6 +11,7 @@ import {
   fetchDealershipDirections,
   fetchHoldings,
   type DashboardOverview,
+  type DashboardEmployeeRatingRow,
   type DealershipDirectionItem,
   type HoldingItem,
   type TimeSeriesPoint,
@@ -323,6 +324,36 @@ function SalonTable({
               <td><span className={scoreColorClass(r.avgScore)}>{r.avgScore.toFixed(1)}</span></td>
               <td><span className={rateColorClass(r.answerRate)}>{r.answerRate}%</span></td>
               <td>{r.totalAudits}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EmployeeRatingTable({ rows }: { rows: DashboardEmployeeRatingRow[] }) {
+  if (rows.length === 0) {
+    return <div className="sa-table-empty">Нет сотрудников с рейтингом</div>;
+  }
+  return (
+    <div className="sa-table-wrap sa-table-in-card">
+      <table className="sa-table sa-table-colored">
+        <thead>
+          <tr>
+            <th>Сотрудник</th>
+            <th className="sa-text-right">Проверки</th>
+            <th className="sa-text-right">AI-рейтинг</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((employee) => (
+            <tr key={employee.id}>
+              <td>{employee.name}</td>
+              <td className="sa-text-right">{employee.auditsCount}</td>
+              <td className="sa-text-right">
+                <span className={scoreColorClass(employee.aiRating)}>{employee.aiRating.toFixed(1)}</span>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -723,6 +754,18 @@ export function Dashboard({ loading }: DashboardProps) {
           </BrutalCard>
           <BrutalCard title="Средняя длительность звонка" className="sa-grid-card">
             <AverageAnswerTimeChart data={answerTimeByCompany} embedded />
+          </BrutalCard>
+        </div>
+      </section>
+
+      <section className="sa-section sa-section-employee-ratings">
+        <h2 className="sa-section-title">Рейтинг сотрудников</h2>
+        <div className="sa-dashboard-grid">
+          <BrutalCard title="ТОП-10 самых эффективных" className="sa-grid-card">
+            <EmployeeRatingTable rows={overview?.topEmployees ?? []} />
+          </BrutalCard>
+          <BrutalCard title="ТОП-10 самых провальных" className="sa-grid-card">
+            <EmployeeRatingTable rows={overview?.lowEmployees ?? []} />
           </BrutalCard>
         </div>
       </section>

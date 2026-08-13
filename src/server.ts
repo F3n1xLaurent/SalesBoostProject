@@ -5213,7 +5213,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         },
         include: {
           holding: true,
-          managerProfiles: { select: { id: true, accountId: true, status: true } },
+          managerProfiles: { select: { id: true, accountId: true, fullName: true, status: true } },
         },
         orderBy: { name: 'asc' },
       }),
@@ -5253,7 +5253,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         select: {
           finishedAt: true,
           totalScore: true,
-          user: { select: { managerProfile: { select: { dealershipId: true } } } },
+          user: { select: { managerProfile: { select: { id: true, dealershipId: true } } } },
         },
       }),
       prisma.trainingSession.findMany({
@@ -5270,7 +5270,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
           totalScore: true,
           evaluationJson: true,
           assessmentScore: true,
-          user: { select: { managerProfile: { select: { dealershipId: true } } } },
+          user: { select: { managerProfile: { select: { id: true, dealershipId: true } } } },
         },
       }),
       prisma.trainerSession.findMany({
@@ -5289,7 +5289,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
           score: true,
           evaluationJson: true,
           branchId: true,
-          employee: { select: { dealershipId: true } },
+          employee: { select: { id: true, dealershipId: true } },
         },
       }),
     ]);
@@ -5347,6 +5347,39 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
     const avgScore = scoredValues.length
       ? round1(scoredValues.reduce((sum, score) => sum + score, 0) / scoredValues.length)
       : 0;
+
+    const employeeRatings = new Map<string, { id: string; name: string; auditsCount: number; scores: number[] }>();
+    const employeeKeyByProfileId = new Map<string, string>();
+    for (const dealership of dealerships) {
+      for (const manager of dealership.managerProfiles) {
+        if (manager.status !== 'active') continue;
+        const key = manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`;
+        employeeKeyByProfileId.set(manager.id, key);
+        if (!employeeRatings.has(key)) {
+          employeeRatings.set(key, { id: manager.accountId || manager.id, name: manager.fullName, auditsCount: 0, scores: [] });
+        }
+      }
+    }
+    const addEmployeeAudit = (managerId: string | null | undefined, score: number | null) => {
+      if (!managerId) return;
+      const key = employeeKeyByProfileId.get(managerId);
+      const employee = key ? employeeRatings.get(key) : null;
+      if (!employee) return;
+      employee.auditsCount += 1;
+      if (typeof score === 'number' && Number.isFinite(score)) employee.scores.push(score);
+    };
+    for (const session of sessions) addEmployeeAudit(session.managerId, scoreFromAnalyticsSession(session));
+    for (const session of trainingSessions) addEmployeeAudit(session.user?.managerProfile?.id, trainingScore(session));
+    for (const session of trainerSessions) addEmployeeAudit(session.employee.id, trainerScore(session));
+    const employeeRatingRows = [...employeeRatings.values()]
+      .filter((employee) => employee.scores.length > 0)
+      .map((employee) => ({
+        id: employee.id,
+        name: employee.name,
+        auditsCount: employee.auditsCount,
+        aiRating: round1(employee.scores.reduce((sum, score) => sum + score, 0) / employee.scores.length),
+      }))
+      .filter((employee) => employee.aiRating > 0);
 
     const checklistCounts = new Map<string, { count: number; total: number }>();
     for (const session of filteredSessions) {
@@ -5443,6 +5476,12 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         .filter((row) => row.totalAudits > 0)
         .sort((a, b) => a.avgAiScore - b.avgAiScore)
         .slice(0, 5),
+      topEmployees: [...employeeRatingRows]
+        .sort((a, b) => b.aiRating - a.aiRating || b.auditsCount - a.auditsCount || a.name.localeCompare(b.name, 'ru'))
+        .slice(0, 10),
+      lowEmployees: [...employeeRatingRows]
+        .sort((a, b) => a.aiRating - b.aiRating || b.auditsCount - a.auditsCount || a.name.localeCompare(b.name, 'ru'))
+        .slice(0, 10),
       topWeakness: topWeakness ? { weakness: topWeakness.weakness, count: topWeakness.count } : null,
       riskLabel: lowDealerships[0]?.name ?? topWeakness?.weakness ?? null,
     });

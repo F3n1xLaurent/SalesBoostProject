@@ -1155,7 +1155,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         />
         <ModalFrame
           title="Редактировать компанию"
-          subtitle="Можно поменять состав точек внутри компании."
+          subtitle="Редактирование основной информации о компании."
           open={editHoldingOpen && !!activeHolding}
           onClose={() => requestCloseHoldingModal('edit')}
           footer={renderHoldingFormFooter({ mode: 'edit', submitLabel: 'Сохранить', onRequestClose: () => requestCloseHoldingModal('edit') })}
@@ -1396,7 +1396,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
 
       <ModalFrame
         title="Редактировать компанию"
-        subtitle="Можно поменять состав точек внутри компании."
+        subtitle="Редактирование основной информации о компании."
         open={editHoldingOpen && !!activeHolding}
         onClose={() => requestCloseHoldingModal('edit')}
         footer={renderHoldingFormFooter({ mode: 'edit', submitLabel: 'Сохранить', onRequestClose: () => requestCloseHoldingModal('edit') })}
