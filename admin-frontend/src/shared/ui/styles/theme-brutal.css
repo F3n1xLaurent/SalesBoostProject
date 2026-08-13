@@ -1142,6 +1142,11 @@
   width: 6%;
 }
 
+.theme-brutal .sa-points-table .sa-col-score,
+.theme-brutal .sa-points-table .sa-col-trend {
+  width: 80px;
+}
+
 .theme-brutal .sa-points-table .sa-col-hours {
   width: 11%;
 }

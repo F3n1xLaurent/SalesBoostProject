@@ -1787,8 +1787,9 @@ export async function fetchAnalyticsComparisonSummary(input: {
   return data.item as AnalyticsAISummary;
 }
 
-export async function fetchAnalyticsDealerships(): Promise<AnalyticsDealershipRow[]> {
-  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships`);
+export async function fetchAnalyticsDealerships(days: 7 | 30 | 'all' = 'all'): Promise<AnalyticsDealershipRow[]> {
+  const params = new URLSearchParams({ days: String(days) });
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships?${params.toString()}`);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error || 'Не удалось загрузить аналитику точек.');

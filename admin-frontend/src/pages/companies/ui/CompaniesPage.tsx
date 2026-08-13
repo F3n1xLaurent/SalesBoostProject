@@ -77,11 +77,12 @@ function comparator(key: SortKey, dir: SortDir) {
 
 /* ────────────────────── Period helper ────────────────────── */
 
-type Period = '7d' | '30d' | 'custom';
+type Period = '7d' | '30d' | 'all';
 
 const PERIOD_FILTER_OPTIONS = [
   { value: '7d' as const, label: '7 дней' },
   { value: '30d' as const, label: '30 дней' },
+  { value: 'all' as const, label: 'Все время' },
 ];
 
 type CompanyRow = DealershipRow & { dealer: string; workingHours: string; type: DealershipType; directions: DealershipDirection[]; isActive: boolean };
@@ -197,7 +198,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
   );
 
   const [search, setSearch] = useState('');
-  const [period, setPeriod] = useState<Period>('30d');
+  const [period, setPeriod] = useState<Period>('all');
   const [sortKey, setSortKey] = useState<SortKey>('aiRating');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [cityFilter, setCityFilter] = useState<string[]>([]);
@@ -376,7 +377,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     let cancelled = false;
     setAnalyticsLoading(true);
     setAnalyticsError(null);
-    fetchAnalyticsDealerships()
+    fetchAnalyticsDealerships(period === '7d' ? 7 : period === '30d' ? 30 : 'all')
       .then((items) => {
         if (!cancelled) setAnalyticsRows(items);
       })
@@ -392,7 +393,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [period]);
 
   useEffect(() => {
     try {
@@ -681,8 +682,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             <col className="sa-col-dealer" />
             <col className="sa-col-city" />
             <col className="sa-col-type" />
-            <col className="sa-col-num" />
-            <col className="sa-col-num" />
+            <col className="sa-col-num sa-col-score" />
+            <col className="sa-col-num sa-col-trend" />
             <col className="sa-col-num" />
             <col className="sa-col-hours" />
             <col className="sa-col-status" />

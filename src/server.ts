@@ -6618,12 +6618,20 @@ app.post('/api/admin/analytics/comparison-summary', async (req, res) => {
   }
 });
 
-app.get('/api/admin/analytics/dealerships', async (_req, res) => {
+app.get('/api/admin/analytics/dealerships', async (req, res) => {
   try {
+    const rawDays = String(req.query.days || 'all');
+    const requestedDays = Number.parseInt(rawDays, 10);
+    const days = requestedDays === 7 ? 7 : requestedDays === 30 ? 30 : null;
+    const periodStart = days === null ? null : new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
     const [dealerships, sessions, managerCounts] = await Promise.all([
       prisma.dealership.findMany({ where: { isActive: true }, include: { holding: true }, orderBy: { name: 'asc' } }),
       prisma.voiceCallSession.findMany({
-        where: { dealershipId: { not: null } },
+        where: {
+          dealershipId: { not: null },
+          ...(periodStart ? { startedAt: { gte: periodStart } } : {}),
+        },
         select: {
           id: true,
           startedAt: true,
