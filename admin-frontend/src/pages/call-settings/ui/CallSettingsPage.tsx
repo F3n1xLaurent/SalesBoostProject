@@ -2159,6 +2159,7 @@ export function CallSettingsPage() {
   const [selectedPlan, setSelectedPlan] = useState<CallPlan | null>(null);
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
+  const [planCallsRefreshing, setPlanCallsRefreshing] = useState(false);
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [schedulePlan, setSchedulePlan] = useState<CallPlan | null>(null);
   const [scheduleDate, setScheduleDate] = useState(todayInputValue());
@@ -2505,16 +2506,18 @@ export function CallSettingsPage() {
     }
   }
 
-  async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean }) {
+  async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean; background?: boolean }) {
     if (!options?.skipNavigate) navigate(`/call-settings/plans/${encodeURIComponent(plan.id)}`);
     setSelectedPlan(plan);
-    setPlanCallsLoading(true);
+    if (options?.background) setPlanCallsRefreshing(true);
+    else setPlanCallsLoading(true);
     try {
       setPlanCalls(await fetchCallPlanCalls(plan.id));
     } catch (historyError) {
       setError(historyError instanceof Error ? historyError.message : 'Не удалось загрузить историю прозвона.');
     } finally {
-      setPlanCallsLoading(false);
+      if (options?.background) setPlanCallsRefreshing(false);
+      else setPlanCallsLoading(false);
     }
   }
 
@@ -2669,9 +2672,14 @@ export function CallSettingsPage() {
             <div className="sa-meta">Состав плана, история прозвонов и аналитика.</div>
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>
+            <button
+              type="button"
+              className="sa-btn-outline"
+              disabled={planCallsRefreshing}
+              onClick={() => openPlanHistory(selectedPlan, { skipNavigate: true, background: true })}
+            >
               <RefreshIcon />
-              Обновить
+              {planCallsRefreshing ? 'Обновление...' : 'Обновить'}
             </button>
             <button type="button" className="sa-btn-outline" onClick={() => openPlanSchedule(selectedPlan)}>
               <CalendarIcon />
