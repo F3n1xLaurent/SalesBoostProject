@@ -758,6 +758,7 @@ export interface CallPlanItem {
   weekdays: CallPlanWeekday[];
   callTimeFrom: string;
   callTimeTo: string;
+  timezoneOffsetMinutes: number;
   lastInitiatedAt: string | null;
   lastBatchId: string | null;
   createdAt: string;
