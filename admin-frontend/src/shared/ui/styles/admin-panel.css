@@ -1736,6 +1736,11 @@
   padding: 6px;
 }
 
+.sa-tag-filter-menu.sa-tag-filter-menu--above {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 .sa-page-header .sa-tag-filter-picker .sa-tag-filter-menu,
 .sa-toolbar-actions .sa-tag-filter-picker .sa-tag-filter-menu,
 .sa-holding-activity-controls .sa-tag-filter-picker .sa-tag-filter-menu {
