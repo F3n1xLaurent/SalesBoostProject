@@ -866,6 +866,9 @@ export interface PhoneNumberItem {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  totalCalls: number;
+  successfulCalls: number;
+  missedCalls: number;
 }
 
 export type ImportFormat = 'json' | 'xml' | 'csv';

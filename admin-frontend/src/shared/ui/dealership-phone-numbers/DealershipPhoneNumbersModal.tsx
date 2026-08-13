@@ -220,19 +220,25 @@ function PhoneNumbersTable(props: {
           <tr>
             <th>Тип</th>
             <th>Номер</th>
+            <th className="sa-text-right">Всего звонков</th>
+            <th className="sa-text-right">Успешных</th>
+            <th className="sa-text-right">Недозвон</th>
             <th>Статус</th>
             <th className="sa-text-right sa-phone-numbers-actions-col">Действия</th>
           </tr>
         </thead>
         <tbody>
           {props.loading ? (
-            <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
+            <tr><td colSpan={7} className="sa-meta" style={{ padding: 28 }}>Загрузка...</td></tr>
           ) : props.items.length === 0 ? (
-            <tr><td colSpan={4} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
+            <tr><td colSpan={7} className="sa-meta" style={{ padding: 28 }}>Номеров пока нет</td></tr>
           ) : props.items.map((item) => (
             <tr key={item.id}>
               <td style={{ fontWeight: 700 }}>{item.typeName}</td>
               <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatPhoneInput(item.phone)}</td>
+              <td className="sa-text-right">{item.totalCalls ?? 0}</td>
+              <td className="sa-text-right"><span className="sa-score-green">{item.successfulCalls ?? 0}</span></td>
+              <td className="sa-text-right"><span className={(item.missedCalls ?? 0) > 0 ? 'sa-score-red' : ''}>{item.missedCalls ?? 0}</span></td>
               <td>
                 <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
                   {item.isActive ? 'Активен' : 'Неактивен'}

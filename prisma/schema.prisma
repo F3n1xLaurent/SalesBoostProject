@@ -727,6 +727,7 @@ model VoiceCallSession {
 
   @@index([dealershipId, startedAt])
   @@index([managerId, startedAt])
+  @@index([to])
   @@index([planId, startedAt])
   @@index([source, startedAt])
   @@map("voice_call_sessions")

@@ -1,5 +1,6 @@
 import type { Account, AccountMembership, PermissionTemplate, Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { getPhoneCallStats, normalizeCallPhone, type PhoneCallStats } from '../voice/phoneNumberStats';
 import { prisma } from '../db';
 import { hashPassword } from './password';
 import {
@@ -431,6 +432,7 @@ function formatPhoneNumber(value: unknown): string | null {
 
 function normalizePhoneNumberResponse(
   phoneNumber: Prisma.PhoneNumberGetPayload<{ include: { type: true } }>,
+  stats?: PhoneCallStats,
 ) {
   return {
     id: phoneNumber.id,
@@ -442,6 +444,9 @@ function normalizePhoneNumberResponse(
     isActive: phoneNumber.isActive,
     createdAt: phoneNumber.createdAt,
     updatedAt: phoneNumber.updatedAt,
+    totalCalls: stats?.totalCalls ?? 0,
+    successfulCalls: stats?.successfulCalls ?? 0,
+    missedCalls: stats?.missedCalls ?? 0,
   };
 }
 
@@ -513,7 +518,7 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
       holdingId: profile.dealership.holdingId,
       holdingName: profile.dealership.holding?.name ?? null,
     })),
-    phoneNumbers: account.phoneNumbers.map(normalizePhoneNumberResponse),
+    phoneNumbers: account.phoneNumbers.map((phoneNumber) => normalizePhoneNumberResponse(phoneNumber)),
     permissionTemplates: account.permissionTemplateAssignments.map((assignment) => ({
       id: assignment.template.id,
       name: assignment.template.name,
@@ -1166,7 +1171,8 @@ export async function handleListUserPhoneNumbers(req: Request, res: Response): P
       include: { type: true },
       orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
     });
-    res.json({ items: items.map(normalizePhoneNumberResponse) });
+    const stats = await getPhoneCallStats(items.map((item) => item.phone));
+    res.json({ items: items.map((item) => normalizePhoneNumberResponse(item, stats.get(normalizeCallPhone(item.phone)))) });
   } catch (error) {
     console.error('List user phone numbers error:', error);
     res.status(error instanceof Error && error.message.includes('не найден') ? 404 : 403).json({
