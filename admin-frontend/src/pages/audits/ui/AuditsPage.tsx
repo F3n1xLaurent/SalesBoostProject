@@ -3,11 +3,13 @@ import { useLocation, useNavigate } from 'react-router';
 import {
   fetchAuditDetail,
   fetchDealerships,
+  fetchDealershipDirections,
   fetchCallReportProblems,
   fetchHoldings,
   type AuditDetailItem,
   type AuditItem,
   type CallReportProblemItem,
+  type DealershipDirectionItem,
   type DealershipItem,
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
@@ -189,6 +191,8 @@ export function Audits({
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [dealerships, setDealerships] = useState<DealershipItem[]>([]);
   const [dealershipsLoading, setDealershipsLoading] = useState(true);
+  const [directionOptions, setDirectionOptions] = useState<DealershipDirectionItem[]>([]);
+  const [directionsLoading, setDirectionsLoading] = useState(false);
   const [problemCatalog, setProblemCatalog] = useState<CallReportProblemItem[]>([]);
   const [problemCatalogLoading, setProblemCatalogLoading] = useState(true);
   const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
@@ -215,6 +219,34 @@ export function Audits({
       .sort((a, b) => a.name.localeCompare(b.name, 'ru')),
     [selectedDealerships],
   );
+  const directionLabelByValue = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const direction of directionOptions) {
+      labels.set(direction.id, direction.name);
+      if (direction.code) labels.set(direction.code, direction.name);
+    }
+    return labels;
+  }, [directionOptions]);
+  const directionFilterOptions = useMemo(() => {
+    const used = new Set(selectedDealerships.flatMap((item) => item.directions || []));
+    const options = directionOptions.map((direction) => {
+      const value = used.has(direction.id)
+        ? direction.id
+        : direction.code && used.has(direction.code)
+          ? direction.code
+          : direction.code || direction.id;
+      return { value, label: direction.name };
+    });
+    const knownValues = new Set(
+      directionOptions.flatMap((direction) => [direction.id, direction.code].filter(Boolean) as string[]),
+    );
+    for (const value of used) {
+      if (!knownValues.has(value)) {
+        options.push({ value, label: directionLabelByValue.get(value) || value });
+      }
+    }
+    return options.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+  }, [directionLabelByValue, directionOptions, selectedDealerships]);
   const allReportIssues = useMemo(() => problemCatalog.map((item) => item.title), [problemCatalog]);
   const problemsByCategory = useMemo(() => {
     const map = new Map<string, CallReportProblemItem[]>();
@@ -243,6 +275,7 @@ export function Audits({
   const [filterStatus, setFilterStatus] = useState<AuditStatus | 'all'>('all');
   const [filterCity, setFilterCity] = useState<Set<string>>(new Set());
   const [filterDealership, setFilterDealership] = useState<Set<string>>(new Set());
+  const [filterDirections, setFilterDirections] = useState<Set<string>>(new Set());
   const [filterScoreBands, setFilterScoreBands] = useState<Set<ScoreBand>>(new Set());
   const [filterProblems, setFilterProblems] = useState<Set<string>>(new Set());
   const [page, setPage] = useState(1);
@@ -340,12 +373,38 @@ export function Audits({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    if (!selectedHoldingId) {
+      setDirectionOptions([]);
+      setDirectionsLoading(false);
+      return () => { cancelled = true; };
+    }
+    setDirectionsLoading(true);
+    fetchDealershipDirections({ holdingId: selectedHoldingId, active: true })
+      .then((items) => {
+        if (!cancelled) setDirectionOptions(items);
+      })
+      .catch(() => {
+        if (!cancelled) setDirectionOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDirectionsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedHoldingId]);
+
+  useEffect(() => {
     setFilterDealership((current) => new Set([...current].filter((id) => selectedDealershipIds.has(id))));
   }, [selectedDealershipIds]);
 
   useEffect(() => {
+    const available = new Set(directionFilterOptions.map((option) => option.value));
+    setFilterDirections((current) => new Set([...current].filter((direction) => available.has(direction))));
+  }, [directionFilterOptions]);
+
+  useEffect(() => {
     setPage(1);
-  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterScoreBands, filterProblems, sortKey, sortDir]);
+  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterDirections, filterScoreBands, filterProblems, sortKey, sortDir]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -358,14 +417,13 @@ export function Audits({
       : <span className="sa-sort-icon sa-sort-icon-inactive">▲</span>;
 
   const toggleCity = (c: string) => setFilterCity((p) => { const n = new Set(p); n.has(c) ? n.delete(c) : n.add(c); return n; });
-  const toggleDealership = (id: string) => setFilterDealership((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleScoreBand = (band: ScoreBand) => setFilterScoreBands((prev) => {
     const next = new Set(prev);
     next.has(band) ? next.delete(band) : next.add(band);
     return next;
   });
 
-  const activeFiltersCount = filterCity.size + filterDealership.size + filterScoreBands.size + filterProblems.size;
+  const activeFiltersCount = filterCity.size + filterDealership.size + filterDirections.size + filterScoreBands.size + filterProblems.size;
 
   const filtered = useMemo(() => {
     let list = [...rows];
@@ -383,12 +441,20 @@ export function Audits({
     if (filterStatus !== 'all') list = list.filter((r) => r.status === filterStatus);
     if (filterCity.size > 0) list = list.filter((r) => filterCity.has(r.city));
     if (filterDealership.size > 0) list = list.filter((r) => filterDealership.has(r.dealershipId));
+    if (filterDirections.size > 0) {
+      const matchingDealershipIds = new Set(
+        selectedDealerships
+          .filter((dealership) => dealership.directions?.some((direction) => filterDirections.has(direction)))
+          .map((dealership) => dealership.id),
+      );
+      list = list.filter((r) => matchingDealershipIds.has(r.dealershipId));
+    }
     if (filterScoreBands.size > 0) list = list.filter((r) => r.totalScore !== null && filterScoreBands.has(scoreBand(r.totalScore)));
     if (filterProblems.size > 0) list = list.filter((r) => r.reportIssues.some((issue) => filterProblems.has(issue)));
 
     list.sort(comparator(sortKey, sortDir));
     return list;
-  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterScoreBands, filterProblems, sortKey, sortDir]);
+  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterDirections, filterScoreBands, filterProblems, selectedDealerships, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / AUDITS_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -449,25 +515,25 @@ export function Audits({
 
   return (
     <>
-      <h1 className="sa-page-title">Проверки</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
+        <h1 className="sa-page-title">Проверки</h1>
+        <HoldingSelectPicker
+          holdings={holdings}
+          value={selectedHoldingId}
+          onChange={(holdingId) => {
+            setSelectedHoldingId(holdingId);
+            setFilterCity(new Set());
+            setFilterDealership(new Set());
+            setFilterDirections(new Set());
+          }}
+          disabled={holdingsLoading || holdings.length === 0}
+          loading={holdingsLoading}
+        />
+      </div>
 
       <div className="sa-toolbar">
         <div className="sa-toolbar-split sa-holdings-toolbar">
           <div className="sa-toolbar-filters">
-            <div className="sa-tag-filter-picker-wrap">
-              <HoldingSelectPicker
-                holdings={holdings}
-                value={selectedHoldingId}
-                onChange={(holdingId) => {
-                  setSelectedHoldingId(holdingId);
-                  setFilterCity(new Set());
-                  setFilterDealership(new Set());
-                }}
-                disabled={holdingsLoading || holdings.length === 0}
-                loading={holdingsLoading}
-              />
-            </div>
-
             <div className="sa-search-wrap">
               <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
@@ -477,6 +543,29 @@ export function Audits({
                 placeholder="Поиск по сотруднику / точке…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            <div className="sa-tag-filter-picker-wrap">
+              <MultiSelectFilterPicker
+                placeholder="Точка"
+                options={allDealerships.map((dealership) => ({
+                  value: dealership.id,
+                  label: dealership.name,
+                }))}
+                values={[...filterDealership]}
+                onChange={(values) => setFilterDealership(new Set(values))}
+                disabled={dealershipsLoading || allDealerships.length === 0}
+              />
+            </div>
+
+            <div className="sa-tag-filter-picker-wrap">
+              <MultiSelectFilterPicker
+                placeholder="Направление"
+                options={directionFilterOptions}
+                values={[...filterDirections]}
+                onChange={(values) => setFilterDirections(new Set(values))}
+                disabled={directionsLoading || directionFilterOptions.length === 0}
               />
             </div>
 
@@ -510,6 +599,7 @@ export function Audits({
           onReset={() => {
             setFilterCity(new Set());
             setFilterDealership(new Set());
+            setFilterDirections(new Set());
             setFilterScoreBands(new Set());
             setFilterProblems(new Set());
           }}
@@ -550,20 +640,6 @@ export function Audits({
                 {c}
               </label>
             ))}
-          </FilterGroup>
-          <FilterGroup label="Точка">
-            {dealershipsLoading ? (
-              <span className="sa-meta">Загружаем точки...</span>
-            ) : allDealerships.length === 0 ? (
-              <span className="sa-meta">У выбранной компании нет точек</span>
-            ) : (
-              allDealerships.map((d) => (
-                <label key={d.id} className="sa-filter-check">
-                  <input type="checkbox" checked={filterDealership.has(d.id)} onChange={() => toggleDealership(d.id)} />
-                  {d.name}
-                </label>
-              ))
-            )}
           </FilterGroup>
         </FiltersPanel>
       )}

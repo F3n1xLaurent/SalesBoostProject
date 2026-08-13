@@ -311,6 +311,14 @@ function userScopeLabel(user: UserAccountItem): string {
   return dealershipMembership?.scopeLabel || user.memberships[0]?.scopeLabel || 'Точка не указана';
 }
 
+function userRoleLabels(user: UserAccountItem): string[] {
+  return [...new Set(user.memberships.map((membership) => roleLabel(membership.role)))];
+}
+
+function isPlatformSuperadminUser(user: UserAccountItem): boolean {
+  return user.memberships.some((membership) => membership.role === 'platform_superadmin');
+}
+
 function userDealershipNames(user: UserAccountItem): string[] {
   const names = [
     ...user.memberships.map((membership) => membership.dealershipName || ''),
@@ -903,6 +911,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       list = list.filter((row) =>
         normalizeSearchValue(row.fullName).includes(q) ||
         normalizeSearchValue(row.user.email).includes(q) ||
+        userRoleLabels(row.user).some((label) => normalizeSearchValue(label).includes(q)) ||
         normalizeSearchValue(row.dealershipName).includes(q) ||
         normalizeSearchValue(row.city).includes(q),
       );
@@ -926,7 +935,10 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       list = list.filter((row) => userMatchesScope(row.user, `holding:${holdingFilter}`));
     }
     if (selectedGlobalHoldingId) {
-      list = list.filter((row) => userMatchesScope(row.user, `holding:${selectedGlobalHoldingId}`));
+      list = list.filter((row) => (
+        (role === 'super' && isPlatformSuperadminUser(row.user))
+        || userMatchesScope(row.user, `holding:${selectedGlobalHoldingId}`)
+      ));
     }
     if (dealershipFilter) {
       list = list.filter((row) => userMatchesScope(row.user, `dealership:${dealershipFilter}`));
@@ -943,7 +955,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       else cmp = (a.user.analytics[userSortKey] ?? -Infinity) - (b.user.analytics[userSortKey] ?? -Infinity);
       return userSortDir === 'asc' ? cmp : -cmp;
     });
-  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, roleFilter, search, selectedGlobalHoldingId, userSortDir, userSortKey, users]);
+  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, role, roleFilter, search, selectedGlobalHoldingId, userSortDir, userSortKey, users]);
 
   const activeUserFiltersCount = [
     fullNameFilter.trim(),
@@ -1859,6 +1871,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               <colgroup>
                 <col className="sa-col-user" />
                 <col className="sa-col-dealership" />
+                <col className="sa-col-role" />
                 <col className="sa-col-num" />
                 <col className="sa-col-num" />
                 <col className="sa-col-num" />
@@ -1868,7 +1881,20 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               </colgroup>
               <thead>
                 <tr>
-                  {USER_COLUMN_DEFS.map((col) => (
+                  {USER_COLUMN_DEFS.slice(0, 2).map((col) => (
+                    <th
+                      key={col.key}
+                      className={`sa-th-sortable ${col.align === 'right' ? 'sa-text-right' : ''}`}
+                      onClick={() => handleUserSort(col.key)}
+                    >
+                      {col.label}{' '}
+                      <span className={userSortKey === col.key ? 'sa-sort-icon' : 'sa-sort-icon sa-sort-icon-inactive'}>
+                        {userSortKey === col.key ? (userSortDir === 'asc' ? '↑' : '↓') : '⇅'}
+                      </span>
+                    </th>
+                  ))}
+                  <th>Роль</th>
+                  {USER_COLUMN_DEFS.slice(2).map((col) => (
                     <th
                       key={col.key}
                       className={`sa-th-sortable ${col.align === 'right' ? 'sa-text-right' : ''}`}
@@ -1891,9 +1917,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={8} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
+                  <tr><td colSpan={9} className="sa-meta" style={{ padding: 32 }}>Загрузка...</td></tr>
                 ) : userEmployeeRows.length === 0 ? (
-                  <tr><td colSpan={8} className="sa-meta" style={{ padding: 32 }}>
+                  <tr><td colSpan={9} className="sa-meta" style={{ padding: 32 }}>
                     Нет сотрудников по выбранным фильтрам
                     <br /><span style={{ fontSize: 12, opacity: 0.7 }}>Сбросьте фильтры или измените поиск</span>
                   </td></tr>
@@ -1924,6 +1950,13 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                               {row.city ? <div className="sa-cell-city">{row.city}</div> : null}
                             </>
                           )}
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {userRoleLabels(row.user).map((label) => (
+                              <span key={label} className="sa-metric-chip">{label}</span>
+                            ))}
+                          </div>
                         </td>
                         <td className="sa-text-right"><span className={ratingClass(analytics.aiRating)}>{analytics.aiRating}</span></td>
                         <td className="sa-text-right"><span className={delta.cls}>{delta.text}</span></td>
@@ -1981,6 +2014,9 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                       <span className={`sa-mobile-rating ${ratingClass(analytics.aiRating)}`}>{analytics.aiRating}</span>
                     </div>
                     <div className="sa-mobile-chips">
+                      {userRoleLabels(row.user).map((label) => (
+                        <span key={label} className="sa-metric-chip">{label}</span>
+                      ))}
                       <span className="sa-metric-chip"><span className={delta.cls}>{delta.text}</span></span>
                       <span className="sa-metric-chip">Проверки: {analytics.auditsCount}</span>
                       <span className="sa-metric-chip">Провалы: {analytics.failsCount}</span>

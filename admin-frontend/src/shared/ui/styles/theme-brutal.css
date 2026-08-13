@@ -1172,19 +1172,23 @@
 }
 
 .theme-brutal .sa-users-table .sa-col-user {
-  width: 22%;
+  width: 18%;
 }
 
 .theme-brutal .sa-users-table .sa-col-dealership {
-  width: 20%;
+  width: 16%;
+}
+
+.theme-brutal .sa-users-table .sa-col-role {
+  width: 12%;
 }
 
 .theme-brutal .sa-users-table .sa-col-num {
-  width: 10%;
+  width: 9%;
 }
 
 .theme-brutal .sa-users-table .sa-col-status {
-  width: 12%;
+  width: 10%;
 }
 
 .theme-brutal .sa-users-table .sa-col-actions {
