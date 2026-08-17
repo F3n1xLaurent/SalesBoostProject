@@ -51,6 +51,7 @@ export function SystemPage() {
   const profileName = auth.status === 'authenticated'
     ? (auth.user.account.displayName?.trim() || auth.user.account.email)
     : '—';
+  const accountId = auth.status === 'authenticated' ? auth.user.account.id : null;
 
   useEffect(() => {
     if (auth.status !== 'authenticated') return;
@@ -142,6 +143,7 @@ export function SystemPage() {
       loadingSummary={teamLoading}
       role={role}
       dealerDealershipId={dealerDealershipId}
+      accountId={accountId}
       profileName={profileName}
       onRoleChange={(nextRole) => {
         if (allowedRoles.includes(nextRole)) {

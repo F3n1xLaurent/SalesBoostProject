@@ -30,7 +30,7 @@ const TABS_BY_ROLE: Record<AdminRole, AdminTab[]> = {
   super: SUPER_COMPANY_TABS,
   company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'holdings' && tab !== 'typesNumbers'),
   dealer: ['dealer-companies', 'audits', 'users', 'dealer-team', 'settings'],
-  staff: ['staff-profile', 'staff-trainer', 'settings'],
+  staff: ['staff-profile', 'users', 'staff-trainer', 'settings'],
 };
 
 export function getDefaultTab(role: AdminRole): AdminTab {

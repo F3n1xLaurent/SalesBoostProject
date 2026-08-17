@@ -34,6 +34,8 @@ type Props = {
   headerRight?: React.ReactNode;
   mockNotice?: string;
   detailOverride?: Partial<Pick<EmployeeDetailData, 'fullName' | 'dealershipName' | 'city'>>;
+  readOnly?: boolean;
+  selfView?: boolean;
 };
 
 type ManagerOutcomeBreakdown = {
@@ -518,7 +520,7 @@ function TrainerStats({
 
 /* ════════════════════ Main component ════════════════════ */
 
-export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCompanies, sourceDealership, actionButtons, headerRight, mockNotice, detailOverride }: Props) {
+export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCompanies, sourceDealership, actionButtons, headerRight, mockNotice, detailOverride, readOnly = false, selfView = false }: Props) {
   const navigate = useNavigate();
   const [realDetail, setRealDetail] = useState<ManagerAnalyticsDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
@@ -671,7 +673,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
   return (
     <div className="sa-detail-root sa-page-enter">
       {/* Breadcrumb */}
-      <div className="sa-breadcrumb">
+      {!selfView && <div className="sa-breadcrumb">
         {sourceDealership ? (
           <>
             <button className="sa-btn-text" onClick={() => onOpenCompanies?.()}>Точки</button>
@@ -687,7 +689,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
             <span>{displayName}</span>
           </>
         )}
-      </div>
+      </div>}
 
       {/* Header */}
       <div className="sa-detail-header">
@@ -776,7 +778,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
       </section>
 
       {/* Schedules */}
-      <section className="sa-section" style={{ marginBottom: 32 }}>
+      {!readOnly && <section className="sa-section" style={{ marginBottom: 32 }}>
         <div className="sa-section-header-row" style={{ marginBottom: 12 }}>
           <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Участвует в расписаниях</h2>
           <button type="button" className="sa-btn-text" onClick={() => navigate('/call-settings/plans')}>
@@ -791,7 +793,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           onExcludePlan={handleExcludePlan}
           variant="employee"
         />
-      </section>
+      </section>}
 
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Динамика эффективности</h2>

@@ -337,6 +337,26 @@ function canAccessDealershipForActiveRole(
   return !!dealership.holdingId && account.memberships.some((membership) => membership.role === 'holding_admin' && membership.holdingId === dealership.holdingId);
 }
 
+async function resolveAccessibleAnalyticsManager(req: express.Request, identifier: string) {
+  const account = req.authAccount;
+  if (!account) return null;
+
+  const include = { dealership: true } as const;
+  const managerById = await prisma.managerProfile.findUnique({ where: { id: identifier }, include });
+  const manager = managerById ?? await prisma.managerProfile.findFirst({
+    where: { accountId: identifier, status: 'active' },
+    include,
+    orderBy: { createdAt: 'asc' },
+  });
+  if (!manager) return null;
+
+  const activeRole = getActiveAdminRole(req);
+  if (activeRole === 'staff') {
+    return manager.accountId === account.id ? manager : null;
+  }
+  return canAccessDealershipForActiveRole(req, manager.dealership) ? manager : null;
+}
+
 function safeJsonParseLocal<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
   try {
@@ -7332,7 +7352,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
 app.get('/api/admin/analytics/managers/:id/plans', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
-    const manager = await prisma.managerProfile.findUnique({ where: { id }, include: { dealership: true } });
+    const manager = await resolveAccessibleAnalyticsManager(req, id);
     if (!manager) return res.status(404).json({ error: 'Manager not found' });
     if (!manager.dealership.holdingId) return res.json({ items: [] });
 
@@ -7396,11 +7416,11 @@ app.post('/api/admin/analytics/managers/:id/plans/:planId/exclude', async (req, 
 app.get('/api/admin/analytics/managers/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
-    const manager = await prisma.managerProfile.findUnique({ where: { id }, include: { dealership: true } });
+    const manager = await resolveAccessibleAnalyticsManager(req, id);
     if (!manager) return res.status(404).json({ error: 'Manager not found' });
     const [sessions, dealershipSessions, networkSessions, dealershipManagers, trainerSessions, trainerScoreAgg, trainerStreak] = await Promise.all([
       prisma.voiceCallSession.findMany({
-        where: { managerId: id },
+        where: { managerId: manager.id },
         include: { plan: { select: { name: true, scriptId: true } } },
         orderBy: { startedAt: 'desc' },
       }),
@@ -7417,15 +7437,15 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
         select: { id: true },
       }),
       prisma.trainerSession.findMany({
-        where: { employeeId: id },
+        where: { employeeId: manager.id },
         include: { scenario: { select: { name: true } } },
         orderBy: { startedAt: 'desc' },
       }),
       prisma.trainerScore.aggregate({
-        where: { employeeId: id },
+        where: { employeeId: manager.id },
         _sum: { finalScore: true },
       }),
-      prisma.trainerStreak.findUnique({ where: { employeeId: id } }),
+      prisma.trainerStreak.findUnique({ where: { employeeId: manager.id } }),
     ]);
     const scriptIds = [...new Set(sessions.map((session) => session.plan?.scriptId).filter((scriptId): scriptId is string => Boolean(scriptId)))];
     const scripts = scriptIds.length
