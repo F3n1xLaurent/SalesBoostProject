@@ -12,6 +12,7 @@ import { getDefaultState } from '../state/defaultState';
 import { evaluateSessionV2 } from '../llm/evaluatorV2';
 import { getTranscriptFromVoxLog } from './voxLogTranscript';
 import { generateCallAnalyticsBundle } from './callAnalyticsBundle';
+import { resolvePhoneNumberSourceSnapshot } from './phoneNumberStats';
 
 export type VoxWebhookEvent = 'progress' | 'connected' | 'disconnected' | 'failed' | 'busy' | 'no_answer';
 
@@ -109,13 +110,14 @@ export async function recordVoiceCallConnected(payload: VoxWebhookPayload): Prom
   const record = getRecordByCallId(callId);
   const existing = await prisma.voiceCallSession.findUnique({
     where: { callId },
-    select: { startedAt: true, connectedAt: true },
+    select: { startedAt: true, connectedAt: true, phoneNumberId: true },
   });
   if (existing?.connectedAt) return;
 
   const startedAt = existing?.startedAt ?? (record ? new Date(record.startedAt) : connectedAt);
   const toNormalized = '+' + String(to).replace(/\D/g, '');
   const answerTimeSec = secondsBetween(startedAt, connectedAt);
+  const phoneNumberSource = existing?.phoneNumberId ? null : await resolvePhoneNumberSourceSnapshot(toNormalized);
 
   await prisma.voiceCallSession.upsert({
     where: { callId },
@@ -125,6 +127,7 @@ export async function recordVoiceCallConnected(payload: VoxWebhookPayload): Prom
       startedAt,
       connectedAt,
       answerTimeSec,
+      ...phoneNumberSource,
     },
     update: {
       connectedAt,
@@ -214,9 +217,12 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       importedItemId: true,
       scriptId: true,
       promptText: true,
+      phone: true,
+      phoneNumberTypeId: true,
     },
   });
   if (!existing) return;
+  const phoneNumberSource = await resolvePhoneNumberSourceSnapshot(existing.phone, existing.phoneNumberTypeId);
   const analyticsFields = extractAnalyticsEvaluationFields(patch.evaluation);
   await prisma.callPlanCall.update({
     where: { callId },
@@ -237,6 +243,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       planId: existing.planId,
       managerId: existing.employeeId,
       dealershipId: existing.dealershipId,
+      ...phoneNumberSource,
       dimensionsJson: analyticsFields.dimensionsJson,
       checklistResultsJson: analyticsFields.checklistResultsJson,
       caseContextJson: JSON.stringify({
@@ -267,7 +274,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   const record = getRecordByCallId(callId);
   const existingSession = await prisma.voiceCallSession.findUnique({
     where: { callId },
-    select: { startedAt: true, connectedAt: true, answerTimeSec: true },
+    select: { startedAt: true, connectedAt: true, answerTimeSec: true, phoneNumberId: true },
   });
   const payloadVoxSessionId =
     payload.vox_session_id ??
@@ -313,6 +320,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       : [];
 
   const toNormalized = '+' + String(to).replace(/\D/g, '');
+  const phoneNumberSource = existingSession?.phoneNumberId ? null : await resolvePhoneNumberSourceSnapshot(toNormalized);
 
   // 1) Save session immediately so admin shows "Processing..." right after hangup
   const initialTranscript = payloadTranscript.length > 0 ? payloadTranscript : (record?.transcript ?? []);
@@ -333,6 +341,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         evaluationJson: null,
         totalScore: null,
         failureReason: null,
+        ...phoneNumberSource,
       },
       update: {
         connectedAt: connectedAt ?? undefined,
@@ -342,6 +351,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         durationSec,
         talkDurationSec: talkDurationSec ?? undefined,
         transcriptJson: JSON.stringify(initialTranscript),
+        ...phoneNumberSource,
       },
     });
   } catch (err) {

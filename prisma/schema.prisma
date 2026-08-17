@@ -706,6 +706,10 @@ model VoiceCallSession {
   dealershipId     String?
   managerId        String?
   planId           String?
+  phoneNumberId          String?   // source phone number snapshot
+  phoneNumberTypeId      String?   // source type snapshot
+  phoneNumberTypeName    String?   // display name snapshot (e.g. Avito)
+  phoneNumberOwnership   String?   // "dealership" | "user"
   startedAt        DateTime  @default(now())
   connectedAt      DateTime?
   endedAt          DateTime?
@@ -730,6 +734,8 @@ model VoiceCallSession {
   @@index([to])
   @@index([planId, startedAt])
   @@index([source, startedAt])
+  @@index([phoneNumberTypeId, startedAt])
+  @@index([phoneNumberOwnership, startedAt])
   @@map("voice_call_sessions")
 }
 

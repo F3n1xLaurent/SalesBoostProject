@@ -4474,3 +4474,18 @@
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
   cursor: pointer;
 }
+
+.sa-recommendation-sections { display: grid; gap: 22px; }
+.sa-recommendation-insights { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.sa-recommendation-insight { border: 2px solid var(--tb-ink, #161613); border-radius: 14px; background: #fff; padding: 18px; box-shadow: 4px 4px 0 var(--tb-ink, #161613); }
+.sa-recommendation-insight.is-clickable { cursor: pointer; }
+.sa-recommendation-insight.is-clickable:hover { transform: translate(-1px, -1px); box-shadow: 6px 6px 0 var(--tb-ink, #161613); }
+.sa-recommendation-insight-kind { color: var(--tb-muted, #6b7280); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.sa-recommendation-insight h3, .sa-recommendation-state h3 { margin: 8px 0; font-size: 17px; }
+.sa-recommendation-insight p, .sa-recommendation-state p { margin: 0; color: var(--tb-muted, #59606b); line-height: 1.45; }
+.sa-recommendation-insight-effect { margin: 12px 0; padding-top: 10px; border-top: 1px solid #d9dde3; font-weight: 650; }
+.sa-recommendation-state { padding: 22px; }
+.sa-recommendation-state.is-normal { background: #effbf3; border-color: #2d9b5e; }
+.sa-recommendation-state.is-error { color: var(--tb-status-red, #c43d3d); }
+.sa-recommendation-growth { margin-top: 14px; padding: 12px; border-radius: 10px; background: rgba(255,255,255,.75); }
+@media (max-width: 720px) { .sa-recommendation-insights { grid-template-columns: 1fr; } }

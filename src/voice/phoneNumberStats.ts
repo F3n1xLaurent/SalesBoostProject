@@ -6,9 +6,40 @@ export type PhoneCallStats = {
   missedCalls: number;
 };
 
+export type PhoneNumberSourceSnapshot = {
+  phoneNumberId: string;
+  phoneNumberTypeId: string;
+  phoneNumberTypeName: string;
+  phoneNumberOwnership: string;
+};
+
 export function normalizeCallPhone(value: string): string {
   const digits = String(value || '').replace(/\D/g, '');
   return digits ? `+${digits}` : '';
+}
+
+export async function resolvePhoneNumberSourceSnapshot(
+  phone: string,
+  preferredTypeId?: string | null,
+): Promise<PhoneNumberSourceSnapshot | null> {
+  const normalizedPhone = normalizeCallPhone(phone);
+  if (!normalizedPhone) return null;
+
+  const findMatch = async (typeId?: string | null) => {
+    const candidates = await prisma.phoneNumber.findMany({
+      where: { isActive: true, ...(typeId ? { typeId } : {}) },
+      include: { type: true },
+    });
+    return candidates.find((candidate) => normalizeCallPhone(candidate.phone) === normalizedPhone) ?? null;
+  };
+  const phoneNumber = await findMatch(preferredTypeId) ?? (preferredTypeId ? await findMatch() : null);
+  if (!phoneNumber) return null;
+  return {
+    phoneNumberId: phoneNumber.id,
+    phoneNumberTypeId: phoneNumber.typeId,
+    phoneNumberTypeName: phoneNumber.type.name,
+    phoneNumberOwnership: phoneNumber.type.ownership,
+  };
 }
 
 export async function getPhoneCallStats(phones: string[]): Promise<Map<string, PhoneCallStats>> {

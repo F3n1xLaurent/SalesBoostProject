@@ -4,6 +4,7 @@ import { prisma } from '../db';
 import { addCall, setVoxSessionId } from './callHistory';
 import { startVoiceCall } from './startVoiceCall';
 import { buildCustomerScenarioPromptCore } from './customerScenarioPrompt';
+import { resolvePhoneNumberSourceSnapshot } from './phoneNumberStats';
 
 type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
 type CustomerPatience = 'low' | 'medium' | 'high';
@@ -1036,6 +1037,7 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
   }
 
   try {
+    const phoneNumberSource = await resolvePhoneNumberSourceSnapshot(call.phone, call.phoneNumberTypeId);
     const result = await startVoiceCall(call.phone, {
       scenario: 'realtime_pure',
       instructions: call.promptText,
@@ -1063,6 +1065,7 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
           dealershipId: call.dealershipId,
           managerId: call.employeeId,
           planId: call.planId,
+          ...phoneNumberSource,
           caseContextJson: JSON.stringify({
             planId: call.planId,
             scriptId: call.scriptId,
@@ -1215,6 +1218,10 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
         dealershipId: target.dealershipId,
         managerId: target.employee.id,
         planId: plan.id,
+        phoneNumberId: target.phoneNumber.id,
+        phoneNumberTypeId: target.phoneNumber.typeId,
+        phoneNumberTypeName: target.phoneNumber.type.name,
+        phoneNumberOwnership: target.phoneNumber.type.ownership,
         caseContextJson: JSON.stringify({
           planId: plan.id,
           scriptId: script.id,
