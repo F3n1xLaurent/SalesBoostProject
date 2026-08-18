@@ -4,13 +4,14 @@ import { BrutalCard } from '../../../shared/ui/brutal-card';
 import { AnsweredMissedDonut } from '../../../shared/ui/answered-missed-donut';
 import { AnswerRateByHour } from '../../../shared/ui/answer-rate-by-hour';
 import type { AdminTab } from '../../../entities/session/model/types';
-import { tabToPath } from '../../../shared/routing/adminRoutes';
+import { buildDealershipPath, tabToPath } from '../../../shared/routing/adminRoutes';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import {
   fetchDashboardOverview,
   fetchDealershipDirections,
   fetchHoldings,
   type DashboardOverview,
+  type DashboardEmployeeRatingRow,
   type DealershipDirectionItem,
   type HoldingItem,
   type TimeSeriesPoint,
@@ -282,9 +283,11 @@ function PerformanceTrendChart({
 function SalonTable({
   rows,
   emptyLabel,
+  onOpenDealership,
 }: {
-  rows: { rank: number; name: string; avgScore: number; answerRate: number; totalAudits: string }[];
+  rows: { id: string; rank: number; name: string; avgScore: number; answerRate: number; totalAudits: string }[];
   emptyLabel: string;
+  onOpenDealership: (id: string) => void;
 }) {
   if (rows.length === 0) {
     return <div className="sa-table-empty">{emptyLabel}</div>;
@@ -303,12 +306,54 @@ function SalonTable({
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.rank}>
+            <tr
+              key={r.id}
+              className="sa-row-clickable"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenDealership(r.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onOpenDealership(r.id);
+                }
+              }}
+            >
               <td>{r.rank}</td>
               <td>{shortName(r.name)}</td>
               <td><span className={scoreColorClass(r.avgScore)}>{r.avgScore.toFixed(1)}</span></td>
               <td><span className={rateColorClass(r.answerRate)}>{r.answerRate}%</span></td>
               <td>{r.totalAudits}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EmployeeRatingTable({ rows }: { rows: DashboardEmployeeRatingRow[] }) {
+  if (rows.length === 0) {
+    return <div className="sa-table-empty">Нет сотрудников с рейтингом</div>;
+  }
+  return (
+    <div className="sa-table-wrap sa-table-in-card">
+      <table className="sa-table sa-table-colored">
+        <thead>
+          <tr>
+            <th>Сотрудник</th>
+            <th className="sa-text-right">Проверки</th>
+            <th className="sa-text-right">AI-рейтинг</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((employee) => (
+            <tr key={employee.id}>
+              <td>{employee.name}</td>
+              <td className="sa-text-right">{employee.auditsCount}</td>
+              <td className="sa-text-right">
+                <span className={scoreColorClass(employee.aiRating)}>{employee.aiRating.toFixed(1)}</span>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -548,6 +593,7 @@ export function Dashboard({ loading }: DashboardProps) {
 
   const topSalons = (overview?.topDealerships ?? [])
     .map((c, i) => ({
+      id: c.id,
       rank: i + 1,
       name: c.name,
       avgScore: c.avgAiScore,
@@ -557,6 +603,7 @@ export function Dashboard({ loading }: DashboardProps) {
 
   const worstSalons = (overview?.lowDealerships ?? [])
     .map((c, i) => ({
+      id: c.id,
       rank: i + 1,
       name: c.name,
       avgScore: c.avgAiScore,
@@ -688,10 +735,18 @@ export function Dashboard({ loading }: DashboardProps) {
           </BrutalCard>
 
           <BrutalCard title="Лучшие точки" className="sa-grid-card">
-            <SalonTable rows={topSalons} emptyLabel="Нет данных" />
+            <SalonTable
+              rows={topSalons}
+              emptyLabel="Нет данных"
+              onOpenDealership={(id) => navigate(buildDealershipPath(id))}
+            />
           </BrutalCard>
           <BrutalCard title="Точки с низким результатом" className="sa-grid-card">
-            <SalonTable rows={worstSalons} emptyLabel="Нет данных" />
+            <SalonTable
+              rows={worstSalons}
+              emptyLabel="Нет данных"
+              onOpenDealership={(id) => navigate(buildDealershipPath(id))}
+            />
           </BrutalCard>
 
           <BrutalCard title="Дозвон по часам" className="sa-grid-card sa-chart-equal">
@@ -699,6 +754,18 @@ export function Dashboard({ loading }: DashboardProps) {
           </BrutalCard>
           <BrutalCard title="Средняя длительность звонка" className="sa-grid-card">
             <AverageAnswerTimeChart data={answerTimeByCompany} embedded />
+          </BrutalCard>
+        </div>
+      </section>
+
+      <section className="sa-section sa-section-employee-ratings">
+        <h2 className="sa-section-title">Рейтинг сотрудников</h2>
+        <div className="sa-dashboard-grid">
+          <BrutalCard title="ТОП-10 самых эффективных" className="sa-grid-card">
+            <EmployeeRatingTable rows={overview?.topEmployees ?? []} />
+          </BrutalCard>
+          <BrutalCard title="ТОП-10 самых провальных" className="sa-grid-card">
+            <EmployeeRatingTable rows={overview?.lowEmployees ?? []} />
           </BrutalCard>
         </div>
       </section>

@@ -10,15 +10,19 @@ import {
   fetchAuditDetail,
   fetchAnalyticsManagerDetail,
   fetchAnalyticsManagerPlans,
+  fetchUserRecommendations,
   type AuditDetailItem,
   type AnalyticsAISummary,
   type AnalyticsPlanParticipation,
+  type RecommendationResult,
+  type RecommendationSignal,
 } from '../../../shared/api/adminPanel';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { CallOutcomeBreakdown } from '../../../shared/ui/call-outcome-breakdown';
 import { AuditHistoryBlock } from '../../../shared/ui/audit-history-block';
 import { PlanParticipationTable } from '../../../shared/ui/plan-participation-table';
+import { RecommendationsBlock } from '../../../shared/ui/recommendations-block';
 
 type Props = {
   employeeId: string;
@@ -30,6 +34,8 @@ type Props = {
   headerRight?: React.ReactNode;
   mockNotice?: string;
   detailOverride?: Partial<Pick<EmployeeDetailData, 'fullName' | 'dealershipName' | 'city'>>;
+  readOnly?: boolean;
+  selfView?: boolean;
 };
 
 type ManagerOutcomeBreakdown = {
@@ -514,7 +520,7 @@ function TrainerStats({
 
 /* ════════════════════ Main component ════════════════════ */
 
-export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCompanies, sourceDealership, actionButtons, headerRight, mockNotice, detailOverride }: Props) {
+export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCompanies, sourceDealership, actionButtons, headerRight, mockNotice, detailOverride, readOnly = false, selfView = false }: Props) {
   const navigate = useNavigate();
   const [realDetail, setRealDetail] = useState<ManagerAnalyticsDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
@@ -526,6 +532,9 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
   const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
   const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
   const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
+  const [recommendations, setRecommendations] = useState<RecommendationResult | null>(null);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(true);
+  const [recommendationsError, setRecommendationsError] = useState<string | null>(null);
   const detail = useMemo(() => {
     if (!realDetail) return null;
     return {
@@ -547,6 +556,9 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
     setPlanParticipation([]);
     setDetailLoading(true);
     setDetailError(null);
+    setRecommendations(null);
+    setRecommendationsLoading(true);
+    setRecommendationsError(null);
     Promise.all([
       fetchAnalyticsManagerDetail(employeeId),
       fetchAnalyticsManagerPlans(employeeId),
@@ -556,6 +568,10 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           setRealDetail(item as ManagerAnalyticsDetail | null);
           setPlanParticipation(plans);
           setDetailLoading(false);
+          fetchUserRecommendations(item?.accountId || employeeId)
+            .then((response) => { if (!cancelled) setRecommendations(response.recommendations); })
+            .catch((error) => { if (!cancelled) setRecommendationsError(error instanceof Error ? error.message : 'Не удалось загрузить рекомендации.'); })
+            .finally(() => { if (!cancelled) setRecommendationsLoading(false); });
         }
       })
       .catch((error) => {
@@ -564,6 +580,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           setPlanParticipation([]);
           setDetailError(error instanceof Error ? error.message : 'Не удалось загрузить данные сотрудника');
           setDetailLoading(false);
+          setRecommendationsLoading(false);
         }
       });
     return () => {
@@ -656,7 +673,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
   return (
     <div className="sa-detail-root sa-page-enter">
       {/* Breadcrumb */}
-      <div className="sa-breadcrumb">
+      {!selfView && <div className="sa-breadcrumb">
         {sourceDealership ? (
           <>
             <button className="sa-btn-text" onClick={() => onOpenCompanies?.()}>Точки</button>
@@ -672,7 +689,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
             <span>{displayName}</span>
           </>
         )}
-      </div>
+      </div>}
 
       {/* Header */}
       <div className="sa-detail-header">
@@ -761,7 +778,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
       </section>
 
       {/* Schedules */}
-      <section className="sa-section" style={{ marginBottom: 32 }}>
+      {!readOnly && <section className="sa-section" style={{ marginBottom: 32 }}>
         <div className="sa-section-header-row" style={{ marginBottom: 12 }}>
           <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Участвует в расписаниях</h2>
           <button type="button" className="sa-btn-text" onClick={() => navigate('/call-settings/plans')}>
@@ -776,7 +793,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
           onExcludePlan={handleExcludePlan}
           variant="employee"
         />
-      </section>
+      </section>}
 
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Динамика эффективности</h2>
@@ -818,12 +835,21 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
 
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Рекомендации</h2>
-        <TrainerRecommendations
-          items={detail.recommendedTrainings}
-          onOpenProblem={(issue) => {
+        <RecommendationsBlock
+          data={recommendations}
+          loading={recommendationsLoading}
+          error={recommendationsError}
+          onOpen={(signal: RecommendationSignal) => {
+            if (signal.scope === 'systemic' && signal.kind === 'missed') { navigate('/call-settings/plans'); return; }
+            if (signal.scope === 'systemic' && signal.kind === 'source') { navigate('/analytics'); return; }
             const params = new URLSearchParams();
-            params.set('problem', issue);
+            if (signal.problemCode) params.set('problem', signal.problemCode);
+            if (signal.sourceTypeId) params.set('sourceTypeId', signal.sourceTypeId);
+            if (signal.phoneNumberId) params.set('phoneNumberId', signal.phoneNumberId);
+            if (signal.kind === 'missed') params.set('outcome', 'missed');
+            if (signal.kind === 'answer_speed') params.set('sort', 'answerTimeDesc');
             if (detail.dealershipId) params.set('dealership', detail.dealershipId);
+            params.set('employee', detail.accountId || employeeId);
             navigate(`/audits?${params.toString()}`);
           }}
         />

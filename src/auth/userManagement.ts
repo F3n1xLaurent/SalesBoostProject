@@ -1,5 +1,6 @@
 import type { Account, AccountMembership, PermissionTemplate, Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { getPhoneCallStats, normalizeCallPhone, type PhoneCallStats } from '../voice/phoneNumberStats';
 import { prisma } from '../db';
 import { hashPassword } from './password';
 import {
@@ -57,6 +58,27 @@ function isHoldingAdmin(account: ScopedAccount): boolean {
 
 function isDealershipAdmin(account: ScopedAccount): boolean {
   return account.memberships.some((membership) => membership.role === APP_ROLES.dealershipAdmin);
+}
+
+function scopeAccountToActiveRole(req: Request, account: ScopedAccount): ScopedAccount {
+  const activeRole = String(req.get('x-admin-role') || '').trim();
+  if (!activeRole) return account;
+
+  const role = activeRole === 'super'
+    ? APP_ROLES.platformSuperadmin
+    : activeRole === 'company'
+      ? APP_ROLES.holdingAdmin
+      : activeRole === 'dealer'
+        ? APP_ROLES.dealershipAdmin
+        : activeRole === 'staff'
+          ? APP_ROLES.manager
+          : null;
+  if (!role) return account;
+
+  return {
+    ...account,
+    memberships: account.memberships.filter((membership) => membership.role === role),
+  };
 }
 
 function getHoldingIds(account: ScopedAccount): string[] {
@@ -410,6 +432,7 @@ function formatPhoneNumber(value: unknown): string | null {
 
 function normalizePhoneNumberResponse(
   phoneNumber: Prisma.PhoneNumberGetPayload<{ include: { type: true } }>,
+  stats?: PhoneCallStats,
 ) {
   return {
     id: phoneNumber.id,
@@ -421,6 +444,9 @@ function normalizePhoneNumberResponse(
     isActive: phoneNumber.isActive,
     createdAt: phoneNumber.createdAt,
     updatedAt: phoneNumber.updatedAt,
+    totalCalls: stats?.totalCalls ?? 0,
+    successfulCalls: stats?.successfulCalls ?? 0,
+    missedCalls: stats?.missedCalls ?? 0,
   };
 }
 
@@ -492,7 +518,7 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
       holdingId: profile.dealership.holdingId,
       holdingName: profile.dealership.holding?.name ?? null,
     })),
-    phoneNumbers: account.phoneNumbers.map(normalizePhoneNumberResponse),
+    phoneNumbers: account.phoneNumbers.map((phoneNumber) => normalizePhoneNumberResponse(phoneNumber)),
     permissionTemplates: account.permissionTemplateAssignments.map((assignment) => ({
       id: assignment.template.id,
       name: assignment.template.name,
@@ -505,7 +531,9 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
 
 async function assertMembershipsAllowed(account: ScopedAccount, memberships: UserMembershipInput[], templateIds: string[]): Promise<void> {
   if (isPlatformSuperadmin(account)) return;
-  if (!isHoldingAdmin(account)) throw new Error('Недостаточно прав для управления пользователями.');
+  if (!isHoldingAdmin(account) && !isDealershipAdmin(account)) {
+    throw new Error('Недостаточно прав для управления пользователями.');
+  }
   if (templateIds.length > 0) throw new Error('Шаблоны прав может назначать только суперадмин.');
 
   const dealerships = await getAccessibleDealerships(account);
@@ -513,23 +541,25 @@ async function assertMembershipsAllowed(account: ScopedAccount, memberships: Use
 
   for (const membership of memberships) {
     if (membership.role !== APP_ROLES.manager) {
-      throw new Error('Руководитель холдинга может создавать и редактировать только менеджеров.');
+      throw new Error('Руководитель компании или точки может создавать и редактировать только менеджеров.');
     }
     if (!membership.dealershipId || !dealershipIds.has(membership.dealershipId)) {
-      throw new Error('Нельзя назначить менеджера вне автосалонов вашего холдинга.');
+      throw new Error('Нельзя назначить менеджера вне доступных вам точек.');
     }
   }
 }
 
 async function assertManagerProfilesAllowed(account: ScopedAccount, profiles: ManagerProfileInput[]): Promise<void> {
   if (isPlatformSuperadmin(account)) return;
-  if (!isHoldingAdmin(account)) throw new Error('Недостаточно прав для управления пользователями.');
+  if (!isHoldingAdmin(account) && !isDealershipAdmin(account)) {
+    throw new Error('Недостаточно прав для управления пользователями.');
+  }
 
   const dealerships = await getAccessibleDealerships(account);
   const dealershipIds = new Set(dealerships.map((dealership) => dealership.id));
   for (const profile of profiles) {
     if (!dealershipIds.has(profile.dealershipId)) {
-      throw new Error('Нельзя редактировать менеджеров вне автосалонов вашего холдинга.');
+      throw new Error('Нельзя редактировать менеджеров вне доступных вам точек.');
     }
   }
 }
@@ -569,11 +599,12 @@ async function assertAccountInScope(account: ScopedAccount, targetAccountId: str
 }
 
 export async function handleRbacMeta(req: Request, res: Response): Promise<void> {
-  const account = req.authAccount;
-  if (!account) {
+  const authAccount = req.authAccount;
+  if (!authAccount) {
     res.status(401).json({ error: 'Требуется авторизация.' });
     return;
   }
+  const account = scopeAccountToActiveRole(req, authAccount);
 
   if (isPlatformSuperadmin(account)) {
     await ensureSystemPermissionTemplates();
@@ -614,11 +645,12 @@ export async function handleRbacMeta(req: Request, res: Response): Promise<void>
 }
 
 export async function handleListUsers(req: Request, res: Response): Promise<void> {
-  const account = req.authAccount;
-  if (!account) {
+  const authAccount = req.authAccount;
+  if (!authAccount) {
     res.status(401).json({ error: 'Требуется авторизация.' });
     return;
   }
+  const account = scopeAccountToActiveRole(req, authAccount);
 
   const search = String(req.query.search || '').trim().toLowerCase();
   const holdingIds = getHoldingIds(account);
@@ -746,11 +778,12 @@ export async function handleListUsers(req: Request, res: Response): Promise<void
 }
 
 export async function handleCreateUser(req: Request, res: Response): Promise<void> {
-  const account = req.authAccount;
-  if (!account) {
+  const authAccount = req.authAccount;
+  if (!authAccount) {
     res.status(401).json({ error: 'Требуется авторизация.' });
     return;
   }
+  const account = scopeAccountToActiveRole(req, authAccount);
 
   const body = (req.body || {}) as Record<string, unknown>;
   const email = String(body.email || '').trim().toLowerCase();
@@ -1138,7 +1171,8 @@ export async function handleListUserPhoneNumbers(req: Request, res: Response): P
       include: { type: true },
       orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
     });
-    res.json({ items: items.map(normalizePhoneNumberResponse) });
+    const stats = await getPhoneCallStats(items.map((item) => item.phone));
+    res.json({ items: items.map((item) => normalizePhoneNumberResponse(item, stats.get(normalizeCallPhone(item.phone)))) });
   } catch (error) {
     console.error('List user phone numbers error:', error);
     res.status(error instanceof Error && error.message.includes('не найден') ? 404 : 403).json({

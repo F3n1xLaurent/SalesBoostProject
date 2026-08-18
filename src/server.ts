@@ -18,6 +18,7 @@ import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
+import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { generateUnifiedCallReport, generateUnifiedTrainerReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
@@ -139,6 +140,11 @@ import {
   handleUpdateUserPhoneNumber,
   handleUpdateUser,
 } from './auth/userManagement';
+import {
+  handleDealershipRecommendations,
+  handleHoldingRecommendations,
+  handleUserRecommendations,
+} from './analytics/recommendations/api';
 import {
   advanceTopic,
   checkCriticalEvasions,
@@ -329,6 +335,26 @@ function canAccessDealershipForActiveRole(
   if (account.memberships.some((membership) => membership.role === 'platform_superadmin')) return true;
   if (account.memberships.some((membership) => membership.role === 'dealership_admin' && membership.dealershipId === dealership.id)) return true;
   return !!dealership.holdingId && account.memberships.some((membership) => membership.role === 'holding_admin' && membership.holdingId === dealership.holdingId);
+}
+
+async function resolveAccessibleAnalyticsManager(req: express.Request, identifier: string) {
+  const account = req.authAccount;
+  if (!account) return null;
+
+  const include = { dealership: true } as const;
+  const managerById = await prisma.managerProfile.findUnique({ where: { id: identifier }, include });
+  const manager = managerById ?? await prisma.managerProfile.findFirst({
+    where: { accountId: identifier, status: 'active' },
+    include,
+    orderBy: { createdAt: 'asc' },
+  });
+  if (!manager) return null;
+
+  const activeRole = getActiveAdminRole(req);
+  if (activeRole === 'staff') {
+    return manager.accountId === account.id ? manager : null;
+  }
+  return canAccessDealershipForActiveRole(req, manager.dealership) ? manager : null;
 }
 
 function safeJsonParseLocal<T>(value: string | null | undefined, fallback: T): T {
@@ -4220,6 +4246,13 @@ app.get('/api/admin/holdings', (req, res) => {
   });
 });
 
+app.get('/api/admin/holdings/:holdingId/recommendations', (req, res) => {
+  handleHoldingRecommendations(req, res).catch((error) => {
+    console.error('Holding recommendations error:', error);
+    res.status(500).json({ error: 'Не удалось рассчитать рекомендации компании.' });
+  });
+});
+
 app.get('/api/admin/cities', (req, res) => {
   handleListCities(req, res).catch((error) => {
     console.error('List cities route error:', error);
@@ -4252,6 +4285,13 @@ app.get('/api/admin/dealerships', (req, res) => {
   handleListDealerships(req, res).catch((error) => {
     console.error('List dealerships error:', error);
     res.status(500).json({ error: 'Не удалось загрузить точки.' });
+  });
+});
+
+app.get('/api/admin/dealerships/:dealershipId/recommendations', (req, res) => {
+  handleDealershipRecommendations(req, res).catch((error) => {
+    console.error('Dealership recommendations error:', error);
+    res.status(500).json({ error: 'Не удалось рассчитать рекомендации точки.' });
   });
 });
 
@@ -4371,6 +4411,13 @@ app.get('/api/admin/users', (req, res) => {
   handleListUsers(req, res).catch((error) => {
     console.error('List users error:', error);
     res.status(500).json({ error: 'Не удалось загрузить пользователей.' });
+  });
+});
+
+app.get('/api/admin/users/:accountId/recommendations', (req, res) => {
+  handleUserRecommendations(req, res).catch((error) => {
+    console.error('User recommendations error:', error);
+    res.status(500).json({ error: 'Не удалось рассчитать рекомендации пользователя.' });
   });
 });
 
@@ -5205,7 +5252,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       if (direction) directionMeta = direction;
     }
 
-    const [dealerships, sessions, attempts, trainingSessions] = await Promise.all([
+    const [dealerships, sessions, attempts, trainingSessions, trainerSessions] = await Promise.all([
       prisma.dealership.findMany({
         where: {
           isActive: true,
@@ -5213,7 +5260,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         },
         include: {
           holding: true,
-          managerProfiles: { select: { id: true, status: true } },
+          managerProfiles: { select: { id: true, accountId: true, fullName: true, status: true } },
         },
         orderBy: { name: 'asc' },
       }),
@@ -5253,7 +5300,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         select: {
           finishedAt: true,
           totalScore: true,
-          user: { select: { managerProfile: { select: { dealershipId: true } } } },
+          user: { select: { managerProfile: { select: { id: true, dealershipId: true } } } },
         },
       }),
       prisma.trainingSession.findMany({
@@ -5270,7 +5317,26 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
           totalScore: true,
           evaluationJson: true,
           assessmentScore: true,
-          user: { select: { managerProfile: { select: { dealershipId: true } } } },
+          user: { select: { managerProfile: { select: { id: true, dealershipId: true } } } },
+        },
+      }),
+      prisma.trainerSession.findMany({
+        where: {
+          status: { in: ['completed', 'failed'] },
+          ...(holdingId ? {
+            OR: [
+              { companyId: holdingId },
+              { branch: { holdingId } },
+              { employee: { dealership: { holdingId } } },
+            ],
+          } : {}),
+        },
+        select: {
+          completedAt: true,
+          score: true,
+          evaluationJson: true,
+          branchId: true,
+          employee: { select: { id: true, dealershipId: true } },
         },
       }),
     ]);
@@ -5282,6 +5348,11 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       }),
     );
     const allowedDealershipIds = new Set(filteredDealerships.map((dealership) => dealership.id));
+    const uniqueEmployeeKeys = new Set(
+      filteredDealerships.flatMap((dealership) => dealership.managerProfiles
+        .filter((manager) => manager.status === 'active')
+        .map((manager) => manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`)),
+    );
 
     const filteredSessions = sessions.filter(
       (session) => session.dealershipId && allowedDealershipIds.has(session.dealershipId),
@@ -5294,6 +5365,10 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       const dealershipId = session.user?.managerProfile?.dealershipId;
       return Boolean(dealershipId && allowedDealershipIds.has(dealershipId));
     });
+    const filteredTrainerSessions = trainerSessions.filter((session) => {
+      const dealershipId = session.branchId ?? session.employee.dealershipId;
+      return allowedDealershipIds.has(dealershipId);
+    });
 
     const trainingScore = (session: { totalScore: number | null; assessmentScore: number | null; evaluationJson: string | null }) => {
       if (typeof session.totalScore === 'number') return session.totalScore;
@@ -5302,16 +5377,56 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       const score = evaluation?.overall_score_0_100;
       return typeof score === 'number' ? score : null;
     };
+    const trainerScore = (session: { score: number | null; evaluationJson: string | null }) => {
+      if (typeof session.score === 'number') return session.score;
+      const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+      if (!evaluation) return null;
+      return scoreFromEvaluation(evaluation, null);
+    };
 
     const scoredValues = [
       ...filteredAttempts.map((attempt) => attempt.totalScore ?? null),
       ...filteredTrainingSessions.map(trainingScore),
+      ...filteredTrainerSessions.map(trainerScore),
       ...filteredSessions.map(scoreFromAnalyticsSession),
     ].filter((score): score is number => typeof score === 'number');
 
     const avgScore = scoredValues.length
       ? round1(scoredValues.reduce((sum, score) => sum + score, 0) / scoredValues.length)
       : 0;
+
+    const employeeRatings = new Map<string, { id: string; name: string; auditsCount: number; scores: number[] }>();
+    const employeeKeyByProfileId = new Map<string, string>();
+    for (const dealership of dealerships) {
+      for (const manager of dealership.managerProfiles) {
+        if (manager.status !== 'active') continue;
+        const key = manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`;
+        employeeKeyByProfileId.set(manager.id, key);
+        if (!employeeRatings.has(key)) {
+          employeeRatings.set(key, { id: manager.accountId || manager.id, name: manager.fullName, auditsCount: 0, scores: [] });
+        }
+      }
+    }
+    const addEmployeeAudit = (managerId: string | null | undefined, score: number | null) => {
+      if (!managerId) return;
+      const key = employeeKeyByProfileId.get(managerId);
+      const employee = key ? employeeRatings.get(key) : null;
+      if (!employee) return;
+      employee.auditsCount += 1;
+      if (typeof score === 'number' && Number.isFinite(score)) employee.scores.push(score);
+    };
+    for (const session of sessions) addEmployeeAudit(session.managerId, scoreFromAnalyticsSession(session));
+    for (const session of trainingSessions) addEmployeeAudit(session.user?.managerProfile?.id, trainingScore(session));
+    for (const session of trainerSessions) addEmployeeAudit(session.employee.id, trainerScore(session));
+    const employeeRatingRows = [...employeeRatings.values()]
+      .filter((employee) => employee.scores.length > 0)
+      .map((employee) => ({
+        id: employee.id,
+        name: employee.name,
+        auditsCount: employee.auditsCount,
+        aiRating: round1(employee.scores.reduce((sum, score) => sum + score, 0) / employee.scores.length),
+      }))
+      .filter((employee) => employee.aiRating > 0);
 
     const checklistCounts = new Map<string, { count: number; total: number }>();
     for (const session of filteredSessions) {
@@ -5331,6 +5446,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
 
     const dealershipRows = filteredDealerships.map((dealership) => {
       const dealershipSessions = filteredSessions.filter((session) => session.dealershipId === dealership.id);
+      const dealershipTrainerSessions = filteredTrainerSessions.filter(
+        (session) => (session.branchId ?? session.employee.dealershipId) === dealership.id,
+      );
       const scored = dealershipSessions
         .map((session) => ({ ...session, resolvedScore: scoreFromAnalyticsSession(session) }))
         .filter((session) => typeof session.resolvedScore === 'number');
@@ -5353,10 +5471,12 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       return {
         id: dealership.id,
         name: dealership.name,
-        managersCount: dealership.managerProfiles.filter((manager) => manager.status === 'active').length,
+        managersCount: new Set(dealership.managerProfiles
+          .filter((manager) => manager.status === 'active')
+          .map((manager) => manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`)).size,
         avgAiScore: scoreFromSessions(dealershipSessions),
         answerRate: answerRateFromSessions(dealershipSessions) ?? 0,
-        totalAudits: dealershipSessions.length,
+        totalAudits: dealershipSessions.length + dealershipTrainerSessions.length,
         avgDurationSec: durations.length ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length) : 0,
         avgAnswerTimeSec: avgAnswerTimeSec ?? 0,
         lastAudit: dealershipSessions[0]?.startedAt.toISOString() ?? null,
@@ -5383,9 +5503,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         lowDealerships: lowDealerships.length,
       }),
       avgScore,
-      totalAudits: filteredAttempts.length + filteredTrainingSessions.length + filteredSessions.length,
+      totalAudits: filteredAttempts.length + filteredTrainingSessions.length + filteredTrainerSessions.length + filteredSessions.length,
       totalDealerships: filteredDealerships.length,
-      totalEmployees: filteredDealerships.reduce((sum, dealership) => sum + dealership.managerProfiles.filter((manager) => manager.status === 'active').length, 0),
+      totalEmployees: uniqueEmployeeKeys.size,
       answerRate: answerRateFromSessions(filteredSessions) ?? 0,
       totalCalls: filteredSessions.length,
       timeSeries: typeTimeSeriesFromSessions(filteredSessions, days),
@@ -5403,6 +5523,12 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         .filter((row) => row.totalAudits > 0)
         .sort((a, b) => a.avgAiScore - b.avgAiScore)
         .slice(0, 5),
+      topEmployees: [...employeeRatingRows]
+        .sort((a, b) => b.aiRating - a.aiRating || b.auditsCount - a.auditsCount || a.name.localeCompare(b.name, 'ru'))
+        .slice(0, 10),
+      lowEmployees: [...employeeRatingRows]
+        .sort((a, b) => a.aiRating - b.aiRating || b.auditsCount - a.auditsCount || a.name.localeCompare(b.name, 'ru'))
+        .slice(0, 10),
       topWeakness: topWeakness ? { weakness: topWeakness.weakness, count: topWeakness.count } : null,
       riskLabel: lowDealerships[0]?.name ?? topWeakness?.weakness ?? null,
     });
@@ -6250,7 +6376,7 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
     const previousStart = new Date(now);
     previousStart.setDate(previousStart.getDate() - 60);
 
-    const [sessions, dealerships, holdings] = await Promise.all([
+    const [sessions, dealerships, holdings, phoneNumbers] = await Promise.all([
       prisma.voiceCallSession.findMany({
         where: {
           dealershipId: { not: null },
@@ -6283,6 +6409,18 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         },
         include: { dealerships: true },
         orderBy: { name: 'asc' },
+      }),
+      prisma.phoneNumber.findMany({
+        where: {
+          isActive: true,
+          ...(holdingId ? {
+            OR: [
+              { dealership: { holdingId } },
+              { account: { managerProfiles: { some: { dealership: { holdingId } } } } },
+            ],
+          } : {}),
+        },
+        select: { phone: true, typeId: true, type: { select: { name: true, ownership: true } } },
       }),
     ]);
     const scriptIds = [...new Set(sessions.map((session) => session.plan?.scriptId).filter((id): id is string => Boolean(id)))];
@@ -6401,6 +6539,38 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
     const laggardIds = new Set(comparedDealerships.slice(0, 3).map((item) => item.id));
     const leaderSessions = sessions.filter((session) => session.dealershipId && leaderIds.has(session.dealershipId));
     const laggardSessions = sessions.filter((session) => session.dealershipId && laggardIds.has(session.dealershipId));
+    const sourceByPhone = new Map(phoneNumbers.map((phone) => [normalizeCallPhone(phone.phone), phone]));
+    const sourceGroups = new Map<string, { id: string; name: string; ownership: string; sessions: typeof sessions }>();
+    for (const session of sessions) {
+      const fallback = sourceByPhone.get(normalizeCallPhone(session.to));
+      const sourceId = session.phoneNumberTypeId ?? fallback?.typeId;
+      if (!sourceId) continue;
+      const group = sourceGroups.get(sourceId) ?? {
+        id: sourceId,
+        name: session.phoneNumberTypeName ?? fallback?.type.name ?? sourceId,
+        ownership: session.phoneNumberOwnership ?? fallback?.type.ownership ?? '',
+        sessions: [],
+      };
+      group.sessions.push(session);
+      sourceGroups.set(sourceId, group);
+    }
+    const currentScored = sessions.filter((session) => session.startedAt >= currentStart && typeof scoreFromAnalyticsSession(session) === 'number');
+    const currentNetworkScore = currentScored.length ? scoreFromSessions(currentScored) : 0;
+    const phoneNumberTypeComparison = [...sourceGroups.values()].map((group) => {
+      const current = group.sessions.filter((session) => session.startedAt >= currentStart && typeof scoreFromAnalyticsSession(session) === 'number');
+      const previous = group.sessions.filter((session) => session.startedAt >= previousStart && session.startedAt < currentStart && typeof scoreFromAnalyticsSession(session) === 'number');
+      const score = current.length ? scoreFromSessions(current) : 0;
+      const previousScore = previous.length ? scoreFromSessions(previous) : null;
+      return {
+        id: group.id,
+        name: group.name,
+        ownership: group.ownership,
+        calls: current.length,
+        score,
+        delta: round1(score - currentNetworkScore),
+        trend: previousScore === null ? null : round1(score - previousScore),
+      };
+    }).filter((item) => item.calls > 0).sort((a, b) => b.score - a.score || b.calls - a.calls);
 
     const errorsInsight: AnalyticsInsight = topProblem
       ? {
@@ -6531,6 +6701,7 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
       timeSeries: timeSeriesFromSessions(sessions, 14),
       weeklyTypeTrend: weeklyTypeTrendFromSessions(sessions),
       typeCategoryComparison: categoryComparisonFromSessions(ownSessions, franchiseSessions),
+      phoneNumberTypeComparison,
       typeTopErrors: {
         own: topIssuesFromSessions(ownSessions, 5, DEFAULT_CALL_REPORT_PROBLEMS),
         franchise: topIssuesFromSessions(franchiseSessions, 5, DEFAULT_CALL_REPORT_PROBLEMS),
@@ -6578,12 +6749,20 @@ app.post('/api/admin/analytics/comparison-summary', async (req, res) => {
   }
 });
 
-app.get('/api/admin/analytics/dealerships', async (_req, res) => {
+app.get('/api/admin/analytics/dealerships', async (req, res) => {
   try {
+    const rawDays = String(req.query.days || 'all');
+    const requestedDays = Number.parseInt(rawDays, 10);
+    const days = requestedDays === 7 ? 7 : requestedDays === 30 ? 30 : null;
+    const periodStart = days === null ? null : new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
     const [dealerships, sessions, managerCounts] = await Promise.all([
       prisma.dealership.findMany({ where: { isActive: true }, include: { holding: true }, orderBy: { name: 'asc' } }),
       prisma.voiceCallSession.findMany({
-        where: { dealershipId: { not: null } },
+        where: {
+          dealershipId: { not: null },
+          ...(periodStart ? { startedAt: { gte: periodStart } } : {}),
+        },
         select: {
           id: true,
           startedAt: true,
@@ -7173,7 +7352,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
 app.get('/api/admin/analytics/managers/:id/plans', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
-    const manager = await prisma.managerProfile.findUnique({ where: { id }, include: { dealership: true } });
+    const manager = await resolveAccessibleAnalyticsManager(req, id);
     if (!manager) return res.status(404).json({ error: 'Manager not found' });
     if (!manager.dealership.holdingId) return res.json({ items: [] });
 
@@ -7237,11 +7416,11 @@ app.post('/api/admin/analytics/managers/:id/plans/:planId/exclude', async (req, 
 app.get('/api/admin/analytics/managers/:id', async (req, res) => {
   try {
     const id = String(req.params.id || '').trim();
-    const manager = await prisma.managerProfile.findUnique({ where: { id }, include: { dealership: true } });
+    const manager = await resolveAccessibleAnalyticsManager(req, id);
     if (!manager) return res.status(404).json({ error: 'Manager not found' });
     const [sessions, dealershipSessions, networkSessions, dealershipManagers, trainerSessions, trainerScoreAgg, trainerStreak] = await Promise.all([
       prisma.voiceCallSession.findMany({
-        where: { managerId: id },
+        where: { managerId: manager.id },
         include: { plan: { select: { name: true, scriptId: true } } },
         orderBy: { startedAt: 'desc' },
       }),
@@ -7258,15 +7437,15 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
         select: { id: true },
       }),
       prisma.trainerSession.findMany({
-        where: { employeeId: id },
+        where: { employeeId: manager.id },
         include: { scenario: { select: { name: true } } },
         orderBy: { startedAt: 'desc' },
       }),
       prisma.trainerScore.aggregate({
-        where: { employeeId: id },
+        where: { employeeId: manager.id },
         _sum: { finalScore: true },
       }),
-      prisma.trainerStreak.findUnique({ where: { employeeId: id } }),
+      prisma.trainerStreak.findUnique({ where: { employeeId: manager.id } }),
     ]);
     const scriptIds = [...new Set(sessions.map((session) => session.plan?.scriptId).filter((scriptId): scriptId is string => Boolean(scriptId)))];
     const scripts = scriptIds.length
@@ -7559,7 +7738,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
     const activeRole = getActiveAdminRole(req);
     const voiceScopeWhere = buildVoiceCallSessionScopeWhere(req.authAccount, activeRole);
     const trainerScopeWhere = buildTrainerSessionScopeWhere(req.authAccount, activeRole);
-    const [voiceSessions, trainerSessions, catalog] = await Promise.all([
+    const [voiceSessions, trainerSessions, catalog, auditPhoneNumbers] = await Promise.all([
       prisma.voiceCallSession.findMany({
         where: {
           AND: [
@@ -7598,9 +7777,15 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         take: limit,
       }),
       getCallReportProblemCatalog(prisma),
+      prisma.phoneNumber.findMany({
+        where: { isActive: true },
+        select: { id: true, phone: true, typeId: true, type: { select: { name: true } } },
+      }),
     ]);
+    const auditPhoneByNumber = new Map(auditPhoneNumbers.map((phone) => [normalizeCallPhone(phone.phone), phone]));
 
     const auditFromCall = (s: typeof voiceSessions[number]) => {
+      const fallbackPhone = auditPhoneByNumber.get(normalizeCallPhone(s.to));
       let score = s.totalScore ?? 0;
       if (s.evaluationJson) {
         try {
@@ -7629,11 +7814,18 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         dealershipName: s.dealership?.name ?? null,
         city: s.dealership?.city ?? null,
         employeeId: s.managerId,
+        employeeAccountId: s.manager?.accountId ?? null,
         date: s.startedAt.toISOString(),
         aiScore: Math.round(score * 10) / 10,
         status: score >= 76 ? 'Good' as const : score >= 50 ? 'Medium' as const : 'Bad' as const,
         auditStatus,
         durationSec: s.durationSec ?? 0,
+        outcome: s.outcome,
+        answerTimeSec: s.answerTimeSec,
+        phoneNumberId: s.phoneNumberId ?? fallbackPhone?.id ?? null,
+        phoneNumberTypeId: s.phoneNumberTypeId ?? fallbackPhone?.typeId ?? null,
+        phoneNumberTypeName: s.phoneNumberTypeName ?? fallbackPhone?.type.name ?? null,
+        phoneNumber: s.to,
         verdict,
         communicationFlag: communicationFlagFromSessions([s]),
         reportIssues: extractReportIssuesFromSession(s, catalog),
@@ -7662,11 +7854,18 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         dealershipName: branch?.name ?? null,
         city: branch?.city ?? null,
         employeeId: s.employeeId,
+        employeeAccountId: s.employee?.accountId ?? null,
         date: (s.completedAt ?? s.startedAt).toISOString(),
         aiScore: score === null ? null : Math.round(score * 10) / 10,
         status: score === null ? 'Medium' as const : score >= 76 ? 'Good' as const : score >= 50 ? 'Medium' as const : 'Bad' as const,
         auditStatus,
         durationSec: s.durationSec ?? 0,
+        outcome: null,
+        answerTimeSec: null,
+        phoneNumberId: null,
+        phoneNumberTypeId: null,
+        phoneNumberTypeName: null,
+        phoneNumber: null,
         verdict: score === null ? 'Аналитика считается' : auditStatus === 'failed' ? 'Нуждается в разборе' : 'Оценено',
         communicationFlag: communicationFlagFromSessions([s as unknown as AnalyticsSession]),
         reportIssues: extractReportIssuesFromSession(s, catalog),

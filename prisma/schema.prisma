@@ -236,6 +236,7 @@ model CallPlan {
   weekdaysJson        String   @default("[1,2,3,4,5,6,0]")
   callTimeFrom        String
   callTimeTo          String
+  timezoneOffsetMinutes Int    @default(180)
   lastInitiatedAt     DateTime?
   lastBatchId         String?
   createdAt           DateTime @default(now())
@@ -705,6 +706,10 @@ model VoiceCallSession {
   dealershipId     String?
   managerId        String?
   planId           String?
+  phoneNumberId          String?   // source phone number snapshot
+  phoneNumberTypeId      String?   // source type snapshot
+  phoneNumberTypeName    String?   // display name snapshot (e.g. Avito)
+  phoneNumberOwnership   String?   // "dealership" | "user"
   startedAt        DateTime  @default(now())
   connectedAt      DateTime?
   endedAt          DateTime?
@@ -726,8 +731,11 @@ model VoiceCallSession {
 
   @@index([dealershipId, startedAt])
   @@index([managerId, startedAt])
+  @@index([to])
   @@index([planId, startedAt])
   @@index([source, startedAt])
+  @@index([phoneNumberTypeId, startedAt])
+  @@index([phoneNumberOwnership, startedAt])
   @@map("voice_call_sessions")
 }
 

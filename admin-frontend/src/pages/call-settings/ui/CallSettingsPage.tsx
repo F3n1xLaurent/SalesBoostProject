@@ -120,6 +120,10 @@ const PLAN_WEEKDAYS: Array<{ value: CallPlanWeekday; label: string; short: strin
 ];
 
 const DEFAULT_PLAN_WEEKDAYS: CallPlanWeekday[] = [1, 2, 3, 4, 5, 6, 0];
+const PLAN_TIMEZONE_OPTIONS = Array.from({ length: 27 }, (_, index) => index - 12).map((hours) => ({
+  value: String(hours * 60),
+  label: `UTC${hours >= 0 ? '+' : ''}${hours}`,
+}));
 
 const CALL_SETTINGS_PATHS: Record<CallSettingsTab, string> = {
   profiles: '/call-settings/profiles',
@@ -157,6 +161,15 @@ function formatPlanWeekdays(days: CallPlanWeekday[] | undefined): string {
     .filter((day) => values.includes(day.value))
     .map((day) => day.short)
     .join(', ');
+}
+
+function formatTimezoneOffset(offsetMinutes: number | undefined): string {
+  const minutes = offsetMinutes ?? 180;
+  const sign = minutes >= 0 ? '+' : '-';
+  const absolute = Math.abs(minutes);
+  const hours = Math.floor(absolute / 60);
+  const remainder = absolute % 60;
+  return `UTC${sign}${hours}${remainder ? `:${String(remainder).padStart(2, '0')}` : ''}`;
 }
 
 function planCallStatusClass(outcome: string | null | undefined, status: string | null | undefined): string {
@@ -585,7 +598,7 @@ function ProfileModal(props: {
                 type="submit"
                 form={PROFILE_FORM_ID}
                 className="sa-btn-primary"
-                disabled={props.saving || (isEdit && !isDirty) || activeVoices.length === 0}
+                disabled={props.saving || !form.name.trim() || activeVoices.length === 0 || (isEdit && !isDirty)}
               >
                 {props.saving ? 'Сохраняем...' : isEdit ? 'Сохранить' : 'Создать профиль'}
               </button>
@@ -1636,6 +1649,7 @@ function CallPlanEditor(props: {
   const [weekdays, setWeekdays] = useState<CallPlanWeekday[]>(props.initialPlan?.weekdays?.length ? props.initialPlan.weekdays : DEFAULT_PLAN_WEEKDAYS);
   const [callTimeFrom, setCallTimeFrom] = useState(props.initialPlan?.callTimeFrom || '09:00');
   const [callTimeTo, setCallTimeTo] = useState(props.initialPlan?.callTimeTo || '09:15');
+  const [timezoneOffsetMinutes, setTimezoneOffsetMinutes] = useState(props.initialPlan?.timezoneOffsetMinutes ?? 180);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [initialSnapshot, setInitialSnapshot] = useState('');
@@ -1652,6 +1666,7 @@ function CallPlanEditor(props: {
       weekdays: props.initialPlan?.weekdays?.length ? props.initialPlan.weekdays : DEFAULT_PLAN_WEEKDAYS,
       callTimeFrom: props.initialPlan?.callTimeFrom || '09:00',
       callTimeTo: props.initialPlan?.callTimeTo || '09:15',
+      timezoneOffsetMinutes: props.initialPlan?.timezoneOffsetMinutes ?? 180,
     };
     setName(next.name);
     setTargetType(next.targetType);
@@ -1662,6 +1677,7 @@ function CallPlanEditor(props: {
     setWeekdays(next.weekdays);
     setCallTimeFrom(next.callTimeFrom);
     setCallTimeTo(next.callTimeTo);
+    setTimezoneOffsetMinutes(next.timezoneOffsetMinutes);
     setInitialSnapshot(JSON.stringify(next));
     setAttempted(false);
   }, [props.initialPlan]);
@@ -1733,6 +1749,7 @@ function CallPlanEditor(props: {
       weekdays,
       callTimeFrom,
       callTimeTo,
+      timezoneOffsetMinutes,
     };
     if (isEdit && JSON.stringify({
       name,
@@ -1744,6 +1761,7 @@ function CallPlanEditor(props: {
       weekdays,
       callTimeFrom,
       callTimeTo,
+      timezoneOffsetMinutes,
     }) === initialSnapshot) return;
     props.onSave(payload);
   }
@@ -1758,6 +1776,7 @@ function CallPlanEditor(props: {
     weekdays,
     callTimeFrom,
     callTimeTo,
+    timezoneOffsetMinutes,
   });
   const isDirty = currentSnapshot !== initialSnapshot;
   const targetsInvalid = attempted && targetIds.length === 0;
@@ -1923,6 +1942,15 @@ function CallPlanEditor(props: {
                   <span>Время звонка до</span>
                   <input className="sa-input" type="time" min="09:00" max="22:00" value={callTimeTo} onChange={(event) => setCallTimeTo(event.target.value)} required />
                 </label>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <span>Таймзона</span>
+                  <BrutalSelect
+                    value={String(timezoneOffsetMinutes)}
+                    options={PLAN_TIMEZONE_OPTIONS}
+                    aria-label="Таймзона плана прозвона"
+                    onChange={(value) => setTimezoneOffsetMinutes(Number(value))}
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -1996,16 +2024,17 @@ function PromptPreviewModal(props: {
   );
 }
 
-function todayInputValue(): string {
-  const date = new Date();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
+function todayInputValue(offsetMinutes = 180): string {
+  const date = new Date(Date.now() + offsetMinutes * 60_000);
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${month}-${day}`;
 }
 
-function formatScheduleTime(value: string | null | undefined): string {
+function formatScheduleTime(value: string | null | undefined, offsetMinutes = 180): string {
   if (!value) return '—';
-  return new Date(value).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const date = new Date(new Date(value).getTime() + offsetMinutes * 60_000);
+  return `${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`;
 }
 
 function CallPlanScheduleModal(props: {
@@ -2045,7 +2074,7 @@ function CallPlanScheduleModal(props: {
             className="sa-search-input"
             type="date"
             value={props.date}
-            max={todayInputValue()}
+            max={todayInputValue(props.plan?.timezoneOffsetMinutes)}
             onChange={(event) => props.onDateChange(event.target.value)}
           />
         </label>
@@ -2072,7 +2101,7 @@ function CallPlanScheduleModal(props: {
                       <div className="sa-cell-name">{item.employeeName || 'Не назначен'}</div>
                       <div className="sa-meta" style={{ marginTop: 3 }}>{item.dealershipName || item.phone}</div>
                     </td>
-                    <td>{formatScheduleTime(item.scheduledAt)}</td>
+                    <td>{formatScheduleTime(item.scheduledAt, props.plan.timezoneOffsetMinutes)}</td>
                     <td>
                       <span className={`sa-batch-state sa-batch-state-${item.status}`}>
                         {formatPlanCallStatus(item.outcome, item.status)}
@@ -2130,6 +2159,7 @@ export function CallSettingsPage() {
   const [selectedPlan, setSelectedPlan] = useState<CallPlan | null>(null);
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
+  const [planCallsRefreshing, setPlanCallsRefreshing] = useState(false);
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [schedulePlan, setSchedulePlan] = useState<CallPlan | null>(null);
   const [scheduleDate, setScheduleDate] = useState(todayInputValue());
@@ -2476,16 +2506,18 @@ export function CallSettingsPage() {
     }
   }
 
-  async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean }) {
+  async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean; background?: boolean }) {
     if (!options?.skipNavigate) navigate(`/call-settings/plans/${encodeURIComponent(plan.id)}`);
     setSelectedPlan(plan);
-    setPlanCallsLoading(true);
+    if (options?.background) setPlanCallsRefreshing(true);
+    else setPlanCallsLoading(true);
     try {
       setPlanCalls(await fetchCallPlanCalls(plan.id));
     } catch (historyError) {
       setError(historyError instanceof Error ? historyError.message : 'Не удалось загрузить историю прозвона.');
     } finally {
-      setPlanCallsLoading(false);
+      if (options?.background) setPlanCallsRefreshing(false);
+      else setPlanCallsLoading(false);
     }
   }
 
@@ -2506,7 +2538,7 @@ export function CallSettingsPage() {
   }
 
   function openPlanSchedule(plan: CallPlan) {
-    const date = todayInputValue();
+    const date = todayInputValue(plan.timezoneOffsetMinutes);
     setSchedulePlan(plan);
     setScheduleDate(date);
     setScheduleItems([]);
@@ -2640,9 +2672,14 @@ export function CallSettingsPage() {
             <div className="sa-meta">Состав плана, история прозвонов и аналитика.</div>
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="sa-btn-outline" onClick={() => openPlanHistory(selectedPlan)}>
+            <button
+              type="button"
+              className="sa-btn-outline"
+              disabled={planCallsRefreshing}
+              onClick={() => openPlanHistory(selectedPlan, { skipNavigate: true, background: true })}
+            >
               <RefreshIcon />
-              Обновить
+              {planCallsRefreshing ? 'Обновление...' : 'Обновить'}
             </button>
             <button type="button" className="sa-btn-outline" onClick={() => openPlanSchedule(selectedPlan)}>
               <CalendarIcon />
@@ -2685,7 +2722,7 @@ export function CallSettingsPage() {
             <div style={{ marginTop: 8, fontSize: 15, fontWeight: 650, lineHeight: 1.3 }}>{scheduleLabel}</div>
             {selectedPlan.frequency !== 'manual' && (
               <div className="sa-meta" style={{ marginTop: 4 }}>
-                {formatPlanWeekdays(selectedPlan.weekdays)} · {selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo}
+                {formatPlanWeekdays(selectedPlan.weekdays)} · {selectedPlan.callTimeFrom} - {selectedPlan.callTimeTo} · {formatTimezoneOffset(selectedPlan.timezoneOffsetMinutes)}
               </div>
             )}
           </div>
@@ -3056,7 +3093,7 @@ export function CallSettingsPage() {
                       <td>{plan.targetType === 'employees' ? `Сотрудники: ${targetCount}` : `Точки: ${plan.targetIds.length} · сотрудников: ${targetCount}`}</td>
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
                       <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
-                      <td>{plan.frequency === 'manual' ? '—' : `${formatPlanWeekdays(plan.weekdays)} · ${plan.callTimeFrom} - ${plan.callTimeTo}`}</td>
+                      <td>{plan.frequency === 'manual' ? '—' : `${formatPlanWeekdays(plan.weekdays)} · ${plan.callTimeFrom} - ${plan.callTimeTo} · ${formatTimezoneOffset(plan.timezoneOffsetMinutes)}`}</td>
                       {isSuperAdmin && (
                         <td className="sa-holdings-actions-cell sa-text-right" onClick={(event) => event.stopPropagation()}>
                           <button

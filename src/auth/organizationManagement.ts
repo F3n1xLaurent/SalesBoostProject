@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
+import { getPhoneCallStats, normalizeCallPhone, type PhoneCallStats } from '../voice/phoneNumberStats';
 import { prisma } from '../db';
 import { normalizeCitySearchName, seedCityDictionaryIfNeeded } from '../data/cityDictionary';
 import { MOCK_DEALERSHIP_SEEDS, MOCK_HOLDING_SEEDS } from '../super-admin/mockOrganization';
@@ -245,6 +246,7 @@ function normalizePhoneNumberResponse(
   phoneNumber: Prisma.PhoneNumberGetPayload<{
     include: { type: true };
   }>,
+  stats?: PhoneCallStats,
 ) {
   return {
     id: phoneNumber.id,
@@ -256,6 +258,9 @@ function normalizePhoneNumberResponse(
     isActive: phoneNumber.isActive,
     createdAt: phoneNumber.createdAt,
     updatedAt: phoneNumber.updatedAt,
+    totalCalls: stats?.totalCalls ?? 0,
+    successfulCalls: stats?.successfulCalls ?? 0,
+    missedCalls: stats?.missedCalls ?? 0,
   };
 }
 
@@ -579,13 +584,6 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
   const account = req.authAccount;
   if (!account) {
     res.status(401).json({ error: 'Требуется авторизация.' });
-    return;
-  }
-
-  try {
-    assertSuperadmin(account);
-  } catch (error) {
-    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
     return;
   }
 
@@ -1037,6 +1035,14 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
     res.status(400).json({ error: 'Название точки обязательно.' });
     return;
   }
+  if (!holdingId) {
+    res.status(400).json({ error: 'Перед созданием точки выберите компанию.' });
+    return;
+  }
+  if (!isPlatformSuperadmin(account) && !canManageHoldingForAccount(account, holdingId)) {
+    res.status(403).json({ error: 'Нет доступа к созданию точки в этой компании.' });
+    return;
+  }
   if ((body.workingHoursFrom != null && !parseTime(body.workingHoursFrom)) || (body.workingHoursTo != null && !parseTime(body.workingHoursTo))) {
     res.status(400).json({ error: 'Укажите время работы точки в формате 00:00.' });
     return;
@@ -1047,6 +1053,24 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   }
 
   try {
+    const activeDirections = await prisma.dealershipDirection.findMany({
+      where: { holdingId, isActive: true },
+      select: { id: true, code: true },
+    });
+    if (activeDirections.length === 0) {
+      res.status(400).json({ error: 'У выбранной компании нет активных направлений. Необходимо сначала их добавить.' });
+      return;
+    }
+    if (directions.length === 0) {
+      res.status(400).json({ error: 'Выберите хотя бы одно направление.' });
+      return;
+    }
+    const allowedDirections = new Set(activeDirections.flatMap((direction) => [direction.id, direction.code].filter(Boolean)));
+    if (directions.some((direction) => !allowedDirections.has(direction))) {
+      res.status(400).json({ error: 'Выбрано недоступное или неактивное направление.' });
+      return;
+    }
+
     const resolvedCode = code ?? await generateUniqueDealershipCode(name);
     const created = await prisma.dealership.create({
       data: {
@@ -1456,7 +1480,8 @@ export async function handleListDealershipPhoneNumbers(req: Request, res: Respon
       include: { type: true },
       orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
     });
-    res.json({ items: items.map(normalizePhoneNumberResponse) });
+    const stats = await getPhoneCallStats(items.map((item) => item.phone));
+    res.json({ items: items.map((item) => normalizePhoneNumberResponse(item, stats.get(normalizeCallPhone(item.phone)))) });
   } catch (error) {
     console.error('List dealership phone numbers error:', error);
     res.status(500).json({ error: 'Не удалось загрузить номера телефонов.' });

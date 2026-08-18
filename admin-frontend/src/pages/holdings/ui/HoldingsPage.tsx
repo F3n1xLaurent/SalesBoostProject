@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router';
 import {
   createHolding,
   deleteHolding,
@@ -8,6 +9,7 @@ import {
   fetchAuditDetail,
   fetchDealerships,
   fetchHoldings,
+  fetchHoldingRecommendations,
   updateHolding,
   type AnalyticsHoldingDealershipRow,
   type AnalyticsHoldingDetail,
@@ -16,6 +18,8 @@ import {
   type DealershipItem,
   type HoldingItem,
   type HoldingType,
+  type RecommendationResult,
+  type RecommendationSignal,
 } from '../../../shared/api/adminPanel';
 import { ratingClass, scoreBarColor, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import { STATUS_LABELS } from '../../../shared/lib/admin-panel/mockData';
@@ -33,6 +37,7 @@ import { BrutalSegmented } from '../../../shared/ui/brutal-segmented';
 import { MetricComparisonModal } from '../../../shared/ui/metric-comparison-modal';
 import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
 import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
+import { RecommendationsBlock } from '../../../shared/ui/recommendations-block';
 
 type HoldingFormState = {
   name: string;
@@ -397,6 +402,7 @@ function HoldingAnalyticsDetail({
   onEdit?: () => void;
   refreshKey?: number;
 }) {
+  const navigate = useNavigate();
   const { showToast } = useToast();
   const [detail, setDetail] = useState<AnalyticsHoldingDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -406,14 +412,21 @@ function HoldingAnalyticsDetail({
   const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
   const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
   const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
+  const [recommendations, setRecommendations] = useState<RecommendationResult | null>(null);
+  const [recommendationsError, setRecommendationsError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setSelectedIds([]);
-    fetchAnalyticsHoldingDetail(holdingId)
-      .then((item) => {
-        if (!cancelled) setDetail(item);
+    setRecommendations(null);
+    setRecommendationsError(null);
+    Promise.all([fetchAnalyticsHoldingDetail(holdingId), fetchHoldingRecommendations(holdingId)])
+      .then(([item, recommendationResponse]) => {
+        if (!cancelled) {
+          setDetail(item);
+          setRecommendations(recommendationResponse.recommendations);
+        }
       })
       .catch((error) => {
         if (cancelled) return;
@@ -423,6 +436,7 @@ function HoldingAnalyticsDetail({
           description: error instanceof Error ? error.message : 'Попробуйте повторить действие.',
         });
         setDetail(null);
+        setRecommendationsError('Не удалось загрузить рекомендации.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -643,6 +657,30 @@ function HoldingAnalyticsDetail({
             )}
           </div>
         </div>
+      </section>
+
+      <section className="sa-section">
+        <h2 className="sa-section-title">Рекомендации</h2>
+        <RecommendationsBlock
+          data={recommendations}
+          loading={loading && !recommendations}
+          error={recommendationsError}
+          onOpen={(signal: RecommendationSignal) => {
+            if ((signal.kind === 'lagging' || signal.kind === 'checklist') && signal.scope === 'quick' && signal.entityId) {
+              onOpenDealership?.(signal.entityId);
+              return;
+            }
+            if (signal.scope === 'systemic' && signal.kind === 'missed') { navigate('/call-settings/plans'); return; }
+            if (signal.scope === 'systemic' && signal.kind === 'source') { navigate('/analytics'); return; }
+            const params = new URLSearchParams({ holding: holdingId });
+            if (signal.problemCode) params.set('problem', signal.problemCode);
+            if (signal.sourceTypeId) params.set('sourceTypeId', signal.sourceTypeId);
+            if (signal.phoneNumberId) params.set('phoneNumberId', signal.phoneNumberId);
+            if (signal.kind === 'missed') params.set('outcome', 'missed');
+            if (signal.kind === 'answer_speed') params.set('sort', 'answerTimeDesc');
+            navigate(`/audits?${params.toString()}`);
+          }}
+        />
       </section>
 
       {selectedRows.length > 0 && createPortal(
@@ -1076,7 +1114,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
   function renderHoldingFormFooter(options: { mode: 'create' | 'edit'; submitLabel: string; onRequestClose: () => void }) {
     const isCreate = options.mode === 'create';
     const isDirty = JSON.stringify(normalizeHoldingForm(holdingForm)) !== JSON.stringify(normalizeHoldingForm(initialHoldingForm));
-    const isSubmitDisabled = savingHolding || (!isCreate && !isDirty);
+    const isSubmitDisabled = savingHolding || !holdingForm.name.trim() || (!isCreate && !isDirty);
     return (
       <div className={`sa-modal-footer-row${isCreate ? '' : ''}`}>
         {!isCreate && (
@@ -1155,7 +1193,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         />
         <ModalFrame
           title="Редактировать компанию"
-          subtitle="Можно поменять состав точек внутри компании."
+          subtitle="Редактирование основной информации о компании."
           open={editHoldingOpen && !!activeHolding}
           onClose={() => requestCloseHoldingModal('edit')}
           footer={renderHoldingFormFooter({ mode: 'edit', submitLabel: 'Сохранить', onRequestClose: () => requestCloseHoldingModal('edit') })}
@@ -1396,7 +1434,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
 
       <ModalFrame
         title="Редактировать компанию"
-        subtitle="Можно поменять состав точек внутри компании."
+        subtitle="Редактирование основной информации о компании."
         open={editHoldingOpen && !!activeHolding}
         onClose={() => requestCloseHoldingModal('edit')}
         footer={renderHoldingFormFooter({ mode: 'edit', submitLabel: 'Сохранить', onRequestClose: () => requestCloseHoldingModal('edit') })}

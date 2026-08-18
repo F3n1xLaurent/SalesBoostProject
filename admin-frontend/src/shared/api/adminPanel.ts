@@ -84,8 +84,17 @@ export interface DashboardOverview {
   answerTimeByCompany: { id: string; name: string; avgSec: number; totalCalls: number }[];
   topDealerships: DashboardDealershipRow[];
   lowDealerships: DashboardDealershipRow[];
+  topEmployees: DashboardEmployeeRatingRow[];
+  lowEmployees: DashboardEmployeeRatingRow[];
   topWeakness: { weakness: string; count: number } | null;
   riskLabel: string | null;
+}
+
+export interface DashboardEmployeeRatingRow {
+  id: string;
+  name: string;
+  auditsCount: number;
+  aiRating: number;
 }
 
 export interface AuditItem {
@@ -98,11 +107,18 @@ export interface AuditItem {
   dealershipName?: string | null;
   city?: string | null;
   employeeId?: string | null;
+  employeeAccountId?: string | null;
   date: string;
   aiScore: number | null;
   status: 'Good' | 'Medium' | 'Bad';
   auditStatus?: 'completed' | 'failed' | 'interrupted';
   durationSec?: number | null;
+  outcome?: string | null;
+  answerTimeSec?: number | null;
+  phoneNumberId?: string | null;
+  phoneNumberTypeId?: string | null;
+  phoneNumberTypeName?: string | null;
+  phoneNumber?: string | null;
   verdict?: string | null;
   communicationFlag?: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
   reportIssues?: string[];
@@ -196,6 +212,36 @@ export interface AnalyticsAISummary {
   source?: 'generated' | 'fallback' | 'llm';
 }
 
+export type RecommendationSignalKind = 'checklist' | 'lagging' | 'trend' | 'source' | 'missed' | 'answer_speed';
+export interface RecommendationSignal {
+  id: string;
+  kind: RecommendationSignalKind;
+  scope: 'quick' | 'systemic';
+  importance: number;
+  entityId?: string;
+  entityName?: string;
+  entityAccountId?: string;
+  problemCode?: string;
+  sourceTypeId?: string;
+  sourceName?: string;
+  phoneNumberId?: string;
+  phoneNumber?: string;
+  ownership?: 'dealership' | 'user';
+  metrics: Record<string, number>;
+}
+export interface RecommendationResult {
+  state: 'insufficient_data' | 'normal' | 'findings';
+  evaluatedCalls: number;
+  minimumCalls: number;
+  quick: RecommendationSignal[];
+  systemic: RecommendationSignal[];
+  growthPoint: RecommendationSignal | null;
+}
+export interface RecommendationsResponse {
+  entity: { id: string; name: string; level: 'holding' | 'dealership' | 'user' };
+  recommendations: RecommendationResult;
+}
+
 export interface AnalyticsSectionInsight {
   fact: string;
   interpretation: string;
@@ -232,6 +278,7 @@ export interface AnalyticsOverview {
   timeSeries?: TimeSeriesPoint[];
   weeklyTypeTrend?: { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[];
   typeCategoryComparison?: { category: string; ownScore: number; franchiseScore: number }[];
+  phoneNumberTypeComparison?: { id: string; name: string; ownership: string; calls: number; score: number; delta: number; trend: number | null }[];
   typeTopErrors?: {
     own: { issue: string; count: number; percent: number }[];
     franchise: { issue: string; count: number; percent: number }[];
@@ -749,6 +796,7 @@ export interface CallPlanItem {
   weekdays: CallPlanWeekday[];
   callTimeFrom: string;
   callTimeTo: string;
+  timezoneOffsetMinutes: number;
   lastInitiatedAt: string | null;
   lastBatchId: string | null;
   createdAt: string;
@@ -856,6 +904,9 @@ export interface PhoneNumberItem {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  totalCalls: number;
+  successfulCalls: number;
+  missedCalls: number;
 }
 
 export type ImportFormat = 'json' | 'xml' | 'csv';
@@ -1773,6 +1824,25 @@ export async function fetchAnalyticsOverview(filters?: { holdingId?: string | nu
   return await res.json() as AnalyticsOverview;
 }
 
+async function fetchRecommendations(path: string): Promise<RecommendationsResponse> {
+  const res = await apiFetch(`${API_BASE}${path}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить рекомендации.');
+  return data as RecommendationsResponse;
+}
+
+export function fetchHoldingRecommendations(id: string): Promise<RecommendationsResponse> {
+  return fetchRecommendations(`/api/admin/holdings/${encodeURIComponent(id)}/recommendations`);
+}
+
+export function fetchDealershipRecommendations(id: string): Promise<RecommendationsResponse> {
+  return fetchRecommendations(`/api/admin/dealerships/${encodeURIComponent(id)}/recommendations`);
+}
+
+export function fetchUserRecommendations(id: string): Promise<RecommendationsResponse> {
+  return fetchRecommendations(`/api/admin/users/${encodeURIComponent(id)}/recommendations`);
+}
+
 export async function fetchAnalyticsComparisonSummary(input: {
   level: string;
   items: Array<Record<string, unknown>>;
@@ -1787,8 +1857,9 @@ export async function fetchAnalyticsComparisonSummary(input: {
   return data.item as AnalyticsAISummary;
 }
 
-export async function fetchAnalyticsDealerships(): Promise<AnalyticsDealershipRow[]> {
-  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships`);
+export async function fetchAnalyticsDealerships(days: 7 | 30 | 'all' = 'all'): Promise<AnalyticsDealershipRow[]> {
+  const params = new URLSearchParams({ days: String(days) });
+  const res = await apiFetch(`${API_BASE}/api/admin/analytics/dealerships?${params.toString()}`);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data?.error || 'Не удалось загрузить аналитику точек.');

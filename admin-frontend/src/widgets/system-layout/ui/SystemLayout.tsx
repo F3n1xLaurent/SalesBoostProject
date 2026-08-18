@@ -27,7 +27,6 @@ import { CallSettingsPage } from '../../../pages/call-settings/ui/CallSettingsPa
 import { Settings } from '../../../pages/settings/ui/SettingsPage';
 import { DealerContent } from '../../../pages/dealer/ui/DealerContent';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
-import { StaffProfileContent } from '../../../pages/staff/ui/StaffContent';
 import { TrainPage } from '../../../pages/train/ui/TrainPage';
 import type { PlatformSummary, PlatformVoice } from '../../../shared/model/adminPanel';
 import { CallBatchTray } from '../../call-batch-tray/ui/CallBatchTray';
@@ -64,13 +63,14 @@ export type SystemLayoutProps = {
   loadingSummary: boolean;
   role: AdminRole;
   dealerDealershipId?: string | null;
+  accountId?: string | null;
   profileName: string;
   onRoleChange: (role: AdminRole) => void;
   onLogout: () => void;
   allowedRoles: AdminRole[];
 };
 
-export function SystemLayout({ summary, voice, loadingSummary, role, dealerDealershipId = null, profileName, onRoleChange, onLogout, allowedRoles }: SystemLayoutProps) {
+export function SystemLayout({ summary, voice, loadingSummary, role, dealerDealershipId = null, accountId = null, profileName, onRoleChange, onLogout, allowedRoles }: SystemLayoutProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -92,6 +92,10 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
     : null;
 
   const navigateToTab = (tab: AdminTab) => {
+    if (role === 'staff' && tab === 'staff-profile' && accountId) {
+      navigate(buildUserEmployeePath(accountId));
+      return;
+    }
     if (role === 'dealer' && tab === 'dealer-companies' && dealerDealershipId) {
       navigate(buildDealershipPath(dealerDealershipId));
       return;
@@ -280,6 +284,13 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
       navigate('/audits', { replace: true });
     }
   }, [navigate, role, selectedBatchDetailId]);
+
+  useEffect(() => {
+    if (role !== 'staff' || !accountId) return;
+    if (activeTab === 'staff-profile' || (activeTab === 'users' && selectedEmployeeId !== accountId)) {
+      navigate(buildUserEmployeePath(accountId), { replace: true });
+    }
+  }, [accountId, activeTab, navigate, role, selectedEmployeeId]);
 
   useEffect(() => {
     if (role === 'dealer' && activeTab === 'dealer-companies' && !selectedDealershipId && dealerDealershipId) {
@@ -571,8 +582,13 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
           )}
 
           {/* ── Staff role content ── */}
-          {role === 'staff' && activeTab === 'staff-profile' && (
-            <StaffProfileContent />
+          {role === 'staff' && activeTab === 'users' && accountId && selectedEmployeeId === accountId && (
+            <EmployeeDetail
+              employeeId={accountId}
+              onBack={() => navigate(buildUserEmployeePath(accountId))}
+              readOnly
+              selfView
+            />
           )}
           {role === 'staff' && activeTab === 'staff-trainer' && (
             <TrainPage embedded />

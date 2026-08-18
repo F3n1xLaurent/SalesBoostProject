@@ -106,6 +106,7 @@ function DirectionModal(props: {
 
   const title = isCreate ? 'Создать направление' : 'Редактировать направление';
   const submitLabel = isCreate ? 'Создать' : 'Сохранить';
+  const requiredFieldsFilled = Boolean(form.holdingId && form.name.trim());
 
   return (
     <>
@@ -128,7 +129,7 @@ function DirectionModal(props: {
                 type="submit"
                 form={DIRECTION_FORM_ID}
                 className="sa-btn-primary"
-                disabled={props.saving || (!isCreate && !isDirty)}
+                disabled={props.saving || !requiredFieldsFilled || (!isCreate && !isDirty)}
               >
                 {props.saving ? 'Сохраняем...' : submitLabel}
               </button>

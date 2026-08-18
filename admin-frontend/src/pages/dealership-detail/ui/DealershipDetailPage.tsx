@@ -10,11 +10,14 @@ import {
   fetchAuditDetail,
   fetchAnalyticsDealershipDetail,
   fetchAnalyticsDealershipPlans,
+  fetchDealershipRecommendations,
   type AnalyticsAISummary,
   type AnalyticsPlanParticipation,
   type AuditDetailItem,
   type DealershipItem,
   type DealershipType,
+  type RecommendationResult,
+  type RecommendationSignal,
 } from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { DealershipPhoneNumbersModal } from '../../../shared/ui/dealership-phone-numbers/DealershipPhoneNumbersModal';
@@ -33,6 +36,7 @@ import { AnswerRateByHour } from '../../../shared/ui/answer-rate-by-hour';
 import { PlanParticipationTable } from '../../../shared/ui/plan-participation-table';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+import { RecommendationsBlock } from '../../../shared/ui/recommendations-block';
 import { CallOutcomeBreakdown } from '../../../shared/ui/call-outcome-breakdown';
 import { AuditHistoryBlock } from '../../../shared/ui/audit-history-block';
 
@@ -399,19 +403,24 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
   const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
   const [analyticsDrawerLoading, setAnalyticsDrawerLoading] = useState(false);
   const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
+  const [recommendations, setRecommendations] = useState<RecommendationResult | null>(null);
+  const [recommendationsError, setRecommendationsError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setDetailLoading(true);
     setDetailError(null);
+    setRecommendationsError(null);
     Promise.all([
       fetchAnalyticsDealershipDetail(dealershipId),
       fetchAnalyticsDealershipPlans(dealershipId),
+      fetchDealershipRecommendations(dealershipId),
     ])
-      .then(([item, plans]) => {
+      .then(([item, plans, recommendationResponse]) => {
         if (!cancelled) {
           setRealDetail(item as DealershipAnalyticsDetail | null);
           setPlanParticipation(plans);
+          setRecommendations(recommendationResponse.recommendations);
           setDetailLoading(false);
         }
       })
@@ -419,6 +428,8 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
         if (!cancelled) {
           setRealDetail(null);
           setPlanParticipation([]);
+          setRecommendations(null);
+          setRecommendationsError('Не удалось загрузить рекомендации.');
           setDetailError(error instanceof Error ? error.message : 'Не удалось загрузить данные точки');
           setDetailLoading(false);
         }
@@ -717,11 +728,23 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
 
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Рекомендации</h2>
-        <Recommendations
-          items={detail.recommendedTrainings}
-          onOpenProblem={(issue) => {
+        <RecommendationsBlock
+          data={recommendations}
+          loading={detailLoading && !recommendations}
+          error={recommendationsError}
+          onOpen={(signal: RecommendationSignal) => {
+            if ((signal.kind === 'lagging' || signal.kind === 'checklist') && signal.scope === 'quick' && signal.entityId) {
+              onOpenEmployee?.(signal.entityId, { accountId: signal.entityAccountId });
+              return;
+            }
+            if (signal.scope === 'systemic' && signal.kind === 'missed') { navigate('/call-settings/plans'); return; }
+            if (signal.scope === 'systemic' && signal.kind === 'source') { navigate('/analytics'); return; }
             const params = new URLSearchParams();
-            params.set('problem', issue);
+            if (signal.problemCode) params.set('problem', signal.problemCode);
+            if (signal.sourceTypeId) params.set('sourceTypeId', signal.sourceTypeId);
+            if (signal.phoneNumberId) params.set('phoneNumberId', signal.phoneNumberId);
+            if (signal.kind === 'missed') params.set('outcome', 'missed');
+            if (signal.kind === 'answer_speed') params.set('sort', 'answerTimeDesc');
             params.set('dealership', dealershipId);
             navigate(`/audits?${params.toString()}`);
           }}

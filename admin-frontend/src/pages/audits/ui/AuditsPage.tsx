@@ -3,11 +3,13 @@ import { useLocation, useNavigate } from 'react-router';
 import {
   fetchAuditDetail,
   fetchDealerships,
+  fetchDealershipDirections,
   fetchCallReportProblems,
   fetchHoldings,
   type AuditDetailItem,
   type AuditItem,
   type CallReportProblemItem,
+  type DealershipDirectionItem,
   type DealershipItem,
   type HoldingItem,
 } from '../../../shared/api/adminPanel';
@@ -31,6 +33,7 @@ type AuditListRow = {
   type: AuditType;
   dateTime: string;
   employeeId: string;
+  employeeAccountId: string;
   employeeName: string;
   holdingId: string;
   dealershipId: string;
@@ -40,6 +43,12 @@ type AuditListRow = {
   verdict: string;
   status: AuditStatus;
   duration: number;
+  outcome: string;
+  answerTimeSec: number | null;
+  phoneNumberId: string;
+  phoneNumberTypeId: string;
+  phoneNumberTypeName: string;
+  phoneNumber: string;
   communicationFlag: CommunicationFlag;
   reportIssues: string[];
 };
@@ -70,7 +79,7 @@ type Props = {
 
 /* ────────────────────── Sort config ────────────────────── */
 
-type SortKey = 'dateTime' | 'totalScore' | 'status' | 'type' | 'employeeName' | 'dealershipName';
+type SortKey = 'dateTime' | 'totalScore' | 'status' | 'type' | 'employeeName' | 'dealershipName' | 'answerTimeSec';
 type SortDir = 'asc' | 'desc';
 
 const STATUS_SORT_ORDER: Record<AuditStatus, number> = {
@@ -86,6 +95,8 @@ function comparator(key: SortKey, dir: SortDir) {
       cmp = a.dateTime.localeCompare(b.dateTime);
     } else if (key === 'totalScore') {
       cmp = (a.totalScore ?? -1) - (b.totalScore ?? -1);
+    } else if (key === 'answerTimeSec') {
+      cmp = (a.answerTimeSec ?? -1) - (b.answerTimeSec ?? -1);
     } else if (key === 'status') {
       cmp = STATUS_SORT_ORDER[a.status] - STATUS_SORT_ORDER[b.status];
     } else if (key === 'type') {
@@ -149,6 +160,7 @@ const COLUMNS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'dealershipName', label: 'Точка' },
   { key: 'totalScore', label: 'Балл', align: 'right' },
   { key: 'status', label: 'Статус' },
+  { key: 'answerTimeSec', label: 'Ответ', align: 'right' },
 ];
 
 const AUDITS_PAGE_SIZE = 10;
@@ -163,6 +175,7 @@ function auditItemToRow(item: AuditItem): AuditListRow {
     type,
     dateTime: item.date,
     employeeId: item.employeeId ?? '',
+    employeeAccountId: item.employeeAccountId ?? '',
     employeeName: item.userName || 'Не назначен',
     holdingId: item.holdingId ?? '',
     dealershipId: item.dealershipId ?? '',
@@ -172,6 +185,12 @@ function auditItemToRow(item: AuditItem): AuditListRow {
     verdict: item.verdict || (status === 'failed' ? 'Нуждается в разборе' : status === 'interrupted' ? 'Звонок не завершён' : 'Оценено'),
     status,
     duration: item.durationSec ?? 0,
+    outcome: item.outcome ?? '',
+    answerTimeSec: item.answerTimeSec ?? null,
+    phoneNumberId: item.phoneNumberId ?? '',
+    phoneNumberTypeId: item.phoneNumberTypeId ?? '',
+    phoneNumberTypeName: item.phoneNumberTypeName ?? '',
+    phoneNumber: item.phoneNumber ?? '',
     communicationFlag: item.communicationFlag ?? 'ok',
     reportIssues: reportIssuesFromItem(item),
   };
@@ -189,6 +208,8 @@ export function Audits({
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [dealerships, setDealerships] = useState<DealershipItem[]>([]);
   const [dealershipsLoading, setDealershipsLoading] = useState(true);
+  const [directionOptions, setDirectionOptions] = useState<DealershipDirectionItem[]>([]);
+  const [directionsLoading, setDirectionsLoading] = useState(false);
   const [problemCatalog, setProblemCatalog] = useState<CallReportProblemItem[]>([]);
   const [problemCatalogLoading, setProblemCatalogLoading] = useState(true);
   const [selectedHoldingId, setSelectedHoldingId] = useGlobalHoldingFilter(holdings, !holdingsLoading);
@@ -215,7 +236,37 @@ export function Audits({
       .sort((a, b) => a.name.localeCompare(b.name, 'ru')),
     [selectedDealerships],
   );
+  const directionLabelByValue = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const direction of directionOptions) {
+      labels.set(direction.id, direction.name);
+      if (direction.code) labels.set(direction.code, direction.name);
+    }
+    return labels;
+  }, [directionOptions]);
+  const directionFilterOptions = useMemo(() => {
+    const used = new Set(selectedDealerships.flatMap((item) => item.directions || []));
+    const options = directionOptions.map((direction) => {
+      const value = used.has(direction.id)
+        ? direction.id
+        : direction.code && used.has(direction.code)
+          ? direction.code
+          : direction.code || direction.id;
+      return { value, label: direction.name };
+    });
+    const knownValues = new Set(
+      directionOptions.flatMap((direction) => [direction.id, direction.code].filter(Boolean) as string[]),
+    );
+    for (const value of used) {
+      if (!knownValues.has(value)) {
+        options.push({ value, label: directionLabelByValue.get(value) || value });
+      }
+    }
+    return options.sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+  }, [directionLabelByValue, directionOptions, selectedDealerships]);
   const allReportIssues = useMemo(() => problemCatalog.map((item) => item.title), [problemCatalog]);
+  const sourceTypeOptions = useMemo(() => [...new Map(rows.filter((row) => row.phoneNumberTypeId).map((row) => [row.phoneNumberTypeId, { value: row.phoneNumberTypeId, label: row.phoneNumberTypeName || row.phoneNumberTypeId }])).values()].sort((a, b) => a.label.localeCompare(b.label, 'ru')), [rows]);
+  const phoneOptions = useMemo(() => [...new Map(rows.filter((row) => row.phoneNumberId).map((row) => [row.phoneNumberId, { value: row.phoneNumberId, label: row.phoneNumber }])).values()].sort((a, b) => a.label.localeCompare(b.label, 'ru')), [rows]);
   const problemsByCategory = useMemo(() => {
     const map = new Map<string, CallReportProblemItem[]>();
     for (const item of problemCatalog) {
@@ -243,8 +294,13 @@ export function Audits({
   const [filterStatus, setFilterStatus] = useState<AuditStatus | 'all'>('all');
   const [filterCity, setFilterCity] = useState<Set<string>>(new Set());
   const [filterDealership, setFilterDealership] = useState<Set<string>>(new Set());
+  const [filterDirections, setFilterDirections] = useState<Set<string>>(new Set());
   const [filterScoreBands, setFilterScoreBands] = useState<Set<ScoreBand>>(new Set());
   const [filterProblems, setFilterProblems] = useState<Set<string>>(new Set());
+  const [filterSourceTypes, setFilterSourceTypes] = useState<Set<string>>(new Set());
+  const [filterPhoneNumbers, setFilterPhoneNumbers] = useState<Set<string>>(new Set());
+  const [filterOutcomes, setFilterOutcomes] = useState<Set<string>>(new Set());
+  const [filterEmployeeId, setFilterEmployeeId] = useState('');
   const [page, setPage] = useState(1);
   const [reportDrawerOpen, setReportDrawerOpen] = useState(false);
   const [reportDrawerLoading, setReportDrawerLoading] = useState(false);
@@ -292,18 +348,32 @@ export function Audits({
     const params = new URLSearchParams(location.search);
     const problem = params.get('problem');
     const dealership = params.get('dealership');
-    if ((!problem && !dealership) || problemCatalogLoading || dealershipsLoading || holdingsLoading) return;
+    const holding = params.get('holding');
+    const sourceTypeId = params.get('sourceTypeId');
+    const phoneNumberId = params.get('phoneNumberId');
+    const outcome = params.get('outcome');
+    const employee = params.get('employee');
+    const requestedSort = params.get('sort');
+    if ((!problem && !dealership && !holding && !sourceTypeId && !phoneNumberId && !outcome && !employee && !requestedSort) || problemCatalogLoading || dealershipsLoading || holdingsLoading) return;
 
     setShowFilters(true);
     setPage(1);
 
     if (problem) {
       const decoded = problem.trim();
-      const match = allReportIssues.find((issue) => issue === decoded)
+      const titleByCode = problemCatalog.find((item) => item.code.toLowerCase() === decoded.toLowerCase())?.title;
+      const match = titleByCode ?? allReportIssues.find((issue) => issue === decoded)
         ?? allReportIssues.find((issue) => issue.toLowerCase() === decoded.toLowerCase())
         ?? decoded;
       setFilterProblems(new Set([match]));
     }
+    if (holding) setSelectedHoldingId(holding);
+    if (sourceTypeId) setFilterSourceTypes(new Set([sourceTypeId]));
+    if (phoneNumberId) setFilterPhoneNumbers(new Set([phoneNumberId]));
+    if (outcome === 'missed') setFilterOutcomes(new Set(['no_answer', 'busy', 'failed']));
+    else if (outcome) setFilterOutcomes(new Set([outcome]));
+    if (employee) setFilterEmployeeId(employee);
+    if (requestedSort === 'answerTimeDesc') { setSortKey('answerTimeSec'); setSortDir('desc'); }
 
     if (dealership) {
       const target = dealerships.find((item) => item.id === dealership);
@@ -319,6 +389,7 @@ export function Audits({
     holdingsLoading,
     location.search,
     problemCatalogLoading,
+    problemCatalog,
     selectedHoldingId,
     setSelectedHoldingId,
   ]);
@@ -340,12 +411,38 @@ export function Audits({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    if (!selectedHoldingId) {
+      setDirectionOptions([]);
+      setDirectionsLoading(false);
+      return () => { cancelled = true; };
+    }
+    setDirectionsLoading(true);
+    fetchDealershipDirections({ holdingId: selectedHoldingId, active: true })
+      .then((items) => {
+        if (!cancelled) setDirectionOptions(items);
+      })
+      .catch(() => {
+        if (!cancelled) setDirectionOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDirectionsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedHoldingId]);
+
+  useEffect(() => {
     setFilterDealership((current) => new Set([...current].filter((id) => selectedDealershipIds.has(id))));
   }, [selectedDealershipIds]);
 
   useEffect(() => {
+    const available = new Set(directionFilterOptions.map((option) => option.value));
+    setFilterDirections((current) => new Set([...current].filter((direction) => available.has(direction))));
+  }, [directionFilterOptions]);
+
+  useEffect(() => {
     setPage(1);
-  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterScoreBands, filterProblems, sortKey, sortDir]);
+  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterDirections, filterScoreBands, filterProblems, filterSourceTypes, filterPhoneNumbers, filterOutcomes, filterEmployeeId, sortKey, sortDir]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -358,14 +455,13 @@ export function Audits({
       : <span className="sa-sort-icon sa-sort-icon-inactive">▲</span>;
 
   const toggleCity = (c: string) => setFilterCity((p) => { const n = new Set(p); n.has(c) ? n.delete(c) : n.add(c); return n; });
-  const toggleDealership = (id: string) => setFilterDealership((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleScoreBand = (band: ScoreBand) => setFilterScoreBands((prev) => {
     const next = new Set(prev);
     next.has(band) ? next.delete(band) : next.add(band);
     return next;
   });
 
-  const activeFiltersCount = filterCity.size + filterDealership.size + filterScoreBands.size + filterProblems.size;
+  const activeFiltersCount = filterCity.size + filterDealership.size + filterDirections.size + filterScoreBands.size + filterProblems.size + filterSourceTypes.size + filterPhoneNumbers.size + filterOutcomes.size + (filterEmployeeId ? 1 : 0);
 
   const filtered = useMemo(() => {
     let list = [...rows];
@@ -383,12 +479,24 @@ export function Audits({
     if (filterStatus !== 'all') list = list.filter((r) => r.status === filterStatus);
     if (filterCity.size > 0) list = list.filter((r) => filterCity.has(r.city));
     if (filterDealership.size > 0) list = list.filter((r) => filterDealership.has(r.dealershipId));
+    if (filterDirections.size > 0) {
+      const matchingDealershipIds = new Set(
+        selectedDealerships
+          .filter((dealership) => dealership.directions?.some((direction) => filterDirections.has(direction)))
+          .map((dealership) => dealership.id),
+      );
+      list = list.filter((r) => matchingDealershipIds.has(r.dealershipId));
+    }
     if (filterScoreBands.size > 0) list = list.filter((r) => r.totalScore !== null && filterScoreBands.has(scoreBand(r.totalScore)));
     if (filterProblems.size > 0) list = list.filter((r) => r.reportIssues.some((issue) => filterProblems.has(issue)));
+    if (filterSourceTypes.size > 0) list = list.filter((r) => filterSourceTypes.has(r.phoneNumberTypeId));
+    if (filterPhoneNumbers.size > 0) list = list.filter((r) => filterPhoneNumbers.has(r.phoneNumberId));
+    if (filterOutcomes.size > 0) list = list.filter((r) => filterOutcomes.has(r.outcome));
+    if (filterEmployeeId) list = list.filter((r) => r.employeeId === filterEmployeeId || r.employeeAccountId === filterEmployeeId);
 
     list.sort(comparator(sortKey, sortDir));
     return list;
-  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterScoreBands, filterProblems, sortKey, sortDir]);
+  }, [rows, search, filterType, filterStatus, filterCity, filterDealership, filterDirections, filterScoreBands, filterProblems, filterSourceTypes, filterPhoneNumbers, filterOutcomes, filterEmployeeId, selectedDealerships, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / AUDITS_PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
@@ -449,25 +557,25 @@ export function Audits({
 
   return (
     <>
-      <h1 className="sa-page-title">Проверки</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 16 }}>
+        <h1 className="sa-page-title">Проверки</h1>
+        <HoldingSelectPicker
+          holdings={holdings}
+          value={selectedHoldingId}
+          onChange={(holdingId) => {
+            setSelectedHoldingId(holdingId);
+            setFilterCity(new Set());
+            setFilterDealership(new Set());
+            setFilterDirections(new Set());
+          }}
+          disabled={holdingsLoading || holdings.length === 0}
+          loading={holdingsLoading}
+        />
+      </div>
 
       <div className="sa-toolbar">
         <div className="sa-toolbar-split sa-holdings-toolbar">
           <div className="sa-toolbar-filters">
-            <div className="sa-tag-filter-picker-wrap">
-              <HoldingSelectPicker
-                holdings={holdings}
-                value={selectedHoldingId}
-                onChange={(holdingId) => {
-                  setSelectedHoldingId(holdingId);
-                  setFilterCity(new Set());
-                  setFilterDealership(new Set());
-                }}
-                disabled={holdingsLoading || holdings.length === 0}
-                loading={holdingsLoading}
-              />
-            </div>
-
             <div className="sa-search-wrap">
               <svg className="sa-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
@@ -477,6 +585,29 @@ export function Audits({
                 placeholder="Поиск по сотруднику / точке…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            <div className="sa-tag-filter-picker-wrap">
+              <MultiSelectFilterPicker
+                placeholder="Точка"
+                options={allDealerships.map((dealership) => ({
+                  value: dealership.id,
+                  label: dealership.name,
+                }))}
+                values={[...filterDealership]}
+                onChange={(values) => setFilterDealership(new Set(values))}
+                disabled={dealershipsLoading || allDealerships.length === 0}
+              />
+            </div>
+
+            <div className="sa-tag-filter-picker-wrap">
+              <MultiSelectFilterPicker
+                placeholder="Направление"
+                options={directionFilterOptions}
+                values={[...filterDirections]}
+                onChange={(values) => setFilterDirections(new Set(values))}
+                disabled={directionsLoading || directionFilterOptions.length === 0}
               />
             </div>
 
@@ -510,14 +641,34 @@ export function Audits({
           onReset={() => {
             setFilterCity(new Set());
             setFilterDealership(new Set());
+            setFilterDirections(new Set());
             setFilterScoreBands(new Set());
             setFilterProblems(new Set());
+            setFilterSourceTypes(new Set());
+            setFilterPhoneNumbers(new Set());
+            setFilterOutcomes(new Set());
+            setFilterEmployeeId('');
           }}
         >
           <FilterGroup label="Балл">
             {SCORE_BAND_OPTIONS.map((option) => (
               <label key={option.id} className="sa-filter-check">
                 <input type="checkbox" checked={filterScoreBands.has(option.id)} onChange={() => toggleScoreBand(option.id)} />
+                {option.label}
+              </label>
+            ))}
+          </FilterGroup>
+          <FilterGroup label="Источник">
+            <MultiSelectFilterPicker placeholder="Тип номера" options={sourceTypeOptions} values={[...filterSourceTypes]} onChange={(values) => setFilterSourceTypes(new Set(values))} />
+            <MultiSelectFilterPicker placeholder="Номер" options={phoneOptions} values={[...filterPhoneNumbers]} onChange={(values) => setFilterPhoneNumbers(new Set(values))} />
+          </FilterGroup>
+          <FilterGroup label="Исход звонка">
+            {[
+              { id: 'completed', label: 'Отвечен' }, { id: 'disconnected', label: 'Завершён' },
+              { id: 'no_answer', label: 'Нет ответа' }, { id: 'busy', label: 'Занято' }, { id: 'failed', label: 'Ошибка' },
+            ].map((option) => (
+              <label key={option.id} className="sa-filter-check">
+                <input type="checkbox" checked={filterOutcomes.has(option.id)} onChange={() => setFilterOutcomes((current) => { const next = new Set(current); next.has(option.id) ? next.delete(option.id) : next.add(option.id); return next; })} />
                 {option.label}
               </label>
             ))}
@@ -551,20 +702,6 @@ export function Audits({
               </label>
             ))}
           </FilterGroup>
-          <FilterGroup label="Точка">
-            {dealershipsLoading ? (
-              <span className="sa-meta">Загружаем точки...</span>
-            ) : allDealerships.length === 0 ? (
-              <span className="sa-meta">У выбранной компании нет точек</span>
-            ) : (
-              allDealerships.map((d) => (
-                <label key={d.id} className="sa-filter-check">
-                  <input type="checkbox" checked={filterDealership.has(d.id)} onChange={() => toggleDealership(d.id)} />
-                  {d.name}
-                </label>
-              ))
-            )}
-          </FilterGroup>
         </FiltersPanel>
       )}
 
@@ -587,10 +724,10 @@ export function Audits({
           </thead>
           <tbody>
             {loading || holdingsLoading || dealershipsLoading ? (
-              <tr><td colSpan={8} className="sa-meta" style={{ padding: 24 }}>Загрузка…</td></tr>
+              <tr><td colSpan={9} className="sa-meta" style={{ padding: 24 }}>Загрузка…</td></tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={8} className="sa-empty-state">
+                <td colSpan={9} className="sa-empty-state">
                   Нет проверок по выбранным фильтрам<br />
                   <span className="sa-meta">Сбросьте фильтры или измените период</span>
                 </td>
@@ -628,6 +765,7 @@ export function Audits({
                       {AUDIT_STATUS_LABELS[r.status]}
                     </span>
                   </td>
+                  <td className="sa-text-right">{r.answerTimeSec === null ? '—' : `${r.answerTimeSec} сек.`}</td>
                   <td>
                     <span className="sa-audit-verdict">{r.verdict.length > 40 ? r.verdict.slice(0, 38) + '…' : r.verdict}</span>
                   </td>

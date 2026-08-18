@@ -40,6 +40,11 @@ const EMPTY_ANALYTICS: AnalyticsOverview = {
 
 type ComparableDealership = NonNullable<AnalyticsOverview['dealershipRows']>[number];
 
+function formatSignedHundredths(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return `${rounded > 0 ? '+' : ''}${rounded.toFixed(2)}`;
+}
+
 function NetworkTrendChart({ points }: { points: TimeSeriesPoint[] }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
@@ -431,39 +436,6 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
       <BestWorstCards rows={dealershipRows} onOpen={(id) => onDrill?.('dealership', id)} />
 
       <section className="sa-section" style={{ marginBottom: 28 }}>
-        <h2 className="sa-section-title">Рекомендуемые действия</h2>
-        <div className="sa-analytics-actions">
-          {data.actions.length === 0 ? (
-            <div className="sa-analytics-action-row">
-              <div className="sa-meta">Пока нет рекомендаций для выбранной компании</div>
-            </div>
-          ) : (
-            data.actions.map((act, i) => (
-              <div key={i} className="sa-analytics-action-row">
-                <div className="sa-analytics-action-body">
-                  <div className="sa-analytics-action-target">Топ {i + 1}{act.target ? ` · ${act.target}` : ''}</div>
-                  <div className="sa-analytics-action-text">{act.action}</div>
-                  <div className="sa-analytics-action-details">
-                    <span>Причина: {act.reason}</span>
-                    <span>Ожидаемый эффект: {act.expectedEffect}</span>
-                  </div>
-                </div>
-                {act.drillType ? (
-                  <button
-                    type="button"
-                    className="sa-btn-outline sa-btn-sm sa-analytics-action-btn"
-                    onClick={() => onDrill?.(act.drillType!, act.drillFilter)}
-                  >
-                    Перейти
-                  </button>
-                ) : null}
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <section className="sa-section" style={{ marginBottom: 28 }}>
         <div className="sa-section-header-row">
           <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Рейтинг компаний</h2>
           <div className="sa-meta">Относительно среднего по сети: {data.avgScore}</div>
@@ -496,13 +468,39 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
                     <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
                     <td className="sa-text-right">{row.dealershipsCount}</td>
                     <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                    <td className="sa-text-right">{row.score - data.avgScore > 0 ? '+' : ''}{row.score - data.avgScore}</td>
+                    <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
                     <td className="sa-text-right">{row.calls}</td>
                     <td className="sa-text-right">{row.noAnswers}</td>
                     <td className="sa-text-right">{row.lowDealerships}</td>
                   </tr>
                 ))
               )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="sa-section" style={{ marginBottom: 28 }}>
+        <div className="sa-section-header-row">
+          <div>
+            <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Сравнение по типам номеров</h2>
+            <div className="sa-meta">Лидеры и отстающие источники за последние 30 дней</div>
+          </div>
+        </div>
+        <div className="sa-companies-table-wrap">
+          <table className="sa-table">
+            <thead><tr><th>Источник</th><th>Владение</th><th className="sa-text-right">Звонков</th><th className="sa-text-right">Балл</th><th className="sa-text-right">Отклонение</th><th className="sa-text-right">Динамика</th></tr></thead>
+            <tbody>
+              {(data.phoneNumberTypeComparison ?? []).length === 0 ? <tr><td colSpan={6} className="sa-meta" style={{ padding: 24 }}>Недостаточно звонков с определённым типом номера</td></tr> : (data.phoneNumberTypeComparison ?? []).map((row, index, all) => (
+                <tr key={row.id}>
+                  <td><div className="sa-cell-name">{row.name}</div><div className="sa-cell-city">{index === 0 ? 'Лидер' : index === all.length - 1 && all.length > 1 ? 'Отстающий' : '—'}</div></td>
+                  <td>{row.ownership === 'dealership' ? 'Для точек' : row.ownership === 'user' ? 'Для пользователей' : '—'}</td>
+                  <td className="sa-text-right">{row.calls}</td>
+                  <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                  <td className="sa-text-right">{formatSignedHundredths(row.delta)}</td>
+                  <td className="sa-text-right">{row.trend === null ? '—' : formatSignedHundredths(row.trend)}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -580,7 +578,7 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
                     <td>{row.dealer}</td>
                     <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
                     <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                    <td className="sa-text-right">{row.score - data.avgScore > 0 ? '+' : ''}{row.score - data.avgScore}</td>
+                    <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
                     <td className="sa-text-right">{row.delta > 0 ? '+' : ''}{row.delta}</td>
                     <td className="sa-text-right">{row.calls}</td>
                     <td className="sa-text-right">{row.noAnswers}</td>
