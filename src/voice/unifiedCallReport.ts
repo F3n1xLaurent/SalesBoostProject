@@ -119,6 +119,24 @@ function asText(value: unknown): string {
   return String(value ?? '').trim();
 }
 
+function isPlaceholderText(value: string): boolean {
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, ' ');
+  return [
+    'короткий комментарий',
+    'краткий комментарий',
+    'комментарий',
+    'пример, как стоило сказать',
+    'как стоило сказать',
+    'пример ответа',
+    'цитата',
+  ].includes(normalized);
+}
+
+function meaningfulText(value: unknown): string {
+  const text = asText(value);
+  return text && !isPlaceholderText(text) ? text : '';
+}
+
 function arrayOfText(value: unknown, limit: number): string[] {
   return Array.isArray(value)
     ? value.map(asText).filter(Boolean).slice(0, limit)
@@ -137,9 +155,9 @@ function normalizeImportance(value: unknown): UnifiedFindingImportance {
   return text === 'Критично' || text === 'Важно' || text === 'Средне' ? text : 'Важно';
 }
 
-function normalizeMark(value: unknown): UnifiedDialogMark {
+function normalizeMark(value: unknown): UnifiedDialogMark | null {
   const text = asText(value);
-  return text === 'positive' || text === 'negative' || text === 'normal' ? text : 'normal';
+  return text === 'positive' || text === 'negative' || text === 'normal' ? text : null;
 }
 
 export function normalizeUnifiedCallReport(
@@ -187,9 +205,9 @@ export function normalizeUnifiedCallReport(
         problemTitle: problem.title,
         importance: normalizeImportance(raw.importance),
         category: normalizeCategory(raw.category, problem.category),
-        quote: asText(raw.quote),
-        comment: asText(raw.comment),
-        betterExample: asText(raw.betterExample),
+        quote: meaningfulText(raw.quote),
+        comment: meaningfulText(raw.comment),
+        betterExample: meaningfulText(raw.betterExample),
       };
     })
     .filter((item): item is UnifiedCallReport['keyFindings'][number] => Boolean(item))
@@ -201,12 +219,14 @@ export function normalizeUnifiedCallReport(
       ? dialogSource[index] as Record<string, unknown>
       : {};
     const role = turn.role;
-    const betterExample = role === 'manager' ? asText(raw.betterExample) || null : null;
+    const betterExample = role === 'manager' ? meaningfulText(raw.betterExample) || null : null;
+    const comment = role === 'manager' ? meaningfulText(raw.comment) || null : null;
+    const rawMark = role === 'manager' ? normalizeMark(raw.mark) : null;
     return {
       role,
       text: turn.text,
-      mark: role === 'manager' ? normalizeMark(raw.mark) : null,
-      comment: role === 'manager' ? asText(raw.comment) || null : null,
+      mark: rawMark,
+      comment,
       betterExample,
     };
   }).map((line) => {
@@ -217,9 +237,15 @@ export function normalizeUnifiedCallReport(
       if (!quote || !text) return false;
       return text.includes(quote) || quote.includes(text) || text.includes(quote.slice(0, Math.min(40, quote.length)));
     });
-    return matched?.betterExample
-      ? { ...line, betterExample: matched.betterExample }
-      : line;
+    const nextComment = line.comment || matched?.comment || null;
+    const nextExample = line.betterExample || matched?.betterExample || null;
+    const nextMark = line.mark ?? (nextExample || nextComment ? 'normal' : null);
+    return {
+      ...line,
+      mark: nextMark,
+      comment: nextComment,
+      betterExample: nextExample,
+    };
   });
 
   const recommendations = (Array.isArray(source.recommendations) ? source.recommendations : [])
@@ -315,16 +341,16 @@ export async function generateUnifiedCallReport(input: {
         problemTitle: catalog[0]?.title ?? DEFAULT_CALL_REPORT_PROBLEMS[0].title,
         importance: 'Важно',
         category: 'Контакт',
-        quote: 'цитата',
-        comment: 'что именно пошло не так',
-        betterExample: 'как стоило сказать',
+        quote: 'реальный фрагмент из диалога',
+        comment: 'конкретно, что в этой реплике было хорошо или плохо',
+        betterExample: 'конкретный вариант, как стоило ответить',
       }],
       dialog: input.transcript.map((turn) => ({
         role: turn.role,
         text: turn.text,
-        mark: turn.role === 'manager' ? 'normal' : null,
-        comment: turn.role === 'manager' ? 'короткий комментарий' : null,
-        betterExample: turn.role === 'manager' ? 'пример, как стоило сказать' : null,
+        mark: turn.role === 'manager' ? 'positive' : null,
+        comment: turn.role === 'manager' ? null : null,
+        betterExample: turn.role === 'manager' ? null : null,
       })),
       recommendations: [{ text: 'конкретное действие', category: 'Контакт', problemTitle: catalog[0]?.title ?? DEFAULT_CALL_REPORT_PROBLEMS[0].title }],
     }, null, 2),

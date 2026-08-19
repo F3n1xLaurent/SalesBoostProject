@@ -1,4 +1,5 @@
 import type { RecommendationResult, RecommendationSignal } from '../../api/adminPanel';
+import { LetsIcon } from '../icons/LetsIcon';
 
 const PROBLEM_TITLES: Record<string, string> = {
   NO_INTRO_COMPANY: 'Представление компании', NO_CLIENT_NAME: 'Обращение к клиенту по имени',
@@ -12,28 +13,133 @@ const PROBLEM_TITLES: Record<string, string> = {
 };
 const pct = (value?: number) => `${Math.round(value ?? 0)}%`;
 const num = (value?: number) => Number(value ?? 0).toFixed(1).replace('.0', '');
+const maybeEntity = (value?: string) => value?.trim() || undefined;
 
-function signalCopy(signal: RecommendationSignal) {
+interface SignalCopy {
+  entity?: string;
+  title: string;
+  reason: string;
+  effect: string;
+  action?: string;
+}
+
+function signalCopy(signal: RecommendationSignal): SignalCopy {
   const m = signal.metrics;
   if (signal.kind === 'checklist') {
     const label = PROBLEM_TITLES[signal.problemCode ?? ''] ?? signal.problemCode ?? 'Пункт чек-листа';
-    return { title: signal.scope === 'quick' && signal.entityName ? `${signal.entityName}: ${label.toLowerCase()}` : signal.scope === 'systemic' ? `${label} требует системной работы` : `${label} — точка роста`, reason: signal.scope === 'quick' && signal.entityName ? `Проблема встречается в ${pct(m.localizedProblemShare)} звонков этой сущности, у большинства коллег пункт в норме.` : signal.scope === 'systemic' ? `Проблема встречается в ${pct(m.problemShare)} звонков; затрагивает ${m.affectedChildren ?? 0} из ${m.totalChildren ?? 0} сущностей группы.` : `Пункт выполняется примерно в ${pct(100 - (m.problemShare ?? 0))} случаев.`, effect: `Потенциальный прирост — около ${num(signal.importance)} балла.`, action: signal.scope === 'quick' && signal.entityName ? 'Открыть профиль' : 'Открыть проверки' };
+    const entity = signal.scope === 'quick' ? maybeEntity(signal.entityName) : undefined;
+    const title = signal.scope === 'systemic' ? `${label} проседает системно` : label;
+    const displayShare = entity && m.localizedProblemShare > 0 ? m.localizedProblemShare : m.problemShare;
+    const reason = signal.scope === 'quick'
+      ? entity
+        ? `Проблема встречается в ${pct(displayShare)} звонков этой сущности, у остальных пункт чаще в норме.`
+        : `Проблема встречается в ${pct(displayShare)} звонков за последние 30 дней.`
+      : `Проблема встречается у ${Math.round(m.affectedChildren ?? 0)} из ${Math.round(m.totalChildren ?? 0)} сущностей и в среднем в ${pct(m.problemShare)} звонков.`;
+    return {
+      entity,
+      title,
+      reason,
+      effect: signal.scope === 'systemic'
+        ? `Может добавить около ${num(signal.importance)} балла группе, если закрепить стандарт у всех.`
+        : `Может добавить около ${num(signal.importance)} балла при исправлении.`,
+      action: entity ? 'Открыть профиль' : 'Открыть проверки',
+    };
   }
-  if (signal.kind === 'lagging') return { title: `${signal.entityName ?? 'Сотрудник'} отстаёт от группы`, reason: `Средний балл ${num(m.score)} против ${num(m.groupScore)} по группе — отставание ${num(m.delta)}.`, effect: `При выравнивании группа может прибавить около ${num(signal.importance)} балла.`, action: 'Открыть профиль' };
-  if (signal.kind === 'trend') return { title: 'Результат снижается', reason: `Средний балл упал с ${num(m.previousScore)} до ${num(m.currentScore)} за последний месяц.`, effect: 'Стоит проверить изменения в команде, скриптах и нагрузке.' };
-  if (signal.kind === 'source') return { title: signal.scope === 'quick' && signal.entityName ? `${signal.entityName}: ${signal.sourceName ?? 'источник'} обрабатывается слабее` : `${signal.sourceName ?? 'Источник'} — слабое место группы`, reason: `Средний балл ${num(m.score)} против ${num(m.otherScore)} по остальным источникам.`, effect: `Потенциал улучшения — около ${num(signal.importance)} балла.`, action: signal.scope === 'systemic' ? 'Открыть аналитику' : 'Открыть проверки' };
-  if (signal.kind === 'missed') return { title: signal.sourceName ? `${signal.sourceName} плохо принимает звонки` : signal.ownership === 'dealership' ? 'Отдел продаж стабильно не берёт трубку' : 'Личный номер часто недоступен', reason: `${pct(m.missedRate)} звонков без ответа при норме не выше ${pct(m.allowedMissedRate)}; повторяется ${m.badDays ?? 0} дня за неделю.`, effect: 'Проверьте загрузку линии, переадресацию и расписание.', action: signal.scope === 'systemic' ? 'Настроить обзвон' : 'Открыть проверки' };
-  return { title: signal.ownership === 'dealership' ? 'Отдел продаж долго берёт трубку' : 'Сотрудник долго отвечает', reason: `В среднем ${num(m.answerTimeSec)} сек. до ответа при норме ${num(m.maximumAnswerTimeSec)} сек.`, effect: 'Клиенты могут завершать звонок до ответа.', action: 'Открыть проверки' };
+  if (signal.kind === 'lagging') {
+    return {
+      entity: maybeEntity(signal.entityName),
+      title: 'Тянет результат вниз',
+      reason: `AI-рейтинг ${num(m.score)} против ${num(m.groupScore)} по группе — отставание ${num(m.delta)} балла.`,
+      effect: `Может добавить около ${num(signal.importance)} балла, если подтянется до уровня группы.`,
+      action: 'Открыть профиль',
+    };
+  }
+  if (signal.kind === 'trend') {
+    return {
+      title: 'Результат снижается',
+      reason: `AI-рейтинг упал с ${num(m.previousScore)} до ${num(m.currentScore)} за последний месяц.`,
+      effect: 'Стоит проверить, что изменилось: команда, нагрузка, скрипт или сезонность.',
+    };
+  }
+  if (signal.kind === 'source') {
+    const entity = signal.scope === 'quick' ? maybeEntity(signal.entityName) : undefined;
+    const sourceName = signal.sourceName ?? 'Источник';
+    return {
+      entity,
+      title: signal.scope === 'systemic' ? `${sourceName} — слабое место группы` : `${sourceName} обрабатывается слабее`,
+      reason: signal.scope === 'systemic'
+        ? `У заметной части сущностей звонки с этого источника слабее остальных. AI-рейтинг ${num(m.score)} против ${num(m.otherScore)} по другим источникам.`
+        : `AI-рейтинг ${num(m.score)} против ${num(m.otherScore)} по остальным источникам этой сущности.`,
+      effect: `Может добавить около ${num(signal.importance)} балла, если подтянуть качество по этому источнику.`,
+      action: signal.scope === 'systemic' ? 'Открыть аналитику' : 'Открыть проверки',
+    };
+  }
+  if (signal.kind === 'missed') {
+    const sourceName = signal.sourceName ?? (signal.phoneNumber ? `Номер ${signal.phoneNumber}` : null);
+    return {
+      entity: signal.scope === 'quick' ? maybeEntity(signal.entityName) : undefined,
+      title: sourceName
+        ? `${sourceName} плохо принимает звонки`
+        : signal.ownership === 'dealership'
+          ? 'Отдел продаж стабильно не берёт трубку'
+          : 'Личный номер часто недоступен',
+      reason: `${pct(m.missedRate)} звонков без ответа при норме не выше ${pct(m.allowedMissedRate)}. Проблема повторяется ${Math.round(m.badDays ?? 0)} дн. за неделю.`,
+      effect: signal.scope === 'systemic'
+        ? 'Похоже на проблему нагрузки, расписания или маршрутизации звонков.'
+        : 'Стоит проверить линию, переадресацию и доступность номера.',
+      action: signal.scope === 'systemic' ? 'Настроить обзвон' : 'Открыть проверки',
+    };
+  }
+  return {
+    entity: signal.scope === 'quick' ? maybeEntity(signal.entityName) : undefined,
+    title: signal.ownership === 'dealership' ? 'Долго отвечают на звонки' : 'Слишком долго отвечают',
+    reason: `В среднем ${num(m.answerTimeSec)} сек. до ответа при норме ${num(m.maximumAnswerTimeSec)} сек.`,
+    effect: signal.scope === 'systemic'
+      ? 'Клиенты могут не дождаться ответа, стоит пересмотреть нагрузку и организацию линии.'
+      : 'Клиенты могут завершать звонок раньше, чем дождутся ответа.',
+    action: 'Открыть проверки',
+  };
+}
+
+function signalIcon(kind: string, scope: string): string {
+  if (kind === 'lagging') return 'sort-down';
+  if (kind === 'trend') return 'chart-alt-light';
+  if (kind === 'source') return 'ring';
+  if (kind === 'missed') return 'phone-light';
+  if (kind === 'answer_speed') return 'time-atack';
+  return scope === 'systemic' ? 'setting-line' : 'lightning-light';
 }
 
 function SignalCard({ signal, onOpen }: { signal: RecommendationSignal; onOpen?: (signal: RecommendationSignal) => void }) {
   const copy = signalCopy(signal);
   const clickable = Boolean(copy.action && onOpen);
-  return <article className={`sa-recommendation-insight${clickable ? ' is-clickable' : ''}`} onClick={clickable ? () => onOpen?.(signal) : undefined}>
-    <div className="sa-recommendation-insight-kind">{signal.scope === 'systemic' ? 'Системная работа' : 'Быстрая победа'}</div>
-    <h3>{copy.title}</h3><p>{copy.reason}</p><div className="sa-recommendation-insight-effect">{copy.effect}</div>
-    {clickable && <button type="button" className="sa-btn-text" onClick={(event) => { event.stopPropagation(); onOpen?.(signal); }}>{copy.action} →</button>}
-  </article>;
+  const iconName = signalIcon(signal.kind, signal.scope);
+  const bonus = typeof signal.importance === 'number' && signal.importance > 0
+    ? `+${num(signal.importance)}`
+    : null;
+  return (
+    <article className={`sa-recommendation-insight${clickable ? ' is-clickable' : ''}`} onClick={clickable ? () => onOpen?.(signal) : undefined}>
+      <div className="sa-recommendation-insight-head">
+        <span className="sa-recommendation-insight-icon">
+          <LetsIcon name={iconName} size={24} strokeWidth={1.5} />
+        </span>
+        <span className="sa-recommendation-insight-kind">
+          {signal.scope === 'systemic' ? 'Системная' : 'Быстрая победа'}
+        </span>
+        {bonus && <span className="sa-recommendation-insight-bonus">{bonus}</span>}
+      </div>
+      <div className="sa-recommendation-insight-body">
+        {copy.entity && <div className="sa-recommendation-insight-entity">{copy.entity}</div>}
+        <h3 className="sa-recommendation-insight-title">{copy.title}</h3>
+        <p className="sa-recommendation-insight-reason">{copy.reason}</p>
+        {clickable && (
+          <button type="button" className="sa-recommendation-insight-action" onClick={(event) => { event.stopPropagation(); onOpen?.(signal); }}>
+            {copy.action} <LetsIcon name="arrow-right-long" size={14} />
+          </button>
+        )}
+      </div>
+    </article>
+  );
 }
 
 export function RecommendationsBlock({ data, loading, error, onOpen }: { data: RecommendationResult | null; loading?: boolean; error?: string | null; onOpen?: (signal: RecommendationSignal) => void }) {
@@ -42,8 +148,10 @@ export function RecommendationsBlock({ data, loading, error, onOpen }: { data: R
   if (!data) return null;
   if (data.state === 'insufficient_data') return <div className="sa-card sa-recommendation-state"><h3>Пока рано делать выводы</h3><p>Накоплено {data.evaluatedCalls} из минимум {data.minimumCalls} нужных проверок за 30 дней.</p></div>;
   if (data.state === 'normal') return <div className="sa-card sa-recommendation-state is-normal"><h3>Критичных проблем не обнаружено</h3><p>Результаты стабильны, значимых отклонений за последние 30 дней нет.</p>{data.growthPoint && <div className="sa-recommendation-growth"><strong>Точка роста:</strong> {signalCopy(data.growthPoint).title}. {signalCopy(data.growthPoint).effect}</div>}</div>;
-  return <div className="sa-recommendation-sections">
-    {data.quick.length > 0 && <div><h3 className="sa-card-heading">Что исправить сейчас</h3><div className="sa-recommendation-insights">{data.quick.map((signal) => <SignalCard key={signal.id} signal={signal} onOpen={onOpen} />)}</div></div>}
-    {data.systemic.length > 0 && <div><h3 className="sa-card-heading">Над чем работать системно</h3><div className="sa-recommendation-insights">{data.systemic.map((signal) => <SignalCard key={signal.id} signal={signal} onOpen={onOpen} />)}</div></div>}
-  </div>;
+  const all = [...data.quick, ...data.systemic];
+  return (
+    <div className="sa-recommendation-insights">
+      {all.map((signal) => <SignalCard key={signal.id} signal={signal} onOpen={onOpen} />)}
+    </div>
+  );
 }

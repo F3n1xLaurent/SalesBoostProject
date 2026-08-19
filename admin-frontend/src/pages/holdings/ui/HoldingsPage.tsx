@@ -120,7 +120,7 @@ const HOLDING_COLUMN_DEFS: { key: HoldingSortKey; label: string; align?: 'right'
   { key: 'name', label: 'Компания' },
   { key: 'type', label: 'Тип' },
   { key: 'dealershipsCount', label: 'Точки', align: 'right' },
-  { key: 'avgScore', label: 'Балл', align: 'right' },
+  { key: 'avgScore', label: 'AI-рейтинг', align: 'right' },
   { key: 'calls', label: 'Звонки', align: 'right' },
   { key: 'noAnswers', label: 'Недозвоны', align: 'right' },
   { key: 'lowDealerships', label: 'Ниже 50', align: 'right' },
@@ -291,7 +291,7 @@ function HoldingComparisonModal({
                 <tr>
                   <th>Точка</th>
                   <th>Город</th>
-                  <th className="sa-text-right">Балл</th>
+                  <th className="sa-text-right">AI-рейтинг</th>
                   <th className="sa-text-right">Динамика</th>
                   <th className="sa-text-right">Звонки</th>
                   <th className="sa-text-right">Недозвоны</th>
@@ -353,7 +353,7 @@ function HoldingListComparisonModal({
   onOpenHolding?: (id: string) => void;
 }) {
   const metrics = [
-    { key: 'avgScore' as const, label: 'Средний балл', higherBetter: true },
+    { key: 'avgScore' as const, label: 'AI-рейтинг', higherBetter: true },
     { key: 'dealershipsCount' as const, label: 'Точки', higherBetter: true },
     { key: 'calls' as const, label: 'Звонки', higherBetter: true },
     { key: 'noAnswers' as const, label: 'Недозвоны', higherBetter: false },
@@ -567,7 +567,7 @@ function HoldingAnalyticsDetail({
                 <th style={{ width: 44 }} />
                 <th>Точка</th>
                 <th>Город</th>
-                <th className="sa-text-right">Балл</th>
+                <th className="sa-text-right">AI-рейтинг</th>
                 <th>Статус</th>
                 <th className="sa-text-right">Звонки</th>
                 <th className="sa-text-right">Недозвоны</th>
@@ -1400,7 +1400,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                 <div className="sa-mobile-chips">
                   <span className="sa-metric-chip">{item.type === 'own' ? 'Собственный' : 'Франчайзинговый'}</span>
                   <span className="sa-metric-chip">{item.dealershipsCount} точек</span>
-                  <span className="sa-metric-chip">Балл: {analytics?.avgScore ?? '—'}</span>
+                  <span className="sa-metric-chip">AI-рейтинг: {analytics?.avgScore ?? '—'}</span>
                   <span className="sa-metric-chip">Звонков: {analytics?.calls ?? '—'}</span>
                   <span className="sa-metric-chip">Недозвонов: {analytics?.noAnswers ?? '—'}</span>
                   <span className="sa-metric-chip">Ниже 50: {analytics?.lowDealerships ?? '—'}</span>

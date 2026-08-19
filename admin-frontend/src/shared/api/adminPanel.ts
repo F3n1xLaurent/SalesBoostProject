@@ -278,7 +278,7 @@ export interface AnalyticsOverview {
   timeSeries?: TimeSeriesPoint[];
   weeklyTypeTrend?: { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[];
   typeCategoryComparison?: { category: string; ownScore: number; franchiseScore: number }[];
-  phoneNumberTypeComparison?: { id: string; name: string; ownership: string; calls: number; score: number; delta: number; trend: number | null }[];
+  phoneNumberTypeComparison?: { id: string; name: string; ownership: string; calls: number; noAnswers: number; score: number; delta: number; trend: number | null }[];
   typeTopErrors?: {
     own: { issue: string; count: number; percent: number }[];
     franchise: { issue: string; count: number; percent: number }[];
