@@ -5416,8 +5416,6 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       if (typeof score === 'number' && Number.isFinite(score)) employee.scores.push(score);
     };
     for (const session of sessions) addEmployeeAudit(session.managerId, scoreFromAnalyticsSession(session));
-    for (const session of trainingSessions) addEmployeeAudit(session.user?.managerProfile?.id, trainingScore(session));
-    for (const session of trainerSessions) addEmployeeAudit(session.employee.id, trainerScore(session));
     const employeeRatingRows = [...employeeRatings.values()]
       .filter((employee) => employee.scores.length > 0)
       .map((employee) => ({
@@ -6483,18 +6481,7 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
 
     const dealershipStats = dealerships.map((dealership) => {
       const dealershipSessions = sessions.filter((session) => session.dealershipId === dealership.id);
-      const dealershipScored = dealershipSessions.filter((session) => typeof session.totalScore === 'number');
-      const currentScored = dealershipScored.filter((session) => session.startedAt >= currentStart);
-      const previousScored = dealershipScored.filter((session) => session.startedAt >= previousStart && session.startedAt < currentStart);
-      const score = dealershipScored.length
-        ? round1(dealershipScored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / dealershipScored.length)
-        : 0;
-      const currentAvg = currentScored.length
-        ? currentScored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / currentScored.length
-        : null;
-      const previousAvg = previousScored.length
-        ? previousScored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / previousScored.length
-        : null;
+      const score = scoreFromSessions(dealershipSessions);
       return {
         id: dealership.id,
         name: dealership.name,
@@ -6502,7 +6489,7 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         type: dealership.type,
         city: dealership.city,
         score,
-        delta: currentAvg != null && previousAvg != null ? Math.round(currentAvg - previousAvg) : 0,
+        delta: deltaFromSessions(dealershipSessions) ?? 0,
         calls: dealershipSessions.length,
         noAnswers: dealershipSessions.filter((session) => session.outcome === 'no_answer').length,
       };
@@ -6557,7 +6544,8 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
     const currentScored = sessions.filter((session) => session.startedAt >= currentStart && typeof scoreFromAnalyticsSession(session) === 'number');
     const currentNetworkScore = currentScored.length ? scoreFromSessions(currentScored) : 0;
     const phoneNumberTypeComparison = [...sourceGroups.values()].map((group) => {
-      const current = group.sessions.filter((session) => session.startedAt >= currentStart && typeof scoreFromAnalyticsSession(session) === 'number');
+      const currentSessions = group.sessions.filter((session) => session.startedAt >= currentStart);
+      const current = currentSessions.filter((session) => typeof scoreFromAnalyticsSession(session) === 'number');
       const previous = group.sessions.filter((session) => session.startedAt >= previousStart && session.startedAt < currentStart && typeof scoreFromAnalyticsSession(session) === 'number');
       const score = current.length ? scoreFromSessions(current) : 0;
       const previousScore = previous.length ? scoreFromSessions(previous) : null;
@@ -6565,7 +6553,8 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         id: group.id,
         name: group.name,
         ownership: group.ownership,
-        calls: current.length,
+        calls: currentSessions.length,
+        noAnswers: currentSessions.filter((session) => session.outcome === 'no_answer').length,
         score,
         delta: round1(score - currentNetworkScore),
         trend: previousScore === null ? null : round1(score - previousScore),
@@ -6698,7 +6687,7 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         { label: 'Слабая коммуникация', percent: percent(communicationWeak, commTotal), color: '#E05252' },
       ],
       topErrors,
-      timeSeries: timeSeriesFromSessions(sessions, 14),
+      timeSeries: timeSeriesFromSessions(sessions, 30),
       weeklyTypeTrend: weeklyTypeTrendFromSessions(sessions),
       typeCategoryComparison: categoryComparisonFromSessions(ownSessions, franchiseSessions),
       phoneNumberTypeComparison,

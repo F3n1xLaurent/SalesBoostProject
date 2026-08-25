@@ -204,7 +204,7 @@ function TrendChart({
             style={{ left: `${leftPct}%`, top: `${topPct}%` }}
           >
             <div className="sa-chart-hover-tooltip-row">Дата: {p.date}</div>
-            <div className="sa-chart-hover-tooltip-row is-strong">Балл: {p.avgScore.toFixed(1)}</div>
+            <div className="sa-chart-hover-tooltip-row is-strong">AI-рейтинг: {p.avgScore.toFixed(1)}</div>
             <div className="sa-chart-hover-tooltip-row">Проверок: {p.count}</div>
           </div>
         );
@@ -449,7 +449,7 @@ function TrainerStats({
   return (
     <div className="sa-card" style={{ padding: 18 }}>
       <div className="sa-trainer-stats-grid">
-        <CompactKpi label="Средний балл" value={trainer.avgScore} cls={ratingClass(trainer.avgScore)} />
+        <CompactKpi label="AI-рейтинг" value={trainer.avgScore} cls={ratingClass(trainer.avgScore)} />
         <CompactKpi label="Очки" value={trainer.totalPoints} />
         <CompactKpi label="Стрик" value={trainer.currentStreak} valueSuffix="День" />
         <CompactKpi label="Сессии 30 дней" value={trainer.sessions30d} />
@@ -486,7 +486,7 @@ function TrainerStats({
                 <th>Дата</th>
                 <th>Сценарий</th>
                 <th>Режим</th>
-                <th className="sa-text-right">Балл</th>
+                <th className="sa-text-right">AI-рейтинг</th>
                 <th className="sa-text-right">Очки</th>
               </tr>
             </thead>

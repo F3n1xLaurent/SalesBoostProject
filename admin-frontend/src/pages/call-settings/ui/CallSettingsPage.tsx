@@ -1501,7 +1501,7 @@ function ScriptEditor(props: {
                   <tr>
                     <th style={{ width: 260 }}>Вопрос/Возражение</th>
                     <th>Эталон ответа</th>
-                    <th style={{ width: 150 }}>Баллы</th>
+                    <th style={{ width: 150 }}>AI-рейтинг</th>
                   </tr>
                 </thead>
                 <tbody>
