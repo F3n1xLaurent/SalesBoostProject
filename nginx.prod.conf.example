@@ -1,0 +1,201 @@
+# Install as /etc/nginx/conf.d/salesboost.conf.
+# Replace salesboost.example.com and certificate paths before `nginx -t`.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# Requests are accepted only for the production domain and its subdomains.
+# Escape dots in regexes and replace salesboost.example.com everywhere below.
+map $host $salesboost_host_allowed {
+    default                                      0;
+    salesboost.example.com                       1;
+    ~^[a-z0-9-]+\.salesboost\.example\.com$     1;
+}
+
+# Browsers send Origin for cross-origin API calls and most state-changing
+# same-origin requests. Empty Origin remains allowed for navigation, health
+# checks, Telegram/Vox webhooks and other server-to-server integrations.
+map $http_origin $salesboost_origin_allowed {
+    default                                               0;
+    ""                                                    1;
+    https://salesboost.example.com                        1;
+    ~^https://[a-z0-9-]+\.salesboost\.example\.com$      1;
+}
+
+# Modern browsers also identify the relationship between the initiating page
+# and this server. Requests without this browser header remain available to
+# trusted server-to-server integrations.
+map $http_sec_fetch_site $salesboost_fetch_site_allowed {
+    default       0;
+    ""            1;
+    same-origin   1;
+    same-site     1;
+    none          1;
+}
+
+limit_req_zone $binary_remote_addr zone=salesboost_api:10m rate=20r/s;
+limit_req_zone $binary_remote_addr zone=salesboost_login:10m rate=5r/m;
+limit_req_zone $binary_remote_addr zone=salesboost_paid_demo:10m rate=2r/m;
+limit_req_zone $binary_remote_addr zone=salesboost_ai:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=salesboost_voice_dialog:10m rate=30r/m;
+limit_conn_zone $binary_remote_addr zone=salesboost_conn:10m;
+
+upstream salesboost_backend {
+    server 127.0.0.1:3000;
+    keepalive 32;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    return 444;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name salesboost.example.com *.salesboost.example.com;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name salesboost.example.com *.salesboost.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/salesboost.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/salesboost.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    server_tokens off;
+    client_max_body_size 16m;
+    client_body_timeout 30s;
+    send_timeout 300s;
+    keepalive_timeout 30s;
+    limit_conn salesboost_conn 30;
+    # Do not let an accidental upstream CORS header reopen browser access.
+    proxy_hide_header Access-Control-Allow-Origin;
+    proxy_hide_header Access-Control-Allow-Credentials;
+
+    # Safe nginx `if` usage: return immediately before proxying. This blocks
+    # direct-IP/forged Host routing and browser requests from foreign origins.
+    if ($salesboost_host_allowed = 0) {
+        return 444;
+    }
+    if ($salesboost_origin_allowed = 0) {
+        return 403;
+    }
+    if ($salesboost_fetch_site_allowed = 0) {
+        return 403;
+    }
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Permissions-Policy "camera=(), geolocation=(), payment=(), usb=()" always;
+    # Telegram Web may embed the Mini App, so X-Frame-Options is intentionally
+    # omitted and embedding is controlled with frame-ancestors instead.
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors 'self' https://web.telegram.org https://*.telegram.org; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https: wss:; upgrade-insecure-requests" always;
+
+    access_log /var/log/nginx/salesboost.access.log;
+    error_log  /var/log/nginx/salesboost.error.log warn;
+
+    location = /health {
+        access_log off;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+
+    location = /api/auth/login {
+        limit_req zone=salesboost_login burst=5 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+
+    # This endpoint starts a real, potentially billable phone call. Keep this
+    # location only if the public demo is intentional; application-level auth
+    # or a challenge should still be added.
+    location = /api/public/demo-call/start {
+        limit_req zone=salesboost_paid_demo burst=2 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
+    location = /api/public/demo-call/evaluate-example {
+        limit_req zone=salesboost_ai burst=5 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
+    location /api/training/web/ {
+        limit_req zone=salesboost_ai burst=10 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    location = /voice/stream {
+        proxy_pass http://salesboost_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    location /api/ {
+        limit_req zone=salesboost_api burst=40 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+
+    location /voice/ {
+        limit_req zone=salesboost_api burst=20 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
+    location = /voice/dialog {
+        limit_req zone=salesboost_voice_dialog burst=20 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
+    location /webhooks/ {
+        limit_req zone=salesboost_api burst=40 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 60s;
+    }
+
+    location / {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+}

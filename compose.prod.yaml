@@ -1,0 +1,52 @@
+name: salesboost
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: salesboost:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # Keep recoverable voice-processing files outside the container layer.
+      TMPDIR: /app/tmp
+      ALLOW_DEV_ADMIN: "false"
+    ports:
+      # Publish strictly on the host loopback interface. External traffic must
+      # reach the application through the host's HTTPS reverse proxy.
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    volumes:
+      # DATABASE_URL from .env must point inside this persistent directory,
+      # for example: file:/data/salesboost.db
+      - salesboost_sqlite:/data
+      - salesboost_audio_tmp:/app/tmp
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=1770
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
+
+volumes:
+  salesboost_sqlite:
+    name: salesboost_sqlite
+  salesboost_audio_tmp:
+    name: salesboost_audio_tmp

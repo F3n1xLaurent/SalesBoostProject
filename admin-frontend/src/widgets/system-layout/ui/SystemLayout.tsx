@@ -9,25 +9,7 @@ import '../../../shared/ui/styles/admin-responsive.css';
 import { AdminSidebar } from '../../admin-sidebar/ui/AdminSidebar';
 import type { AdminTab, AdminRole } from '../../admin-sidebar/ui/AdminSidebar';
 import sidebarLogo from '../../../assets/logo.png';
-import { Dashboard } from '../../../pages/dashboard/ui/DashboardPage';
-import { HoldingsPage } from '../../../pages/holdings/ui/HoldingsPage';
-import { Companies } from '../../../pages/companies/ui/CompaniesPage';
-import { DealershipDirectionsPage } from '../../../pages/dealership-directions/ui/DealershipDirectionsPage';
-import { ImportsPage } from '../../../pages/imports/ui/ImportsPage';
-import { DealershipDetail } from '../../../pages/dealership-detail/ui/DealershipDetailPage';
-import { UsersPage } from '../../../pages/users/ui/UsersPage';
-import { TypesNumbersPage } from '../../../pages/types-numbers/ui/TypesNumbersPage';
-import { Autodealers } from '../../../pages/autodealers/ui/AutodealersPage';
-import { EmployeeDetail } from '../../../pages/employee-detail/ui/EmployeeDetailPage';
-import { Audits } from '../../../pages/audits/ui/AuditsPage';
-import { AuditDetail } from '../../../pages/audit-detail/ui/AuditDetailPage';
-import { AuditBatchDetail } from '../../../pages/audit-batch-detail/ui/AuditBatchDetailPage';
-import { Analytics } from '../../../pages/analytics/ui/AnalyticsPage';
-import { CallSettingsPage } from '../../../pages/call-settings/ui/CallSettingsPage';
-import { Settings } from '../../../pages/settings/ui/SettingsPage';
-import { DealerContent } from '../../../pages/dealer/ui/DealerContent';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
-import { TrainPage } from '../../../pages/train/ui/TrainPage';
 import type { PlatformSummary, PlatformVoice } from '../../../shared/model/adminPanel';
 import { CallBatchTray } from '../../call-batch-tray/ui/CallBatchTray';
 import {
@@ -56,6 +38,35 @@ import {
   type TimeSeriesPoint,
   type AdminPanelSettings,
 } from '../../../shared/api/adminPanel';
+
+function lazyNamed<T extends React.ComponentType<any>>(
+  loader: () => Promise<Record<string, unknown>>,
+  exportName: string,
+) {
+  return React.lazy(async () => {
+    const module = await loader();
+    return { default: module[exportName] as T };
+  });
+}
+
+const Dashboard = lazyNamed(() => import('../../../pages/dashboard/ui/DashboardPage'), 'Dashboard');
+const HoldingsPage = lazyNamed(() => import('../../../pages/holdings/ui/HoldingsPage'), 'HoldingsPage');
+const Companies = lazyNamed(() => import('../../../pages/companies/ui/CompaniesPage'), 'Companies');
+const DealershipDirectionsPage = lazyNamed(() => import('../../../pages/dealership-directions/ui/DealershipDirectionsPage'), 'DealershipDirectionsPage');
+const ImportsPage = lazyNamed(() => import('../../../pages/imports/ui/ImportsPage'), 'ImportsPage');
+const DealershipDetail = lazyNamed(() => import('../../../pages/dealership-detail/ui/DealershipDetailPage'), 'DealershipDetail');
+const UsersPage = lazyNamed(() => import('../../../pages/users/ui/UsersPage'), 'UsersPage');
+const TypesNumbersPage = lazyNamed(() => import('../../../pages/types-numbers/ui/TypesNumbersPage'), 'TypesNumbersPage');
+const Autodealers = lazyNamed(() => import('../../../pages/autodealers/ui/AutodealersPage'), 'Autodealers');
+const EmployeeDetail = lazyNamed(() => import('../../../pages/employee-detail/ui/EmployeeDetailPage'), 'EmployeeDetail');
+const Audits = lazyNamed(() => import('../../../pages/audits/ui/AuditsPage'), 'Audits');
+const AuditDetail = lazyNamed(() => import('../../../pages/audit-detail/ui/AuditDetailPage'), 'AuditDetail');
+const AuditBatchDetail = lazyNamed(() => import('../../../pages/audit-batch-detail/ui/AuditBatchDetailPage'), 'AuditBatchDetail');
+const Analytics = lazyNamed(() => import('../../../pages/analytics/ui/AnalyticsPage'), 'Analytics');
+const CallSettingsPage = lazyNamed(() => import('../../../pages/call-settings/ui/CallSettingsPage'), 'CallSettingsPage');
+const Settings = lazyNamed(() => import('../../../pages/settings/ui/SettingsPage'), 'Settings');
+const DealerContent = lazyNamed(() => import('../../../pages/dealer/ui/DealerContent'), 'DealerContent');
+const TrainPage = lazyNamed(() => import('../../../pages/train/ui/TrainPage'), 'TrainPage');
 
 export type SystemLayoutProps = {
   summary: PlatformSummary | null;
@@ -392,6 +403,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
         )}
         <div className={`super-admin-content${trainerSessionActive ? ' super-admin-content--trainer-focus' : ''}`}>
           <div className="sa-page-enter">
+          <React.Suspense fallback={<div role="status" aria-live="polite">Загрузка раздела…</div>}>
           {backendNotRunning && shouldLoadAuditData && (
             <StatusNotice tone="warning">
               <strong>Нет данных: бэкенд не запущен.</strong>
@@ -598,6 +610,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
           {activeTab === 'settings' && (
             <Settings settings={settings} loading={dataLoading} />
           )}
+          </React.Suspense>
           </div>
         </div>
 
