@@ -1,11 +1,28 @@
-node_modules
-dist
-.env
-.env.*
-!.env.example
-.git
-.gitignore
-*.md
-!README.md
-dev.db
-*.db-journal
+# Deny by default: only files explicitly required by the production build enter
+# the Docker context. This prevents secrets, local databases and unrelated
+# artifacts from being sent to the Docker daemon.
+**
+
+!package.json
+!package-lock.json
+!tsconfig.json
+
+!prisma/
+!prisma/**
+!src/
+!src/**
+!public/
+!public/**
+!data/
+!data/**
+!scripts/
+!scripts/docker-entrypoint.sh
+!admin-frontend/
+!admin-frontend/**
+
+!apps/
+!apps/vox-smoke-test-server/
+!apps/vox-smoke-test-server/package.json
+!packages/
+!packages/voximplant-smoke/
+!packages/voximplant-smoke/package.json
