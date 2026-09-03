@@ -20,6 +20,7 @@ import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
 import { DEMO_CALL_CRITERIA, DEMO_CALL_PROMPT } from './voice/demoCallPrompt';
 import { normalizeCallPhone } from './voice/phoneNumberStats';
+import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
 import { generateUnifiedCallReport, generateUnifiedTrainerReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
@@ -6020,6 +6021,8 @@ app.get('/api/admin/internal-analytics/demo', async (req, res) => {
         totalScore: true,
         failureReason: true,
         evaluationJson: true,
+        ivrDetected: true,
+        ivrPathJson: true,
       },
     });
 
@@ -6097,6 +6100,8 @@ app.get('/api/admin/internal-analytics/demo', async (req, res) => {
         id: session.id,
         callId: session.callId,
         phone: session.to,
+        ivrDetected: session.ivrDetected,
+        ivrPath: parseStoredIvrPath(session.ivrPathJson),
         ipAddress: session.ipAddress,
         startedAt: session.startedAt.toISOString(),
         outcome: session.failureReason ? 'error' : (session.outcome || (session.endedAt ? 'completed' : 'processing')),
@@ -6258,6 +6263,26 @@ function normalizeVoxWebhookEvent(rawEvent: unknown): string {
   return event;
 }
 
+async function recordVoxIvrEvent(event: string, payload: Record<string, unknown>): Promise<void> {
+  const callId = String(payload.call_id ?? '').trim();
+  if (!callId) {
+    console.warn('[webhooks/vox] IVR event without call_id', { event });
+    return;
+  }
+  const existing = await prisma.voiceCallSession.findUnique({ where: { callId }, select: { ivrPathJson: true } });
+  if (!existing) {
+    console.warn('[webhooks/vox] IVR event for unknown call', { event, callId });
+    return;
+  }
+  const previousPath = parseStoredIvrPath(existing.ivrPathJson);
+  const incomingPath = event === 'ivr_selected' ? extractIvrPath(payload, previousPath) : previousPath;
+  const ivrPath = incomingPath.length >= previousPath.length ? incomingPath : previousPath;
+  await prisma.voiceCallSession.update({
+    where: { callId },
+    data: { ivrDetected: true, ...(ivrPath.length > 0 ? { ivrPathJson: JSON.stringify(ivrPath) } : {}) },
+  });
+}
+
 const voxFinalWatchdogs = new Map<string, NodeJS.Timeout>();
 const voxWatchdogMeta = new Map<string, { to: string; voxSessionId?: number | null }>();
 const VOX_FINAL_WEBHOOK_TIMEOUT_MS = (() => {
@@ -6398,6 +6423,15 @@ app.post('/webhooks/vox', async (req, res) => {
   });
   const isFinalEvent = ['disconnected', 'failed', 'no_answer', 'busy'].includes(event);
   if (!isFinalEvent) {
+    if (event === 'ivr_detected' || event === 'ivr_selected') {
+      try {
+        await recordVoxIvrEvent(event, normalizedPayload);
+      } catch (err) {
+        console.error('[webhooks/vox] recordVoxIvrEvent error:', {
+          requestId, event, callId: callIdStr || null, error: err instanceof Error ? err.message : err,
+        });
+      }
+    }
     if (event === 'connected') {
       recordVoiceCallConnected(normalizedPayload).catch((err) => {
         console.error('[webhooks/vox] recordVoiceCallConnected error:', {
@@ -6504,6 +6538,8 @@ app.get('/api/admin/call-history', async (req, res) => {
         managerName: s.manager?.fullName ?? null,
         planId: s.planId,
         planName: s.plan?.name ?? null,
+        ivrDetected: s.ivrDetected,
+        ivrPath: parseStoredIvrPath(s.ivrPathJson),
         transcript,
         transcriptTurns: transcript.length,
         totalScore: s.totalScore,
@@ -7999,6 +8035,8 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         phoneNumberTypeId: s.phoneNumberTypeId ?? fallbackPhone?.typeId ?? null,
         phoneNumberTypeName: s.phoneNumberTypeName ?? fallbackPhone?.type.name ?? null,
         phoneNumber: s.to,
+        ivrDetected: s.ivrDetected,
+        ivrPath: parseStoredIvrPath(s.ivrPathJson),
         verdict,
         communicationFlag: communicationFlagFromSessions([s]),
         reportIssues: extractReportIssuesFromSession(s, catalog),
@@ -8039,6 +8077,8 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
         phoneNumberTypeId: null,
         phoneNumberTypeName: null,
         phoneNumber: null,
+        ivrDetected: false,
+        ivrPath: [],
         verdict: score === null ? 'Аналитика считается' : auditStatus === 'failed' ? 'Нуждается в разборе' : 'Оценено',
         communicationFlag: communicationFlagFromSessions([s as unknown as AnalyticsSession]),
         reportIssues: extractReportIssuesFromSession(s, catalog),

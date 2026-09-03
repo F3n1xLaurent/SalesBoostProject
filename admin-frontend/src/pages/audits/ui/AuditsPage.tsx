@@ -49,6 +49,8 @@ type AuditListRow = {
   phoneNumberTypeId: string;
   phoneNumberTypeName: string;
   phoneNumber: string;
+  ivrDetected: boolean;
+  ivrPath: string[];
   communicationFlag: CommunicationFlag;
   reportIssues: string[];
 };
@@ -191,6 +193,8 @@ function auditItemToRow(item: AuditItem): AuditListRow {
     phoneNumberTypeId: item.phoneNumberTypeId ?? '',
     phoneNumberTypeName: item.phoneNumberTypeName ?? '',
     phoneNumber: item.phoneNumber ?? '',
+    ivrDetected: item.ivrDetected ?? false,
+    ivrPath: item.ivrPath ?? [],
     communicationFlag: item.communicationFlag ?? 'ok',
     reportIssues: reportIssuesFromItem(item),
   };
@@ -750,6 +754,12 @@ export function Audits({
                   </td>
                   <td>
                     <div className="sa-cell-name">{r.employeeName}</div>
+                    {r.phoneNumber && (
+                      <div className="sa-meta" style={{ marginTop: 3, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span>{r.phoneNumber}</span>
+                        {r.ivrDetected && <span className="sa-ivr-badge">IVR{r.ivrPath.length > 0 ? ` (${r.ivrPath.join('-')})` : ''}</span>}
+                      </div>
+                    )}
                   </td>
                   <td>
                     <div className="sa-cell-name">{r.dealershipName}</div>
@@ -784,6 +794,7 @@ export function Audits({
               <div>
                 <div className="sa-cell-name">{r.employeeName}</div>
                 <div className="sa-cell-city">{r.dealershipName} · {r.city}</div>
+                {r.phoneNumber && <div className="sa-cell-city">{r.phoneNumber} {r.ivrDetected ? `· IVR${r.ivrPath.length > 0 ? ` (${r.ivrPath.join('-')})` : ''}` : ''}</div>}
               </div>
               {r.totalScore === null
                 ? <span className="sa-mobile-rating sa-muted">—</span>

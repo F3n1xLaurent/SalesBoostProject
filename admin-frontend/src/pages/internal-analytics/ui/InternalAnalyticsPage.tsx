@@ -22,6 +22,8 @@ type DemoAnalytics = {
     id: number;
     callId: string;
     phone: string;
+    ivrDetected: boolean;
+    ivrPath: string[];
     ipAddress: string | null;
     startedAt: string;
     outcome: string;
@@ -172,7 +174,7 @@ export function InternalAnalyticsPage() {
               <table className="internal-calls-table">
                 <thead><tr><th>Дата и время (МСК)</th><th>IP-адрес</th><th>Телефон</th><th>Результат</th><th>Длительность</th><th>Балл</th></tr></thead>
                 <tbody>{data.recentCalls.map((call) => <tr key={call.id} title={call.error || undefined}>
-                  <td>{formatDate(call.startedAt)}</td><td className="mono">{call.ipAddress || '—'}</td><td>{call.phone}</td>
+                  <td>{formatDate(call.startedAt)}</td><td className="mono">{call.ipAddress || '—'}</td><td>{call.phone}{call.ivrDetected && <span className="sa-ivr-badge" style={{ marginLeft: 6 }}>IVR{call.ivrPath.length > 0 ? ` (${call.ivrPath.join('-')})` : ''}</span>}</td>
                   <td><span className={`internal-outcome internal-outcome--${call.outcome}`}>{outcomeLabels[call.outcome] || call.outcome}</span></td>
                   <td>{formatDuration(call.durationSec)}</td><td>{call.totalScore == null ? '—' : `${Math.round(call.totalScore)}/100`}</td>
                 </tr>)}{data.recentCalls.length === 0 && <tr><td colSpan={6} className="internal-calls-empty">По заданным фильтрам звонки не найдены.</td></tr>}</tbody>

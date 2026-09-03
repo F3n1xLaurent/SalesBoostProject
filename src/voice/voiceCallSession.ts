@@ -228,6 +228,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       promptText: true,
       phone: true,
       phoneNumberTypeId: true,
+      targetKind: true,
     },
   });
   if (!existing) return;
@@ -252,6 +253,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       planId: existing.planId,
       managerId: existing.employeeId,
       dealershipId: existing.dealershipId,
+      attributionType: existing.targetKind === 'dealership' ? 'dealership' : 'manager',
       ...phoneNumberSource,
       dimensionsJson: analyticsFields.dimensionsJson,
       checklistResultsJson: analyticsFields.checklistResultsJson,
