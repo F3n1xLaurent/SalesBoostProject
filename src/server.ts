@@ -18,6 +18,7 @@ import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
+import { DEMO_CALL_CRITERIA, DEMO_CALL_PROMPT } from './voice/demoCallPrompt';
 import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { generateUnifiedCallReport, generateUnifiedTrainerReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
 import {
@@ -3018,6 +3019,23 @@ function buildVoiceCallDetailResponse(session: {
     Array.isArray(checklist) && checklist.length > 0
       ? computeUiDimensionScoresFromChecklist(checklist as Array<{ code?: string; status?: string }>, dimensionScoresRaw)
       : dimensionScoresRaw;
+  const reportTranscript = transcript
+    .map((line) => ({
+      role: (line.role === 'manager' || line.role === 'assistant' ? 'manager' : 'client') as 'manager' | 'client',
+      text: String(line.text || '').trim(),
+    }))
+    .filter((line) => line.text);
+  const unifiedReport = normalizeUnifiedCallReport(
+    evaluation?.unified_call_report,
+    {
+      totalScore: score ?? 0,
+      transcript: reportTranscript,
+      source: 'call',
+      dimensionScores: dimensionScores && typeof dimensionScores === 'object'
+        ? dimensionScores as Record<string, number>
+        : undefined,
+    },
+  );
   const qualityTag = score != null ? (score >= 76 ? 'Хорошо' : score >= 50 ? 'Средне' : 'Плохо') : null;
   const ended = !!session.endedAt;
   const hasEval = !!session.evaluationJson;
@@ -3050,6 +3068,7 @@ function buildVoiceCallDetailResponse(session: {
     recommendations,
     callSummary,
     replyImprovements,
+    unifiedReport,
     strengths: checklist.filter((c: any) => c.status === 'YES').map((c: any) => c.comment || c.code),
     weaknesses: issues.map((i: any) => (i.recommendation || i.issue_type) || ''),
   };
@@ -5865,7 +5884,10 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     const scenario = body.scenario === 'dialog' || body.scenario === 'realtime'
       ? body.scenario
       : 'realtime_pure';
-    const result = await startVoiceCall(toRaw, { scenario });
+    const result = await startVoiceCall(toRaw, {
+      scenario,
+      instructions: DEMO_CALL_PROMPT,
+    });
     if ('error' in result) {
       return res.status(400).json({ error: result.error });
     }
@@ -5874,6 +5896,10 @@ app.post('/api/public/demo-call/start', async (req, res) => {
       setVoxSessionId(result.callId, result.callSessionHistoryId);
     }
     const toNormalized = '+' + String(toRaw).replace(/\D/g, '');
+    // nginx.prod.conf overwrites X-Real-IP with $remote_addr, so prefer it over a client-supplied X-Forwarded-For chain.
+    const realIp = String(req.headers['x-real-ip'] || '').trim();
+    const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',').at(-1)?.trim();
+    const ipAddress = (realIp || forwardedFor || req.socket.remoteAddress || '').replace(/^::ffff:/, '').slice(0, 64) || null;
     try {
       await prisma.voiceCallSession.create({
         data: {
@@ -5881,6 +5907,12 @@ app.post('/api/public/demo-call/start', async (req, res) => {
           to: toNormalized,
           scenario: result.scenario ?? 'realtime_pure',
           source: 'demo',
+          ipAddress,
+          caseContextJson: JSON.stringify({
+            kind: 'fixed_demo_call',
+            prompt: DEMO_CALL_PROMPT,
+            criteria: DEMO_CALL_CRITERIA,
+          }),
           startedAt: new Date(result.startedAt),
         },
       });
@@ -5935,6 +5967,147 @@ app.get('/api/public/demo-call/:callId', async (req, res) => {
   } catch (err) {
     console.error('public demo-call/:callId error:', err);
     res.status(500).json({ error: 'Не удалось получить статус звонка.' });
+  }
+});
+
+app.get('/api/admin/internal-analytics/demo', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+
+    const query = String(req.query.q || '').trim().slice(0, 100);
+    const finiteNumber = (value: unknown, min: number, max: number) => {
+      if (value == null || value === '') return undefined;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : undefined;
+    };
+    const validDate = (value: unknown) => {
+      if (!value) return undefined;
+      const parsed = new Date(String(value));
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const minDuration = finiteNumber(req.query.minDuration, 0, 86400);
+    const maxDuration = finiteNumber(req.query.maxDuration, 0, 86400);
+    const minScore = finiteNumber(req.query.minScore, 0, 100);
+    const maxScore = finiteNumber(req.query.maxScore, 0, 100);
+    const dateFrom = validDate(req.query.dateFrom);
+    const dateTo = validDate(req.query.dateTo);
+    const sessions = await prisma.voiceCallSession.findMany({
+      where: {
+        source: 'demo',
+        ...(query ? { OR: [
+          { to: { contains: query } },
+          { ipAddress: { contains: query } },
+          { callId: { contains: query } },
+        ] } : {}),
+        ...(minDuration != null || maxDuration != null ? { durationSec: { gte: minDuration, lte: maxDuration } } : {}),
+        ...(minScore != null || maxScore != null ? { totalScore: { gte: minScore, lte: maxScore } } : {}),
+        ...(dateFrom || dateTo ? { startedAt: { gte: dateFrom, lte: dateTo } } : {}),
+      },
+      orderBy: { startedAt: 'desc' },
+      select: {
+        id: true,
+        callId: true,
+        to: true,
+        ipAddress: true,
+        startedAt: true,
+        endedAt: true,
+        outcome: true,
+        durationSec: true,
+        answerTimeSec: true,
+        totalScore: true,
+        failureReason: true,
+        evaluationJson: true,
+      },
+    });
+
+    const completed = sessions.filter((item) => item.endedAt && !item.failureReason);
+    const scored = sessions.filter((item) => item.totalScore != null);
+    const answered = sessions.filter((item) => (item.durationSec ?? 0) > 0 || item.outcome === 'completed' || item.outcome === 'disconnected');
+    const average = (values: number[]) => values.length
+      ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)
+      : 0;
+    const outcomeBreakdown: Record<string, number> = {};
+    const dailyMap = new Map<string, { calls: number; answered: number; scores: number[] }>();
+    const ipCounts = new Map<string, number>();
+    const weaknessCounts = new Map<string, number>();
+    const criteriaMap = new Map<string, { score: number; maxScore: number; checks: number }>();
+
+    for (const session of sessions) {
+      const outcome = session.failureReason ? 'error' : (session.outcome || (session.endedAt ? 'completed' : 'processing'));
+      outcomeBreakdown[outcome] = (outcomeBreakdown[outcome] || 0) + 1;
+      const day = session.startedAt.toISOString().slice(0, 10);
+      const daily = dailyMap.get(day) ?? { calls: 0, answered: 0, scores: [] };
+      daily.calls += 1;
+      if ((session.durationSec ?? 0) > 0) daily.answered += 1;
+      if (session.totalScore != null) daily.scores.push(session.totalScore);
+      dailyMap.set(day, daily);
+      if (session.ipAddress) ipCounts.set(session.ipAddress, (ipCounts.get(session.ipAddress) || 0) + 1);
+
+      const evaluation = safeJsonParseLocal<Record<string, any>>(session.evaluationJson, {});
+      const report = evaluation?.unified_call_report;
+      for (const weakness of Array.isArray(report?.weaknesses) ? report.weaknesses : []) {
+        const text = String(weakness || '').trim();
+        if (text) weaknessCounts.set(text, (weaknessCounts.get(text) || 0) + 1);
+      }
+      for (const criterion of Array.isArray(evaluation?.plan_criteria?.items) ? evaluation.plan_criteria.items : []) {
+        const title = String(criterion.expectedAnswer || '').trim();
+        if (!title) continue;
+        const current = criteriaMap.get(title) ?? { score: 0, maxScore: 0, checks: 0 };
+        current.score += Number(criterion.score) || 0;
+        current.maxScore += Number(criterion.maxScore) || 0;
+        current.checks += 1;
+        criteriaMap.set(title, current);
+      }
+    }
+
+    res.json({
+      summary: {
+        totalCalls: sessions.length,
+        completedCalls: completed.length,
+        answeredRate: sessions.length ? Math.round((answered.length / sessions.length) * 100) : 0,
+        avgDurationSec: average(answered.map((item) => item.durationSec ?? 0).filter((value) => value > 0)),
+        avgAnswerTimeSec: average(sessions.map((item) => item.answerTimeSec ?? 0).filter((value) => value > 0)),
+        avgScore: average(scored.map((item) => item.totalScore ?? 0)),
+        uniqueIps: ipCounts.size,
+        repeatVisitors: [...ipCounts.values()].filter((count) => count > 1).length,
+      },
+      scoreDistribution: {
+        good: scored.filter((item) => (item.totalScore ?? 0) >= 76).length,
+        medium: scored.filter((item) => (item.totalScore ?? 0) >= 50 && (item.totalScore ?? 0) < 76).length,
+        bad: scored.filter((item) => (item.totalScore ?? 0) < 50).length,
+      },
+      outcomeBreakdown,
+      criteria: [...criteriaMap.entries()].map(([title, value]) => ({
+        title,
+        checks: value.checks,
+        completionPercent: value.maxScore > 0 ? Math.round((value.score / value.maxScore) * 100) : 0,
+      })),
+      topWeaknesses: [...weaknessCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([text, count]) => ({ text, count })),
+      daily: [...dailyMap.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .slice(-30)
+        .map(([date, value]) => ({ date, calls: value.calls, answered: value.answered, avgScore: average(value.scores) })),
+      recentCalls: sessions.slice(0, 100).map((session) => ({
+        id: session.id,
+        callId: session.callId,
+        phone: session.to,
+        ipAddress: session.ipAddress,
+        startedAt: session.startedAt.toISOString(),
+        outcome: session.failureReason ? 'error' : (session.outcome || (session.endedAt ? 'completed' : 'processing')),
+        durationSec: session.durationSec,
+        totalScore: session.totalScore,
+        error: session.failureReason,
+      })),
+    });
+  } catch (error) {
+    console.error('internal demo analytics error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить внутреннюю аналитику.' });
   }
 });
 

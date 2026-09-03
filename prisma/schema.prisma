@@ -722,6 +722,7 @@ model VoiceCallSession {
   dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson
   checklistResultsJson String? // JSON: checklist results extracted from evaluationJson
   caseContextJson  String?   // JSON: scenario/profile/item context used for the call
+  ipAddress        String?   // requester IP for public demo calls
   totalScore       Float?    // 0-100
   failureReason    String?   // if early fail
 

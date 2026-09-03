@@ -46,7 +46,11 @@ function buildNav(main: NavItem[], secondary: NavItem[]): NavEntry[] {
   return [...main, { type: 'separator' }, ...secondary];
 }
 
-const SUPER_NAV: NavEntry[] = buildNav(SUPER_NAV_MAIN, SUPER_NAV_SECONDARY);
+const SUPER_NAV: NavEntry[] = [
+  ...buildNav(SUPER_NAV_MAIN, SUPER_NAV_SECONDARY),
+  { type: 'separator' },
+  { id: 'internalAnalytics', label: 'Внутренняя аналитика', icon: 'chart' },
+];
 
 const COMPANY_NAV: NavEntry[] = buildNav(
   SUPER_NAV_MAIN.filter((item) => item.id !== 'holdings'),
