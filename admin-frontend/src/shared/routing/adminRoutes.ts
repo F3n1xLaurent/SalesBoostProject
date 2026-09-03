@@ -23,12 +23,13 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
   'audits',
   'analytics',
   'callSettings',
+  'internalAnalytics',
   'settings',
 ];
 
 const TABS_BY_ROLE: Record<AdminRole, AdminTab[]> = {
   super: SUPER_COMPANY_TABS,
-  company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'holdings' && tab !== 'typesNumbers'),
+  company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'holdings' && tab !== 'typesNumbers' && tab !== 'internalAnalytics'),
   dealer: ['dealer-companies', 'audits', 'users', 'dealer-team', 'settings'],
   staff: ['staff-profile', 'users', 'staff-trainer', 'settings'],
 };
@@ -72,6 +73,8 @@ export function tabToPath(tab: AdminTab): string {
       return '/analytics';
     case 'callSettings':
       return '/call-settings/profiles';
+    case 'internalAnalytics':
+      return '/internal-analytics';
     case 'settings':
       return '/settings';
     case 'dealer-companies':
@@ -115,6 +118,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'train') return { role: 'staff', tab: 'staff-trainer', trainerSessionId: resource };
   if (section === 'analytics') return { tab: 'analytics' };
   if (section === 'call-settings') return { tab: 'callSettings' };
+  if (section === 'internal-analytics') return { tab: 'internalAnalytics' };
   if (section === 'settings') return { tab: 'settings' };
   if (section === 'audits' && resource === 'batches') return { tab: 'audits', batchId: id };
   if (section === 'audits') return { tab: 'audits', auditId: resource };

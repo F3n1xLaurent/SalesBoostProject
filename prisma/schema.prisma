@@ -232,6 +232,9 @@ model CallPlan {
   targetIdsJson       String   @default("[]")
   scriptId            String
   phoneNumberTypeId   String
+  targetPhoneScope    String   @default("employees") // "employees" | "dealerships" | "all"
+  employeePhoneNumberTypeId   String?
+  dealershipPhoneNumberTypeId String?
   frequency           String   // "manual" | "daily" | "weekly"
   weekdaysJson        String   @default("[1,2,3,4,5,6,0]")
   callTimeFrom        String
@@ -260,6 +263,8 @@ model CallPlanCall {
   dealershipName      String?
   phone               String
   phoneNumberTypeId   String
+  phoneNumberId       String?
+  targetKind          String   @default("employee") // "employee" | "dealership"
   scriptId            String
   profileId           String?
   importedItemId      String?
@@ -281,6 +286,7 @@ model CallPlanCall {
 
   @@index([planId, startedAt])
   @@index([planId, scheduledAt])
+  @@index([planId, phoneNumberId, scheduledAt])
   @@index([status, scheduledAt])
   @@map("call_plan_calls")
 }
@@ -705,6 +711,7 @@ model VoiceCallSession {
   source           String    @default("manual") // "manual" | "scheduled" | "batch" | "demo"
   dealershipId     String?
   managerId        String?
+  attributionType  String?   // "manager" | "dealership"
   planId           String?
   phoneNumberId          String?   // source phone number snapshot
   phoneNumberTypeId      String?   // source type snapshot
@@ -722,6 +729,9 @@ model VoiceCallSession {
   dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson
   checklistResultsJson String? // JSON: checklist results extracted from evaluationJson
   caseContextJson  String?   // JSON: scenario/profile/item context used for the call
+  ipAddress        String?   // requester IP for public demo calls
+  ivrDetected      Boolean   @default(false) // IVR was detected during this call
+  ivrPathJson      String?   // JSON array with accumulated IVR selections, e.g. ["3","2"]
   totalScore       Float?    // 0-100
   failureReason    String?   // if early fail
 

@@ -4,6 +4,8 @@ import './public-voice-demo.css';
 import { computeMockFromTranscript, type TranscriptTurn } from '../lib/demoMockEvaluation';
 import { buildPrecomputedExampleDetail } from '../lib/demoExampleReportsLoader';
 import { DEMO_REPORT_EXAMPLES, type ExampleTier } from '../model/demoReportExamples';
+import type { AuditDetailItem } from '../../../shared/api/adminPanel';
+import { DemoUnifiedReport } from './DemoUnifiedReport';
 
 const API_BASE = '';
 const CALL_ID_PARAM = 'callId';
@@ -34,6 +36,7 @@ type DemoCallState = CallInsightDetail & {
   hasEvaluation: boolean;
   isProcessing: boolean;
   processingStage: 'transcript' | 'evaluation' | null;
+  unifiedReport?: AuditDetailItem['unifiedReport'];
 };
 
 function buildPreviewCallWaitingDetail(): DemoCallState {
@@ -515,7 +518,9 @@ export function PublicVoiceDemoPage() {
         {screenState === 'result' && detail && (
           <div>
             <div className="demo-brutal-insight-wrap">
-              <CallInsightCard detail={detail} />
+              {detail.unifiedReport
+                ? <DemoUnifiedReport report={detail.unifiedReport} />
+                : <CallInsightCard detail={detail} />}
             </div>
             <button type="button" className="demo-brutal-btn-primary" onClick={handleReset}>
               Запустить новый звонок

@@ -2181,6 +2181,17 @@
   font-weight: 600;
   white-space: nowrap;
 }
+.sa-ivr-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(124, 58, 237, 0.1);
+  color: #6d28d9;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
 .sa-status-norm {
   background: rgba(5, 150, 105, 0.1);
   color: #059669;

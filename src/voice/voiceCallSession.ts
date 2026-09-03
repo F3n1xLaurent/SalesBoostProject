@@ -10,6 +10,7 @@ import { getRecordByCallId, markCallConnected, type TranscriptTurn } from './cal
 import { loadCar } from '../data/carLoader';
 import { getDefaultState } from '../state/defaultState';
 import { evaluateSessionV2 } from '../llm/evaluatorV2';
+import { DEMO_CALL_CRITERIA, DEMO_CALL_PROMPT } from './demoCallPrompt';
 import { getTranscriptFromVoxLog } from './voxLogTranscript';
 import { generateCallAnalyticsBundle } from './callAnalyticsBundle';
 import { resolvePhoneNumberSourceSnapshot } from './phoneNumberStats';
@@ -164,8 +165,16 @@ function normalizePlanCriteriaEvaluation(value: unknown): unknown | null {
 
 async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]): Promise<unknown | null> {
   const planCall = await prisma.callPlanCall.findUnique({ where: { callId }, select: { criteriaJson: true } });
-  if (!planCall) return null;
-  const criteria = safeJsonParse<Array<{ expectedAnswer?: string; score?: number }>>(planCall.criteriaJson, []);
+  const session = planCall ? null : await prisma.voiceCallSession.findUnique({
+    where: { callId },
+    select: { source: true, caseContextJson: true },
+  });
+  const demoContext = session?.source === 'demo'
+    ? safeJsonParse<{ criteria?: Array<{ expectedAnswer?: string; score?: number }> }>(session.caseContextJson, {})
+    : null;
+  const criteria = planCall
+    ? safeJsonParse<Array<{ expectedAnswer?: string; score?: number }>>(planCall.criteriaJson, [])
+    : demoContext?.criteria ?? (session?.source === 'demo' ? [...DEMO_CALL_CRITERIA] : []);
   const meaningfulCriteria = criteria.filter((item) => String(item.expectedAnswer || '').trim());
   if (meaningfulCriteria.length === 0) return null;
   const prompt = [
@@ -219,6 +228,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       promptText: true,
       phone: true,
       phoneNumberTypeId: true,
+      targetKind: true,
     },
   });
   if (!existing) return;
@@ -243,6 +253,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       planId: existing.planId,
       managerId: existing.employeeId,
       dealershipId: existing.dealershipId,
+      attributionType: existing.targetKind === 'dealership' ? 'dealership' : 'manager',
       ...phoneNumberSource,
       dimensionsJson: analyticsFields.dimensionsJson,
       checklistResultsJson: analyticsFields.checklistResultsJson,
@@ -274,7 +285,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   const record = getRecordByCallId(callId);
   const existingSession = await prisma.voiceCallSession.findUnique({
     where: { callId },
-    select: { startedAt: true, connectedAt: true, answerTimeSec: true, phoneNumberId: true },
+    select: { startedAt: true, connectedAt: true, answerTimeSec: true, phoneNumberId: true, source: true, caseContextJson: true },
   });
   const payloadVoxSessionId =
     payload.vox_session_id ??
@@ -423,6 +434,9 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       state,
       earlyFail: false,
       behaviorSignals: [],
+      scenarioContext: existingSession?.source === 'demo'
+        ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || DEMO_CALL_PROMPT)
+        : undefined,
     });
     console.log('[voice/session] evaluation base done', { callId, ms: elapsedMs(evaluationStartedAt) });
 
@@ -449,6 +463,9 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
             issues,
             recommendations,
           },
+          scenarioContext: existingSession?.source === 'demo'
+            ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || DEMO_CALL_PROMPT)
+            : undefined,
         }),
         evaluatePlanCriteria(callId, transcript),
       ]);

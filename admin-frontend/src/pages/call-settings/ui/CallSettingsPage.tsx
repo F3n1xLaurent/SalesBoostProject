@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import { useLocation, useNavigate } from 'react-router';
 import {
@@ -31,6 +31,7 @@ import {
   type CallPlanDealershipOption,
   type CallPlanEmployeeOption,
   type CallPlanFrequency,
+  type CallPlanPhoneScope,
   type CallPlanItem,
   type CallPlanCallItem,
   type CallPlanOptions,
@@ -66,6 +67,31 @@ const PROFILE_FORM_ID = 'call-settings-profile-form';
 const VOICE_EDIT_FORM_ID = 'call-settings-voice-edit-form';
 const VOICE_CREATE_FORM_ID = 'call-settings-voice-create-form';
 const SELECTED_ROW_BG = '#F5F5F5';
+
+function AutoResizeTextarea(props: {
+  value: string;
+  onChange: React.ChangeEventHandler<HTMLTextAreaElement>;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${element.scrollHeight}px`;
+  }, [props.value]);
+
+  return (
+    <textarea
+      ref={ref}
+      className="sa-input"
+      rows={1}
+      value={props.value}
+      onChange={props.onChange}
+      style={{ minHeight: 42, overflowY: 'hidden', resize: 'none' }}
+    />
+  );
+}
 
 type CallSettingsTab = 'profiles' | 'scripts' | 'plan';
 type CallSettingsRoute =
@@ -1509,7 +1535,10 @@ function ScriptEditor(props: {
                     <tr key={criterion.id}>
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis' }} title={sourceLabel(criterion)}>{sourceLabel(criterion)}</td>
                       <td>
-                        <input className="sa-input" value={criterion.expectedAnswer} onChange={(event) => updateCriterion(criterion.id, { expectedAnswer: event.target.value })} />
+                        <AutoResizeTextarea
+                          value={criterion.expectedAnswer}
+                          onChange={(event) => updateCriterion(criterion.id, { expectedAnswer: event.target.value })}
+                        />
                       </td>
                       <td>
                         <input
@@ -1644,7 +1673,9 @@ function CallPlanEditor(props: {
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [dealershipSearch, setDealershipSearch] = useState('');
   const [scriptId, setScriptId] = useState(props.initialPlan?.scriptId || '');
-  const [phoneNumberTypeId, setPhoneNumberTypeId] = useState(props.initialPlan?.phoneNumberTypeId || '');
+  const [targetPhoneScope, setTargetPhoneScope] = useState<CallPlanPhoneScope>(props.initialPlan?.targetPhoneScope || 'employees');
+  const [employeePhoneNumberTypeId, setEmployeePhoneNumberTypeId] = useState(props.initialPlan?.employeePhoneNumberTypeId || props.initialPlan?.phoneNumberTypeId || '');
+  const [dealershipPhoneNumberTypeId, setDealershipPhoneNumberTypeId] = useState(props.initialPlan?.dealershipPhoneNumberTypeId || '');
   const [frequency, setFrequency] = useState<CallPlanFrequency>(props.initialPlan?.frequency || 'daily');
   const [weekdays, setWeekdays] = useState<CallPlanWeekday[]>(props.initialPlan?.weekdays?.length ? props.initialPlan.weekdays : DEFAULT_PLAN_WEEKDAYS);
   const [callTimeFrom, setCallTimeFrom] = useState(props.initialPlan?.callTimeFrom || '09:00');
@@ -1661,7 +1692,9 @@ function CallPlanEditor(props: {
       targetType: props.initialPlan?.targetType || 'employees' as CallPlanTargetType,
       targetIds: props.initialPlan?.targetIds || [],
       scriptId: props.initialPlan?.scriptId || '',
-      phoneNumberTypeId: props.initialPlan?.phoneNumberTypeId || '',
+      targetPhoneScope: props.initialPlan?.targetPhoneScope || 'employees' as CallPlanPhoneScope,
+      employeePhoneNumberTypeId: props.initialPlan?.employeePhoneNumberTypeId || props.initialPlan?.phoneNumberTypeId || '',
+      dealershipPhoneNumberTypeId: props.initialPlan?.dealershipPhoneNumberTypeId || '',
       frequency: props.initialPlan?.frequency || 'daily' as CallPlanFrequency,
       weekdays: props.initialPlan?.weekdays?.length ? props.initialPlan.weekdays : DEFAULT_PLAN_WEEKDAYS,
       callTimeFrom: props.initialPlan?.callTimeFrom || '09:00',
@@ -1672,7 +1705,9 @@ function CallPlanEditor(props: {
     setTargetType(next.targetType);
     setTargetIds(next.targetIds);
     setScriptId(next.scriptId);
-    setPhoneNumberTypeId(next.phoneNumberTypeId);
+    setTargetPhoneScope(next.targetType === 'employees' ? 'employees' : next.targetPhoneScope);
+    setEmployeePhoneNumberTypeId(next.employeePhoneNumberTypeId);
+    setDealershipPhoneNumberTypeId(next.dealershipPhoneNumberTypeId);
     setFrequency(next.frequency);
     setWeekdays(next.weekdays);
     setCallTimeFrom(next.callTimeFrom);
@@ -1685,7 +1720,8 @@ function CallPlanEditor(props: {
   useEffect(() => {
     if (props.initialPlan) return;
     setScriptId((current) => current || props.options.scripts[0]?.id || '');
-    setPhoneNumberTypeId((current) => current || props.options.phoneNumberTypes[0]?.id || '');
+    setEmployeePhoneNumberTypeId((current) => current || props.options.phoneNumberTypes.find((type) => type.ownership === 'user')?.id || '');
+    setDealershipPhoneNumberTypeId((current) => current || props.options.phoneNumberTypes.find((type) => type.ownership === 'dealership')?.id || '');
   }, [props.initialPlan, props.options.scripts, props.options.phoneNumberTypes]);
 
   const filteredEmployees = useMemo(() => {
@@ -1709,6 +1745,7 @@ function CallPlanEditor(props: {
 
   function switchTargetType(next: CallPlanTargetType) {
     setTargetType(next);
+    setTargetPhoneScope('employees');
     setTargetIds([]);
   }
 
@@ -1737,14 +1774,19 @@ function CallPlanEditor(props: {
   function save(event: React.FormEvent) {
     event.preventDefault();
     setAttempted(true);
-    if (!scriptId || !phoneNumberTypeId || targetIds.length === 0) return;
+    const needsEmployeeType = targetType === 'employees' || targetPhoneScope === 'employees' || targetPhoneScope === 'all';
+    const needsDealershipType = targetType === 'dealerships' && (targetPhoneScope === 'dealerships' || targetPhoneScope === 'all');
+    if (!scriptId || targetIds.length === 0 || (needsEmployeeType && !employeePhoneNumberTypeId) || (needsDealershipType && !dealershipPhoneNumberTypeId)) return;
     const payload = {
       holdingId: props.holdingId,
       name: name.trim() || (targetType === 'employees' ? 'Обзвон сотрудников' : 'Обзвон точек'),
       targetType,
       targetIds,
       scriptId,
-      phoneNumberTypeId,
+      phoneNumberTypeId: employeePhoneNumberTypeId || dealershipPhoneNumberTypeId,
+      targetPhoneScope: targetType === 'employees' ? 'employees' : targetPhoneScope,
+      employeePhoneNumberTypeId: employeePhoneNumberTypeId || null,
+      dealershipPhoneNumberTypeId: dealershipPhoneNumberTypeId || null,
       frequency,
       weekdays,
       callTimeFrom,
@@ -1756,7 +1798,9 @@ function CallPlanEditor(props: {
       targetType,
       targetIds,
       scriptId,
-      phoneNumberTypeId,
+      targetPhoneScope,
+      employeePhoneNumberTypeId,
+      dealershipPhoneNumberTypeId,
       frequency,
       weekdays,
       callTimeFrom,
@@ -1771,7 +1815,9 @@ function CallPlanEditor(props: {
     targetType,
     targetIds,
     scriptId,
-    phoneNumberTypeId,
+    targetPhoneScope,
+    employeePhoneNumberTypeId,
+    dealershipPhoneNumberTypeId,
     frequency,
     weekdays,
     callTimeFrom,
@@ -1781,7 +1827,8 @@ function CallPlanEditor(props: {
   const isDirty = currentSnapshot !== initialSnapshot;
   const targetsInvalid = attempted && targetIds.length === 0;
   const scriptInvalid = attempted && !scriptId;
-  const phoneTypeInvalid = attempted && !phoneNumberTypeId;
+  const employeePhoneTypeInvalid = attempted && (targetType === 'employees' || targetPhoneScope !== 'dealerships') && !employeePhoneNumberTypeId;
+  const dealershipPhoneTypeInvalid = attempted && targetType === 'dealerships' && targetPhoneScope !== 'employees' && !dealershipPhoneNumberTypeId;
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
@@ -1843,7 +1890,21 @@ function CallPlanEditor(props: {
               )}
             />
           ) : (
-            <PlanTargetPicker<CallPlanDealershipOption>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <div style={{ display: 'grid', gap: 7 }}>
+                <span>Какие номера обзванивать</span>
+                <BrutalSegmented
+                  value={targetPhoneScope}
+                  options={[
+                    { value: 'employees', label: 'Только сотрудники' },
+                    { value: 'dealerships', label: 'Номера точки' },
+                    { value: 'all', label: 'Все' },
+                  ]}
+                  onChange={(value) => setTargetPhoneScope(value as CallPlanPhoneScope)}
+                  ariaLabel="Номера аудитории"
+                />
+              </div>
+              <PlanTargetPicker<CallPlanDealershipOption>
               title="Точки"
               search={dealershipSearch}
               onSearchChange={setDealershipSearch}
@@ -1857,11 +1918,12 @@ function CallPlanEditor(props: {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dealership.name}</div>
                   <div className="sa-meta" style={{ marginTop: 3 }}>
-                    {dealership.city || 'Город не указан'} · сотрудников: {dealership.employeesCount}
+                    {dealership.city || 'Город не указан'} · сотрудников: {dealership.employeesCount} · номеров точки: {dealership.phoneNumbersCount}
                   </div>
                 </div>
               )}
-            />
+              />
+            </div>
           )}
           {targetsInvalid && (
             <div className="sa-meta" style={{ color: '#b91c1c' }}>Выберите хотя бы одного участника аудитории.</div>
@@ -1883,19 +1945,32 @@ function CallPlanEditor(props: {
                 onChange={setScriptId}
               />
             </div>
-            <div style={{ display: 'grid', gap: 6 }}>
-              <span>Тип номера</span>
+            {(targetType === 'employees' || targetPhoneScope === 'employees' || targetPhoneScope === 'all') && <div style={{ display: 'grid', gap: 6 }}>
+              <span>Тип номера сотрудников</span>
               <BrutalSelect
-                value={phoneNumberTypeId}
+                value={employeePhoneNumberTypeId}
                 options={[
                   { value: '', label: 'Выберите тип номера' },
-                  ...props.options.phoneNumberTypes.map((type) => ({ value: type.id, label: type.name })),
+                  ...props.options.phoneNumberTypes.filter((type) => type.ownership === 'user').map((type) => ({ value: type.id, label: type.name })),
                 ]}
-                aria-label="Тип номера"
-                invalid={phoneTypeInvalid}
-                onChange={setPhoneNumberTypeId}
+                aria-label="Тип номера сотрудников"
+                invalid={employeePhoneTypeInvalid}
+                onChange={setEmployeePhoneNumberTypeId}
               />
-            </div>
+            </div>}
+            {targetType === 'dealerships' && (targetPhoneScope === 'dealerships' || targetPhoneScope === 'all') && <div style={{ display: 'grid', gap: 6 }}>
+              <span>Тип номера точки</span>
+              <BrutalSelect
+                value={dealershipPhoneNumberTypeId}
+                options={[
+                  { value: '', label: 'Выберите тип номера' },
+                  ...props.options.phoneNumberTypes.filter((type) => type.ownership === 'dealership').map((type) => ({ value: type.id, label: type.name })),
+                ]}
+                aria-label="Тип номера точки"
+                invalid={dealershipPhoneTypeInvalid}
+                onChange={setDealershipPhoneNumberTypeId}
+              />
+            </div>}
             <div style={{ display: 'grid', gap: 6 }}>
               <span>Частотность</span>
               <BrutalSelect
@@ -2160,6 +2235,7 @@ export function CallSettingsPage() {
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
   const [planCallsRefreshing, setPlanCallsRefreshing] = useState(false);
+  const [initiatingPlanId, setInitiatingPlanId] = useState<string | null>(null);
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [schedulePlan, setSchedulePlan] = useState<CallPlan | null>(null);
   const [scheduleDate, setScheduleDate] = useState(todayInputValue());
@@ -2495,14 +2571,24 @@ export function CallSettingsPage() {
   }
 
   async function initiatePlan(plan: CallPlan) {
+    if (initiatingPlanId) return;
+    setInitiatingPlanId(plan.id);
     try {
       const result = await initiateCallPlan(plan.id);
       setPlans((current) => current.map((item) => item.id === result.item.id ? result.item : item));
-      showToast({ type: 'success', title: 'Прозвон инициирован', description: `${result.totalJobs} звонков` });
+      showToast({
+        type: result.failedJobs > 0 ? 'info' : 'success',
+        title: result.failedJobs > 0 ? 'Прозвон запущен частично' : 'Прозвон инициирован',
+        description: result.failedJobs > 0
+          ? `Запущено: ${result.totalJobs}, ошибок: ${result.failedJobs}`
+          : `Запущено звонков: ${result.totalJobs}`,
+      });
       if (selectedPlan?.id === plan.id || route.planId === plan.id) await openPlanHistory(result.item, { skipNavigate: true });
     } catch (initError) {
       const message = initError instanceof Error ? initError.message : 'Не удалось инициировать прозвон.';
       showToast({ type: 'error', title: 'Не удалось инициировать прозвон', description: message });
+    } finally {
+      setInitiatingPlanId(null);
     }
   }
 
@@ -2650,10 +2736,38 @@ export function CallSettingsPage() {
 
   if (selectedPlan) {
     const selectedScript = scripts.find((script) => script.id === selectedPlan.scriptId);
-    const selectedPhoneType = planOptions.phoneNumberTypes.find((type) => type.id === selectedPlan.phoneNumberTypeId);
+    const employeePhoneNumberTypeId = selectedPlan.employeePhoneNumberTypeId || selectedPlan.phoneNumberTypeId;
+    const selectedEmployeePhoneType = planOptions.phoneNumberTypes.find((type) => type.id === employeePhoneNumberTypeId);
+    const selectedDealershipPhoneType = planOptions.phoneNumberTypes.find((type) => type.id === selectedPlan.dealershipPhoneNumberTypeId);
     const selectedEmployees = selectedPlan.targetType === 'employees'
       ? planOptions.employees.filter((employee) => selectedPlan.targetIds.includes(employee.id))
       : planOptions.employees.filter((employee) => selectedPlan.targetIds.includes(employee.dealershipId));
+    const selectedCallTargets = [
+      ...((selectedPlan.targetPhoneScope === 'employees' || selectedPlan.targetPhoneScope === 'all')
+        ? selectedEmployees.flatMap((employee) => employee.phoneNumbers
+          .filter((phoneNumber) => phoneNumber.typeId === employeePhoneNumberTypeId)
+          .map((phoneNumber) => ({
+            key: `employee-${employee.id}-${phoneNumber.id}`,
+            name: employee.fullName,
+            dealershipName: employee.dealershipName,
+            email: employee.email,
+            phone: phoneNumber.phone,
+          })))
+        : []),
+      ...((selectedPlan.targetType === 'dealerships' && (selectedPlan.targetPhoneScope === 'dealerships' || selectedPlan.targetPhoneScope === 'all'))
+        ? planOptions.dealerships
+          .filter((dealership) => selectedPlan.targetIds.includes(dealership.id))
+          .flatMap((dealership) => dealership.phoneNumbers
+            .filter((phoneNumber) => phoneNumber.typeId === selectedPlan.dealershipPhoneNumberTypeId)
+            .map((phoneNumber) => ({
+              key: `dealership-${dealership.id}-${phoneNumber.id}`,
+              name: dealership.name,
+              dealershipName: dealership.name,
+              email: null,
+              phone: phoneNumber.phone,
+            })))
+        : []),
+    ];
     const audienceCount = selectedPlan.targetType === 'employees'
       ? selectedPlan.targetIds.length
       : planOptions.dealerships.filter((item) => selectedPlan.targetIds.includes(item.id)).reduce((sum, item) => sum + item.employeesCount, 0);
@@ -2689,9 +2803,9 @@ export function CallSettingsPage() {
               <EditIcon />
               Редактировать
             </button>
-            <button type="button" className="sa-btn-outline" onClick={() => initiatePlan(selectedPlan)}>
+            <button type="button" className="sa-btn-outline" disabled={initiatingPlanId === selectedPlan.id} onClick={() => initiatePlan(selectedPlan)}>
               <PhoneIcon />
-              Позвонить по аудитории
+              {initiatingPlanId === selectedPlan.id ? 'Запускаем звонки…' : 'Позвонить по аудитории'}
             </button>
             <button type="button" className="sa-btn-danger" onClick={() => setPlanDeleteConfirm(true)}>Удалить</button>
           </div>
@@ -2712,9 +2826,11 @@ export function CallSettingsPage() {
             </div>
           </div>
           <div className="sa-card sa-brutal-card" style={{ padding: '14px 16px', minHeight: 0 }}>
-            <div className="sa-meta">Тип номера</div>
+            <div className="sa-meta">Типы номеров</div>
             <div style={{ marginTop: 8, fontSize: 15, fontWeight: 650, lineHeight: 1.3 }}>
-              {selectedPhoneType?.name || 'Не найден'}
+              {(selectedPlan.targetPhoneScope === 'employees' || selectedPlan.targetPhoneScope === 'all') && `Сотрудники: ${selectedEmployeePhoneType?.name || 'не найден'}`}
+              {selectedPlan.targetPhoneScope === 'all' && <br />}
+              {(selectedPlan.targetPhoneScope === 'dealerships' || selectedPlan.targetPhoneScope === 'all') && `Точка: ${selectedDealershipPhoneType?.name || 'не найден'}`}
             </div>
           </div>
           <div className="sa-card sa-brutal-card" style={{ padding: '14px 16px', minHeight: 0 }}>
@@ -2729,33 +2845,33 @@ export function CallSettingsPage() {
         </div>
 
         <section style={{ display: 'grid', gap: 12 }}>
-          <h2 className="sa-section-title" style={{ margin: 0 }}>Выбранные сотрудники</h2>
+          <h2 className="sa-section-title" style={{ margin: 0 }}>Выбрано для прозвона</h2>
           <div className="sa-companies-table-wrap sa-desktop-only">
             <table className="sa-table" style={{ tableLayout: 'fixed', width: '100%' }}>
               <thead>
                 <tr>
-                  <th>Сотрудник</th>
+                  <th>Название</th>
                   <th style={{ width: 220 }}>Точка</th>
                   <th style={{ width: 220 }}>Email</th>
                   <th style={{ width: 160 }}>Телефон</th>
                 </tr>
               </thead>
               <tbody>
-                {selectedEmployees.length === 0 ? (
+                {selectedCallTargets.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="sa-empty-state">
-                      Сотрудники не найдены в текущей компании.
+                      Для выбранных настроек номера не найдены.
                     </td>
                   </tr>
                 ) : (
-                  selectedEmployees.map((employee) => (
-                    <tr key={employee.id}>
+                  selectedCallTargets.map((target) => (
+                    <tr key={target.key}>
                       <td>
-                        <div className="sa-cell-name">{employee.fullName}</div>
+                        <div className="sa-cell-name">{target.name}</div>
                       </td>
-                      <td>{employee.dealershipName}</td>
-                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{employee.email || '—'}</td>
-                      <td>{employee.phone || '—'}</td>
+                      <td>{target.dealershipName}</td>
+                      <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{target.email || '—'}</td>
+                      <td>{target.phone}</td>
                     </tr>
                   ))
                 )}
@@ -2815,7 +2931,10 @@ export function CallSettingsPage() {
                           <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
                           {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
                         </td>
-                        <td>{call.phone}</td>
+                        <td>
+                          <div>{call.phone}</div>
+                          {call.ivrDetected && <span className="sa-ivr-badge" style={{ marginTop: 5 }}>IVR{call.ivrPath.length > 0 ? ` (${call.ivrPath.join('-')})` : ''}</span>}
+                        </td>
                         <td>
                           <span className={`sa-status-badge ${planCallStatusClass(call.outcome, call.status)}`}>
                             {formatPlanCallStatus(call.outcome, call.status)}
@@ -3090,7 +3209,9 @@ export function CallSettingsPage() {
                           <div className="sa-meta" style={{ marginTop: 4 }}>Последний запуск: {new Date(plan.lastInitiatedAt).toLocaleString('ru-RU')}</div>
                         )}
                       </td>
-                      <td>{plan.targetType === 'employees' ? `Сотрудники: ${targetCount}` : `Точки: ${plan.targetIds.length} · сотрудников: ${targetCount}`}</td>
+                      <td>{plan.targetType === 'employees'
+                        ? `Сотрудники: ${targetCount}`
+                        : `Точки: ${plan.targetIds.length} · ${plan.targetPhoneScope === 'employees' ? 'только сотрудники' : plan.targetPhoneScope === 'dealerships' ? 'номера точек' : 'все номера'}`}</td>
                       <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={script?.name || ''}>{script?.name || '—'}</td>
                       <td>{PLAN_FREQUENCIES.find((item) => item.value === plan.frequency)?.label || plan.frequency}</td>
                       <td>{plan.frequency === 'manual' ? '—' : `${formatPlanWeekdays(plan.weekdays)} · ${plan.callTimeFrom} - ${plan.callTimeTo} · ${formatTimezoneOffset(plan.timezoneOffsetMinutes)}`}</td>

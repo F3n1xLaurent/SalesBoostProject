@@ -119,6 +119,8 @@ export interface AuditItem {
   phoneNumberTypeId?: string | null;
   phoneNumberTypeName?: string | null;
   phoneNumber?: string | null;
+  ivrDetected?: boolean;
+  ivrPath?: string[];
   verdict?: string | null;
   communicationFlag?: 'ok' | 'fillers' | 'aggression' | 'profanity' | 'low-engagement';
   reportIssues?: string[];
@@ -781,6 +783,7 @@ export interface CallScriptItem {
 }
 
 export type CallPlanTargetType = 'employees' | 'dealerships';
+export type CallPlanPhoneScope = 'employees' | 'dealerships' | 'all';
 export type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
 export type CallPlanWeekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -792,6 +795,9 @@ export interface CallPlanItem {
   targetIds: string[];
   scriptId: string;
   phoneNumberTypeId: string;
+  targetPhoneScope: CallPlanPhoneScope;
+  employeePhoneNumberTypeId: string | null;
+  dealershipPhoneNumberTypeId: string | null;
   frequency: CallPlanFrequency;
   weekdays: CallPlanWeekday[];
   callTimeFrom: string;
@@ -832,6 +838,8 @@ export interface CallPlanDealershipOption {
   city: string | null;
   address: string | null;
   employeesCount: number;
+  phoneNumbersCount: number;
+  phoneNumbers: Array<{ id: string; typeId: string; typeName: string; phone: string }>;
 }
 
 export interface CallPlanOptions {
@@ -864,6 +872,8 @@ export interface CallPlanCallItem {
   dealershipName: string | null;
   phone: string;
   phoneNumberTypeId: string;
+  phoneNumberId: string | null;
+  targetKind: 'employee' | 'dealership';
   scriptId: string;
   profileId: string | null;
   importedItemId: string | null;
@@ -874,6 +884,8 @@ export interface CallPlanCallItem {
   endedAt: string | null;
   answerTimeSec: number | null;
   talkDurationSec: number | null;
+  ivrDetected: boolean;
+  ivrPath: string[];
   transcript: Array<{ role: 'manager' | 'client'; text: string }>;
   evaluation: unknown | null;
   totalScore: number | null;
@@ -1738,11 +1750,21 @@ export async function deleteCallPlan(id: string): Promise<void> {
   if (!res.ok) throw new Error(data?.error || 'Не удалось удалить план прозвона.');
 }
 
-export async function initiateCallPlan(id: string): Promise<{ item: CallPlanItem; callId: string; batchId: string; totalJobs: number }> {
+export type CallPlanInitiateResult = {
+  item: CallPlanItem;
+  callId: string;
+  callIds: string[];
+  batchId: string;
+  totalJobs: number;
+  failedJobs: number;
+  failures: Array<{ phone: string; error: string }>;
+};
+
+export async function initiateCallPlan(id: string): Promise<CallPlanInitiateResult> {
   const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/initiate`, { method: 'POST' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось инициировать прозвон.');
-  return data as { item: CallPlanItem; callId: string; batchId: string; totalJobs: number };
+  return data as CallPlanInitiateResult;
 }
 
 export async function previewCallPlanPrompt(id: string): Promise<CallPlanPromptPreview> {

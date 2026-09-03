@@ -37,6 +37,7 @@ export async function generateCallAnalyticsBundle(input: {
   outcome: string | null;
   totalScore: number | null;
   evaluation: EvaluationInput;
+  scenarioContext?: string;
 }): Promise<AnalyticsBundle> {
   const totalScore = Math.max(0, Math.min(100, Math.round(
     Number(input.totalScore ?? input.evaluation.overall_score_0_100 ?? 0) || 0,
@@ -65,6 +66,11 @@ export async function generateCallAnalyticsBundle(input: {
     `Исход звонка: ${input.outcome ?? '—'}`,
     `Итоговый балл: ${totalScore}/100`,
     `Вердикт: ${unifiedVerdict(totalScore)}`,
+    ...(input.scenarioContext ? [
+      '',
+      'Сценарий и условия, по которым выполнялся звонок. Учитывай их при анализе ответов менеджера:',
+      input.scenarioContext.slice(0, 16000),
+    ] : []),
     '',
     `Справочник проблем для unifiedCallReport.keyFindings.problemTitle:\n${problemCatalog}`,
     '',

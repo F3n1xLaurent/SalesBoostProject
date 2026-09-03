@@ -10,6 +10,7 @@ type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
 type CustomerPatience = 'low' | 'medium' | 'high';
 type ReplyLength = 'short' | 'medium' | 'detailed';
 type CallPlanTargetType = 'employees' | 'dealerships';
+type CallPlanPhoneScope = 'employees' | 'dealerships' | 'all';
 type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
 type CallPlanWeekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -17,6 +18,7 @@ const TEMPERAMENTS = new Set<CustomerTemperament>(['calm', 'doubtful', 'irritate
 const PATIENCE = new Set<CustomerPatience>(['low', 'medium', 'high']);
 const REPLY_LENGTHS = new Set<ReplyLength>(['short', 'medium', 'detailed']);
 const CALL_PLAN_TARGET_TYPES = new Set<CallPlanTargetType>(['employees', 'dealerships']);
+const CALL_PLAN_PHONE_SCOPES = new Set<CallPlanPhoneScope>(['employees', 'dealerships', 'all']);
 const CALL_PLAN_FREQUENCIES = new Set<CallPlanFrequency>(['manual', 'daily', 'weekly']);
 const WEEKDAYS = new Set<CallPlanWeekday>([0, 1, 2, 3, 4, 5, 6]);
 const TIME_RE = /^([01]\d|2[0-2]):([0-5]\d)$/;
@@ -33,6 +35,7 @@ let callPlanDueRunnerTimer: NodeJS.Timeout | null = null;
 let callPlanScheduleCheckerTimer: NodeJS.Timeout | null = null;
 let callPlanDueRunnerRunning = false;
 let callPlanScheduleCheckerRunning = false;
+const manualPlanInitiations = new Set<string>();
 
 function parseString(value: unknown): string | null {
   const parsed = String(value ?? '').trim();
@@ -201,6 +204,9 @@ function normalizePlan(plan: Prisma.CallPlanGetPayload<{}>) {
     targetIds: safeJsonParse<string[]>(plan.targetIdsJson, []),
     scriptId: plan.scriptId,
     phoneNumberTypeId: plan.phoneNumberTypeId,
+    targetPhoneScope: plan.targetPhoneScope as CallPlanPhoneScope,
+    employeePhoneNumberTypeId: plan.employeePhoneNumberTypeId ?? plan.phoneNumberTypeId,
+    dealershipPhoneNumberTypeId: plan.dealershipPhoneNumberTypeId,
     frequency: plan.frequency,
     weekdays: safeJsonParse<CallPlanWeekday[]>(plan.weekdaysJson, DEFAULT_PLAN_WEEKDAYS),
     callTimeFrom: plan.callTimeFrom,
@@ -216,7 +222,7 @@ function normalizePlan(plan: Prisma.CallPlanGetPayload<{}>) {
 function normalizePlanCall(
   call: Prisma.CallPlanCallGetPayload<{}>,
   auditId: string | null = null,
-  timing: { answerTimeSec: number | null; talkDurationSec: number | null; durationSec: number | null } | null = null,
+  timing: { answerTimeSec: number | null; talkDurationSec: number | null; durationSec: number | null; ivrDetected: boolean; ivrPathJson: string | null } | null = null,
 ) {
   return {
     id: call.id,
@@ -229,6 +235,8 @@ function normalizePlanCall(
     dealershipName: call.dealershipName,
     phone: call.phone,
     phoneNumberTypeId: call.phoneNumberTypeId,
+    phoneNumberId: call.phoneNumberId,
+    targetKind: call.targetKind,
     scriptId: call.scriptId,
     profileId: call.profileId,
     importedItemId: call.importedItemId,
@@ -239,6 +247,8 @@ function normalizePlanCall(
     endedAt: call.endedAt,
     answerTimeSec: timing?.answerTimeSec ?? null,
     talkDurationSec: timing?.talkDurationSec ?? timing?.durationSec ?? null,
+    ivrDetected: timing?.ivrDetected ?? false,
+    ivrPath: safeJsonParse<string[]>(timing?.ivrPathJson, []),
     transcript: safeJsonParse(call.transcriptJson, []),
     evaluation: safeJsonParse(call.evaluationJson, null),
     totalScore: call.totalScore,
@@ -391,8 +401,8 @@ function randomIntInclusive(min: number, max: number): number {
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 
-function scheduledCallId(planId: string, employeeId: string, dayKey: string): string {
-  return `scheduled:${planId}:${employeeId}:${dayKey}`;
+function scheduledCallId(planId: string, targetId: string, dayKey: string): string {
+  return `scheduled:${planId}:${targetId}:${dayKey}`;
 }
 
 function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
@@ -401,6 +411,12 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
   const targetIds = parseStringArray(body.targetIds);
   const scriptId = parseString(body.scriptId);
   const phoneNumberTypeId = parseString(body.phoneNumberTypeId);
+  const requestedScope = parseString(body.targetPhoneScope) as CallPlanPhoneScope | null;
+  const targetPhoneScope: CallPlanPhoneScope = targetType === 'employees'
+    ? 'employees'
+    : requestedScope && CALL_PLAN_PHONE_SCOPES.has(requestedScope) ? requestedScope : 'employees';
+  const employeePhoneNumberTypeId = parseString(body.employeePhoneNumberTypeId) ?? (targetPhoneScope !== 'dealerships' ? phoneNumberTypeId : null);
+  const dealershipPhoneNumberTypeId = parseString(body.dealershipPhoneNumberTypeId) ?? (targetPhoneScope === 'dealerships' ? phoneNumberTypeId : null);
   const callTimeFrom = frequency === 'manual' ? '09:00' : parseString(body.callTimeFrom) || '';
   const callTimeTo = frequency === 'manual' ? '09:15' : parseString(body.callTimeTo) || '';
   const rawTimezoneOffset = Number(body.timezoneOffsetMinutes ?? DEFAULT_TIMEZONE_OFFSET_MINUTES);
@@ -410,7 +426,8 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
   if (!targetType || !CALL_PLAN_TARGET_TYPES.has(targetType)) throw new Error('Выберите тип прозвона.');
   if (targetIds.length === 0) throw new Error('Выберите сотрудников или точки.');
   if (!scriptId) throw new Error('Выберите скрипт.');
-  if (!phoneNumberTypeId) throw new Error('Выберите тип номера.');
+  if ((targetPhoneScope === 'employees' || targetPhoneScope === 'all') && !employeePhoneNumberTypeId) throw new Error('Выберите тип номера сотрудников.');
+  if ((targetPhoneScope === 'dealerships' || targetPhoneScope === 'all') && !dealershipPhoneNumberTypeId) throw new Error('Выберите тип номера точки.');
   if (!frequency || !CALL_PLAN_FREQUENCIES.has(frequency)) throw new Error('Выберите частотность.');
   const weekdays = parseWeekdays(body.weekdays, frequency);
   if (frequency !== 'manual') {
@@ -428,7 +445,10 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
     targetType,
     targetIdsJson: JSON.stringify(targetIds),
     scriptId,
-    phoneNumberTypeId,
+    phoneNumberTypeId: employeePhoneNumberTypeId ?? dealershipPhoneNumberTypeId as string,
+    targetPhoneScope,
+    employeePhoneNumberTypeId,
+    dealershipPhoneNumberTypeId,
     frequency,
     weekdaysJson: JSON.stringify(weekdays),
     callTimeFrom,
@@ -441,8 +461,14 @@ function parsePlanPayload(body: Record<string, unknown>, holdingId: string) {
 async function assertPlanReferences(holdingId: string, payload: ReturnType<typeof parsePlanPayload>): Promise<void> {
   const script = await prisma.callScript.findFirst({ where: { id: payload.scriptId, holdingId }, select: { id: true } });
   if (!script) throw new Error('Выбранный скрипт не найден в этой компании.');
-  const phoneType = await prisma.phoneNumberType.findFirst({ where: { id: payload.phoneNumberTypeId, ownership: 'user', isActive: true }, select: { id: true } });
-  if (!phoneType) throw new Error('Выбранный тип номера сотрудников не найден.');
+  if (payload.targetPhoneScope === 'employees' || payload.targetPhoneScope === 'all') {
+    const phoneType = await prisma.phoneNumberType.findFirst({ where: { id: payload.employeePhoneNumberTypeId ?? '', ownership: 'user', isActive: true, OR: [{ holdingId }, { holdingId: null }] }, select: { id: true } });
+    if (!phoneType) throw new Error('Выбранный тип номера сотрудников не найден.');
+  }
+  if (payload.targetPhoneScope === 'dealerships' || payload.targetPhoneScope === 'all') {
+    const phoneType = await prisma.phoneNumberType.findFirst({ where: { id: payload.dealershipPhoneNumberTypeId ?? '', ownership: 'dealership', isActive: true, OR: [{ holdingId }, { holdingId: null }] }, select: { id: true } });
+    if (!phoneType) throw new Error('Выбранный тип номера точки не найден.');
+  }
   const targetIds = safeJsonParse<string[]>(payload.targetIdsJson, []);
   if (payload.targetType === 'employees') {
     const count = await prisma.managerProfile.count({ where: { id: { in: targetIds }, dealership: { holdingId } } });
@@ -640,10 +666,16 @@ export async function handleGetCallPlanOptions(req: Request, res: Response): Pro
       }),
       prisma.dealership.findMany({
         where: { holdingId, isActive: true },
-        include: { managerProfiles: { where: { status: 'active' }, select: { id: true, accountId: true } } },
+        include: {
+          managerProfiles: { where: { status: 'active' }, select: { id: true, accountId: true } },
+          phoneNumbers: {
+            where: { isActive: true, type: { ownership: 'dealership' } },
+            select: { id: true, typeId: true, phone: true, type: { select: { name: true } } },
+          },
+        },
         orderBy: { name: 'asc' },
       }),
-      prisma.phoneNumberType.findMany({ where: { ownership: 'user', isActive: true }, orderBy: { name: 'asc' } }),
+      prisma.phoneNumberType.findMany({ where: { isActive: true, OR: [{ holdingId }, { holdingId: null }] }, orderBy: [{ ownership: 'asc' }, { name: 'asc' }] }),
       prisma.callScript.findMany({ where: { holdingId }, orderBy: { name: 'asc' } }),
     ]);
     const uniqueEmployees = new Map<string, {
@@ -684,6 +716,13 @@ export async function handleGetCallPlanOptions(req: Request, res: Response): Pro
         city: dealership.city,
         address: dealership.address,
         employeesCount: new Set(dealership.managerProfiles.map(managerIdentityKey)).size,
+        phoneNumbersCount: dealership.phoneNumbers.length,
+        phoneNumbers: dealership.phoneNumbers.map((phoneNumber) => ({
+          id: phoneNumber.id,
+          typeId: phoneNumber.typeId,
+          typeName: phoneNumber.type.name,
+          phone: phoneNumber.phone,
+        })),
       })),
       phoneNumberTypes: phoneNumberTypes.map((type) => ({
         id: type.id,
@@ -751,36 +790,48 @@ export async function handleDeleteCallPlan(req: Request, res: Response): Promise
 
 async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
   const targetIds = safeJsonParse<string[]>(plan.targetIdsJson, []);
-  const where: Prisma.ManagerProfileWhereInput = plan.targetType === 'employees'
-    ? { id: { in: targetIds }, dealership: { holdingId: plan.holdingId } }
-    : { dealershipId: { in: targetIds }, dealership: { holdingId: plan.holdingId } };
-  const employees = await prisma.managerProfile.findMany({
-    where,
-    include: {
-      dealership: true,
-      account: {
-        include: {
-          phoneNumbers: {
-            where: { typeId: plan.phoneNumberTypeId, isActive: true },
-            include: { type: true },
-          },
-        },
-      },
-    },
-    orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
-  });
-  const uniqueEmployeesByIdentity = new Map<string, typeof employees[number]>();
-  for (const employee of employees) {
-    const key = managerIdentityKey(employee);
-    if (!uniqueEmployeesByIdentity.has(key)) uniqueEmployeesByIdentity.set(key, employee);
+  const scope = plan.targetType === 'employees' ? 'employees' : plan.targetPhoneScope;
+  const targets: Array<{
+    targetKind: 'employee' | 'dealership';
+    employee: { id: string; fullName: string } | null;
+    phoneNumber: { id: string; typeId: string; phone: string; type: { name: string; ownership: string } };
+    dealershipId: string;
+    dealershipName: string;
+  }> = [];
+  if (scope === 'employees' || scope === 'all') {
+    const employeeTypeId = plan.employeePhoneNumberTypeId ?? plan.phoneNumberTypeId;
+    const where: Prisma.ManagerProfileWhereInput = plan.targetType === 'employees'
+      ? { id: { in: targetIds }, dealership: { holdingId: plan.holdingId } }
+      : { dealershipId: { in: targetIds }, dealership: { holdingId: plan.holdingId } };
+    const employees = await prisma.managerProfile.findMany({
+      where,
+      include: { dealership: true, account: { include: { phoneNumbers: { where: { typeId: employeeTypeId, isActive: true }, include: { type: true } } } } },
+      orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
+    });
+    const uniqueEmployees = new Map<string, typeof employees[number]>();
+    for (const employee of employees) {
+      const key = managerIdentityKey(employee);
+      if (!uniqueEmployees.has(key)) uniqueEmployees.set(key, employee);
+    }
+    for (const employee of uniqueEmployees.values()) {
+      for (const phoneNumber of employee.account?.phoneNumbers ?? []) {
+        targets.push({ targetKind: 'employee', employee, phoneNumber, dealershipId: employee.dealershipId, dealershipName: employee.dealership.name });
+      }
+    }
   }
-  const uniqueEmployees = [...uniqueEmployeesByIdentity.values()];
-  return uniqueEmployees.flatMap((employee) => (employee.account?.phoneNumbers ?? []).map((phoneNumber) => ({
-    employee,
-    phoneNumber,
-    dealershipId: employee.dealershipId,
-    dealershipName: employee.dealership.name,
-  })));
+  if (plan.targetType === 'dealerships' && (scope === 'dealerships' || scope === 'all')) {
+    const dealerships = await prisma.dealership.findMany({
+      where: { id: { in: targetIds }, holdingId: plan.holdingId, isActive: true },
+      include: { phoneNumbers: { where: { typeId: plan.dealershipPhoneNumberTypeId ?? '', isActive: true }, include: { type: true } } },
+      orderBy: { name: 'asc' },
+    });
+    for (const dealership of dealerships) {
+      for (const phoneNumber of dealership.phoneNumbers) {
+        targets.push({ targetKind: 'dealership', employee: null, phoneNumber, dealershipId: dealership.id, dealershipName: dealership.name });
+      }
+    }
+  }
+  return targets;
 }
 
 async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{}>) {
@@ -855,33 +906,76 @@ function buildCallPlanRealtimePrompt(input: {
     'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы по предложению, условиям, деталям и следующему шагу.',
     'Формируй ответы не как письменный текст, а как текст, предназначенный для озвучивания. Если слово может быть неправильно произнесено TTS - напиши его в фонетически более удобной форме для сохранения естественного звучания (например, ударение пишется большой буквой, скажем "перспектИва"). Задавая вопросы формулируй их по разному, чтобы звучало как реальный диалог, а не как анкета.',
     '',
-    '=== ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК (КРИТИЧНО) ===',
-    'Если в начале разговора или в любой момент становится понятно, что на другом конце не живой сотрудник, а голосовой помощник, автоответчик, виртуальный ассистент или сервис записи сообщений, НЕ продолжай обычный сценарий диалога.',
+    '=== IVR / ГОЛОСОВОЕ МЕНЮ (КРИТИЧНО) ===',
+'',
+'Если в начале звонка или в любой момент разговора слышно автоматическое голосовое меню (IVR), его НЕ нужно считать автоответчиком и НЕ нужно завершать звонок.',
+'',
+'Признаки IVR:',
+'- звучат инструкции вида «для ... нажмите 1», «нажмите 2», «выберите пункт меню»;',
+'- перечисляются отделы или варианты действий с соответствующими цифрами;',
+'- система просит выбрать направление звонка нажатием клавиши телефона.',
+'',
+'ВАЖНО: не выбирай пункт меню сразу после того, как услышал первый подходящий вариант.',
+'Сначала дождись окончания текущего списка вариантов IVR и только после этого сравни доступные пункты между собой.',
+'Если IVR перечисляет несколько вариантов подряд, не вызывай send_dtmf до тех пор, пока перечисление вариантов не завершено.',
+'Выбирай наиболее точный пункт из ВСЕХ услышанных вариантов текущего уровня меню, а не первый подходящий.',
+'',
+'Для выбора пункта меню ОБЯЗАТЕЛЬНО используй доступный client tool с именем send_dtmf.',
+'Передай выбранную кнопку в обязательный параметр digit инструмента send_dtmf.',
+'КРИТИЧНО: никогда не печатай и не произноси название send_dtmf, его параметры или синтаксис вызова.',
+'Строка вида send_dtmf с параметрами в текстовом ответе НЕ является вызовом инструмента и запрещена.',
+'Когда пункт выбран, следующим действием должен быть настоящий вызов инструмента send_dtmf. Не создавай обычный текстовый ответ.',
+'Во время IVR не объясняй свои решения и не сообщай, какую кнопку собираешься нажать.',
+'',
+'Во время IVR:',
+'1. НЕ произноси приветствие, вопросы или цифры голосом.',
+'2. НЕ начинай обычный сценарий разговора с сотрудником.',
+'3. НЕ вызывай end_call.',
+'4. Дождись окончания перечисления вариантов текущего уровня меню. После этого сравни ВСЕ услышанные варианты и выбери наиболее подходящий цели текущего звонка.',
+'5. Для выбора пункта обязательно вызови client tool send_dtmf и передай выбранную кнопку в параметре digit. Допустимые значения digit: цифры 0-9, * или #.',
+'6. За один вызов send_dtmf отправляй только одну кнопку.',
+'7. После вызова send_dtmf ничего не говори. Продолжай слушать телефонную линию.',
+'8. Если открылся следующий уровень IVR, снова проанализируй новые варианты и снова используй send_dtmf.',
+'9. Проходи столько уровней IVR, сколько необходимо для соединения с подходящим живым сотрудником.',
+'10. Не выбирай цифру только потому, что она была произнесена. send_dtmf вызывается исключительно в ответ на явную инструкцию IVR нажать соответствующую кнопку.',
+'',
+'При выборе пункта IVR ориентируйся прежде всего на цель звонка и данные текущего сценария. Выбирай наиболее конкретное подходящее направление.',
+'Например, при звонке по поводу покупки автомобиля приоритетнее «отдел продаж», «автомобили», «автомобили с пробегом», «покупка автомобиля», «менеджер отдела продаж» или аналогичный пункт.',
+'Если подходящего специализированного пункта нет, выбирай соединение с оператором или менеджером.',
+'',
+'Как только вместо IVR отвечает живой сотрудник и начинает обычный разговор, прекрати режим IVR и продолжай основной сценарий с фазы first_contact.',
+'',
+'IVR НИКОГДА не является причиной для end_call({ "reason": "voicemail" }).',
+'',
+'=== ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК (КРИТИЧНО) ===',
+'',
+'Автоответчик или сервис голосовых сообщений нужно отличать от IVR.',
+'',
+'Признаки автоответчика / voicemail:',
+'- сообщается, что абонент занят или недоступен;',
+'- предлагается оставить сообщение;',
+'- система предлагает записать информацию для сотрудника;',
+'- просят говорить после сигнала;',
+'- голосовой помощник сообщает, что передаст сообщение владельцу или сотруднику;',
+'- очевидно, что соединения с живым сотрудником не будет, а система предназначена для записи сообщения.',
+'',
+'ВАЖНО: наличие автоматического голоса само по себе НЕ означает voicemail. Если система предлагает выбрать отдел или действие нажатием цифры, это IVR, и необходимо использовать сценарий IVR выше.',
+'',
+'При обнаружении voicemail:',
+'1. Один раз произнеси ровно:',
+'"Прошу прощения, до свидания."',
+'2. Сразу после этого вызови:',
+'end_call({ "reason": "voicemail" })',
+'',
+'После обнаружения voicemail запрещено:',
+'- продолжать разговор;',
+'- задавать вопросы;',
+'- оставлять сообщение;',
+'- повторять первую реплику;',
+'- пытаться пройти сценарий продажи;',
+'- вызывать end_call с любой другой причиной.',
     '',
-    'К признакам относятся, например:',
-    '- собеседник сообщает, что абонент занят или недоступен;',
-    '- предлагает оставить сообщение;',
-    '- говорит, что может записать информацию;',
-    '- представляется голосовым помощником, виртуальным ассистентом или секретарём;',
-    '- просит говорить после сигнала или обещает передать сообщение владельцу.',
-    '',
-    'В этом случае:',
-    '',
-    '1. Один раз произнеси ровно:',
-    '   "Прошу прощения, до свидания."',
-    '',
-    '2. Сразу после этого вызови:',
-    '   end_call({ "reason": "voicemail" })',
-    '',
-    'После обнаружения голосового помощника запрещено:',
-    '- продолжать разговор;',
-    '- задавать вопросы;',
-    '- повторять первую реплику;',
-    '- пытаться пройти сценарий продажи;',
-    '- вызывать end_call с любой другой причиной.',
-    '',
-    'Исключение: если обнаружен голосовой помощник или автоответчик, не выполняй обычный сценарий завершения разговора. Вместо этого используй только сценарий "ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК".',
-    '',
+'Исключение: если обнаружен именно голосовой помощник, автоответчик или voicemail (но НЕ IVR с выбором пунктов через DTMF), не выполняй обычный сценарий завершения разговора. Вместо этого используй только сценарий "ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК".',    '',
     '=== ИНФОРМАЦИЯ О КОМПАНИИ ===',
     `Название компании: ${input.holding.name}`,
     `Описание компании: ${input.holding.description?.trim() || 'Описание не указано.'}`,
@@ -941,10 +1035,12 @@ async function ensureCallPlanScheduleForDate(plan: Prisma.CallPlanGetPayload<{}>
 
   const existing = await prisma.callPlanCall.findMany({
     where: { planId: plan.id, scheduledAt: { gte: dayStart, lte: dayEnd } },
-    select: { employeeId: true },
+    select: { phoneNumberId: true, employeeId: true },
   });
-  const existingEmployeeIds = new Set(existing.map((item) => item.employeeId).filter(Boolean) as string[]);
-  const targets = (await buildCallPlanTargets(plan)).filter((target) => !existingEmployeeIds.has(target.employee.id));
+  const existingTargetIds = new Set(existing.flatMap((item) => [item.phoneNumberId, item.employeeId].filter(Boolean) as string[]));
+  const targets = (await buildCallPlanTargets(plan)).filter((target) =>
+    !existingTargetIds.has(target.phoneNumber.id) && (!target.employee || !existingTargetIds.has(target.employee.id))
+  );
   if (targets.length === 0) return 0;
 
   const context = await buildScheduledCallContext(plan);
@@ -986,13 +1082,15 @@ async function createScheduledPlanCall(
   return prisma.callPlanCall.create({
     data: {
       planId: plan.id,
-      callId: scheduledCallId(plan.id, target.employee.id, dayKey),
-      employeeId: target.employee.id,
-      employeeName: target.employee.fullName,
+      callId: scheduledCallId(plan.id, target.phoneNumber.id, dayKey),
+      employeeId: target.employee?.id ?? null,
+      employeeName: target.employee?.fullName ?? null,
       dealershipId: target.dealershipId,
       dealershipName: target.dealershipName,
       phone: '+' + String(target.phoneNumber.phone).replace(/\D/g, ''),
-      phoneNumberTypeId: plan.phoneNumberTypeId,
+      phoneNumberTypeId: target.phoneNumber.typeId,
+      phoneNumberId: target.phoneNumber.id,
+      targetKind: target.targetKind,
       scriptId: context.script.id,
       profileId: profile?.id ?? null,
       importedItemId: context.importedItem?.id ?? null,
@@ -1064,6 +1162,7 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
           source: 'scheduled',
           dealershipId: call.dealershipId,
           managerId: call.employeeId,
+          attributionType: call.targetKind === 'dealership' ? 'dealership' : 'manager',
           planId: call.planId,
           ...phoneNumberSource,
           caseContextJson: JSON.stringify({
@@ -1161,6 +1260,85 @@ async function runCallPlanDueRunner(): Promise<void> {
   }
 }
 
+async function launchManualPlanTarget(
+  plan: Prisma.CallPlanGetPayload<{}>,
+  target: Awaited<ReturnType<typeof buildCallPlanTargets>>[number],
+  context: Awaited<ReturnType<typeof buildScheduledCallContext>>,
+): Promise<string> {
+  const profile = pickRandom(context.profiles);
+  const customerVoice = await resolveCustomerVoiceForProfile(profile);
+  const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
+  const prompt = buildCallPlanRealtimePrompt({
+    script: context.script,
+    profile,
+    importedItem: context.importedItem,
+    customerVoiceName: customerVoice?.name ?? null,
+    holding: context.holding,
+  });
+  const result = await startVoiceCall(target.phoneNumber.phone, {
+    scenario: 'realtime_pure',
+    instructions: prompt,
+    elevenLabsVoiceId,
+    customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
+  });
+  if ('error' in result) throw new Error(result.error);
+  const startedAt = new Date(result.startedAt);
+  const toNormalized = '+' + String(target.phoneNumber.phone).replace(/\D/g, '');
+  const criteria = safeJsonParse(context.script.successCriteriaJson, []);
+  await prisma.$transaction([
+    prisma.voiceCallSession.create({
+      data: {
+        callId: result.callId,
+        to: toNormalized,
+        scenario: result.scenario ?? 'realtime_pure',
+        source: 'scheduled',
+        dealershipId: target.dealershipId,
+        managerId: target.employee?.id ?? null,
+        attributionType: target.targetKind === 'dealership' ? 'dealership' : 'manager',
+        planId: plan.id,
+        phoneNumberId: target.phoneNumber.id,
+        phoneNumberTypeId: target.phoneNumber.typeId,
+        phoneNumberTypeName: target.phoneNumber.type.name,
+        phoneNumberOwnership: target.phoneNumber.type.ownership,
+        caseContextJson: JSON.stringify({
+          planId: plan.id,
+          scriptId: context.script.id,
+          profileId: profile?.id ?? null,
+          customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
+          elevenLabsVoiceId,
+          importedItemId: context.importedItem?.id ?? null,
+        }),
+        startedAt,
+      },
+    }),
+    prisma.callPlanCall.create({
+      data: {
+        planId: plan.id,
+        callId: result.callId,
+        employeeId: target.employee?.id ?? null,
+        employeeName: target.employee?.fullName ?? null,
+        dealershipId: target.dealershipId,
+        dealershipName: target.dealershipName,
+        phone: toNormalized,
+        phoneNumberTypeId: target.phoneNumber.typeId,
+        phoneNumberId: target.phoneNumber.id,
+        targetKind: target.targetKind,
+        scriptId: context.script.id,
+        profileId: profile?.id ?? null,
+        importedItemId: context.importedItem?.id ?? null,
+        promptText: prompt,
+        criteriaJson: JSON.stringify(criteria),
+        status: 'running',
+        scheduledAt: startedAt,
+        startedAt,
+      },
+    }),
+  ]);
+  addCall(result.callId, target.phoneNumber.phone);
+  if (result.callSessionHistoryId) setVoxSessionId(result.callId, result.callSessionHistoryId);
+  return result.callId;
+}
+
 export function startCallPlanScheduler(): void {
   if (callPlanDueRunnerTimer || callPlanScheduleCheckerTimer) return;
   void runCallPlanScheduleChecker();
@@ -1178,90 +1356,55 @@ export function startCallPlanScheduler(): void {
 }
 
 export async function handleInitiateCallPlan(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id || '').trim();
+  let initiationClaimed = false;
   try {
-    const id = String(req.params.id || '').trim();
+    if (manualPlanInitiations.has(id)) throw new Error('Запуск этого плана уже выполняется.');
+    manualPlanInitiations.add(id);
+    initiationClaimed = true;
     await assertCanAccessPlan(req, id);
     const plan = await prisma.callPlan.findUnique({ where: { id } });
     if (!plan) throw new Error('План прозвона не найден.');
-    const holding = await prisma.holding.findUnique({ where: { id: plan.holdingId }, select: { name: true, description: true } });
-    if (!holding) throw new Error('Компания плана не найдена.');
-    const script = await prisma.callScript.findFirst({ where: { id: plan.scriptId, holdingId: plan.holdingId } });
-    if (!script) throw new Error('Скрипт плана не найден.');
-    const targets = await buildCallPlanTargets(plan);
-    const target = pickRandom(targets);
-    if (!target) throw new Error('Нет сотрудников с активными номерами выбранного типа.');
-    const profileIds = safeJsonParse<string[]>(script.profileIdsJson, []);
-    const profiles = profileIds.length
-      ? await prisma.callCustomerProfile.findMany({ where: { id: { in: profileIds }, holdingId: plan.holdingId } })
-      : [];
-    const profile = pickRandom(profiles);
-    const importedItem = await pickImportedSampleForScript(script);
-    const customerVoice = await resolveCustomerVoiceForProfile(profile);
-    const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
-    const prompt = buildCallPlanRealtimePrompt({ script, profile, importedItem, customerVoiceName: customerVoice?.name ?? null, holding });
-    const result = await startVoiceCall(target.phoneNumber.phone, {
-      scenario: 'realtime_pure',
-      instructions: prompt,
-      elevenLabsVoiceId,
-      customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
+    const rawTargets = await buildCallPlanTargets(plan);
+    const targets = [...new Map(rawTargets.map((target) => [String(target.phoneNumber.phone).replace(/\D/g, ''), target])).values()];
+    if (targets.length === 0) throw new Error('Нет активных номеров выбранных типов для этой аудитории.');
+    const context = await buildScheduledCallContext(plan);
+    const successes: string[] = [];
+    const failures: Array<{ phone: string; error: string }> = [];
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(3, targets.length) }, async () => {
+      while (nextIndex < targets.length) {
+        const target = targets[nextIndex++];
+        try {
+          successes.push(await launchManualPlanTarget(plan, target, context));
+        } catch (error) {
+          failures.push({
+            phone: '+' + String(target.phoneNumber.phone).replace(/\D/g, ''),
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     });
-    if ('error' in result) throw new Error(result.error);
-    addCall(result.callId, target.phoneNumber.phone);
-    if (result.callSessionHistoryId) setVoxSessionId(result.callId, result.callSessionHistoryId);
-    const toNormalized = '+' + String(target.phoneNumber.phone).replace(/\D/g, '');
-    await prisma.voiceCallSession.create({
-      data: {
-        callId: result.callId,
-        to: toNormalized,
-        scenario: result.scenario ?? 'realtime_pure',
-        source: 'scheduled',
-        dealershipId: target.dealershipId,
-        managerId: target.employee.id,
-        planId: plan.id,
-        phoneNumberId: target.phoneNumber.id,
-        phoneNumberTypeId: target.phoneNumber.typeId,
-        phoneNumberTypeName: target.phoneNumber.type.name,
-        phoneNumberOwnership: target.phoneNumber.type.ownership,
-        caseContextJson: JSON.stringify({
-          planId: plan.id,
-          scriptId: script.id,
-          profileId: profile?.id ?? null,
-          customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
-          elevenLabsVoiceId,
-          importedItemId: importedItem?.id ?? null,
-        }),
-        startedAt: new Date(result.startedAt),
-      },
-    }).catch(() => undefined);
-    const criteria = safeJsonParse(script.successCriteriaJson, []);
-    await prisma.callPlanCall.create({
-      data: {
-        planId: plan.id,
-        callId: result.callId,
-        employeeId: target.employee.id,
-        employeeName: target.employee.fullName,
-        dealershipId: target.dealershipId,
-        dealershipName: target.dealershipName,
-        phone: toNormalized,
-        phoneNumberTypeId: plan.phoneNumberTypeId,
-        scriptId: script.id,
-        profileId: profile?.id ?? null,
-        importedItemId: importedItem?.id ?? null,
-        promptText: prompt,
-        criteriaJson: JSON.stringify(criteria),
-        status: 'running',
-        scheduledAt: new Date(result.startedAt),
-        startedAt: new Date(result.startedAt),
-      },
-    });
+    await Promise.all(workers);
+    if (successes.length === 0) throw new Error(failures[0]?.error || 'Не удалось запустить ни одного звонка.');
     const updated = await prisma.callPlan.update({
       where: { id },
-      data: { lastInitiatedAt: new Date(), lastBatchId: result.callId },
+      data: { lastInitiatedAt: new Date(), lastBatchId: successes[0] },
     });
-    res.json({ item: normalizePlan(updated), callId: result.callId, batchId: result.callId, totalJobs: 1 });
+    res.json({
+      item: normalizePlan(updated),
+      callId: successes[0],
+      callIds: successes,
+      batchId: successes[0],
+      totalJobs: successes.length,
+      failedJobs: failures.length,
+      failures: failures.slice(0, 20),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось инициировать прозвон.';
     res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
+  } finally {
+    if (initiationClaimed) manualPlanInitiations.delete(id);
   }
 }
 
@@ -1311,12 +1454,12 @@ export async function handleListCallPlanCalls(req: Request, res: Response): Prom
     });
     const voiceSessions = await prisma.voiceCallSession.findMany({
       where: { callId: { in: items.map((item) => item.callId) } },
-      select: { id: true, callId: true, answerTimeSec: true, talkDurationSec: true, durationSec: true },
+      select: { id: true, callId: true, answerTimeSec: true, talkDurationSec: true, durationSec: true, ivrDetected: true, ivrPathJson: true },
     });
     const auditIds = new Map(voiceSessions.map((session) => [session.callId, `call-${session.id}`]));
     const timings = new Map(voiceSessions.map((session) => [
       session.callId,
-      { answerTimeSec: session.answerTimeSec, talkDurationSec: session.talkDurationSec, durationSec: session.durationSec },
+      { answerTimeSec: session.answerTimeSec, talkDurationSec: session.talkDurationSec, durationSec: session.durationSec, ivrDetected: session.ivrDetected, ivrPathJson: session.ivrPathJson },
     ]));
     res.json({ items: items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null, timings.get(item.callId) ?? null)) });
   } catch (error) {
@@ -1367,7 +1510,7 @@ export async function handleRecreateCallPlanScheduleCall(req: Request, res: Resp
 
     const existing = await prisma.callPlanCall.findFirst({ where: { id: callPlanCallId, planId } });
     if (!existing) throw new Error('Запись расписания не найдена.');
-    if (!existing.employeeId) throw new Error('У записи расписания не указан сотрудник.');
+    if (!existing.employeeId && !existing.phoneNumberId) throw new Error('У записи расписания не указана цель звонка.');
     if (existing.status === 'running') throw new Error('Нельзя пересоздать звонок, который уже выполняется.');
 
     const plan = await prisma.callPlan.findUnique({ where: { id: planId } });
@@ -1391,14 +1534,17 @@ export async function handleRecreateCallPlanScheduleCall(req: Request, res: Resp
     const minMinutes = Math.max(fromMinutes, nowMinutes + 1);
     if (minMinutes > toMinutes) throw new Error('Диапазон звонков на сегодня уже закончился.');
 
-    const target = (await buildCallPlanTargets(plan)).find((item) => item.employee.id === existing.employeeId);
-    if (!target) throw new Error('Сотрудник больше не входит в аудиторию плана или у него нет подходящего номера.');
+    const target = (await buildCallPlanTargets(plan)).find((item) =>
+      (existing.phoneNumberId && item.phoneNumber.id === existing.phoneNumberId) ||
+      (existing.employeeId && item.employee?.id === existing.employeeId)
+    );
+    if (!target) throw new Error('Цель больше не входит в аудиторию плана или у неё нет подходящего номера.');
 
     const context = await buildScheduledCallContext(plan);
     await prisma.callPlanCall.deleteMany({
       where: {
         planId,
-        employeeId: existing.employeeId,
+        ...(existing.phoneNumberId ? { phoneNumberId: existing.phoneNumberId } : { employeeId: existing.employeeId }),
         status: { not: 'running' },
         OR: [
           { scheduledAt: { gte: day, lte: dayEnd } },

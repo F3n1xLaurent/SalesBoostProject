@@ -24,6 +24,7 @@ export interface EvaluatorInput {
   earlyFail: boolean;
   failureReason?: string;
   behaviorSignals?: BehaviorSignal[];
+  scenarioContext?: string;
 }
 
 export interface EvaluatorOutput {
@@ -166,8 +167,12 @@ export async function evaluateSessionV2(input: EvaluatorInput): Promise<Evaluato
     behaviorEvidence = lines.join('\n');
   }
 
+  const scenarioContext = input.scenarioContext?.trim()
+    ? `\n\n=== СЦЕНАРИЙ И УСЛОВИЯ ПРОВЕРКИ ===\n${input.scenarioContext.slice(0, 16000)}`
+    : '';
   const userPrompt = `=== АВТОМОБИЛЬ ===
 ${carContext}
+${scenarioContext}
 
 === ДИАЛОГ ===${failContext}
 ${historyStr}
