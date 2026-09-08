@@ -2725,7 +2725,8 @@
 
 .theme-brutal .sa-call-report .sa-card,
 .theme-brutal .sa-call-report-section,
-.theme-brutal .sa-call-report-score {
+.theme-brutal .sa-call-report-score,
+.theme-brutal .sa-call-report-recording {
   background: #FFFFFF;
   border: 1px solid rgba(22, 22, 19, 0.1);
   border-radius: 14px;

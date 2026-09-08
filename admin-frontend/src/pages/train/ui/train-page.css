@@ -1587,6 +1587,14 @@
   margin-top: 18px;
 }
 
+/* The scenario picker is taller than this compact dialog. Keep the modal's
+   normal scrolling rules everywhere else, but let this dropdown escape its
+   body instead of being clipped behind the footer. */
+.theme-brutal .sa-modal.train-new-session-modal,
+.theme-brutal .sa-modal.train-new-session-modal .sa-modal-body {
+  overflow: visible;
+}
+
 .train-new-start {
   width: 100%;
   margin-top: 16px;

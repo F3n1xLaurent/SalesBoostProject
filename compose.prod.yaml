@@ -6,6 +6,16 @@ services:
       context: .
       dockerfile: Dockerfile
       target: production
+      args:
+        SENTRY_FRONTEND_DSN: ${SENTRY_FRONTEND_DSN:-}
+        SENTRY_ORG: ${SENTRY_ORG:-}
+        SENTRY_FRONTEND_PROJECT: ${SENTRY_FRONTEND_PROJECT:-}
+        SENTRY_RELEASE: ${IMAGE_TAG:-latest}
+        SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+        SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.1}
+        SENTRY_UPLOAD_SOURCEMAPS: ${SENTRY_UPLOAD_SOURCEMAPS:-false}
+      secrets:
+        - sentry_auth_token
     image: salesboost:${IMAGE_TAG:-latest}
     restart: unless-stopped
     init: true
@@ -16,7 +26,11 @@ services:
       PORT: "3000"
       # Keep recoverable voice-processing files outside the container layer.
       TMPDIR: /app/tmp
+      CALL_RECORDINGS_DIR: /app/storage/recordings
       ALLOW_DEV_ADMIN: "false"
+      SENTRY_RELEASE: ${IMAGE_TAG:-latest}
+      # Build-only credential must never remain available to the application.
+      SENTRY_AUTH_TOKEN: ""
     ports:
       # Publish strictly on the host loopback interface. External traffic must
       # reach the application through the host's HTTPS reverse proxy.
@@ -26,6 +40,7 @@ services:
       # for example: file:/data/salesboost.db
       - salesboost_sqlite:/data
       - salesboost_audio_tmp:/app/tmp
+      - salesboost_recordings:/app/storage/recordings
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=1770
@@ -50,3 +65,9 @@ volumes:
     name: salesboost_sqlite
   salesboost_audio_tmp:
     name: salesboost_audio_tmp
+  salesboost_recordings:
+    name: salesboost_recordings
+
+secrets:
+  sentry_auth_token:
+    environment: SENTRY_AUTH_TOKEN

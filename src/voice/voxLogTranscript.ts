@@ -8,6 +8,7 @@
 import { request } from 'undici';
 import { createSign } from 'crypto';
 import type { TranscriptTurn } from './callHistory';
+import { config } from '../config';
 
 const VOX_API_BASE = 'https://api.voximplant.com/platform_api';
 
@@ -124,8 +125,8 @@ function base64url(input: Buffer | string): string {
  * Create JWT for Voximplant secure objects using service account credentials JSON from
  * VOX_SERVICE_ACCOUNT_CREDENTIALS env (same format as credentials.json from control panel).
  */
-function createVoxJwt(): string | null {
-  const raw = process.env.VOX_SERVICE_ACCOUNT_CREDENTIALS;
+export function createVoxJwt(): string | null {
+  const raw = config.voxServiceAccountCredentials;
   if (!raw) return null;
   try {
     const creds = JSON.parse(raw) as VoxServiceAccountCredentials;

@@ -15,3 +15,4 @@ key.pem
 
 # Local env snapshots (secrets; never commit)
 backups/
+storage/

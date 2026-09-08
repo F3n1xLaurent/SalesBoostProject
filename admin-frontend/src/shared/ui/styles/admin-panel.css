@@ -2994,6 +2994,106 @@
   flex-shrink: 0;
 }
 
+.sa-call-report-recording {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+  background: #FFFFFF;
+  border: 1px solid rgba(22, 22, 19, 0.1);
+  border-radius: 14px;
+}
+
+.sa-call-report-recording-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.sa-call-report-recording-copy strong {
+  font-size: 15px;
+}
+
+.sa-call-report-recording-copy span {
+  color: var(--sa-text-secondary);
+  font-size: 12px;
+}
+
+.sa-call-report-recording-player {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 86px;
+  align-items: center;
+  gap: 12px;
+}
+
+.sa-call-report-recording-player audio {
+  display: none;
+}
+
+.sa-call-report-recording-play {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  color: #FFFFFF;
+  background: var(--sa-text, #161613);
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.sa-call-report-recording-play:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.sa-call-report-recording-play svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.sa-call-report-waveform {
+  display: block;
+  width: 100%;
+  height: 72px;
+  padding: 2px 0;
+  overflow: hidden;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.sa-call-report-waveform:disabled {
+  cursor: default;
+}
+
+.sa-call-report-waveform svg {
+  display: block;
+  width: 100%;
+  height: 68px;
+}
+
+.sa-call-report-waveform line {
+  stroke: #C6C6C6;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  transition: stroke 120ms ease;
+}
+
+.sa-call-report-waveform line.is-played {
+  stroke: #4B4B4B;
+}
+
+.sa-call-report-recording-time {
+  color: var(--sa-text-secondary);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .sa-call-report-score {
   display: grid;
   grid-template-columns: 160px 1fr;
@@ -3749,6 +3849,27 @@
   }
   .sa-call-report-header-actions {
     align-items: flex-start;
+  }
+  .sa-call-report-recording {
+    padding: 14px;
+  }
+  .sa-call-report-recording-copy {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .sa-call-report-recording-player {
+    grid-template-columns: 38px minmax(0, 1fr);
+    gap: 9px;
+  }
+  .sa-call-report-recording-play {
+    width: 38px;
+    height: 38px;
+  }
+  .sa-call-report-recording-time {
+    grid-column: 2;
+    margin-top: -8px;
+    text-align: left;
   }
   .sa-call-report-score,
   .sa-call-report-two-col {

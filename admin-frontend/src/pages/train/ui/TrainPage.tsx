@@ -581,6 +581,7 @@ function NewSessionModal(props: {
       title="Новая тренировка"
       subtitle="Свободная тренировка с виртуальным клиентом"
       width="medium"
+      modalClassName="train-new-session-modal"
       footer={(
         <div className="sa-modal-footer-row">
           <span />

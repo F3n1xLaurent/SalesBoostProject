@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import type { RecommendationResult, RecommendationSignal } from '../../api/adminPanel';
+import { trackProductEvent } from '../../analytics/productAnalytics';
 
 const PROBLEM_TITLES: Record<string, string> = {
   NO_INTRO_COMPANY: 'Представление компании', NO_CLIENT_NAME: 'Обращение к клиенту по имени',
@@ -37,6 +39,14 @@ function SignalCard({ signal, onOpen }: { signal: RecommendationSignal; onOpen?:
 }
 
 export function RecommendationsBlock({ data, loading, error, onOpen }: { data: RecommendationResult | null; loading?: boolean; error?: string | null; onOpen?: (signal: RecommendationSignal) => void }) {
+  useEffect(() => {
+    if (data?.state !== 'findings') return;
+    trackProductEvent('recommendations_viewed', {
+      targetType: 'analytics_recommendations',
+      properties: { surface: 'recommendations_block' },
+    });
+  }, [data]);
+
   if (loading) return <div className="sa-card sa-recommendation-state">Рассчитываем рекомендации…</div>;
   if (error) return <div className="sa-card sa-recommendation-state is-error">{error}</div>;
   if (!data) return null;

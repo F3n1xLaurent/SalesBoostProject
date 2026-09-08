@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
+import { trackProductEvent } from '../../../shared/analytics/productAnalytics';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
+import { apiFetch } from '../../../entities/session';
 
 type UnifiedReport = NonNullable<AuditDetailItem['unifiedReport']>;
 type DialogLine = UnifiedReport['dialog'][number] & { betterExample?: string | null };
@@ -141,6 +143,188 @@ function ScoreGauge({ score }: { score: number }) {
   );
 }
 
+const CALL_WAVEFORM_BARS = 220;
+const EMPTY_CALL_WAVEFORM = Array.from({ length: CALL_WAVEFORM_BARS }, (_, index) =>
+  0.08 + (Math.sin(index * 0.47) + 1) * 0.035,
+);
+
+function formatPlaybackTime(seconds: number) {
+  const safe = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+async function analyzeCallWaveform(blob: Blob): Promise<number[]> {
+  const AudioContextCtor = window.AudioContext
+    || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) return EMPTY_CALL_WAVEFORM;
+  const context = new AudioContextCtor();
+  try {
+    const audioBuffer = await context.decodeAudioData((await blob.arrayBuffer()).slice(0));
+    const blockSize = Math.max(1, Math.floor(audioBuffer.length / CALL_WAVEFORM_BARS));
+    const peaks = Array.from({ length: CALL_WAVEFORM_BARS }, (_, index) => {
+      const start = index * blockSize;
+      const end = Math.min(audioBuffer.length, start + blockSize);
+      const sampleStep = Math.max(1, Math.floor((end - start) / 256));
+      let peak = 0;
+      for (let channelIndex = 0; channelIndex < audioBuffer.numberOfChannels; channelIndex += 1) {
+        const channel = audioBuffer.getChannelData(channelIndex);
+        for (let sample = start; sample < end; sample += sampleStep) {
+          peak = Math.max(peak, Math.abs(channel[sample]));
+        }
+      }
+      return peak;
+    });
+    const sorted = [...peaks].sort((a, b) => a - b);
+    const normalizationPeak = Math.max(sorted[Math.floor(sorted.length * 0.96)] ?? 0, 0.001);
+    return peaks.map((peak) => Math.max(0.06, Math.min(1, peak / normalizationPeak)));
+  } finally {
+    await context.close().catch(() => undefined);
+  }
+}
+
+function CallRecordingPlayer({ recordingUrl }: { recordingUrl: string }) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [waveform, setWaveform] = useState<number[]>(EMPTY_CALL_WAVEFORM);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    setAudioUrl(null);
+    setWaveform(EMPTY_CALL_WAVEFORM);
+    setLoading(true);
+    setError(false);
+    setPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+
+    apiFetch(recordingUrl, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Recording request failed');
+        const blob = await response.blob();
+        if (blob.size === 0) throw new Error('Recording is empty');
+        objectUrl = URL.createObjectURL(blob);
+        setAudioUrl(objectUrl);
+        analyzeCallWaveform(blob)
+          .then((levels) => {
+            if (!controller.signal.aborted) setWaveform(levels);
+          })
+          .catch(() => undefined);
+      })
+      .catch((requestError) => {
+        if (!(requestError instanceof DOMException && requestError.name === 'AbortError')) setError(true);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [recordingUrl]);
+
+  const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
+
+  function togglePlayback() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (!audio.paused) {
+      audio.pause();
+      return;
+    }
+    if (audio.duration && audio.currentTime >= audio.duration - 0.05) audio.currentTime = 0;
+    audio.play().catch(() => setError(true));
+  }
+
+  function seek(event: React.MouseEvent<HTMLButtonElement>) {
+    const audio = audioRef.current;
+    if (!audio || event.detail === 0 || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    audio.currentTime = ratio * audio.duration;
+    setCurrentTime(audio.currentTime);
+  }
+
+  function seekWithKeyboard(event: React.KeyboardEvent<HTMLButtonElement>) {
+    const audio = audioRef.current;
+    if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const shift = event.key === 'ArrowRight' ? 5 : -5;
+    audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + shift));
+    setCurrentTime(audio.currentTime);
+  }
+
+  return (
+    <section className="sa-call-report-recording">
+      <div className="sa-call-report-recording-copy">
+        <strong>Запись звонка</strong>
+        <span>{loading ? 'Загружаем аудио…' : error ? 'Не удалось загрузить запись' : 'Можно прослушать разговор целиком'}</span>
+      </div>
+      <div className="sa-call-report-recording-player">
+        <audio
+          ref={audioRef}
+          preload="metadata"
+          src={audioUrl || undefined}
+          onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+          onDurationChange={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+          onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+        />
+        <button
+          type="button"
+          className="sa-call-report-recording-play"
+          disabled={!audioUrl || loading || error}
+          onClick={togglePlayback}
+          aria-label={playing ? 'Поставить запись на паузу' : 'Воспроизвести запись звонка'}
+        >
+          {playing ? (
+            <svg viewBox="0 0 24 24" aria-hidden><path d="M7 5h3v14H7zM14 5h3v14h-3z" /></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" aria-hidden><path d="m8 5 11 7-11 7V5Z" /></svg>
+          )}
+        </button>
+        <button
+          type="button"
+          className="sa-call-report-waveform"
+          disabled={!audioUrl || error}
+          onClick={seek}
+          onKeyDown={seekWithKeyboard}
+          aria-label={`Перемотать запись. Прослушано ${Math.round(progress * 100)}%`}
+        >
+          <svg viewBox={`0 0 ${CALL_WAVEFORM_BARS * 3} 68`} preserveAspectRatio="none" aria-hidden>
+            {waveform.map((level, index) => {
+              const height = 3 + level * 58;
+              const played = index / waveform.length <= progress;
+              return (
+                <line
+                  key={index}
+                  className={played ? 'is-played' : undefined}
+                  x1={index * 3 + 1.5}
+                  x2={index * 3 + 1.5}
+                  y1={(68 - height) / 2}
+                  y2={(68 + height) / 2}
+                />
+              );
+            })}
+          </svg>
+        </button>
+        <span className="sa-call-report-recording-time">
+          {formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}
+        </span>
+      </div>
+    </section>
+  );
+}
+
 export function AuditAnalyticsReport({
   detail,
   onOpenEmployee,
@@ -163,6 +347,36 @@ export function AuditAnalyticsReport({
     () => (report ? enrichDialogExamples(report.dialog, report.keyFindings) : []),
     [report],
   );
+
+  useEffect(() => {
+    if (!report) return;
+    const targetType = detail.type === 'call' ? 'voice_call' : 'trainer_session';
+    const properties = { report_type: detail.type } as const;
+    trackProductEvent('report_viewed', { targetType, targetId: detail.id, properties });
+    trackProductEvent('score_viewed', { targetType, targetId: detail.id, properties });
+  }, [detail.id, detail.type, report]);
+
+  const toggleFindings = () => {
+    if (!findingsOpen) {
+      trackProductEvent('errors_viewed', {
+        targetType: detail.type === 'call' ? 'voice_call' : 'trainer_session',
+        targetId: detail.id,
+        properties: { report_type: detail.type },
+      });
+    }
+    setFindingsOpen(!findingsOpen);
+  };
+
+  const toggleRecommendations = () => {
+    if (!recommendationsOpen) {
+      trackProductEvent('recommendations_viewed', {
+        targetType: detail.type === 'call' ? 'voice_call' : 'trainer_session',
+        targetId: detail.id,
+        properties: { report_type: detail.type },
+      });
+    }
+    setRecommendationsOpen(!recommendationsOpen);
+  };
 
   return (
     <div className="sa-call-report">
@@ -198,6 +412,10 @@ export function AuditAnalyticsReport({
           )}
         </div>
       </div>
+
+      {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
+        <CallRecordingPlayer recordingUrl={detail.recordingUrl} />
+      )}
 
       {!report ? (
         <section className="sa-call-report-section">
@@ -276,7 +494,7 @@ export function AuditAnalyticsReport({
               type="button"
               className={`sa-call-report-collapse-toggle${findingsOpen ? ' is-open' : ''}`}
               aria-expanded={findingsOpen}
-              onClick={() => setFindingsOpen((current) => !current)}
+              onClick={toggleFindings}
             >
               <span className="sa-call-report-collapse-icon" aria-hidden>{findingsOpen ? '−' : '+'}</span>
               <span className="sa-section-title">Ключевые находки</span>
@@ -383,7 +601,7 @@ export function AuditAnalyticsReport({
               type="button"
               className={`sa-call-report-collapse-toggle${recommendationsOpen ? ' is-open' : ''}`}
               aria-expanded={recommendationsOpen}
-              onClick={() => setRecommendationsOpen((current) => !current)}
+              onClick={toggleRecommendations}
             >
               <span className="sa-call-report-collapse-icon" aria-hidden>{recommendationsOpen ? '−' : '+'}</span>
               <span className="sa-section-title">Рекомендации</span>
