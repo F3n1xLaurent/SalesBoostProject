@@ -1,11 +1,16 @@
-import https from 'https';
 import { Input } from 'telegraf';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { config } from '../config';
 import { openai } from '../lib/openaiClient';
 import type { Context } from 'telegraf';
 import type { TtsVoice } from '../state/userPreferences';
 
 const TTS_MAX_CHARS = 360;
+const ELEVENLABS_TTS_TIMEOUT_MS = 25_000;
+
+const elevenLabsProxyAgent = config.elevenLabsProxyUrl
+  ? new ProxyAgent(config.elevenLabsProxyUrl)
+  : null;
 
 /** OpenAI voices: male = onyx, female = nova */
 const OPENAI_VOICE_MAP: Record<TtsVoice, string> = {
@@ -49,46 +54,52 @@ async function generateSpeechElevenLabs(text: string, voiceId = config.elevenLab
     throw new Error('ElevenLabs is not configured');
   }
 
+  const ttsText = buildTtsText(text);
   const body = JSON.stringify({
-    text: buildTtsText(text),
+    text: ttsText,
     model_id: 'eleven_multilingual_v2',
   });
-
-  const options: https.RequestOptions = {
-    hostname: 'api.elevenlabs.io',
-    port: 443,
-    path: `/v1/text-to-speech/${encodeURIComponent(
-      resolvedVoiceId
-    )}?output_format=opus_48000_128`,
-    method: 'POST',
-    headers: {
-      'xi-api-key': config.elevenLabsApiKey,
-      'Content-Type': 'application/json',
-      Accept: 'audio/opus',
-      'Content-Length': Buffer.byteLength(body),
-    },
-  };
-
-  return await new Promise<Buffer>((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (d) => chunks.push(Buffer.isBuffer(d) ? d : Buffer.from(d)));
-      res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 400) {
-          const errBody = Buffer.concat(chunks).toString('utf8');
-          return reject(
-            new Error(
-              `ElevenLabs TTS error: HTTP ${res.statusCode} ${res.statusMessage || ''} - ${errBody.slice(0, 300)}`
-            )
-          );
-        }
-        resolve(Buffer.concat(chunks));
-      });
-    });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TTS_TIMEOUT_MS);
+  console.log(`[tts] ElevenLabs request chars=${ttsText.length} proxy=${Boolean(elevenLabsProxyAgent)}`);
+  try {
+    const response = await undiciFetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(resolvedVoiceId)}?output_format=opus_48000_128`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': config.elevenLabsApiKey,
+          'Content-Type': 'application/json',
+          Accept: 'audio/opus',
+        },
+        body,
+        signal: controller.signal,
+        redirect: 'manual',
+        ...(elevenLabsProxyAgent ? { dispatcher: elevenLabsProxyAgent } : {}),
+      },
+    );
+    const audio = Buffer.from(await response.arrayBuffer());
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (!response.ok) {
+      const location = response.headers.get('location');
+      const errorBody = audio.toString('utf8').slice(0, 300);
+      throw new Error(
+        `ElevenLabs TTS error: HTTP ${response.status} ${response.statusText}`
+        + `${location ? ` redirect=${location}` : ''}`
+        + `${errorBody ? ` - ${errorBody}` : ''}`,
+      );
+    }
+    if (!contentType.startsWith('audio/') && contentType !== 'application/octet-stream') {
+      throw new Error(
+        `ElevenLabs TTS returned non-audio content-type=${contentType || 'missing'} bytes=${audio.length}`,
+      );
+    }
+    if (!audio.length) throw new Error('ElevenLabs TTS returned an empty audio response');
+    console.log(`[tts] ElevenLabs response status=${response.status} content_type=${contentType || 'unknown'} bytes=${audio.length}`);
+    return audio;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function generateSpeechElevenLabsVoice(text: string, voiceId: string): Promise<Buffer> {
@@ -122,12 +133,8 @@ export async function generateSpeechBuffer(text: string, voice: TtsVoice = 'male
   try {
     return await generateSpeechElevenLabs(trimmed);
   } catch (elErr) {
-    const msg = elErr instanceof Error ? elErr.message : String(elErr);
-    if (msg.includes('401') || msg.includes('402') || msg.includes('403') || msg.includes('Payment Required') || msg.includes('Unauthorized')) {
-      console.warn('[tts] ElevenLabs failed, falling back to OpenAI TTS');
-      return generateSpeechOpenAI(trimmed, voice);
-    }
-    throw elErr;
+    console.warn('[tts] ElevenLabs failed, falling back to OpenAI TTS:', elErr instanceof Error ? elErr.message : elErr);
+    return generateSpeechOpenAI(trimmed, voice);
   }
 }
 
@@ -171,13 +178,8 @@ export async function sendClientVoiceIfEnabled(
     try {
       await tryElevenLabs();
     } catch (elErr) {
-      const msg = elErr instanceof Error ? elErr.message : String(elErr);
-      if (msg.includes('401') || msg.includes('402') || msg.includes('403') || msg.includes('Payment Required') || msg.includes('Unauthorized')) {
-        console.warn('[tts] ElevenLabs failed, falling back to OpenAI TTS');
-        await tryOpenAI();
-      } else {
-        throw elErr;
-      }
+      console.warn('[tts] ElevenLabs failed, falling back to OpenAI TTS:', elErr instanceof Error ? elErr.message : elErr);
+      await tryOpenAI();
     }
   } catch (err) {
     console.error('[tts] Failed to send voice:', err);

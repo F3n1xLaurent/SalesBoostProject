@@ -45,7 +45,7 @@ import { buildDealershipFromCar } from './llm/virtualClient';
 import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
 import { evaluateSessionV2 } from './llm/evaluatorV2';
-import { generateSpeechBuffer, generateSpeechElevenLabsVoice } from './voice/tts';
+import { generateSpeechBuffer, generateSpeechElevenLabsVoice, generateSpeechOpenAI } from './voice/tts';
 import { buildCustomerScenarioPromptCore } from './voice/customerScenarioPrompt';
 import {
   closeElevenLabsAgentConversation,
@@ -2135,24 +2135,48 @@ function withTrainerRuntime(caseContext: Record<string, unknown>, runtime: Train
   };
 }
 
+function trainerGeneratedAudioMimeType(audio: Buffer): string {
+  if (audio.length >= 4 && audio.subarray(0, 4).toString('ascii') === 'OggS') return 'audio/ogg';
+  if (audio.length >= 12
+    && audio.subarray(0, 4).toString('ascii') === 'RIFF'
+    && audio.subarray(8, 12).toString('ascii') === 'WAVE') return 'audio/wav';
+  if (audio.length >= 12 && audio.subarray(4, 8).toString('ascii') === 'ftyp') return 'audio/mp4';
+  if (audio.length >= 3 && audio.subarray(0, 3).toString('ascii') === 'ID3') return 'audio/mpeg';
+  if (audio.length >= 2 && audio[0] === 0xff && (audio[1] & 0xe0) === 0xe0) return 'audio/mpeg';
+  return 'audio/mpeg';
+}
+
 async function ttsBase64(
   text: string,
   replyMode: 'text' | 'text+voice',
   ttsVoice: TtsVoice,
   elevenLabsVoiceId?: string | null,
-): Promise<string | null> {
+): Promise<{ audioBase64: string; audioMimeType: string } | null> {
   if (replyMode !== 'text+voice' || !text.trim()) return null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       const buf = elevenLabsVoiceId?.trim()
         ? await generateSpeechElevenLabsVoice(text, elevenLabsVoiceId.trim())
         : await generateSpeechBuffer(text, ttsVoice);
-      return buf.length ? buf.toString('base64') : null;
+      return buf.length
+        ? { audioBase64: buf.toString('base64'), audioMimeType: trainerGeneratedAudioMimeType(buf) }
+        : null;
     } catch (error) {
       console.error(`[trainer] TTS error attempt=${attempt}:`, error);
       if (attempt < 3) {
         await new Promise((resolve) => setTimeout(resolve, attempt * 700));
       }
+    }
+  }
+  if (elevenLabsVoiceId?.trim()) {
+    try {
+      console.warn('[trainer] ElevenLabs TTS unavailable, falling back to OpenAI TTS');
+      const fallback = await generateSpeechOpenAI(text, ttsVoice);
+      return fallback.length
+        ? { audioBase64: fallback.toString('base64'), audioMimeType: trainerGeneratedAudioMimeType(fallback) }
+        : null;
+    } catch (error) {
+      console.error('[trainer] OpenAI TTS fallback error:', error);
     }
   }
   return null;
@@ -2172,12 +2196,12 @@ async function ensureTrainerClientAudio(params: {
       audioMimeType: params.audioMimeType ?? null,
     };
   }
-  const audioBase64 = await ttsBase64(params.text, 'text+voice', params.ttsVoice, params.elevenLabsVoiceId);
-  if (!audioBase64) {
+  const audio = await ttsBase64(params.text, 'text+voice', params.ttsVoice, params.elevenLabsVoiceId);
+  if (!audio) {
     console.warn('[trainer] TTS unavailable, returning text-only client message');
     return { audioBase64: null, audioMimeType: null };
   }
-  return { audioBase64, audioMimeType: 'audio/mpeg' };
+  return audio;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
