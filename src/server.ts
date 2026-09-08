@@ -2538,6 +2538,36 @@ async function initializeTrainerDialog(params: {
   });
 }
 
+type TrainerDialogInitialization = Awaited<ReturnType<typeof initializeTrainerDialog>>;
+
+const trainerDialogInitializationTasks = new Map<string, Promise<TrainerDialogInitialization>>();
+const trainerTurnTasks = new Set<string>();
+
+function ensureTrainerDialogInitialized(params: {
+  sessionId: string;
+  replyMode: 'text' | 'text+voice';
+  ttsVoice: TtsVoice;
+}): Promise<TrainerDialogInitialization> {
+  const runningTask = trainerDialogInitializationTasks.get(params.sessionId);
+  if (runningTask) return runningTask;
+
+  const task = initializeTrainerDialog(params);
+  trainerDialogInitializationTasks.set(params.sessionId, task);
+  void task.then(
+    () => {
+      if (trainerDialogInitializationTasks.get(params.sessionId) === task) {
+        trainerDialogInitializationTasks.delete(params.sessionId);
+      }
+    },
+    () => {
+      if (trainerDialogInitializationTasks.get(params.sessionId) === task) {
+        trainerDialogInitializationTasks.delete(params.sessionId);
+      }
+    },
+  );
+  return task;
+}
+
 async function runTrainerSessionTurn(params: {
   sessionId: string;
   managerText: string;
@@ -3521,7 +3551,17 @@ app.post('/api/admin/product-events', async (req, res) => {
   }
 });
 
-async function resolveTrainerManager(req: express.Request) {
+type ResolvedTrainerManager = Prisma.ManagerProfileGetPayload<{
+  include: {
+    dealership: {
+      include: { holding: true };
+    };
+  };
+}>;
+
+const trainerManagerResolutionTasks = new Map<string, Promise<ResolvedTrainerManager | null>>();
+
+async function resolveTrainerManager(req: express.Request): Promise<ResolvedTrainerManager | null> {
   const account = req.authAccount;
   const accountId = account?.id;
   if (!accountId) return null;
@@ -3536,23 +3576,56 @@ async function resolveTrainerManager(req: express.Request) {
   });
   if (existing) return existing;
 
-  const dealershipId = account.memberships.find((membership) => membership.dealershipId)?.dealershipId;
-  if (!dealershipId) return null;
+  const runningTask = trainerManagerResolutionTasks.get(accountId);
+  if (runningTask) return runningTask;
 
-  return prisma.managerProfile.create({
-    data: {
-      accountId,
-      dealershipId,
-      fullName: account.displayName?.trim() || account.email.split('@')[0]?.trim() || account.email,
-      email: account.email,
-      status: 'active',
-    },
-    include: {
-      dealership: {
-        include: { holding: true },
+  const task = (async (): Promise<ResolvedTrainerManager | null> => {
+    // Another parallel trainer request may have created the profile after the
+    // first lookup, so check once more while holding the per-account lock.
+    const createdByParallelRequest = await prisma.managerProfile.findFirst({
+      where: { accountId, status: 'active' },
+      include: {
+        dealership: {
+          include: { holding: true },
+        },
       },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (createdByParallelRequest) return createdByParallelRequest;
+
+    const dealershipId = account.memberships.find((membership) => membership.dealershipId)?.dealershipId;
+    if (!dealershipId) return null;
+
+    return prisma.managerProfile.create({
+      data: {
+        accountId,
+        dealershipId,
+        fullName: account.displayName?.trim() || account.email.split('@')[0]?.trim() || account.email,
+        email: account.email,
+        status: 'active',
+      },
+      include: {
+        dealership: {
+          include: { holding: true },
+        },
+      },
+    });
+  })();
+
+  trainerManagerResolutionTasks.set(accountId, task);
+  void task.then(
+    () => {
+      if (trainerManagerResolutionTasks.get(accountId) === task) {
+        trainerManagerResolutionTasks.delete(accountId);
+      }
     },
-  });
+    () => {
+      if (trainerManagerResolutionTasks.get(accountId) === task) {
+        trainerManagerResolutionTasks.delete(accountId);
+      }
+    },
+  );
+  return task;
 }
 
 function trainerSessionSummary(session: {
@@ -3904,7 +3977,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
       });
     }
 
-    const initialMessagePromise = initializeTrainerDialog({
+    const initialMessagePromise = ensureTrainerDialogInitialized({
       sessionId: session.id,
       replyMode,
       ttsVoice,
@@ -3936,10 +4009,20 @@ app.get('/api/trainer/session/:id/dialog', async (req, res) => {
       include: { scenario: { select: { id: true, name: true } } },
     });
     if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+    const transcript = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+    if (session.status === 'in_progress' && transcript.length === 0) {
+      void ensureTrainerDialogInitialized({
+        sessionId: session.id,
+        replyMode: 'text+voice',
+        ttsVoice: 'male',
+      }).catch((error) => {
+        console.error('trainer/session/dialog recovery error:', error);
+      });
+    }
     res.json({
       session: trainerSessionSummary(session),
       caseContext: safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {}),
-      transcript: safeArray(session.transcriptJson),
+      transcript,
     });
   } catch (error) {
     console.error('trainer/session/dialog error:', error);
@@ -3948,6 +4031,7 @@ app.get('/api/trainer/session/:id/dialog', async (req, res) => {
 });
 
 app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
+  let lockedSessionId: string | null = null;
   try {
     const requestStartedAt = Date.now();
     console.log(`[trainer] voice-message received session=${String(req.params.id)}`);
@@ -3955,9 +4039,12 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
     const session = await prisma.trainerSession.findFirst({
       where: { id: String(req.params.id), employeeId: manager.id },
-      select: { id: true },
+      select: { id: true, status: true },
     });
     if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+    if (session.status !== 'in_progress') {
+      return res.status(409).json({ error: 'Эта тренировка уже завершена.' });
+    }
 
     const body = req.body || {};
     const { audioBase64, mimeType } = body as { audioBase64?: string; mimeType?: string };
@@ -3967,6 +4054,19 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     if (!audioBase64 || typeof audioBase64 !== 'string') {
       return res.status(400).json({ error: 'audioBase64 обязателен' });
     }
+    if (trainerTurnTasks.has(session.id)) {
+      return res.status(409).json({ error: 'Предыдущая реплика ещё обрабатывается. Дождитесь ответа клиента.' });
+    }
+    trainerTurnTasks.add(session.id);
+    lockedSessionId = session.id;
+
+    // The opening client turn must be persisted before the manager can reply.
+    // Otherwise both async operations can overwrite transcriptJson.
+    await ensureTrainerDialogInitialized({
+      sessionId: session.id,
+      replyMode,
+      ttsVoice,
+    });
 
     const isPcm = String(mimeType || '').toLowerCase().includes('audio/pcm');
 
@@ -4034,6 +4134,8 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
       return res.status(504).json({ error: 'Сервис ответа клиента не успел. Отправьте сообщение ещё раз.' });
     }
     res.status(500).json({ error: 'Не удалось обработать голосовое сообщение.' });
+  } finally {
+    if (lockedSessionId) trainerTurnTasks.delete(lockedSessionId);
   }
 });
 

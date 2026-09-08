@@ -1,7 +1,12 @@
 import fs from 'fs';
 import path from 'path';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { openai } from '../lib/openaiClient';
 import { config } from '../config';
+
+const elevenLabsProxyAgent = config.elevenLabsProxyUrl
+  ? new ProxyAgent(config.elevenLabsProxyUrl)
+  : null;
 
 function contentTypeForFile(filepath: string): string {
   const ext = path.extname(filepath).toLowerCase();
@@ -17,6 +22,13 @@ async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: num
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    if (elevenLabsProxyAgent) {
+      return await undiciFetch(input, {
+        ...init,
+        signal: controller.signal,
+        dispatcher: elevenLabsProxyAgent,
+      } as Parameters<typeof undiciFetch>[1]) as unknown as Response;
+    }
     return await fetch(input, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
