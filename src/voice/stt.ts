@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { fetch as undiciFetch, ProxyAgent } from 'undici';
+import { File } from 'node:buffer';
+import { fetch as undiciFetch, FormData as UndiciFormData, ProxyAgent } from 'undici';
 import { openai } from '../lib/openaiClient';
 import { config } from '../config';
 
@@ -18,18 +19,19 @@ function contentTypeForFile(filepath: string): string {
   return 'application/octet-stream';
 }
 
-async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(
+  input: string,
+  init: NonNullable<Parameters<typeof undiciFetch>[1]>,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    if (elevenLabsProxyAgent) {
-      return await undiciFetch(input, {
-        ...init,
-        signal: controller.signal,
-        dispatcher: elevenLabsProxyAgent,
-      } as Parameters<typeof undiciFetch>[1]) as unknown as Response;
-    }
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await undiciFetch(input, {
+      ...init,
+      signal: controller.signal,
+      ...(elevenLabsProxyAgent ? { dispatcher: elevenLabsProxyAgent } : {}),
+    }) as unknown as Response;
   } finally {
     clearTimeout(timeout);
   }
@@ -55,10 +57,10 @@ export async function transcribeVoiceElevenLabs(filepath: string): Promise<strin
   if (!config.elevenLabsApiKey) throw new Error('ELEVENLABS_API_KEY is not configured');
   const contentType = contentTypeForFile(filepath);
   const bytes = await fs.promises.readFile(filepath);
-  const file = new File([new Blob([bytes], { type: contentType })], path.basename(filepath), {
+  const file = new File([bytes], path.basename(filepath), {
     type: contentType,
   });
-  const form = new FormData();
+  const form = new UndiciFormData();
   form.append('model_id', 'scribe_v2');
   form.append('language_code', 'ru');
   form.append('tag_audio_events', 'false');
