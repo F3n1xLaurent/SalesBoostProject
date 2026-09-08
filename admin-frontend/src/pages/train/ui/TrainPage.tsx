@@ -985,6 +985,9 @@ function SessionPreview(props: {
   const [error, setError] = useState<string | null>(null);
   const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const dialogReady = messages.some((message) => (
+    message.role === 'client' && message.textFallback !== 'Клиент отвечает...'
+  ));
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -1163,7 +1166,7 @@ function SessionPreview(props: {
       await stopPcmRecording();
       return;
     }
-    if (sending || ended) return;
+    if (sending || ended || !dialogReady) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -1298,8 +1301,9 @@ function SessionPreview(props: {
             )}
             <button
               className={`train-record-button ${recording ? 'train-record-button-active' : ''}`}
-              title="Записать голосовое сообщение"
-              disabled={sending || leaving}
+              title={dialogReady ? 'Записать голосовое сообщение' : 'Дождитесь подключения клиента'}
+              aria-label={dialogReady ? 'Записать голосовое сообщение' : 'Дождитесь подключения клиента'}
+              disabled={sending || leaving || !dialogReady}
               onClick={toggleRecording}
             >
               <span className="train-record-button-core" />
@@ -1360,6 +1364,7 @@ export function TrainPage(props: { embedded?: boolean }) {
   const [clientType, setClientType] = useState('random');
   const [selectedScenarioId, setSelectedScenarioId] = useState<string>('');
   const [busy, setBusy] = useState(false);
+  const [dialogReloadKey, setDialogReloadKey] = useState(0);
   const [activeSession, setActiveSession] = useState<TrainerSessionSummary | null>(null);
   const [activeInitialMessage, setActiveInitialMessage] = useState<TrainerInitialMessage | null>(null);
   const [activeTranscript, setActiveTranscript] = useState<TrainerInitialMessage['transcript']>([]);
@@ -1376,6 +1381,7 @@ export function TrainPage(props: { embedded?: boolean }) {
     title: string;
     showStreak: boolean;
   } | null>(null);
+  const startInFlightRef = useRef(false);
 
   const firstScenarioId = selectedScenarioId || scenarios[0]?.id || '';
 
@@ -1430,12 +1436,23 @@ export function TrainPage(props: { embedded?: boolean }) {
     }
     let cancelled = false;
     async function loadSelectedSession() {
+      setActiveSession((current) => current?.id === selectedSessionId ? current : null);
       setBusy(true);
       setError(null);
       try {
         const startedAt = Date.now();
+        let consecutiveFailures = 0;
         while (!cancelled) {
-          const dialog = await fetchTrainerDialog(selectedSessionId as string);
+          let dialog: Awaited<ReturnType<typeof fetchTrainerDialog>>;
+          try {
+            dialog = await fetchTrainerDialog(selectedSessionId as string);
+            consecutiveFailures = 0;
+          } catch (fetchError) {
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= 3) throw fetchError;
+            await new Promise((resolve) => window.setTimeout(resolve, 700 * consecutiveFailures));
+            continue;
+          }
           if (cancelled) return;
           setActiveSession(dialog.session);
           setActiveCaseContext(dialog.caseContext);
@@ -1443,15 +1460,19 @@ export function TrainPage(props: { embedded?: boolean }) {
           setActiveTranscript(dialog.transcript);
           const hasMessages = dialog.transcript.length > 0;
           const ended = dialog.session.status !== 'in_progress';
-          if (hasMessages || ended || Date.now() - startedAt > 90_000) {
-            break;
+          if (hasMessages || ended) break;
+          if (Date.now() - startedAt > 90_000) {
+            throw new Error('Клиент не успел подключиться. Попробуйте загрузить тренировку ещё раз.');
           }
           // Show chat shell while first client voice is still generating.
           setBusy(false);
           await new Promise((resolve) => window.setTimeout(resolve, 700));
         }
       } catch (selectedError) {
-        if (!cancelled) setError(selectedError instanceof Error ? selectedError.message : 'Не удалось открыть тренировку.');
+        if (!cancelled) {
+          setActiveSession(null);
+          setError(selectedError instanceof Error ? selectedError.message : 'Не удалось открыть тренировку.');
+        }
       } finally {
         if (!cancelled) setBusy(false);
       }
@@ -1460,10 +1481,11 @@ export function TrainPage(props: { embedded?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId]);
+  }, [selectedSessionId, dialogReloadKey]);
 
   async function startFree() {
-    if (!firstScenarioId) return;
+    if (!firstScenarioId || startInFlightRef.current) return;
+    startInFlightRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -1483,6 +1505,7 @@ export function TrainPage(props: { embedded?: boolean }) {
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : 'Не удалось начать тренировку.');
     } finally {
+      startInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -1574,9 +1597,14 @@ export function TrainPage(props: { embedded?: boolean }) {
           ) : error ? (
             <div className="train-session-loading">
               <p>{error}</p>
-              <button type="button" className="sa-btn-brutal-3d" onClick={() => navigate(buildTrainerSessionPath())}>
-                К тренажёру
-              </button>
+              <div className="sa-unsaved-actions">
+                <button type="button" className="sa-btn-brutal-3d" onClick={() => setDialogReloadKey((value) => value + 1)}>
+                  Повторить
+                </button>
+                <button type="button" className="sa-btn-outline" onClick={() => navigate(buildTrainerSessionPath())}>
+                  К тренажёру
+                </button>
+              </div>
             </div>
           ) : null}
         </div>

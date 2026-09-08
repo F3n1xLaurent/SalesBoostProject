@@ -24,6 +24,7 @@ const EnvSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
   ELEVENLABS_VOICE_ID: z.string().optional(),
   ELEVENLABS_AGENT_ID: z.string().optional(),
+  ELEVENLABS_PROXY_URL: z.string().optional(),
   TTS_PROVIDER: z.string().optional(), // "openai" | "elevenlabs" — default: elevenlabs if keys set, else openai
   HTTPS_PROXY: z.string().optional(), // Прокси для OpenAI (если API недоступен в регионе)
   AUTH_TOKEN_SECRET: z.string().optional(),
@@ -84,6 +85,7 @@ export const env = {
   elevenLabsApiKey: raw.ELEVENLABS_API_KEY,
   elevenLabsVoiceId: raw.ELEVENLABS_VOICE_ID,
   elevenLabsAgentId: raw.ELEVENLABS_AGENT_ID?.trim() || undefined,
+  elevenLabsProxyUrl: raw.ELEVENLABS_PROXY_URL?.trim() || undefined,
   ttsProvider: raw.TTS_PROVIDER?.toLowerCase() === 'openai' ? 'openai' : 'elevenlabs',
   httpsProxy: raw.HTTPS_PROXY?.trim() || undefined,
   authTokenSecret: raw.AUTH_TOKEN_SECRET?.trim() || undefined,
