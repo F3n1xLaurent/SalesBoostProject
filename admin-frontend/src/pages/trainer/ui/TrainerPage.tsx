@@ -28,7 +28,7 @@ export function Trainer({ audits, summary, loading = false }: TrainerProps) {
   return (
     <>
       <h1 className="sa-page-title">Тренажёр</h1>
-      <AISummaryBlock body="Обзор эффективности тренировок. Завершённые сессии, средний балл, прогресс." />
+      <AISummaryBlock body="Обзор эффективности тренировок. Завершённые сессии, AI-рейтинг, прогресс." />
 
       <section style={{ marginBottom: 40 }}>
         <h2 className="sa-section-title">Обзор</h2>
@@ -38,7 +38,7 @@ export function Trainer({ audits, summary, loading = false }: TrainerProps) {
             <div className="sa-kpi-value">{loading ? '—' : sessionsCompleted}</div>
           </div>
           <div className="sa-card">
-            <div className="sa-meta">Средний балл</div>
+            <div className="sa-meta">AI-рейтинг</div>
             <div className="sa-kpi-value">{loading ? '—' : avgScore.toFixed(1)}</div>
           </div>
           <div className="sa-card">
@@ -57,7 +57,7 @@ export function Trainer({ audits, summary, loading = false }: TrainerProps) {
               <tr>
                 <th>Сотрудник</th>
                 <th>Дата</th>
-                <th>Балл</th>
+                <th>AI-рейтинг</th>
                 <th>Статус</th>
               </tr>
             </thead>

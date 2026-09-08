@@ -445,7 +445,7 @@ function EmployeesTab(props: {
                         <div key={step.order} className="rounded-md admin-card-inner p-2 text-xs space-y-1">
                           <div className="flex justify-between items-center">
                             <span className="font-semibold">Шаг {step.order}</span>
-                            {step.score != null && <span className="text-[11px] text-default-500">Балл: {step.score.toFixed(1)}</span>}
+                            {step.score != null && <span className="text-[11px] text-default-500">AI-рейтинг: {step.score.toFixed(1)}</span>}
                           </div>
                           <div><span className="font-semibold">Клиент:</span> <span className="text-default-500">{step.customerMessage}</span></div>
                           <div><span className="font-semibold">Менеджер:</span> <span className="text-default-500">{step.answer}</span></div>

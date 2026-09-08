@@ -47,7 +47,7 @@ const COLUMN_DEFS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'dealer', label: 'Дилер' },
   { key: 'city', label: 'Город' },
   { key: 'type', label: 'Тип' },
-  { key: 'aiRating', label: 'Балл', align: 'right' },
+  { key: 'aiRating', label: 'AI-рейтинг', align: 'right' },
   { key: 'deltaRating', label: 'Тренд', align: 'right' },
   { key: 'auditsCount', label: 'Звонки', align: 'right' },
   { key: 'workingHours', label: 'Часы работы' },

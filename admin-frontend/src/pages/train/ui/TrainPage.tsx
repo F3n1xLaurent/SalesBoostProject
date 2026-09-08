@@ -312,7 +312,7 @@ function TrainerHub(props: {
                     <th>Дата</th>
                     <th>Тип</th>
                     <th>Оценка</th>
-                    <th>Балл</th>
+                    <th>AI-рейтинг</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -452,7 +452,7 @@ function TrainMiniScoreGauge(props: { score: number }) {
   const offset = circumference - (progress / 100) * circumference;
 
   return (
-    <div className={`train-report-score-gauge sa-call-report-gauge--${tone}`} aria-label={`Балл ${score}`}>
+    <div className={`train-report-score-gauge sa-call-report-gauge--${tone}`} aria-label={`AI-рейтинг ${score}`}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
         <circle
           className="sa-call-report-gauge-track"

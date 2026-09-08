@@ -136,6 +136,10 @@
   margin-top: 8px !important;
 }
 
+.theme-brutal .sa-dashboard-root .sa-section-employee-ratings {
+  margin-top: 32px !important;
+}
+
 .theme-brutal .sa-dashboard-root .sa-section .sa-section-title {
   margin-bottom: 12px;
   padding: 0 2px;
@@ -429,6 +433,14 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.theme-brutal .sa-brutal-card.sa-grid-card .sa-chart-wrap {
+  margin-left: -12px;
+  margin-right: -12px;
+  width: calc(100% + 24px);
 }
 
 .theme-brutal .sa-brutal-card.sa-grid-card .sa-brutal-card-title {
@@ -1181,11 +1193,11 @@
 }
 
 .theme-brutal .sa-users-table .sa-col-dealership {
-  width: 16%;
+  width: 14%;
 }
 
 .theme-brutal .sa-users-table .sa-col-role {
-  width: 12%;
+  width: 18%;
 }
 
 .theme-brutal .sa-users-table .sa-col-num {
@@ -1200,9 +1212,28 @@
   width: 64px;
 }
 
-.theme-brutal .sa-users-table td {
+.theme-brutal .sa-users-table td.sa-users-dealership-cell .sa-cell-name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-brutal .sa-users-table td.sa-users-role-cell,
+.theme-brutal .sa-users-table td.sa-users-status-cell {
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.theme-brutal .sa-users-role-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.theme-brutal .sa-users-role-chips .sa-metric-chip {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .theme-brutal .sa-users-table .sa-top-mistake {
@@ -2199,6 +2230,8 @@
 
 .theme-brutal .sa-chart-plot {
   position: relative;
+  width: 100%;
+  min-width: 0;
 }
 
 .theme-brutal .sa-chart-hover-tooltip {

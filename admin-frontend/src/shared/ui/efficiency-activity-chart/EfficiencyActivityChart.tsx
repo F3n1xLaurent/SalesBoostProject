@@ -62,7 +62,7 @@ function ChartLegend({ metric }: { metric: EfficiencyActivityMetric }) {
   return (
     <div className="sa-chart-legend sa-holding-activity-legend">
       <span><i className="is-line" style={{ color: scoreColor }} /> Рейтинг качества</span>
-      <span className="sa-holding-activity-legend-meta">средний балл, 0–100</span>
+      <span className="sa-holding-activity-legend-meta">AI-рейтинг, 0–100</span>
     </div>
   );
 }

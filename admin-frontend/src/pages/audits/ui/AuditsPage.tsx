@@ -160,7 +160,7 @@ const COLUMNS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'type', label: 'Тип' },
   { key: 'employeeName', label: 'Сотрудник' },
   { key: 'dealershipName', label: 'Точка' },
-  { key: 'totalScore', label: 'Балл', align: 'right' },
+  { key: 'totalScore', label: 'AI-рейтинг', align: 'right' },
   { key: 'status', label: 'Статус' },
   { key: 'answerTimeSec', label: 'Ответ', align: 'right' },
 ];
@@ -654,7 +654,7 @@ export function Audits({
             setFilterEmployeeId('');
           }}
         >
-          <FilterGroup label="Балл">
+          <FilterGroup label="AI-рейтинг">
             {SCORE_BAND_OPTIONS.map((option) => (
               <label key={option.id} className="sa-filter-check">
                 <input type="checkbox" checked={filterScoreBands.has(option.id)} onChange={() => toggleScoreBand(option.id)} />

@@ -1941,7 +1941,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                           <div className="sa-cell-name">{row.fullName}</div>
                           <div className="sa-cell-city">{row.user.email}</div>
                         </td>
-                        <td>
+                        <td className="sa-users-dealership-cell">
                           {row.dealershipNames.length > 0 ? (
                             <div className="sa-cell-name">{row.dealershipNames.join(', ')}</div>
                           ) : (
@@ -1951,8 +1951,8 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                             </>
                           )}
                         </td>
-                        <td>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <td className="sa-users-role-cell">
+                          <div className="sa-users-role-chips">
                             {userRoleLabels(row.user).map((label) => (
                               <span key={label} className="sa-metric-chip">{label}</span>
                             ))}
@@ -1966,7 +1966,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                             {analytics.failsCount}
                           </span>
                         </td>
-                        <td><span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span></td>
+                        <td className="sa-users-status-cell"><span className={statusBadgeClass(analytics.status)}>{USER_ANALYTICS_STATUS_LABELS[analytics.status]}</span></td>
                         <td className="sa-holdings-actions-cell" onClick={(event) => event.stopPropagation()}>
                           <div>
                             <button

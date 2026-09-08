@@ -4,7 +4,7 @@ import { BrutalCard } from '../../../shared/ui/brutal-card';
 import { AnsweredMissedDonut } from '../../../shared/ui/answered-missed-donut';
 import { AnswerRateByHour } from '../../../shared/ui/answer-rate-by-hour';
 import type { AdminTab } from '../../../entities/session/model/types';
-import { buildDealershipPath, tabToPath } from '../../../shared/routing/adminRoutes';
+import { buildDealershipPath, buildUserEmployeePath, tabToPath } from '../../../shared/routing/adminRoutes';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import {
   fetchDashboardOverview,
@@ -138,7 +138,7 @@ function PerformanceTrendChart({
 
   const width = 560;
   const height = 260;
-  const padding = { top: 20, right: 20, bottom: 36, left: 44 };
+  const padding = { top: 20, right: 10, bottom: 36, left: 36 };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
   const step = points.length <= 1 ? 0 : chartWidth / (points.length - 1);
@@ -299,7 +299,7 @@ function SalonTable({
           <tr>
             <th>#</th>
             <th>Точка</th>
-            <th>Балл</th>
+            <th>AI-рейтинг</th>
             <th>Дозвон</th>
             <th>Проверки</th>
           </tr>
@@ -332,7 +332,7 @@ function SalonTable({
   );
 }
 
-function EmployeeRatingTable({ rows }: { rows: DashboardEmployeeRatingRow[] }) {
+function EmployeeRatingTable({ rows, onOpenEmployee }: { rows: DashboardEmployeeRatingRow[]; onOpenEmployee: (id: string) => void }) {
   if (rows.length === 0) {
     return <div className="sa-table-empty">Нет сотрудников с рейтингом</div>;
   }
@@ -341,14 +341,28 @@ function EmployeeRatingTable({ rows }: { rows: DashboardEmployeeRatingRow[] }) {
       <table className="sa-table sa-table-colored">
         <thead>
           <tr>
+            <th>#</th>
             <th>Сотрудник</th>
             <th className="sa-text-right">Проверки</th>
             <th className="sa-text-right">AI-рейтинг</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((employee) => (
-            <tr key={employee.id}>
+          {rows.map((employee, index) => (
+            <tr
+              key={employee.id}
+              className="sa-row-clickable"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpenEmployee(employee.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onOpenEmployee(employee.id);
+                }
+              }}
+            >
+              <td>{index + 1}</td>
               <td>{employee.name}</td>
               <td className="sa-text-right">{employee.auditsCount}</td>
               <td className="sa-text-right">
@@ -376,9 +390,9 @@ function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: stri
   }
 
   const maxSec = Math.max(...data.map((d) => d.avgSec), 1);
-  const svgW = 540;
+  const svgW = 560;
   const svgH = 260;
-  const pad = { top: 24, right: 12, bottom: 48, left: 40 };
+  const pad = { top: 24, right: 10, bottom: 48, left: 36 };
   const chartW = svgW - pad.left - pad.right;
   const chartH = svgH - pad.top - pad.bottom;
   const barGap = 10;
@@ -752,7 +766,7 @@ export function Dashboard({ loading }: DashboardProps) {
           <BrutalCard title="Дозвон по часам" className="sa-grid-card sa-chart-equal">
             <AnswerRateByHour hourly={hourly.length === 24 ? hourly : []} embedded />
           </BrutalCard>
-          <BrutalCard title="Средняя длительность звонка" className="sa-grid-card">
+          <BrutalCard title="Средняя длительность звонка" className="sa-grid-card sa-chart-equal">
             <AverageAnswerTimeChart data={answerTimeByCompany} embedded />
           </BrutalCard>
         </div>
@@ -762,10 +776,10 @@ export function Dashboard({ loading }: DashboardProps) {
         <h2 className="sa-section-title">Рейтинг сотрудников</h2>
         <div className="sa-dashboard-grid">
           <BrutalCard title="ТОП-10 самых эффективных" className="sa-grid-card">
-            <EmployeeRatingTable rows={overview?.topEmployees ?? []} />
+            <EmployeeRatingTable rows={overview?.topEmployees ?? []} onOpenEmployee={(id) => navigate(buildUserEmployeePath(id))} />
           </BrutalCard>
           <BrutalCard title="ТОП-10 самых провальных" className="sa-grid-card">
-            <EmployeeRatingTable rows={overview?.lowEmployees ?? []} />
+            <EmployeeRatingTable rows={overview?.lowEmployees ?? []} onOpenEmployee={(id) => navigate(buildUserEmployeePath(id))} />
           </BrutalCard>
         </div>
       </section>

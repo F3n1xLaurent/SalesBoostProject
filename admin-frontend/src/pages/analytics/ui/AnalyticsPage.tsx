@@ -1,18 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { PlatformSummary } from '../../../shared/model/adminPanel';
-import { fetchAnalyticsOverview, fetchHoldings, type AnalyticsOverview, type HoldingItem, type TimeSeriesPoint } from '../../../shared/api/adminPanel';
-import { ratingClass, scoreBarColor } from '../../../shared/lib/admin-panel/utils';
+import { fetchAnalyticsOverview, fetchHoldings, type AnalyticsOverview, type HoldingItem } from '../../../shared/api/adminPanel';
+import { deltaDisplay, ratingClass, scoreBarColor } from '../../../shared/lib/admin-panel/utils';
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
+import { BrutalCard } from '../../../shared/ui/brutal-card';
 
 type AnalyticsProps = {
   summary: PlatformSummary | null;
-  timeSeries?: TimeSeriesPoint[];
   loading?: boolean;
   onDrill?: (type: 'employees' | 'dealership' | 'audits' | 'holding', filter?: string) => void;
 };
-
-const ANALYTICS_CATEGORY_LABELS = ['Контакт', 'Диагностика', 'Продукт', 'Закрытие', 'Коммуникация'] as const;
 
 const EMPTY_ANALYTICS: AnalyticsOverview = {
   aiSummary: {
@@ -33,7 +31,6 @@ const EMPTY_ANALYTICS: AnalyticsOverview = {
   topErrors: [],
   dealershipComparison: [],
   dealershipRows: [],
-  holdingRows: [],
   weeklyTypeTrend: [],
   scriptCompliance: [],
 };
@@ -45,113 +42,66 @@ function formatSignedHundredths(value: number): string {
   return `${rounded > 0 ? '+' : ''}${rounded.toFixed(2)}`;
 }
 
-function NetworkTrendChart({ points }: { points: TimeSeriesPoint[] }) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-  if (!points.length) return <div className="sa-chart-empty">Нет данных</div>;
-  const W = 960, H = 240;
-  const pad = { top: 18, right: 18, bottom: 34, left: 42 };
-  const cw = W - pad.left - pad.right;
-  const ch = H - pad.top - pad.bottom;
-  const step = points.length <= 1 ? 0 : cw / (points.length - 1);
-  const xs = points.map((_, index) => pad.left + index * step);
-  const y = (score: number) => pad.top + ch - (Math.max(0, Math.min(score, 100)) / 100) * ch;
-  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${xs[index]} ${y(point.avgScore)}`).join(' ');
-  return (
-    <div className="sa-chart-wrap sa-chart-wrap-full">
-      <svg
-        className="sa-trend-chart-svg"
-        width="100%"
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="xMidYMid meet"
-        onMouseLeave={() => setHoverIdx(null)}
-      >
-        {[0, 25, 50, 75, 100].map((value) => {
-          const gy = y(value);
-          return (
-            <g key={value}>
-              <line x1={pad.left} y1={gy} x2={pad.left + cw} y2={gy} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
-              <text x={pad.left - 8} y={gy + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{value}</text>
-            </g>
-          );
-        })}
-        <path d={path} fill="none" stroke="var(--tb-ink)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-        {points.map((_, index) => (
-          <rect
-            key={`hit-${index}`}
-            x={xs[index] - (step || 40) / 2}
-            y={pad.top}
-            width={step || 40}
-            height={ch}
-            fill="transparent"
-            onMouseEnter={() => setHoverIdx(index)}
-          />
-        ))}
-        {hoverIdx !== null && (
-          <line x1={xs[hoverIdx]} y1={pad.top} x2={xs[hoverIdx]} y2={pad.top + ch} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.4" />
-        )}
-        {points.map((point, index) => (
-          <g key={point.date}>
-            <circle
-              cx={xs[index]}
-              cy={y(point.avgScore)}
-              r={hoverIdx === index ? 5.5 : 4}
-              fill={hoverIdx === index ? '#fff' : 'var(--tb-ink)'}
-              stroke="var(--tb-ink)"
-              strokeWidth={hoverIdx === index ? 2.5 : 0}
-            />
-            <text x={xs[index]} y={H - 10} textAnchor="middle" fontSize="10" fill="var(--sa-text-secondary)">{point.date.slice(5)}</text>
-          </g>
-        ))}
-      </svg>
-      {hoverIdx !== null && (() => {
-        const point = points[hoverIdx];
-        const leftPct = (xs[hoverIdx] / W) * 100;
-        const topPct = (y(point.avgScore) / H) * 100;
-        const placeBelow = topPct < 28;
-        return (
-          <div
-            className={`sa-chart-hover-tooltip${placeBelow ? ' sa-chart-hover-tooltip-below' : ''}`}
-            style={{ left: `${leftPct}%`, top: `${topPct}%` }}
-          >
-            <div className="sa-chart-hover-tooltip-row">Дата: {point.date}</div>
-            <div className="sa-chart-hover-tooltip-row is-strong">Средний балл: {point.avgScore.toFixed(1)}</div>
-            <div className="sa-chart-hover-tooltip-row">Проверок: {point.count}</div>
-          </div>
-        );
-      })()}
-    </div>
-  );
+
+function scoreColorClass(score: number): 'sa-score-green' | 'sa-score-orange' | 'sa-score-red' {
+  if (score >= 80) return 'sa-score-green';
+  if (score >= 50) return 'sa-score-orange';
+  return 'sa-score-red';
+}
+
+function trendColorClass(value: number | null): 'sa-score-green' | 'sa-score-red' | '' {
+  if (value === null || value === 0) return '';
+  return value > 0 ? 'sa-score-green' : 'sa-score-red';
 }
 
 function BestWorstCards({ rows, onOpen }: { rows: ComparableDealership[]; onOpen?: (id: string) => void }) {
   const active = rows.filter((row) => row.calls > 0);
   const best = [...active].sort((a, b) => b.score - a.score).slice(0, 3);
   const worst = [...active].sort((a, b) => a.score - b.score).slice(0, 3);
-  const renderList = (items: ComparableDealership[]) => items.length === 0
-    ? <div className="sa-meta">Нет данных</div>
+  const renderTable = (items: ComparableDealership[]) => items.length === 0
+    ? <div className="sa-table-empty">Нет данных</div>
     : (
-      <ul className="sa-analytics-rank-list">
-        {items.map((row, index) => (
-          <li key={row.id}>
-            <button type="button" className="sa-analytics-rank-row" onClick={() => onOpen?.(row.id)}>
-              <span className="sa-analytics-rank-idx">{index + 1}</span>
-              <span className="sa-analytics-rank-name">{row.name}</span>
-              <span className={`sa-analytics-rank-score ${ratingClass(row.score)}`}>{row.score}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      <div className="sa-table-wrap sa-table-in-card" style={{ justifyContent: 'flex-start' }}>
+        <table className="sa-table sa-table-colored">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Точка</th>
+              <th>AI-рейтинг</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((row, index) => (
+              <tr
+                key={row.id}
+                className="sa-row-clickable"
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpen?.(row.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onOpen?.(row.id);
+                  }
+                }}
+              >
+                <td>{index + 1}</td>
+                <td>{row.name}</td>
+                <td><span className={scoreColorClass(row.score)}>{row.score}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   return (
-    <div className="sa-analytics-rank-grid" style={{ marginBottom: 28 }}>
-      <div className="sa-analytics-panel">
-        <h3 className="sa-analytics-panel-title">Лучшие точки</h3>
-        {renderList(best)}
-      </div>
-      <div className="sa-analytics-panel">
-        <h3 className="sa-analytics-panel-title">Худшие точки</h3>
-        {renderList(worst)}
-      </div>
+    <div className="sa-dashboard-grid" style={{ marginBottom: 28 }}>
+      <BrutalCard title="Лучшие точки" className="sa-grid-card">
+        {renderTable(best)}
+      </BrutalCard>
+      <BrutalCard title="Худшие точки" className="sa-grid-card">
+        {renderTable(worst)}
+      </BrutalCard>
     </div>
   );
 }
@@ -185,30 +135,28 @@ function IssueList({ items, labelKey = 'issue' }: { items: Array<{ issue?: strin
   );
 }
 
-function ScriptChart({ data }: { data: { block: string; rate: number }[] }) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-  const rows = ANALYTICS_CATEGORY_LABELS.map((block) => {
-    const found = data.find((item) => item.block === block);
-    return { block, rate: found?.rate ?? 0 };
-  });
-
+function CategoryBreakdownCard({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: Array<{ block: string; rate: number }>;
+}) {
+  if (!rows.length) return <div className="sa-chart-empty">Нет данных</div>;
   return (
-    <div className="sa-hbar-list sa-hbar-list-thin">
-      {rows.map((d, i) => (
-        <div
-          key={d.block}
-          className={`sa-hbar-row ${hoverIdx === i ? 'sa-hbar-row-hover' : ''}`}
-          onMouseEnter={() => setHoverIdx(i)}
-          onMouseLeave={() => setHoverIdx(null)}
-        >
-          <span className="sa-hbar-label">{d.block}</span>
-          <div className="sa-hbar-track">
-            <div className="sa-hbar-fill" style={{ width: `${d.rate}%`, background: scoreBarColor(d.rate) }} />
+    <BrutalCard title={title} className="sa-grid-card">
+      <div className="sa-hbar-list sa-hbar-list-thin">
+        {[...rows].sort((a, b) => a.rate - b.rate).map((item) => (
+          <div key={item.block} className="sa-hbar-row">
+            <span className="sa-hbar-label">{item.block}</span>
+            <div className="sa-hbar-track">
+              <div className="sa-hbar-fill" style={{ width: `${item.rate}%`, background: scoreBarColor(item.rate) }} />
+            </div>
+            <span className={`sa-hbar-score ${ratingClass(item.rate)}`}>{item.rate}%</span>
           </div>
-          <span className={`sa-hbar-score ${ratingClass(d.rate)}`}>{d.rate}%</span>
-        </div>
-      ))}
-    </div>
+        ))}
+      </div>
+    </BrutalCard>
   );
 }
 
@@ -265,16 +213,16 @@ function WeeklyTypeTrendChart({ data }: { data: NonNullable<AnalyticsOverview['w
         ))}
         {hoverIdx !== null && (() => {
           const point = data[hoverIdx];
-          const tw = 190, th = 76;
+          const tw = 176, th = 68;
           const tx = Math.min(Math.max(xs[hoverIdx] - tw / 2, 4), W - tw - 4);
           const ty = Math.max(4, y(Math.max(point.ownScore, point.franchiseScore)) - th - 12);
           return (
             <g>
               <line x1={xs[hoverIdx]} y1={pad.top} x2={xs[hoverIdx]} y2={pad.top + ch} stroke="var(--sa-text-secondary)" strokeWidth="1" strokeDasharray="3" opacity="0.35" />
               <rect x={tx} y={ty} width={tw} height={th} rx="8" fill="#1F2937" opacity="0.92" />
-              <text x={tx + 12} y={ty + 18} fontSize="11" fill="#D1D5DB">Неделя: {point.week}</text>
-              <text x={tx + 12} y={ty + 38} fontSize="11" fill="#F9FAFB">Собственные: {point.ownScore} ({point.ownCount})</text>
-              <text x={tx + 12} y={ty + 58} fontSize="11" fill="#F9FAFB">Франшиза: {point.franchiseScore} ({point.franchiseCount})</text>
+              <text x={tx + 10} y={ty + 16} fontSize="10" fill="#D1D5DB">Неделя: {point.week}</text>
+              <text x={tx + 10} y={ty + 34} fontSize="10" fill="#F9FAFB">Собственные: {point.ownScore} ({point.ownCount})</text>
+              <text x={tx + 10} y={ty + 52} fontSize="10" fill="#F9FAFB">Франшиза: {point.franchiseScore} ({point.franchiseCount})</text>
             </g>
           );
         })()}
@@ -324,7 +272,7 @@ function AnalyticsSplitGroup({
   );
 }
 
-export function Analytics({ summary: _summary, timeSeries = [], loading = false, onDrill }: AnalyticsProps) {
+export function Analytics({ summary: _summary, loading = false, onDrill }: AnalyticsProps) {
   const [data, setData] = useState<AnalyticsOverview>(EMPTY_ANALYTICS);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
@@ -381,7 +329,6 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
 
   const isLoading = loading || holdingsLoading || analyticsLoading;
   const dealershipRows = data.dealershipRows ?? [];
-  const networkTrend = data.timeSeries ?? timeSeries;
   const rankedRows = useMemo(
     () => [...dealershipRows].sort((a, b) => b.score - a.score),
     [dealershipRows],
@@ -397,14 +344,14 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
   const typeComparisonInsight = ownAvg || franchiseAvg
     ? `${ownAvg >= franchiseAvg ? 'Собственные точки' : 'Франшиза'} выше на ${Math.abs(ownAvg - franchiseAvg)} балл(ов): ${ownAvg} против ${franchiseAvg}.`
     : 'Недостаточно данных для сравнения собственных точек и франшизы.';
-  const topProblemInsight = data.leadersLaggards?.laggardsErrors[0]
-    ? `У отстающих чаще всего встречается «${data.leadersLaggards.laggardsErrors[0].issue}»: ${data.leadersLaggards.laggardsErrors[0].percent}% по текущей выборке.`
-    : 'Недостаточно данных для выделения системной топ-проблемы.';
 
   return (
     <div className="sa-analytics-root">
       <div className="sa-page-header" style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: 20 }}>
-        <h1 className="sa-page-title" style={{ marginBottom: 0 }}>Аналитика</h1>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+          <h1 className="sa-page-title" style={{ marginBottom: 0 }}>Аналитика</h1>
+          <div className="sa-meta">За 30 дней</div>
+        </div>
         <HoldingSelectPicker
           holdings={holdings}
           value={selectedHoldingId}
@@ -421,120 +368,28 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
       ) : null}
 
       <section className="sa-section" style={{ marginBottom: 28 }}>
-        <div className="sa-card">
-          <div className="sa-section-header-row" style={{ marginBottom: 12 }}>
-            <div>
-              <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Динамика среднего балла по сети</h2>
-              <div className="sa-meta">Одна линия по оценённым привязанным звонкам</div>
-            </div>
-            <div className={`sa-kpi-value ${ratingClass(data.avgScore)}`}>{data.avgScore}</div>
-          </div>
-          <NetworkTrendChart points={networkTrend} />
-        </div>
-      </section>
-
-      <BestWorstCards rows={dealershipRows} onOpen={(id) => onDrill?.('dealership', id)} />
-
-      <section className="sa-section" style={{ marginBottom: 28 }}>
-        <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Рейтинг компаний</h2>
-          <div className="sa-meta">Относительно среднего по сети: {data.avgScore}</div>
-        </div>
-        <div className="sa-companies-table-wrap">
-          <table className="sa-table">
-            <thead>
-              <tr>
-                <th>Компания</th>
-                <th>Тип</th>
-                <th className="sa-text-right">Точек</th>
-                <th className="sa-text-right">Балл</th>
-                <th className="sa-text-right">Отклонение</th>
-                <th className="sa-text-right">Звонков</th>
-                <th className="sa-text-right">Недозвоны</th>
-                <th className="sa-text-right">Ниже 50</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(data.holdingRows ?? []).length === 0 ? (
-                <tr><td colSpan={8} className="sa-meta" style={{ padding: 24 }}>Нет компаний с привязанными точками</td></tr>
-              ) : (
-                (data.holdingRows ?? []).map((row) => (
-                  <tr
-                    key={row.id}
-                    className="sa-row-clickable"
-                    onClick={() => onDrill?.('holding', row.id)}
-                  >
-                    <td style={{ fontWeight: 600 }}>{row.name}</td>
-                    <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
-                    <td className="sa-text-right">{row.dealershipsCount}</td>
-                    <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                    <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
-                    <td className="sa-text-right">{row.calls}</td>
-                    <td className="sa-text-right">{row.noAnswers}</td>
-                    <td className="sa-text-right">{row.lowDealerships}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="sa-section" style={{ marginBottom: 28 }}>
-        <div className="sa-section-header-row">
-          <div>
-            <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Сравнение по типам номеров</h2>
-            <div className="sa-meta">Лидеры и отстающие источники за последние 30 дней</div>
-          </div>
-        </div>
-        <div className="sa-companies-table-wrap">
-          <table className="sa-table">
-            <thead><tr><th>Источник</th><th>Владение</th><th className="sa-text-right">Звонков</th><th className="sa-text-right">Балл</th><th className="sa-text-right">Отклонение</th><th className="sa-text-right">Динамика</th></tr></thead>
-            <tbody>
-              {(data.phoneNumberTypeComparison ?? []).length === 0 ? <tr><td colSpan={6} className="sa-meta" style={{ padding: 24 }}>Недостаточно звонков с определённым типом номера</td></tr> : (data.phoneNumberTypeComparison ?? []).map((row, index, all) => (
-                <tr key={row.id}>
-                  <td><div className="sa-cell-name">{row.name}</div><div className="sa-cell-city">{index === 0 ? 'Лидер' : index === all.length - 1 && all.length > 1 ? 'Отстающий' : '—'}</div></td>
-                  <td>{row.ownership === 'dealership' ? 'Для точек' : row.ownership === 'user' ? 'Для пользователей' : '—'}</td>
-                  <td className="sa-text-right">{row.calls}</td>
-                  <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                  <td className="sa-text-right">{formatSignedHundredths(row.delta)}</td>
-                  <td className="sa-text-right">{row.trend === null ? '—' : formatSignedHundredths(row.trend)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="sa-section" style={{ marginBottom: 28 }}>
-        <div className="sa-section-header-row">
-          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Динамика сети: собственные vs франшиза</h2>
-          <div className="sa-meta">12 недель по оценённым привязанным звонкам</div>
-        </div>
-        <div className="sa-card" style={{ marginBottom: 12 }}>
+        <div className="sa-card" style={{ marginBottom: 12, position: 'relative' }}>
           <WeeklyTypeTrendChart data={data.weeklyTypeTrend ?? []} />
           <div className="sa-meta" style={{ marginTop: 12 }}>{typeComparisonInsight}</div>
         </div>
+
+        <BestWorstCards rows={dealershipRows} onOpen={(id) => onDrill?.('dealership', id)} />
+      </section>
+
+      <section className="sa-section" style={{ marginBottom: 28 }}>
+        <div className="sa-section-header-row">
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Собственные vs франшиза</h2>
+        </div>
         {!!data.typeCategoryComparison?.length && (
-          <div className="sa-companies-table-wrap" style={{ marginBottom: 12 }}>
-            <table className="sa-table">
-              <thead>
-                <tr>
-                  <th>Категория</th>
-                  <th className="sa-text-right">Собственные</th>
-                  <th className="sa-text-right">Франшиза</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.typeCategoryComparison.map((row) => (
-                  <tr key={row.category}>
-                    <td>{row.category}</td>
-                    <td className="sa-text-right"><span className={ratingClass(row.ownScore)}>{row.ownScore}</span></td>
-                    <td className="sa-text-right"><span className={ratingClass(row.franchiseScore)}>{row.franchiseScore}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="sa-dashboard-grid" style={{ marginBottom: 12, alignItems: 'start' }}>
+            <CategoryBreakdownCard
+              title="Собственные"
+              rows={data.typeCategoryComparison.map((row) => ({ block: row.category, rate: row.ownScore }))}
+            />
+            <CategoryBreakdownCard
+              title="Франшиза"
+              rows={data.typeCategoryComparison.map((row) => ({ block: row.category, rate: row.franchiseScore }))}
+            />
           </div>
         )}
         <div className="sa-analytics-panels sa-analytics-panels-2">
@@ -549,8 +404,38 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
 
       <section className="sa-section" style={{ marginBottom: 28 }}>
         <div className="sa-section-header-row">
+          <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Сравнение по типам номеров</h2>
+        </div>
+        <div className="sa-companies-table-wrap">
+          <table className="sa-table">
+            <thead><tr><th>Источник</th><th>Владение</th><th className="sa-text-right">AI-рейтинг</th><th className="sa-text-right">Откл. от сети</th><th className="sa-text-right">Динамика 30d</th><th className="sa-text-right">Звонков</th><th className="sa-text-right">Недозвоны</th></tr></thead>
+            <tbody>
+              {(data.phoneNumberTypeComparison ?? []).length === 0 ? <tr><td colSpan={7} className="sa-meta" style={{ padding: 24 }}>Недостаточно звонков с определённым типом номера</td></tr> : (data.phoneNumberTypeComparison ?? []).map((row, index, all) => (
+                <tr key={row.id}>
+                  {(() => {
+                    const trend = deltaDisplay(row.trend);
+                    return (
+                      <>
+                  <td><div className="sa-cell-name">{row.name}</div><div className="sa-cell-city">{index === 0 ? 'Лидер' : index === all.length - 1 && all.length > 1 ? 'Отстающий' : '—'}</div></td>
+                  <td>{row.ownership === 'dealership' ? 'Для точек' : row.ownership === 'user' ? 'Для пользователей' : '—'}</td>
+                  <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                  <td className="sa-text-right">{formatSignedHundredths(row.delta)}</td>
+                  <td className="sa-text-right"><span className={trend.cls}>{trend.text}</span></td>
+                  <td className="sa-text-right">{row.calls}</td>
+                  <td className="sa-text-right">{row.noAnswers ?? 0}</td>
+                      </>
+                    );
+                  })()}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="sa-section" style={{ marginBottom: 28 }}>
+        <div className="sa-section-header-row">
           <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Рейтинг точек</h2>
-          <div className="sa-meta">Позиция, отклонение от среднего сети и динамика</div>
         </div>
         <div className="sa-companies-table-wrap">
           <table className="sa-table">
@@ -558,11 +443,11 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
               <tr>
                 <th className="sa-text-right">#</th>
                 <th>Точка</th>
-                <th>Дилер</th>
+                <th>Компания</th>
                 <th>Тип</th>
-                <th className="sa-text-right">Балл</th>
-                <th className="sa-text-right">Отклонение</th>
-                <th className="sa-text-right">Динамика</th>
+                <th className="sa-text-right">AI-рейтинг</th>
+                <th className="sa-text-right">Откл. от сети</th>
+                <th className="sa-text-right">Динамика 30d</th>
                 <th className="sa-text-right">Звонков</th>
                 <th className="sa-text-right">Недозвоны</th>
               </tr>
@@ -571,19 +456,22 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
               {dealershipRows.length === 0 ? (
                 <tr><td colSpan={9} className="sa-meta" style={{ padding: 24 }}>Нет привязанных точек для аналитики</td></tr>
               ) : (
-                rankedRows.map((row, index) => (
-                  <tr key={row.id} className="sa-row-clickable" onClick={() => onDrill?.('dealership', row.id)}>
-                    <td className="sa-text-right">{index + 1}</td>
-                    <td style={{ fontWeight: 600 }}>{row.name}</td>
-                    <td>{row.dealer}</td>
-                    <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
-                    <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                    <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
-                    <td className="sa-text-right">{row.delta > 0 ? '+' : ''}{row.delta}</td>
-                    <td className="sa-text-right">{row.calls}</td>
-                    <td className="sa-text-right">{row.noAnswers}</td>
-                  </tr>
-                ))
+                rankedRows.map((row, index) => {
+                  const trend = deltaDisplay(row.delta);
+                  return (
+                    <tr key={row.id} className="sa-row-clickable" onClick={() => onDrill?.('dealership', row.id)}>
+                      <td className="sa-text-right">{index + 1}</td>
+                      <td style={{ fontWeight: 600 }}>{row.name}</td>
+                      <td>{row.dealer}</td>
+                      <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
+                      <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                      <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
+                      <td className="sa-text-right"><span className={trend.cls}>{trend.text}</span></td>
+                      <td className="sa-text-right">{row.calls}</td>
+                      <td className="sa-text-right">{row.noAnswers ?? 0}</td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -593,7 +481,6 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
       <section className="sa-section" style={{ marginBottom: 28 }}>
         <div className="sa-section-header-row">
           <h2 className="sa-section-title" style={{ marginBottom: 0 }}>Лидеры и отстающие</h2>
-          <div className="sa-meta">Ошибки и сложные вопросы из справочника</div>
         </div>
         <div className="sa-analytics-groups">
           <AnalyticsSplitGroup
@@ -611,15 +498,8 @@ export function Analytics({ summary: _summary, timeSeries = [], loading = false,
             right={<IssueList items={data.leadersLaggards?.laggardsQuestions ?? []} labelKey="question" />}
           />
         </div>
-        <div className="sa-meta" style={{ marginTop: 12 }}>{topProblemInsight}</div>
       </section>
 
-      <section className="sa-section" style={{ marginBottom: 28 }}>
-        <h2 className="sa-section-title">Распределение по категориям</h2>
-        <div className="sa-card">
-          <ScriptChart data={data.scriptCompliance} />
-        </div>
-      </section>
     </div>
   );
 }

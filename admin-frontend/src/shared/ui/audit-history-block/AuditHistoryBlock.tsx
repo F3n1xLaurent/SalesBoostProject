@@ -118,7 +118,7 @@ export function AuditHistoryBlock({
               {showDealership ? <th className="sa-audit-col-dealership">Точка</th> : null}
               <th className="sa-audit-col-type">Тип</th>
               {showEmployee ? <th className="sa-audit-col-employee">Сотрудник</th> : null}
-              <th className="sa-text-right sa-audit-col-score">Балл</th>
+              <th className="sa-text-right sa-audit-col-score">AI-рейтинг</th>
               {showVerdict ? <th className="sa-audit-col-verdict">Вердикт</th> : null}
             </tr>
           </thead>

@@ -188,7 +188,7 @@ function StaffScoreTrendChart(props: {
               style={{ left: `${leftPct}%`, top: `${topPct}%` }}
             >
               <div className="sa-chart-hover-tooltip-row">Дата: {p.date}</div>
-              <div className="sa-chart-hover-tooltip-row is-strong">Балл: {p.avgScore.toFixed(0)}</div>
+              <div className="sa-chart-hover-tooltip-row is-strong">AI-рейтинг: {p.avgScore.toFixed(0)}</div>
             </div>
           );
         })()}
@@ -319,7 +319,7 @@ export function StaffProfileContent() {
         <h2 className="sa-section-title">Ключевые метрики</h2>
         <div className="sa-kpi-grid sa-staff-kpi-grid">
           <StaffProfileKpi
-            label="Средний балл"
+            label="AI-рейтинг"
             value={stats.avgScore ? stats.avgScore.toFixed(1) : '—'}
             hint="По всем тренировкам"
             valueClass={stats.avgScore ? staffScoreClass(stats.avgScore) : undefined}
@@ -330,7 +330,7 @@ export function StaffProfileContent() {
             hint={`Рекорд ${stats.longestStreak} дн.`}
           />
           <StaffProfileKpi
-            label="AI-баллы"
+            label="AI-рейтинг"
             value={String(stats.totalPoints)}
             hint="За всё время"
           />
@@ -374,7 +374,7 @@ export function StaffProfileContent() {
       </section>
 
       <section className="sa-section sa-staff-profile-section">
-        <h2 className="sa-section-title">Динамика баллов</h2>
+        <h2 className="sa-section-title">Динамика AI-рейтинга</h2>
         {stats.scoreTrend.length === 0 ? (
           <p className="sa-staff-profile-empty">Нет завершённых тренировок с оценкой.</p>
         ) : (
