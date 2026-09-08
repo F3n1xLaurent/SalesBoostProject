@@ -4,6 +4,8 @@ import { prisma } from '../db';
 import { config } from '../config';
 import { verifyPassword } from './password';
 import { createAuthToken, verifyAuthToken } from './token';
+import { recordProductEvent, type ProductRole } from '../analytics/productAnalytics';
+import * as Sentry from '@sentry/node';
 
 export type FrontendRole = 'super' | 'company' | 'dealer' | 'staff';
 
@@ -121,6 +123,30 @@ export async function handleAuthLogin(req: Request, res: Response): Promise<void
     data: { lastLoginAt: new Date() },
   }).catch(() => {});
 
+  const analyticsMembershipOrder: Array<{ membershipRole: string; productRole: ProductRole }> = [
+    { membershipRole: 'platform_superadmin', productRole: 'platform_superadmin' },
+    { membershipRole: 'holding_admin', productRole: 'holding_admin' },
+    { membershipRole: 'dealership_admin', productRole: 'dealership_admin' },
+    { membershipRole: 'manager', productRole: 'manager' },
+  ];
+  const analyticsRole = analyticsMembershipOrder.find((candidate) =>
+    account.memberships.some((membership) => membership.role === candidate.membershipRole),
+  );
+  const analyticsMembership = analyticsRole
+    ? account.memberships.find((membership) => membership.role === analyticsRole.membershipRole)
+    : null;
+  if (analyticsRole) {
+    void recordProductEvent({
+      eventName: 'login_succeeded',
+      accountId: account.id,
+      role: analyticsRole.productRole,
+      holdingId: analyticsMembership?.holdingId ?? null,
+      dealershipId: analyticsMembership?.dealershipId ?? null,
+    }).catch((error) => {
+      console.warn('[analytics] failed to record login:', error instanceof Error ? error.message : error);
+    });
+  }
+
   const token = createAuthToken({ sub: account.id, email: account.email }, tokenSecret());
   res.json({
     token,
@@ -145,5 +171,6 @@ export async function adminApiAuthMiddleware(req: Request, res: Response, next: 
     return;
   }
   req.authAccount = account;
+  Sentry.getIsolationScope().setUser({ id: account.id });
   next();
 }

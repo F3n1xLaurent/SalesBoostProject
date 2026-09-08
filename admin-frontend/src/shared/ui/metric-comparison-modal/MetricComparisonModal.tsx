@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrutalModal } from '../brutal-modal';
 import { ComparisonAISummary } from '../comparison-ai-summary/ComparisonAISummary';
+import { trackProductEvent } from '../../analytics/productAnalytics';
 
 export type MetricComparisonColumn = {
   id: string;
@@ -48,6 +49,14 @@ export function MetricComparisonModal({
   aiLevel,
   aiItems,
 }: Props) {
+  useEffect(() => {
+    if (!open || columns.length < 2) return;
+    trackProductEvent('comparison_used', {
+      targetType: 'comparison',
+      properties: { comparison_type: title, selected_count: columns.length },
+    });
+  }, [columns.length, open, title]);
+
   if (!open || columns.length < 2) return null;
 
   return (

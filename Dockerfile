@@ -5,6 +5,23 @@
 # are built using source code only, while credentials are injected at runtime.
 FROM node:20-slim AS builder
 
+# These identifiers are safe to embed in the browser bundle. The auth token
+# used to upload source maps is passed separately as a BuildKit secret.
+ARG SENTRY_FRONTEND_DSN=""
+ARG SENTRY_ORG=""
+ARG SENTRY_FRONTEND_PROJECT=""
+ARG SENTRY_RELEASE=""
+ARG SENTRY_ENVIRONMENT="production"
+ARG SENTRY_TRACES_SAMPLE_RATE="0.1"
+ARG SENTRY_UPLOAD_SOURCEMAPS="false"
+ENV SENTRY_FRONTEND_DSN=$SENTRY_FRONTEND_DSN \
+    SENTRY_ORG=$SENTRY_ORG \
+    SENTRY_FRONTEND_PROJECT=$SENTRY_FRONTEND_PROJECT \
+    SENTRY_RELEASE=$SENTRY_RELEASE \
+    SENTRY_ENVIRONMENT=$SENTRY_ENVIRONMENT \
+    SENTRY_TRACES_SAMPLE_RATE=$SENTRY_TRACES_SAMPLE_RATE \
+    SENTRY_UPLOAD_SOURCEMAPS=$SENTRY_UPLOAD_SOURCEMAPS
+
 RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,7 +42,9 @@ COPY src ./src/
 COPY public ./public/
 COPY data ./data/
 COPY admin-frontend ./admin-frontend/
-RUN npm run build
+RUN --mount=type=secret,id=sentry_auth_token,required=false \
+    if [ -f /run/secrets/sentry_auth_token ]; then export SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token)"; fi; \
+    npm run build
 
 # Reuse the exact dependency tree that produced the build, then remove build-only
 # packages. This avoids a second network install and keeps the runtime reproducible.
@@ -50,7 +69,7 @@ COPY --chmod=755 scripts/docker-entrypoint.sh /usr/local/bin/salesboost-entrypoi
 
 # The application runs without root privileges. /data is the persistent SQLite
 # mount; /app/tmp is used for short-lived Telegram voice downloads.
-RUN mkdir -p /data /app/tmp && chown -R node:node /app /data
+RUN mkdir -p /data /app/tmp /app/storage/recordings && chown -R node:node /app /data
 
 ENV NODE_ENV=production
 EXPOSE 3000
@@ -58,4 +77,4 @@ EXPOSE 3000
 USER node
 
 ENTRYPOINT ["salesboost-entrypoint"]
-CMD ["node", "dist/src/index.js"]
+CMD ["node", "--enable-source-maps", "dist/src/index.js"]

@@ -35,6 +35,35 @@ model Account {
   @@map("accounts")
 }
 
+/// Curated first-party product events used by the superadmin activity dashboard.
+/// Business data remains in its domain tables; this model records user interaction
+/// events that cannot be reconstructed later (page/report/recommendation views).
+model ProductAnalyticsEvent {
+  id               String   @id @default(cuid())
+  eventName        String
+  accountId        String?
+  role             String?
+  holdingId        String?
+  dealershipId     String?
+  managerId        String?
+  targetType       String?
+  targetId         String?
+  route            String?
+  clientSessionId  String?
+  propertiesJson   String   @default("{}")
+  deduplicationKey String?  @unique
+  occurredAt       DateTime @default(now())
+  createdAt        DateTime @default(now())
+
+  @@index([eventName, occurredAt])
+  @@index([accountId, occurredAt])
+  @@index([role, occurredAt])
+  @@index([holdingId, occurredAt])
+  @@index([dealershipId, occurredAt])
+  @@index([managerId, occurredAt])
+  @@map("product_analytics_events")
+}
+
 /// Organizational root: a holding/group of dealerships.
 model Holding {
   id          String   @id @default(cuid())
@@ -732,6 +761,10 @@ model VoiceCallSession {
   ipAddress        String?   // requester IP for public demo calls
   ivrDetected      Boolean   @default(false) // IVR was detected during this call
   ivrPathJson      String?   // JSON array with accumulated IVR selections, e.g. ["3","2"]
+  voxSessionId     String?   // Voximplant call_session_history_id
+  recordingStatus String?   // "pending" | "processing" | "ready" | "failed"
+  recordingUrl    String?   // stable URL served by our storage/API
+  voxRecordId     String?   // Voximplant record_id
   totalScore       Float?    // 0-100
   failureReason    String?   // if early fail
 
@@ -746,6 +779,7 @@ model VoiceCallSession {
   @@index([source, startedAt])
   @@index([phoneNumberTypeId, startedAt])
   @@index([phoneNumberOwnership, startedAt])
+  @@index([voxSessionId])
   @@map("voice_call_sessions")
 }
 

@@ -163,6 +163,8 @@ export interface AuditDetailItem {
   scenarioName: string | null;
   assignedBy: string | null;
   failReason: string | null;
+  recordingStatus?: 'pending' | 'processing' | 'ready' | 'failed' | null;
+  recordingUrl?: string | null;
   unifiedReport: {
     version: 'call-report-v1';
     source: 'call' | 'trainer';

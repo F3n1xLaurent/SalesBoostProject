@@ -21,6 +21,7 @@ import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores
 import { DEMO_CALL_CRITERIA, DEMO_CALL_PROMPT } from './voice/demoCallPrompt';
 import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
+import { getCallRecordingFilePath, resumePendingRecordingFetches } from './voice/voximplantRecordingService';
 import { generateUnifiedCallReport, generateUnifiedTrainerReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
@@ -153,6 +154,13 @@ import {
   recordEvasion,
   type TopicCode,
 } from './logic/topicStateMachine';
+import { getInternalActivityAnalytics } from './analytics/internalActivityAnalytics';
+import {
+  parseClientProductEvent,
+  recordProductEvent,
+  type ProductRole,
+} from './analytics/productAnalytics';
+import * as Sentry from '@sentry/node';
 
 type AnalyticsInsight = {
   fact: string;
@@ -190,6 +198,48 @@ type ActiveAdminRole = 'super' | 'company' | 'dealer' | 'staff';
 function getActiveAdminRole(req: express.Request): ActiveAdminRole | null {
   const value = String(req.get('x-admin-role') || '').trim();
   return value === 'super' || value === 'company' || value === 'dealer' || value === 'staff' ? value : null;
+}
+
+async function getProductEventContext(req: express.Request): Promise<{
+  accountId: string;
+  role: ProductRole;
+  holdingId: string | null;
+  dealershipId: string | null;
+  managerId: string | null;
+} | null> {
+  const account = req.authAccount;
+  if (!account) return null;
+  const requestedRole = getActiveAdminRole(req);
+  const roleOrder: Array<{ frontend: ActiveAdminRole; product: ProductRole; membership: string }> = [
+    { frontend: 'super', product: 'platform_superadmin', membership: 'platform_superadmin' },
+    { frontend: 'company', product: 'holding_admin', membership: 'holding_admin' },
+    { frontend: 'dealer', product: 'dealership_admin', membership: 'dealership_admin' },
+    { frontend: 'staff', product: 'manager', membership: 'manager' },
+  ];
+  const selectedRole = (requestedRole
+    ? roleOrder.find((item) => item.frontend === requestedRole)
+    : roleOrder.find((item) => account.memberships.some((membership) => membership.role === item.membership)));
+  if (!selectedRole) return null;
+  const membership = account.memberships.find((item) => item.role === selectedRole.membership);
+  if (!membership) return null;
+
+  let holdingId = membership.holdingId ?? null;
+  const dealershipId = membership.dealershipId ?? null;
+  if (!holdingId && dealershipId) {
+    holdingId = (await prisma.dealership.findUnique({
+      where: { id: dealershipId },
+      select: { holdingId: true },
+    }))?.holdingId ?? null;
+  }
+  const managerId = selectedRole.product === 'manager'
+    ? (await prisma.managerProfile.findFirst({
+      where: { accountId: account.id, status: 'active' },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    }))?.id ?? null
+    : null;
+
+  return { accountId: account.id, role: selectedRole.product, holdingId, dealershipId, managerId };
 }
 
 function buildVoiceCallSessionScopeWhere(
@@ -1604,6 +1654,21 @@ export function registerTelegramWebhook(bot: Telegraf): void {
   });
 }
 app.use(express.json({ limit: '12mb' }));
+app.use((req, res, next) => {
+  res.once('finish', () => {
+    if (res.statusCode < 500 || res.locals.sentryExceptionCaptured) return;
+    Sentry.captureMessage('HTTP request returned 5xx', {
+      level: 'error',
+      tags: { failure_stage: 'http', status_code: String(res.statusCode) },
+      extra: {
+        method: req.method,
+        route: req.route?.path ?? req.path,
+        statusCode: res.statusCode,
+      },
+    });
+  });
+  next();
+});
 
 // ── In‑memory web training sessions (independent от Telegram) ──
 type WebTrainingProfile = 'normal' | 'thorough' | 'pressure';
@@ -2874,6 +2939,15 @@ async function resetTrainerPlanItemForSession(employeeId: string, sessionId: str
 async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<void> {
   const session = await prisma.trainerSession.findUnique({
     where: { id: sessionId },
+    include: {
+      employee: {
+        select: {
+          accountId: true,
+          dealershipId: true,
+          dealership: { select: { holdingId: true } },
+        },
+      },
+    },
   });
   if (!session || !['completed', 'failed'].includes(session.status)) return;
 
@@ -2923,6 +2997,24 @@ async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<voi
 
   if (session.status === 'completed') {
     await updateTrainerStreakOnCompletion(session.employeeId, session.startedAt);
+  }
+
+  if (session.status === 'completed') {
+    void recordProductEvent({
+      eventName: 'training_completed',
+      accountId: session.employee.accountId,
+      role: 'manager',
+      holdingId: session.companyId ?? session.employee.dealership.holdingId,
+      dealershipId: session.branchId ?? session.employee.dealershipId,
+      managerId: session.employeeId,
+      targetType: 'trainer_session',
+      targetId: session.id,
+      properties: { status: session.status, session_type: session.sessionType },
+      deduplicationKey: `training_completed:${session.id}`,
+      occurredAt: session.completedAt ?? new Date(),
+    }).catch((error) => {
+      console.warn('[analytics] failed to record training completion:', error instanceof Error ? error.message : error);
+    });
   }
 }
 
@@ -3408,6 +3500,27 @@ app.use('/api/trainer', (req, res, next) => {
   });
 });
 
+app.post('/api/admin/product-events', async (req, res) => {
+  try {
+    const event = parseClientProductEvent(req.body);
+    if (!event) return res.status(400).json({ error: 'Некорректное событие аналитики.' });
+    const context = await getProductEventContext(req);
+    if (!context) return res.status(403).json({ error: 'Роль пользователя недоступна.' });
+    const deduplicationKey = event.eventName === 'session_started' && event.clientSessionId
+      ? `session_started:${context.accountId}:${event.clientSessionId}`
+      : null;
+    const stored = await recordProductEvent({
+      ...event,
+      ...context,
+      deduplicationKey,
+    });
+    return res.status(stored ? 201 : 200).json({ ok: true, stored });
+  } catch (error) {
+    console.warn('[analytics] failed to store client event:', error instanceof Error ? error.message : error);
+    return res.status(500).json({ error: 'Не удалось сохранить событие аналитики.' });
+  }
+});
+
 async function resolveTrainerManager(req: express.Request) {
   const account = req.authAccount;
   const accountId = account?.id;
@@ -3763,6 +3876,22 @@ app.post('/api/trainer/session/start', async (req, res) => {
         multiplier,
       },
       include: { scenario: { select: { id: true, name: true } } },
+    });
+
+    void recordProductEvent({
+      eventName: 'training_started',
+      accountId: manager.accountId,
+      role: 'manager',
+      holdingId: manager.dealership.holdingId,
+      dealershipId: manager.dealershipId,
+      managerId: manager.id,
+      targetType: 'trainer_session',
+      targetId: session.id,
+      properties: { session_type: session.sessionType },
+      deduplicationKey: `training_started:${session.id}`,
+      occurredAt: session.startedAt,
+    }).catch((error) => {
+      console.warn('[analytics] failed to record training start:', error instanceof Error ? error.message : error);
     });
 
     if (sessionType === 'plan' && plan && planItem) {
@@ -5969,6 +6098,21 @@ app.get('/api/public/demo-call/:callId', async (req, res) => {
   }
 });
 
+app.get('/api/admin/internal-analytics/activity', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    const requestedPeriod = Number.parseInt(String(req.query.period || '30'), 10);
+    const period = requestedPeriod === 7 || requestedPeriod === 90 ? requestedPeriod : 30;
+    return res.json(await getInternalActivityAnalytics(period));
+  } catch (error) {
+    console.error('internal-analytics/activity error:', error);
+    return res.status(500).json({ error: 'Не удалось загрузить аналитику активности.' });
+  }
+});
+
 app.get('/api/admin/internal-analytics/demo', async (req, res) => {
   try {
     const isPlatformSuperadmin = req.authAccount?.memberships.some(
@@ -6419,7 +6563,7 @@ app.post('/webhooks/vox', async (req, res) => {
     keys: Object.keys(normalizedPayload),
     transcriptTurns: hasTranscript ? (normalizedPayload as { transcript: unknown[] }).transcript.length : 0,
   });
-  const isFinalEvent = ['disconnected', 'failed', 'no_answer', 'busy'].includes(event);
+  const isFinalEvent = ['disconnected', 'failed', 'no_answer', 'busy', 'cancelled'].includes(event);
   if (!isFinalEvent) {
     if (event === 'ivr_detected' || event === 'ivr_selected') {
       try {
@@ -6538,6 +6682,8 @@ app.get('/api/admin/call-history', async (req, res) => {
         planName: s.plan?.name ?? null,
         ivrDetected: s.ivrDetected,
         ivrPath: parseStoredIvrPath(s.ivrPathJson),
+        recordingStatus: s.recordingStatus,
+        recordingUrl: s.recordingUrl,
         transcript,
         transcriptTurns: transcript.length,
         totalScore: s.totalScore,
@@ -6567,10 +6713,40 @@ app.get('/api/admin/call-history/:id', async (req, res) => {
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
-    res.json(buildVoiceCallDetailResponse(session));
+    res.json({
+      ...buildVoiceCallDetailResponse(session),
+      recordingStatus: session.recordingStatus,
+      recordingUrl: session.recordingUrl,
+    });
   } catch (err) {
     console.error('call-history/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/admin/call-recordings/:callId', async (req, res) => {
+  try {
+    const callId = String(req.params.callId || '').trim();
+    if (!callId) return res.status(400).json({ error: 'Missing callId.' });
+    const session = await prisma.voiceCallSession.findFirst({
+      where: { AND: [{ callId }, buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] },
+      select: { recordingStatus: true },
+    });
+    if (!session || session.recordingStatus !== 'ready') {
+      return res.status(404).json({ error: 'Запись звонка не найдена.' });
+    }
+    const filePath = getCallRecordingFilePath(callId);
+    if (!fs.existsSync(filePath)) {
+      console.error(`Voximplant recording file missing call_id=${callId}`);
+      return res.status(404).json({ error: 'Файл записи звонка недоступен.' });
+    }
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Disposition', 'inline; filename="recording.mp3"');
+    return res.sendFile(filePath);
+  } catch (error) {
+    console.error('call-recordings/:callId error:', error instanceof Error ? error.message : error);
+    return res.status(500).json({ error: 'Не удалось получить запись звонка.' });
   }
 });
 
@@ -8458,6 +8634,8 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         scenarioName: type === 'trainer' ? session.scenario ?? session.plan?.name ?? null : null,
         assignedBy: null,
         failReason: session.failureReason,
+        recordingStatus: session.recordingStatus,
+        recordingUrl: session.recordingUrl,
         unifiedReport,
       },
     });
@@ -8641,6 +8819,18 @@ app.get('*', (req, res, next) => {
   next();
 });
 
+// Must be registered after routes. Sentry forwards the error to our final
+// handler after it captures the exception and request context.
+Sentry.setupExpressErrorHandler(app);
+
+app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('Unhandled HTTP error:', error);
+  if (res.headersSent) return;
+  res.locals.sentryExceptionCaptured = true;
+  const message = req.path.startsWith('/api/') ? 'Внутренняя ошибка сервера.' : 'Не удалось обработать запрос.';
+  res.status(500).json({ error: message });
+});
+
 // Final 404: friendly message instead of plain "Not Found"
 app.use((req, res) => {
   if (req.path.startsWith('/api/')) {
@@ -8698,6 +8888,9 @@ export function startServer(): Promise<void> {
       startCallBatchOrchestrator();
       startCallPlanScheduler();
       startImportScheduler();
+      resumePendingRecordingFetches().catch((error) => {
+        console.error('Voximplant recording recovery failed:', error instanceof Error ? error.message : error);
+      });
       resolve();
     };
 

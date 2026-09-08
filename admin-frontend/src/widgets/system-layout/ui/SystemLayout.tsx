@@ -38,6 +38,7 @@ import {
   type TimeSeriesPoint,
   type AdminPanelSettings,
 } from '../../../shared/api/adminPanel';
+import { startProductAnalyticsSession, trackProductEvent } from '../../../shared/analytics/productAnalytics';
 
 function lazyNamed<T extends React.ComponentType<any>>(
   loader: () => Promise<Record<string, unknown>>,
@@ -339,6 +340,45 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   useEffect(() => {
     setMobileNavOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!accountId) return;
+    startProductAnalyticsSession(accountId);
+  }, [accountId]);
+
+  useEffect(() => {
+    if (!accountId) return;
+    trackProductEvent('page_viewed', { route: location.pathname });
+  }, [accountId, location.pathname]);
+
+  useEffect(() => {
+    if (!accountId) return;
+    if (activeTab === 'analytics') {
+      trackProductEvent('analytics_opened', { route: location.pathname });
+    }
+  }, [accountId, activeTab, location.pathname]);
+
+  useEffect(() => {
+    if (!accountId) return;
+    if (selectedEmployeeId) {
+      trackProductEvent('manager_viewed', {
+        route: location.pathname,
+        targetType: 'manager',
+        targetId: selectedEmployeeId,
+      });
+    }
+  }, [accountId, location.pathname, selectedEmployeeId]);
+
+  useEffect(() => {
+    if (!accountId) return;
+    if (selectedDealershipId) {
+      trackProductEvent('dealership_viewed', {
+        route: location.pathname,
+        targetType: 'dealership',
+        targetId: selectedDealershipId,
+      });
+    }
+  }, [accountId, location.pathname, selectedDealershipId]);
 
   useEffect(() => {
     if (!mobileNavOpen || !isMobileAdminNav) return;

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import './instrument';
 import { Telegraf, Scenes, session, Context } from 'telegraf';
 import { config } from './config';
 import { handleStart, handleNameInput, showMainMenu, showMainMenuContent } from './handlers/start';
