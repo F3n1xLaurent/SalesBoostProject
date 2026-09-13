@@ -1,18 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { BrutalModal } from '../../../shared/ui/brutal-modal/BrutalModal';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { buildLandingExampleAudit } from '../lib/exampleAudit';
-import reportUi from '../assets/report-ui.svg';
-import heroDashboardUi from '../assets/hero-dashboard-ui.svg';
-import featPhone from '../assets/Phone.png';
-import featTrain from '../assets/Train.png';
-import featAnalytics from '../assets/Analytics.png';
-import setupData from '../assets/Data.png';
-import setupRules from '../assets/Rules.png';
-import setupProfiles from '../assets/Profiles.png';
 import { ShaderBackground } from './ShaderBackground';
 import { FlowButton } from './FlowButton';
-import { ChartColumn, Database, FileText, PhoneCall } from 'lucide-react';
+import { PdfStructureBlocks } from './PdfStructure';
+import { SalsaLogo } from './SalsaLogo';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import './landing.css';
@@ -22,95 +15,13 @@ const DEMO_CALL_PATH = '/demo-call';
 function DemoCta({
   label = 'Запросить демо',
   variant = 'default',
+  href = DEMO_CALL_PATH,
 }: {
   label?: string;
   variant?: 'default' | 'white';
+  href?: string;
 }) {
-  return <FlowButton text={label} href={DEMO_CALL_PATH} variant={variant} />;
-}
-
-const PROCESS_STEPS = [
-  [
-    'Онбординг',
-    'Загружаем продукт, скрипты и стандарты компании',
-  ],
-  [
-    'Тренировка',
-    'Менеджер отрабатывает сценарии с голосовым AI-клиентом',
-  ],
-  [
-    'Проверка',
-    'AI звонит как тайный покупатель и оценивает разговор',
-  ],
-  [
-    'Аналитика',
-    'Ошибки менеджера, точки и динамика всей сети',
-  ],
-  [
-    'Улучшение',
-    'Слабые места — снова в тренировку и проверку',
-  ],
-] as const;
-
-function ProcessSteps() {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [phase, setPhase] = useState(0);
-  const [started, setStarted] = useState(false);
-
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        setStarted(true);
-        io.disconnect();
-      },
-      { threshold: 0.35 }
-    );
-    io.observe(root);
-    return () => io.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!started) return;
-    const stepMs = 850;
-    const timers = PROCESS_STEPS.map((_, i) =>
-      window.setTimeout(() => setPhase(i + 1), i * stepMs)
-    );
-    return () => timers.forEach(clearTimeout);
-  }, [started]);
-
-  return (
-    <div className="sl-process" ref={rootRef}>
-      {PROCESS_STEPS.map(([label, cap], i) => {
-        const shown = phase > i;
-        const active = phase === i + 1;
-        return (
-          <div
-            key={label}
-            className={[
-              'sl-process-step',
-              shown || active ? 'is-shown' : '',
-              shown ? 'is-done' : '',
-              active ? 'is-active' : '',
-            ]
-              .filter(Boolean)
-              .join(' ')}
-          >
-            <span className="sl-process-num">{String(i + 1).padStart(2, '0')}</span>
-            <div className="sl-process-bar" aria-hidden>
-              <span className="sl-process-bar-fill" />
-            </div>
-            <div className="sl-process-body">
-              <span className="sl-process-label">{label}</span>
-              <span className="sl-process-cap">{cap}</span>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
+  return <FlowButton text={label} href={href} variant={variant} />;
 }
 
 function GridEnds() {
@@ -258,426 +169,6 @@ function UiTrainerMgr() {
   );
 }
 
-/* ───────────────────── Product UI ─────────────────────── */
-
-type AnalyticsLevelId = 'manager' | 'point' | 'company' | 'calls' | 'recommendations';
-
-const ANALYTICS_LEVELS: {
-  id: AnalyticsLevelId;
-  icon: 'users' | 'pin' | 'list' | 'call' | 'siren';
-  title: string;
-  text: string;
-}[] = [
-  {
-    id: 'manager',
-    icon: 'users',
-    title: 'Менеджер',
-    text: 'Профиль с динамикой, сильными сторонами и типовыми ошибками',
-  },
-  {
-    id: 'point',
-    icon: 'pin',
-    title: 'Точка',
-    text: 'Рейтинг, сравнение с сетью и динамика по неделям',
-  },
-  {
-    id: 'company',
-    icon: 'list',
-    title: 'Компания',
-    text: 'Вся сеть на одном экране: лидеры, отстающие, тренды',
-  },
-  {
-    id: 'calls',
-    icon: 'call',
-    title: 'Звонки',
-    text: 'Время ответа, поднял / не поднял, дозвон и другие сигналы по линии',
-  },
-  {
-    id: 'recommendations',
-    icon: 'siren',
-    title: 'Рекомендации',
-    text: 'Системные и свежие проблемы — что чинить и какой прирост AI-рейтинга это даст',
-  },
-];
-
-const ANALYTICS_CYCLE_MS = 5200;
-
-function UiAnalyticsManager() {
-  return (
-    <div className="sl-alevels-mock" aria-hidden>
-      <div className="sl-alevels-mock-head">
-        <div>
-          <span className="sl-mock-caption">Профиль менеджера</span>
-          <span className="sl-mock-title">Савчюнко Даниил</span>
-        </div>
-        <div className="sl-alevels-score-pill">74 · Средне</div>
-      </div>
-      <div className="sl-alevels-mgr-grid">
-        <div className="sl-alevels-mgr-col">
-          <span className="sl-alevels-mock-cap">Сильные стороны</span>
-          <span className="sl-alevels-chip is-good">Диагностика</span>
-          <span className="sl-alevels-chip is-good">Коммуникация</span>
-        </div>
-        <div className="sl-alevels-mgr-col">
-          <span className="sl-alevels-mock-cap">Типовые ошибки</span>
-          <span className="sl-alevels-chip">Цена без вилки</span>
-          <span className="sl-alevels-chip">Нет next step</span>
-        </div>
-      </div>
-      <div className="sl-alevels-spark">
-        <span className="sl-alevels-mock-cap">Динамика 4 недели</span>
-        <div className="sl-alevels-bars">
-          {[42, 55, 48, 68].map((h, i) => (
-            <span key={i} style={{ height: `${h}%` }} />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function UiAnalyticsPoint() {
-  return (
-    <div className="sl-alevels-mock" aria-hidden>
-      <div className="sl-alevels-mock-head">
-        <div>
-          <span className="sl-mock-caption">Точка</span>
-          <span className="sl-mock-title">Салон «Центр»</span>
-        </div>
-        <div className="sl-alevels-score-pill is-good">82 · Выше сети</div>
-      </div>
-      <div className="sl-alevels-compare">
-        <div>
-          <span>AI-рейтинг точки</span>
-          <strong>82</strong>
-        </div>
-        <div>
-          <span>Среднее по сети</span>
-          <strong>74</strong>
-        </div>
-      </div>
-      <div className="sl-alevels-spark">
-        <span className="sl-alevels-mock-cap">Недели</span>
-        <div className="sl-alevels-bars is-dense">
-          {[50, 58, 54, 62, 60, 70, 66, 78].map((h, i) => (
-            <span key={i} style={{ height: `${h}%` }} />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function UiAnalyticsCompany() {
-  const rows = [
-    { name: 'Точка «Центр»', score: 82, tone: 'good' as const },
-    { name: 'Точка «Север»', score: 79, tone: 'good' as const },
-    { name: 'Точка «Юг»', score: 61, tone: 'bad' as const },
-  ];
-  return (
-    <div className="sl-alevels-mock" aria-hidden>
-      <div className="sl-alevels-mock-head">
-        <div>
-          <span className="sl-mock-caption">Компания · 30 дней</span>
-          <span className="sl-mock-title">Дашборд сети</span>
-        </div>
-      </div>
-      <div className="sl-alevels-kpis">
-        <div><span>AI-рейтинг</span><strong>74</strong></div>
-        <div><span>Дозвон</span><strong>87%</strong></div>
-        <div><span>Проверки</span><strong>312</strong></div>
-      </div>
-      <div className="sl-alevels-table">
-        {rows.map((r) => (
-          <div key={r.name} className="sl-alevels-table-row">
-            <span>{r.name}</span>
-            <span className={`sl-tone-${r.tone}`}>{r.score}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function UiAnalyticsCalls() {
-  return (
-    <div className="sl-alevels-mock" aria-hidden>
-      <div className="sl-alevels-mock-head">
-        <div>
-          <span className="sl-mock-caption">Линия · сегодня</span>
-          <span className="sl-mock-title">Сигналы по звонкам</span>
-        </div>
-      </div>
-      <div className="sl-alevels-kpis sl-alevels-kpis-4">
-        <div><span>Ответ</span><strong>12с</strong></div>
-        <div><span>Поднял</span><strong>81%</strong></div>
-        <div><span>Дозвон</span><strong>87%</strong></div>
-        <div><span>Пропущено</span><strong>19%</strong></div>
-      </div>
-      <div className="sl-alevels-call-list">
-        {[
-          ['09:14', 'Поднял · 42с', 'good'],
-          ['09:31', 'Не поднял', 'bad'],
-          ['10:02', 'Поднял · 1м 08с', 'good'],
-        ].map(([time, status, tone]) => (
-          <div key={time} className="sl-alevels-call-row">
-            <span>{time}</span>
-            <span className={`sl-tone-${tone}`}>{status}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function UiAnalyticsRecommendations() {
-  return (
-    <div className="sl-alevels-mock" aria-hidden>
-      <div className="sl-alevels-mock-head">
-        <div>
-          <span className="sl-mock-caption">Приоритеты</span>
-          <span className="sl-mock-title">Рекомендации</span>
-        </div>
-        <div className="sl-alevels-score-pill">5 действий</div>
-      </div>
-      <div className="sl-alevels-rec-list">
-        {[
-          ['systemic', 'Системные', 'Возражения по цене', 'Обучение · +6 AI'],
-          ['systemic', 'Системные', 'Нет следующего шага', 'Регламент · +4 AI'],
-          ['recent', 'Недавние', 'Точка «Юг» — упал дозвон', 'Сегодня'],
-          ['recent', 'Недавние', 'Новый сотрудник — рейтинг 51', '2 дня'],
-        ].map(([kind, tag, title, meta]) => (
-          <div key={title} className={`sl-alevels-rec-row is-${kind}`}>
-            <div>
-              <span className="sl-alevels-rec-tag">{tag}</span>
-              <strong>{title}</strong>
-              <span>{meta}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AnalyticsLevelVisual({ id }: { id: AnalyticsLevelId }) {
-  if (id === 'manager') return <UiAnalyticsManager />;
-  if (id === 'point') return <UiAnalyticsPoint />;
-  if (id === 'company') return <UiAnalyticsCompany />;
-  if (id === 'calls') return <UiAnalyticsCalls />;
-  return <UiAnalyticsRecommendations />;
-}
-
-function AnalyticsMock() {
-  const best = [
-    { n: '01', name: 'Точка «Центр»', score: 82, delta: '↑ 4', tone: 'good' as const },
-    { n: '02', name: 'Точка «Север»', score: 79, delta: '↑ 2', tone: 'good' as const },
-    { n: '03', name: 'Точка «Восток»', score: 77, delta: '↑ 1', tone: 'good' as const },
-  ];
-  const worst = [
-    { n: '01', name: 'Точка «Юг»', score: 61, delta: '↓ 3', tone: 'bad' as const },
-    { n: '02', name: 'Точка «Запад»', score: 64, delta: '↓ 1', tone: 'bad' as const },
-    { n: '03', name: 'Точка «Река»', score: 66, delta: '→ 0', tone: 'mid' as const },
-  ];
-  const line = '12,78 48,70 84,74 120,58 156,52 192,40 228,34';
-
-  return (
-    <div className="sl-analytics-mock sl-analytics-mock-wide" aria-hidden>
-      <div className="sl-analytics-mock-head">
-        <div>
-          <span className="sl-mock-caption">Аналитика · сеть за 30 дней</span>
-          <span className="sl-mock-title">Дашборд компании</span>
-        </div>
-        <div className="sl-analytics-mock-filters">
-          <span>Все точки</span>
-          <span>30 дней</span>
-        </div>
-      </div>
-
-      <div className="sl-analytics-kpis">
-        <div className="sl-analytics-kpi">
-          <span>AI-рейтинг</span>
-          <strong>74 <em className="sl-tone-good">↑ 2.1</em></strong>
-        </div>
-        <div className="sl-analytics-kpi">
-          <span>Дозвон</span>
-          <strong>87%</strong>
-        </div>
-        <div className="sl-analytics-kpi">
-          <span>Проверки</span>
-          <strong>312</strong>
-        </div>
-        <div className="sl-analytics-kpi">
-          <span>Точки</span>
-          <strong>24</strong>
-        </div>
-      </div>
-
-      <div className="sl-analytics-mock-body">
-        <div className="sl-analytics-chart-card">
-          <div className="sl-analytics-table-cap">Динамика AI-рейтинга</div>
-          <svg className="sl-analytics-chart" viewBox="0 0 240 96" preserveAspectRatio="none">
-            {[24, 48, 72].map((y) => (
-              <line key={y} x1="0" y1={y} x2="240" y2={y} stroke="rgba(22,22,19,0.06)" strokeWidth="1" />
-            ))}
-            <polyline points={line} fill="none" stroke="var(--tb-status-green)" strokeWidth="2" />
-            {line.split(' ').map((p) => {
-              const [x, y] = p.split(',');
-              return <circle key={p} cx={x} cy={y} r="2.5" fill="var(--tb-status-green)" />;
-            })}
-          </svg>
-          <div className="sl-analytics-chart-x">
-            {['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => <span key={d}>{d}</span>)}
-          </div>
-        </div>
-
-        <div className="sl-analytics-tables">
-          <div>
-            <div className="sl-analytics-table-cap">Лучшие точки</div>
-            {best.map((r) => (
-              <div key={r.name} className="sl-analytics-row">
-                <span className="sl-analytics-n">{r.n}</span>
-                <span className="sl-analytics-name">{r.name}</span>
-                <span className="sl-analytics-score">{r.score}</span>
-                <span className={`sl-analytics-delta sl-tone-${r.tone}`}>{r.delta}</span>
-              </div>
-            ))}
-          </div>
-          <div>
-            <div className="sl-analytics-table-cap">Точки с низким результатом</div>
-            {worst.map((r) => (
-              <div key={r.name} className="sl-analytics-row">
-                <span className="sl-analytics-n">{r.n}</span>
-                <span className="sl-analytics-name">{r.name}</span>
-                <span className="sl-analytics-score">{r.score}</span>
-                <span className={`sl-analytics-delta sl-tone-${r.tone}`}>{r.delta}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AnalyticsLevels() {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const inViewRef = useRef(false);
-  const [active, setActive] = useState(0);
-  const [cycleKey, setCycleKey] = useState(0);
-  const [inView, setInView] = useState(false);
-  const count = ANALYTICS_LEVELS.length;
-  const current = ANALYTICS_LEVELS[active]!;
-
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        const visible = Boolean(entry?.isIntersecting);
-        const entered = visible && !inViewRef.current;
-        inViewRef.current = visible;
-        setInView(visible);
-        if (entered) {
-          setActive(0);
-          setCycleKey((k) => k + 1);
-        }
-      },
-      { threshold: 0.28, rootMargin: '0px 0px -10% 0px' },
-    );
-
-    io.observe(root);
-    return () => io.disconnect();
-  }, []);
-
-  const select = (index: number) => {
-    setActive(index);
-    setCycleKey((k) => k + 1);
-  };
-
-  const advance = () => {
-    if (!inViewRef.current) return;
-    setActive((i) => (i + 1) % count);
-    setCycleKey((k) => k + 1);
-  };
-
-  return (
-    <div className="sl-alevels" ref={rootRef}>
-      <div className="sl-alevels-nav" role="tablist" aria-label="Уровни аналитики">
-        {ANALYTICS_LEVELS.map((item, i) => {
-          const isActive = i === active;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              className={`sl-alevels-item${isActive ? ' is-active' : ''}`}
-              onClick={() => select(i)}
-            >
-              <span className="sl-alevels-ico-wrap">
-                {isActive && inView ? (
-                  <svg
-                    key={cycleKey}
-                    className="sl-alevels-ring"
-                    viewBox="0 0 56 56"
-                    aria-hidden
-                  >
-                    <circle className="sl-alevels-ring-track" cx="28" cy="28" r="25" />
-                    <circle
-                      className="sl-alevels-ring-prog"
-                      cx="28"
-                      cy="28"
-                      r="25"
-                      style={{ animationDuration: `${ANALYTICS_CYCLE_MS}ms` }}
-                      onAnimationEnd={advance}
-                    />
-                  </svg>
-                ) : null}
-                <span className="sl-alevels-ico">
-                  <MiniGlyph name={item.icon} />
-                </span>
-              </span>
-              <span className="sl-alevels-name">{item.title}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="sl-alevels-panel" role="tabpanel">
-        <div className="sl-alevels-visual">
-          <AnalyticsLevelVisual id={current.id} />
-        </div>
-        <div className="sl-alevels-copy">
-          <h3 className="sl-alevels-title">{current.title}</h3>
-          <p className="sl-alevels-text">{current.text}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ReportPreview({ onShowExample }: { onShowExample: () => void }) {
-  return (
-    <div className="sl-report-shot">
-      <ShaderBackground className="sl-report-shot-canvas" variant="forest" />
-      <img
-        className="sl-report-shot-ui"
-        src={reportUi}
-        alt="Пример отчёта по звонку тайного покупателя"
-      />
-      <div className="sl-report-shot-action">
-        <FlowButton
-          text="Показать пример отчёта"
-          variant="white"
-          onClick={onShowExample}
-        />
-
-      </div>
-    </div>
-  );
-}
 
 function useSoftReveal() {
   useEffect(() => {
@@ -711,24 +202,66 @@ function useSoftReveal() {
 
 export function LandingPage() {
   const [reportOpen, setReportOpen] = useState(false);
+  const [productOpen, setProductOpen] = useState(false);
   const exampleAudit = useMemo(() => buildLandingExampleAudit(), []);
   useSoftReveal();
+
+  const openProduct = () => setProductOpen(true);
+  const closeProduct = () => setProductOpen(false);
 
   return (
     <div className="theme-brutal sl-page">
       {/* Header */}
-      <header className="sl-header">
-        <div className="sl-inner sl-header-shell">
-          <a className="sl-logo" href="#top">Salsa</a>
-          <nav className="sl-nav">
-            <a href="#product">Продукт</a>
-            <a href="#shopper">Тайный покупатель</a>
-            <a href="#trainer">Тренажёр</a>
-            <a href="#analytics">Аналитика</a>
-            <a href="#why">Почему Salsa</a>
-          </nav>
-          <div className="sl-header-cta">
-            <DemoCta />
+      <header
+        className={`sl-header${productOpen ? ' is-open' : ''}`}
+        onMouseLeave={closeProduct}
+      >
+        <div className="sl-inner sl-header-inner">
+          <div className="sl-header-shell">
+            <a className="sl-logo" href="#top" aria-label="Salsa">
+              <SalsaLogo className="sl-logo-svg" />
+            </a>
+            <nav className="sl-nav">
+              <a href="#how" onMouseEnter={closeProduct}>Как это работает</a>
+              <a
+                className="sl-nav-trigger"
+                href="#pdf-product"
+                onMouseEnter={openProduct}
+                onFocus={openProduct}
+              >
+                Продукт
+              </a>
+              <a href="#manager" onMouseEnter={closeProduct}>Руководителю</a>
+              <a href="#importers" onMouseEnter={closeProduct}>Импортёрам</a>
+              <a href="#faq" onMouseEnter={closeProduct}>FAQ</a>
+            </nav>
+            <div className="sl-header-cta">
+              <DemoCta label="Получить демо" href="#demo" />
+            </div>
+          </div>
+          <div className="sl-mega" aria-label="Разделы продукта" onMouseEnter={openProduct}>
+            <div className="sl-mega-panel">
+              <a href="#how">
+                <strong>Как это работает</strong>
+                <em>Допуск, контроль, исправление</em>
+              </a>
+              <a href="#pdf-product">
+                <strong>Система</strong>
+                <em>Дашборд сети, рейтинг точек и динамика</em>
+              </a>
+              <a href="#report">
+                <strong>Разбор звонка</strong>
+                <em>Оценка по вашим стандартам в любое время</em>
+              </a>
+              <a href="#trainer">
+                <strong>Тренажёр</strong>
+                <em>Реальные ситуации до первого клиента</em>
+              </a>
+              <a href="#diff">
+                <strong>Чем отличается</strong>
+                <em>Salsa рядом с CRM, LMS и речевой аналитикой</em>
+              </a>
+            </div>
           </div>
           <GridEnds />
         </div>
@@ -736,343 +269,86 @@ export function LandingPage() {
 
       <div className="sl-inner sl-body">
       <main id="top">
-        {/* Hero */}
-        <section className="sl-sec sl-hero">
-          <div className="sl-hero-center">
-            <h1 className="sl-h1">
-              Проверка, обучение и контроль
-              <br />
-              качества продаж с AI
-            </h1>
-            <p className="sl-lede">
-              Salsa звонит как реальный клиент, оценивает каждый разговор
-              и показывает, где вы теряете продажи
-            </p>
-            <div className="sl-hero-actions">
-              <DemoCta label="Попробовать демо" />
-            </div>
-          </div>
-          <div className="sl-well-cell">
-            <div className="sl-hero-shot">
-              <ShaderBackground className="sl-hero-shot-canvas" />
-              <img
-                className="sl-hero-shot-ui"
-                src={heroDashboardUi}
-                alt="Дашборд Salsa: ключевые метрики и аналитика сети"
-              />
-            </div>
-          </div>
-          <div className="sl-hero-features">
-            {(
-              [
-                { Icon: PhoneCall, label: 'AI тайный покупатель' },
-                { Icon: FileText, label: 'Отчёт после звонка' },
-                { Icon: Database, label: 'Реальные данные компании' },
-                { Icon: ChartColumn, label: 'Аналитика всей сети' },
-              ] as const
-            ).map(({ Icon, label }) => (
-              <div key={label} className="sl-hero-feature">
-                <span className="sl-hero-feature-icon" aria-hidden>
-                  <Icon strokeWidth={1.6} />
-                </span>
-                <span className="sl-hero-feature-label">{label}</span>
-              </div>
-            ))}
-          </div>
-          <GridEnds />
-        </section>
-
-        {/* End-to-end cycle */}
-        <section className="sl-sec sl-reveal" id="product">
-          <div className="sl-band">
-            <div>
-              <div className="sl-section-tag">End-to-end процесс</div>
-              <h2 className="sl-h2">Один цикл вместо набора разрозненных инструментов</h2>
-            </div>
-            <p className="sl-lede">От онбординга нового менеджера до устойчивого роста продаж</p>
-          </div>
-          <ProcessSteps />
-          <GridEnds />
-        </section>
-
-        {/* Three components */}
-        <section className="sl-sec sl-reveal" id="capabilities">
-          <div className="sl-band">
-            <div>
-              <div className="sl-section-tag">Основные возможности</div>
-              <h2 className="sl-h2">Контроль, тренировка и аналитика в одной системе</h2>
-            </div>
-            <p className="sl-lede">Три части продукта, которые работают на одних данных и одних сценариях</p>
-          </div>
-          <div className="sl-feat-row">
-            <article className="sl-feat-cell sl-squircle">
-              <div className="sl-feat-illu">
-                <img className="sl-feat-img" src={featPhone} alt="" />
-              </div>
-              <h3 className="sl-feat-title">AI-тайный покупатель</h3>
-              <p className="sl-feat-text">
-                Звонит на точки как обычный клиент. Реалистичный голос — менеджер
-                не догадается, что это проверка
-              </p>
-            </article>
-            <article className="sl-feat-cell sl-squircle">
-              <div className="sl-feat-illu">
-                <img className="sl-feat-img" src={featTrain} alt="" />
-              </div>
-              <h3 className="sl-feat-title">AI-тренажёр</h3>
-              <p className="sl-feat-text">
-                Менеджер отрабатывает сценарии с голосовым AI-клиентом.
-                Ошибаться можно сколько угодно — но не на ваших клиентах
-              </p>
-            </article>
-            <article className="sl-feat-cell sl-squircle">
-              <div className="sl-feat-illu">
-                <img className="sl-feat-img" src={featAnalytics} alt="" />
-              </div>
-              <h3 className="sl-feat-title">Аналитика</h3>
-              <p className="sl-feat-text">
-                Каждый звонок превращается в оценку по вашим критериям.
-                Видно менеджера, точку и всю сеть — постоянно и автоматически
-              </p>
-            </article>
-          </div>
-          <GridEnds />
-        </section>
-
-        {/* Secret shopper */}
-        <section className="sl-sec sl-reveal" id="shopper">
-          <div className="sl-band">
-            <div>
-              <div className="sl-section-tag">Тайный покупатель</div>
-              <h2 className="sl-h2">Проверяйте реальную работу менеджеров в любое время</h2>
-            </div>
-            <p className="sl-lede">
-              AI звонит на точки как клиент, ведёт живой диалог и оценивает
-              разговор по вашим стандартам
-            </p>
-          </div>
-          <ReportPreview onShowExample={() => setReportOpen(true)} />
-          <div className="sl-step-cards">
-            {([
-              ['pin', 'Выберите, кого проверить', 'Точку, направление или всю сеть — одним запуском'],
-              ['call', 'AI звонит как клиент', 'Реалистичный голос, ваши данные, живые возражения'],
-              ['list', 'Оценка по вашим стандартам', 'Не универсальный чек-лист — ваши критерии продаж'],
-              ['file', 'Отчёт за минуты', 'AI-рейтинг, сильные стороны и конкретные улучшения'],
-            ] as const).map(([icon, title, text]) => (
-              <article key={title} className="sl-step-card sl-squircle">
-                <span className="sl-step-ico" aria-hidden>
-                  <MiniGlyph name={icon} />
-                </span>
-                <h3 className="sl-step-title">{title}</h3>
-                <p className="sl-step-text">{text}</p>
-              </article>
-            ))}
-          </div>
-          <GridEnds />
-        </section>
-
-        {/* Trainer */}
-        <section className="sl-sec sl-reveal" id="trainer">
-          <div className="sl-band">
-            <div>
-              <div className="sl-section-tag">Тренажёр</div>
-              <h2 className="sl-h2">Тренируйте менеджеров на реальных ситуациях вашего бизнеса</h2>
-            </div>
-            <p className="sl-lede">
-              Симуляция общения с клиентом и реальные рабочие ситуации
-              до первого реального диалога
-            </p>
-          </div>
-          <div className="sl-audience-row sl-trainer-audience">
-            <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader">
-              <ShaderBackground className="sl-audience-shader" variant="amber" />
-              <div className="sl-audience-copy">
-                <span className="sl-audience-kicker">Для бизнеса</span>
-                <h3 className="sl-audience-title">Ваши скрипты. Видимый прогресс</h3>
-                <p className="sl-audience-text">
-                  Сценарии на ваших стандартах. Видно, кто тренируется, а кто нет
+        <PdfStructureBlocks
+          onShowExample={() => setReportOpen(true)}
+          afterManager={
+            <section className="sl-sec sl-reveal" id="trainer">
+              <div className="sl-band">
+                <div>
+                  <div className="sl-section-tag">Тренажёр</div>
+                  <h2 className="sl-h2">
+                    Тренируйте менеджеров
+                    <br />
+                    на реальных ситуациях
+                  </h2>
+                </div>
+                <p className="sl-lede">
+                  Симуляция общения с клиентом и реальные рабочие ситуации
+                  до первого реального диалога
                 </p>
               </div>
-              <div className="sl-audience-illu" aria-hidden><UiTrainerBiz /></div>
-            </article>
-            <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader">
-              <ShaderBackground className="sl-audience-shader" variant="dusk" />
-              <div className="sl-audience-copy">
-                <span className="sl-audience-kicker">Для менеджера</span>
-                <h3 className="sl-audience-title">Голосовой AI-клиент без подсказок</h3>
-                <p className="sl-audience-text">
-                  Живой диалог голосом. После сессии — оценка и разбор ошибок
-                </p>
+              <div className="sl-audience-row sl-trainer-audience">
+                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader">
+                  <ShaderBackground className="sl-audience-shader" variant="amber" />
+                  <div className="sl-audience-copy">
+                    <span className="sl-audience-kicker">Для бизнеса</span>
+                    <h3 className="sl-audience-title">Ваши скрипты. Видимый прогресс</h3>
+                    <p className="sl-audience-text">
+                      Сценарии на ваших стандартах. Видно, кто тренируется, а кто нет
+                    </p>
+                  </div>
+                  <div className="sl-audience-illu" aria-hidden><UiTrainerBiz /></div>
+                </article>
+                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader">
+                  <ShaderBackground className="sl-audience-shader" variant="dusk" />
+                  <div className="sl-audience-copy">
+                    <span className="sl-audience-kicker">Для менеджера</span>
+                    <h3 className="sl-audience-title">Голосовой AI-клиент без подсказок</h3>
+                    <p className="sl-audience-text">
+                      Живой диалог голосом. После сессии — оценка и разбор ошибок
+                    </p>
+                  </div>
+                  <div className="sl-audience-illu" aria-hidden><UiTrainerMgr /></div>
+                </article>
               </div>
-              <div className="sl-audience-illu" aria-hidden><UiTrainerMgr /></div>
-            </article>
-          </div>
-          <div className="sl-step-cards">
-            {([
-              ['box', 'Знание ассортимента', 'Продукт и условия — до первого звонка клиенту'],
-              ['script', 'Разговор по скрипту', 'Сценарий компании голосом, без подсказок и вариантов'],
-              ['chat', 'Работа с возражениями', '«Дорого», сравнения и жёсткие вопросы клиентов'],
-              ['users', 'Сложные клиенты', 'Разные типы клиентов и эмоциональные состояния'],
-            ] as const).map(([icon, title, text]) => (
-              <article key={title} className="sl-step-card sl-squircle">
-                <span className="sl-step-ico" aria-hidden>
-                  <MiniGlyph name={icon} />
-                </span>
-                <h3 className="sl-step-title">{title}</h3>
-                <p className="sl-step-text">{text}</p>
-              </article>
-            ))}
-          </div>
-          <GridEnds />
-        </section>
-
-        {/* Setup under your business */}
-        <section className="sl-sec sl-reveal" id="setup">
-          <div className="sl-band">
-            <div>
-              <div className="sl-section-tag">Настройка под ваш бизнес</div>
-              <h2 className="sl-h2">Реальные данные. Ваши стандарты. Любые сценарии</h2>
-            </div>
-            <p className="sl-lede">
-              Тренировки и проверки строятся на ваших данных,
-              правилах и сценариях продаж
-            </p>
-          </div>
-          <div className="sl-feat-row sl-setup-row">
-            <article className="sl-feat-cell sl-setup-cell sl-squircle">
-              <div className="sl-feat-illu">
-                <img className="sl-feat-img" src={setupData} alt="" />
+              <div className="sl-step-cards">
+                {([
+                  ['box', 'Знание ассортимента', 'Продукт и условия — до первого звонка клиенту'],
+                  ['script', 'Разговор по скрипту', 'Сценарий компании голосом, без подсказок и вариантов'],
+                  ['chat', 'Работа с возражениями', '«Дорого», сравнения и жёсткие вопросы клиентов'],
+                  ['users', 'Сложные клиенты', 'Разные типы клиентов и эмоциональные состояния'],
+                ] as const).map(([icon, title, text]) => (
+                  <article key={title} className="sl-step-card sl-squircle">
+                    <span className="sl-step-ico" aria-hidden>
+                      <MiniGlyph name={icon} />
+                    </span>
+                    <h3 className="sl-step-title">{title}</h3>
+                    <p className="sl-step-text">{text}</p>
+                  </article>
+                ))}
               </div>
-              <h3 className="sl-feat-title">Данные из ваших систем</h3>
-              <p className="sl-feat-text">
-                Информация подтягивается из ваших систем и используется в разговорах
-              </p>
-              <ul className="sl-setup-list">
-                <li>Автомобили и комплектации</li>
-                <li>Наличие и склад</li>
-                <li>Цены, акции и кредит</li>
-                <li>Фиды склада и товарные матрицы</li>
-              </ul>
-            </article>
-            <article className="sl-feat-cell sl-setup-cell sl-squircle">
-              <div className="sl-feat-illu">
-                <img className="sl-feat-img" src={setupRules} alt="" />
-              </div>
-              <h3 className="sl-feat-title">Настройка правил оценки</h3>
-              <p className="sl-feat-text">
-                AI оценивает разговор по правилам вашего бизнеса
-              </p>
-              <ul className="sl-setup-list">
-                <li>Скрипты продаж</li>
-                <li>Регламенты</li>
-                <li>Чек-листы</li>
-                <li>Критерии оценки</li>
-              </ul>
-            </article>
-            <article className="sl-feat-cell sl-setup-cell sl-squircle">
-              <div className="sl-feat-illu">
-                <img className="sl-feat-img" src={setupProfiles} alt="" />
-              </div>
-              <h3 className="sl-feat-title">Профили и сценарии</h3>
-              <p className="sl-feat-text">
-                Разные профили клиентов и сценарии — для тренировок и проверок
-              </p>
-              <ul className="sl-setup-list">
-                <li>Новый клиент</li>
-                <li>Кредит и trade-in</li>
-                <li>Возражение по цене</li>
-                <li>Повторная покупка</li>
-              </ul>
-            </article>
-          </div>
-          <GridEnds />
-        </section>
-
-        {/* Analytics + recommendations */}
-        <section className="sl-sec sl-reveal" id="analytics">
-          <div className="sl-band">
-            <div>
-              <div className="sl-section-tag">Аналитика и рекомендации</div>
-              <h2 className="sl-h2">Контролируйте качество — и получайте умные рекомендации</h2>
-            </div>
-            <p className="sl-lede">
-              От менеджера и точки до всей сети. Цифры превращаются
-              в приоритеты: системные и свежие проблемы
-            </p>
-          </div>
-
-          <div className="sl-analytics-shot">
-            <ShaderBackground className="sl-analytics-shot-canvas" variant="forest" />
-            <div className="sl-analytics-shot-ui">
-              <AnalyticsMock />
-            </div>
-          </div>
-
-          <AnalyticsLevels />
-          <GridEnds />
-        </section>
-
-        {/* Why Salsa */}
-        <section className="sl-sec sl-reveal" id="why">
-          <div className="sl-band sl-band--title">
-            <div>
-              <div className="sl-section-tag">Почему Salsa</div>
-              <h2 className="sl-h2">Всё для контроля качества продаж</h2>
-            </div>
-          </div>
-
-          <div className="sl-why-grid">
-            {([
-              ['call', 'AI-тайный покупатель', 'Звонит на точки как реальный клиент. Проверка без шаблонов и сюрпризов'],
-              ['chat', 'Эмоции как в разговоре', 'От спокойного до раздражённого клиента. Менеджер отвечает как обычно'],
-              ['users', 'AI-тренажёр', 'Сценарии на ваших стандартах. Ошибки — в тренировке, не у клиента'],
-              ['box', 'Ваши данные', 'Ассортимент, скрипты, регламенты. Разговоры на материалах бизнеса'],
-              ['list', 'Аналитика на всех уровнях', 'Менеджер, точка, компания. Слабые места видны сразу'],
-              ['gauge', 'Рейтинг сотрудников', 'Сравнение по ключевым метрикам. Кого учить — понятно'],
-              ['pin', 'Рейтинг точек', 'Лидеры и отстающие в сети. Лучшие практики — на всю компанию'],
-              ['siren', 'Умные рекомендации', 'Что чинить и какой прирост это даст. Данные превращаются в действия'],
-            ] as const).map(([icon, title, text]) => (
-              <article key={title} className="sl-why-cell">
-                <span className="sl-why-ico" aria-hidden>
-                  <MiniGlyph name={icon} />
-                </span>
-                <h3 className="sl-why-title">{title}</h3>
-                <p className="sl-why-text">{text}</p>
-              </article>
-            ))}
-          </div>
-          <GridEnds />
-        </section>
-
-        {/* Final CTA */}
-        <section className="sl-sec sl-final sl-reveal">
-          <div className="sl-final-shot">
-            <ShaderBackground className="sl-final-shot-canvas" variant="warm" />
-            <div className="sl-final-shot-inner">
-              <h2 className="sl-final-title">Посмотрите Salsa в деле</h2>
-              <p className="sl-final-sub">
-                Оставьте номер — AI позвонит вам как тайный покупатель
-                и пришлёт отчёт через пару минут. Это и есть демо
-              </p>
-              <DemoCta label="Запросить демо-звонок" variant="white" />
-            </div>
-          </div>
-          <GridEnds />
-        </section>
+              <GridEnds />
+            </section>
+          }
+        />
 
         {/* Footer */}
         <footer className="sl-footer sl-reveal">
           <div className="sl-footer-main">
             <div className="sl-footer-brand">
-              <span className="sl-footer-logo">Salsa</span>
+              <span className="sl-footer-logo">
+                <SalsaLogo className="sl-footer-logo-svg" />
+              </span>
               <span className="sl-footer-note">AI-платформа контроля качества продаж</span>
             </div>
             <nav className="sl-footer-nav" aria-label="Навигация">
-              <a href="#product">Продукт</a>
-              <a href="#shopper">Тайный покупатель</a>
+              <a href="#how">Как это работает</a>
+              <a href="#pdf-product">Продукт</a>
+              <a href="#report">Разбор звонка</a>
+              <a href="#manager">Руководителю</a>
               <a href="#trainer">Тренажёр</a>
-              <a href="#analytics">Аналитика</a>
-              <a href="#why">Почему Salsa</a>
+              <a href="#importers">Импортёрам</a>
+              <a href="#faq">FAQ</a>
             </nav>
           </div>
           <div className="sl-footer-meta">

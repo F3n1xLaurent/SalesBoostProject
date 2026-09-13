@@ -6,16 +6,17 @@ type FlowButtonProps = {
   onClick?: () => void;
   type?: 'button' | 'submit';
   className?: string;
-  /** White outline on dark surfaces; fills white on hover */
-  variant?: 'default' | 'white';
+  /** default: outline → fill; solid: filled primary; white: on dark surfaces */
+  variant?: 'default' | 'white' | 'solid';
 };
 
 const BASE =
-  'group relative inline-flex items-center gap-1 overflow-hidden rounded-[100px] border-[1.5px] bg-transparent px-8 py-3 text-sm font-semibold no-underline cursor-pointer transition-all duration-[600ms] ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-transparent hover:rounded-[12px] active:scale-[0.95]';
+  'group relative inline-flex items-center gap-1 overflow-hidden rounded-[100px] border-[1.5px] px-8 py-3 text-sm font-semibold no-underline cursor-pointer transition-all duration-[600ms] ease-[cubic-bezier(0.23,1,0.32,1)] hover:border-transparent hover:rounded-[12px] active:scale-[0.95]';
 
 const VARIANT = {
-  default: 'border-[#333333]/40 text-[#111111] hover:text-white',
-  white: 'border-white/90 text-white hover:text-[#111111]',
+  default: 'bg-transparent border-[#333333]/40 text-[#111111] hover:text-white',
+  white: 'bg-transparent border-white/90 text-white hover:text-[#111111]',
+  solid: 'border-[#111111] !bg-[#111111] text-white hover:text-[#111111]',
 } as const;
 
 const ARROW = {
@@ -23,11 +24,14 @@ const ARROW = {
     'stroke-[#111111] group-hover:stroke-white',
   white:
     'stroke-white group-hover:stroke-[#111111]',
+  solid:
+    'stroke-white group-hover:stroke-[#111111]',
 } as const;
 
 const FILL = {
   default: 'bg-[#111111]',
   white: 'bg-white',
+  solid: 'bg-white',
 } as const;
 
 export function FlowButton({
