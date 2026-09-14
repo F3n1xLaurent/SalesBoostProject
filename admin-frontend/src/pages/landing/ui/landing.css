@@ -5168,7 +5168,7 @@ html:has(.sl-page) {
   min-width: 0;
   padding: 28px 26px 26px;
   border-radius: 22px;
-  background: color-mix(in srgb, var(--tb-cream) 88%, #fff);
+  background: #FFFFFF;
   border: 1px solid color-mix(in srgb, #fff 35%, transparent);
   box-shadow: 0 16px 40px rgba(22, 22, 19, 0.16);
 }
