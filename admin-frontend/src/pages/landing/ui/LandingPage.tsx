@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router';
 import { BrutalModal } from '../../../shared/ui/brutal-modal/BrutalModal';
+import { LEGAL_NAV, OPERATOR_ADDRESS } from '../lib/legalDocuments';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { buildLandingExampleAudit } from '../lib/exampleAudit';
-import { ShaderBackground } from './ShaderBackground';
+import trainerBizUi from '../assets/trainer-biz.png';
+import trainerMgrUi from '../assets/trainer-mgr.png';
 import { FlowButton } from './FlowButton';
 import { PdfStructureBlocks } from './PdfStructure';
 import { SalsaLogo } from './SalsaLogo';
@@ -106,69 +109,6 @@ function MiniGlyph({
     </svg>
   );
 }
-
-function UiTrainerBiz() {
-  const rows = [
-    { name: 'Иванов А.', status: 'Готово', pct: 92, tone: 'done' as const },
-    { name: 'Петрова М.', status: 'В работе', pct: 58, tone: 'mid' as const },
-    { name: 'Козлов Д.', status: 'Не начал', pct: 8, tone: 'low' as const },
-  ];
-  return (
-    <div className="sl-ui-snip sl-ui-snip-biz" aria-hidden>
-      <div className="sl-ui-snip-head">
-        <span className="sl-ui-snip-label">Тренировки команды</span>
-        <span className="sl-ui-snip-pill">Скрипт · Возражения</span>
-      </div>
-      <ul className="sl-ui-snip-rows">
-        {rows.map((row) => (
-          <li key={row.name}>
-            <div className="sl-ui-snip-row-top">
-              <span className="sl-ui-snip-name">{row.name}</span>
-              <span className={`sl-ui-snip-status is-${row.tone}`}>{row.status}</span>
-            </div>
-            <span className="sl-ui-snip-bar">
-              <i style={{ width: `${row.pct}%` }} className={`is-${row.tone}`} />
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function UiTrainerMgr() {
-  const bars = [8, 18, 12, 26, 14, 30, 16, 22, 28, 12, 24, 10, 20, 15, 27, 11];
-  return (
-    <div className="sl-ui-snip sl-ui-snip-voice" aria-hidden>
-      <div className="sl-ui-snip-head">
-        <div className="sl-ui-snip-live">
-          <span className="sl-ui-snip-dot" />
-          AI-клиент · в эфире
-        </div>
-        <span className="sl-ui-snip-timer">04:18</span>
-      </div>
-      <div className="sl-ui-snip-wave">
-        {bars.map((h, i) => (
-          <span key={i} style={{ height: h }} />
-        ))}
-      </div>
-      <div className="sl-ui-snip-foot">
-        <div className="sl-ui-snip-score-block">
-          <div className="sl-ui-snip-score">74</div>
-          <div className="sl-ui-snip-score-meta">
-            <span className="sl-ui-snip-score-title">Оценка сессии</span>
-            <span className="sl-ui-snip-score-sub">Средне</span>
-          </div>
-        </div>
-        <div className="sl-ui-snip-chips">
-          <span>Цена без вилки</span>
-          <span>Нет next step</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 
 function useSoftReveal() {
   useEffect(() => {
@@ -343,8 +283,7 @@ export function LandingPage() {
                 </p>
               </div>
               <div className="sl-audience-row sl-trainer-audience sl-reveal sl-reveal-delay-1">
-                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader sl-audience-card--shader-light">
-                  <ShaderBackground className="sl-audience-shader" variant="plasmaMist" />
+                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--muted">
                   <div className="sl-audience-copy">
                     <span className="sl-audience-kicker">Для бизнеса</span>
                     <h3 className="sl-audience-title">Ваши скрипты. Видимый прогресс</h3>
@@ -352,10 +291,11 @@ export function LandingPage() {
                       Сценарии на ваших стандартах. Видно, кто тренируется, а кто нет
                     </p>
                   </div>
-                  <div className="sl-audience-illu" aria-hidden><UiTrainerBiz /></div>
+                  <div className="sl-audience-illu" aria-hidden>
+                    <img className="sl-trainer-ui" src={trainerBizUi} width={1024} height={563} alt="" />
+                  </div>
                 </article>
-                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader sl-audience-card--shader-light">
-                  <ShaderBackground className="sl-audience-shader" variant="plasmaMistAlt" />
+                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--muted">
                   <div className="sl-audience-copy">
                     <span className="sl-audience-kicker">Для менеджера</span>
                     <h3 className="sl-audience-title">Голосовой AI-клиент без подсказок</h3>
@@ -363,7 +303,9 @@ export function LandingPage() {
                       Живой диалог голосом. После сессии — оценка и разбор ошибок
                     </p>
                   </div>
-                  <div className="sl-audience-illu" aria-hidden><UiTrainerMgr /></div>
+                  <div className="sl-audience-illu" aria-hidden>
+                    <img className="sl-trainer-ui" src={trainerMgrUi} width={1024} height={563} alt="" />
+                  </div>
                 </article>
               </div>
               <div className="sl-step-cards sl-reveal sl-reveal-delay-2">
@@ -408,11 +350,12 @@ export function LandingPage() {
           </div>
           <div className="sl-footer-meta">
             <span className="sl-footer-address">
-              Юридический адрес: тест тест тест
+              Юридический адрес: {OPERATOR_ADDRESS}
             </span>
             <div className="sl-footer-legal">
-              <a href="#privacy">Политика конфиденциальности</a>
-              <a href="#terms">Пользовательское соглашение</a>
+              {LEGAL_NAV.map((item) => (
+                <Link key={item.slug} to={item.path}>{item.navLabel}</Link>
+              ))}
             </div>
             <span className="sl-footer-copy">© {new Date().getFullYear()}</span>
           </div>
@@ -427,6 +370,8 @@ export function LandingPage() {
         title="Пример отчёта"
         width="wide"
         className="sl-landing-modal"
+        overlayClassName="sl-landing-modal-overlay"
+        exitDurationMs={420}
       >
         <div className="sl-report-modal">
           <AuditAnalyticsReport detail={exampleAudit} />

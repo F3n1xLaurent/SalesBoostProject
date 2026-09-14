@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Link } from 'react-router';
 import { Orb } from '@/components/ui/orb';
 import featAnalytics from '../assets/Analytics.png';
 import featPhone from '../assets/Phone.png';
@@ -6,8 +7,10 @@ import featTrain from '../assets/Train.png';
 import avatarMan1 from '../assets/avatar-man-1.png';
 import avatarMan2 from '../assets/avatar-man-2.png';
 import avatarWoman from '../assets/avatar-woman.png';
-import heroDashboardUi from '../assets/red-button-dashboard.svg';
-import reportUi from '../assets/employee-evaluation.svg';
+import dashboardDesktopUi from '../assets/dashboard-desktop.svg';
+import dashboardMobileUi from '../assets/dashboard-mobile.svg';
+import reportDesktopUi from '../assets/report-desktop.svg';
+import reportMobileUi from '../assets/report-mobile.svg';
 import { FlowButton } from './FlowButton';
 import { SalsaLogo } from './SalsaLogo';
 import { ShaderBackground } from './ShaderBackground';
@@ -77,11 +80,13 @@ function DemoLeadForm() {
   const [company, setCompany] = useState('');
   const [phone, setPhone] = useState('');
   const [comment, setComment] = useState('');
+  const [pdnConsent, setPdnConsent] = useState(false);
+  const [adsConsent, setAdsConsent] = useState(false);
   const [sent, setSent] = useState(false);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !company.trim() || !phone.trim()) return;
+    if (!name.trim() || !company.trim() || !phone.trim() || !pdnConsent) return;
     setSent(true);
   };
 
@@ -142,6 +147,39 @@ function DemoLeadForm() {
           onChange={(e) => setComment(e.target.value)}
         />
       </label>
+      <div className="sl-lead-consents">
+        <label className="sl-lead-check">
+          <input
+            type="checkbox"
+            checked={pdnConsent}
+            onChange={(e) => setPdnConsent(e.target.checked)}
+            required
+          />
+          <span>
+            Даю{' '}
+            <Link to="/landing/consent" target="_blank" rel="noopener noreferrer">
+              согласие на обработку персональных данных
+            </Link>
+            {' '}и принимаю{' '}
+            <Link to="/landing/privacy" target="_blank" rel="noopener noreferrer">
+              политику обработки персональных данных
+            </Link>
+          </span>
+        </label>
+        <label className="sl-lead-check">
+          <input
+            type="checkbox"
+            checked={adsConsent}
+            onChange={(e) => setAdsConsent(e.target.checked)}
+          />
+          <span>
+            Согласен получать{' '}
+            <Link to="/landing/marketing" target="_blank" rel="noopener noreferrer">
+              информационные и рекламные сообщения
+            </Link>
+          </span>
+        </label>
+      </div>
       <div className="sl-lead-actions">
         <FlowButton text="Записаться на демо" type="submit" variant="solid" />
       </div>
@@ -375,6 +413,12 @@ function TryLiveDemo() {
             />
             <FlowButton text="Получить звонок" type="submit" variant="solid" />
           </div>
+          <p className="sl-try-legal">
+            Нажимая кнопку, вы даёте{' '}
+            <Link to="/landing/consent" target="_blank" rel="noopener noreferrer">
+              согласие на обработку персональных данных
+            </Link>
+          </p>
         </form>
       </div>
       <GridEnds />
@@ -529,11 +573,16 @@ function ReportShot({ onShowExample }: { onShowExample: () => void }) {
   return (
     <div className="sl-report-shot sl-reveal sl-reveal-delay-1">
       <ShaderBackground className="sl-report-shot-canvas sl-hero-shot-shader" variant="plasmaReport" />
-      <img
-        className="sl-report-shot-ui"
-        src={reportUi}
-        alt="Пример отчёта по звонку тайного покупателя"
-      />
+      <picture className="sl-report-shot-picture">
+        <source media="(max-width: 860px)" srcSet={reportMobileUi} type="image/svg+xml" />
+        <img
+          className="sl-report-shot-ui"
+          src={reportDesktopUi}
+          width={1120}
+          height={584}
+          alt="Пример отчёта по звонку тайного покупателя"
+        />
+      </picture>
       <div className="sl-report-shot-action">
         <FlowButton text="Показать пример отчёта" onClick={onShowExample} />
       </div>
@@ -725,11 +774,16 @@ export function PdfStructureBlocks({
         <div className="sl-well-cell sl-reveal sl-reveal-delay-1">
           <div className="sl-hero-shot">
             <ShaderBackground className="sl-hero-shot-canvas sl-hero-shot-shader" variant="plasma" />
-            <img
-              className="sl-hero-shot-ui"
-              src={heroDashboardUi}
-              alt="Дашборд Salsa: ключевые метрики и аналитика сети"
-            />
+            <picture className="sl-hero-shot-picture">
+              <source media="(max-width: 860px)" srcSet={dashboardMobileUi} type="image/svg+xml" />
+              <img
+                className="sl-hero-shot-ui"
+                src={dashboardDesktopUi}
+                width={1132}
+                height={739}
+                alt="Дашборд Salsa: ключевые метрики и аналитика сети"
+              />
+            </picture>
           </div>
         </div>
         <GridEnds />
@@ -852,7 +906,7 @@ export function PdfStructureBlocks({
       {/* Демо */}
       <section className="sl-sec sl-final sl-reveal" id="demo">
         <div className="sl-final-shot sl-demo-stage sl-reveal sl-reveal-delay-1">
-          <ShaderBackground className="sl-final-shot-canvas sl-hero-shot-shader" variant="plasmaForm" />
+          <ShaderBackground className="sl-final-shot-canvas sl-hero-shot-shader" variant="plasma" />
           <div className="sl-final-shot-grid">
             <div className="sl-final-shot-copy">
               <div>
