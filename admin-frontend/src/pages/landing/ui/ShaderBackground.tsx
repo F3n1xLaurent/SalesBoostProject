@@ -158,6 +158,15 @@ vec3 hueRotate(vec3 col, float a) {
   return toRGB * yiq;
 }
 
+#ifdef PLASMA_PATTERN
+vec3 shade(vec2 uv, vec2 p, float t) {
+  float k = 2.0 + u_intensity * 6.0;
+  float v = sin(p.x * k + t) + sin(p.y * k * 0.8 - t * 0.7)
+    + sin((p.x + p.y) * k * 0.6 + t * 0.5)
+    + sin(length(p) * k * 1.2 - t);
+  return palette(0.5 + 0.5 * sin(v + u_seed));
+}
+#else
 vec3 shade(vec2 uv, vec2 p, float t) {
   vec3 acc = u_colors[0] * 0.15;
   float total = 0.15;
@@ -173,6 +182,7 @@ vec3 shade(vec2 uv, vec2 p, float t) {
   }
   return acc / total;
 }
+#endif
 
 void main() {
   vec2 uv = gl_FragCoord.xy / u_resolution.xy;
@@ -258,12 +268,53 @@ void main() {
 
 type ColorRgb = [number, number, number]
 
-export type ShaderVariant = "warm" | "forest" | "amber" | "dusk"
+export type ShaderVariant =
+  | "warm"
+  | "forest"
+  | "amber"
+  | "dusk"
+  | "sky"
+  | "peach"
+  | "ink"
+  | "floss"
+  | "apollo"
+  | "moss"
+  | "wash"
+  | "plasma"
+  | "plasmaReport"
+  | "plasmaForm"
+  | "plasmaMist"
+  | "plasmaMistAlt"
 
-const VARIANT_COLORS: Record<
-  ShaderVariant,
-  { colors: ColorRgb[]; colorCount: number; seed: number; timeScale?: number; drift?: number }
-> = {
+type VariantConfig = {
+  colors: ColorRgb[]
+  colorCount: number
+  seed: number
+  timeScale?: number
+  drift?: number
+  rotate?: number
+  scale?: number
+  intensity?: number
+  paramA?: number
+  warp?: number
+  detail?: number
+  contrast?: number
+  brightness?: number
+  saturation?: number
+  hue?: number
+  vignette?: number
+  blur?: number
+  grain?: number
+  offsetX?: number
+  offsetY?: number
+  cursorEnabled?: boolean
+  cursorEffect?: number
+  cursorStrength?: number
+  cursorRadius?: number
+  plasma?: boolean
+}
+
+const VARIANT_COLORS: Record<ShaderVariant, VariantConfig> = {
   // Warm rust → orange → peach → cream (hero)
   warm: {
     colors: [
@@ -308,6 +359,310 @@ const VARIANT_COLORS: Record<
     ],
     colorCount: 5,
     seed: 3187.0,
+  },
+  // Apollo splash: yellow field, a little pink fringe, pastel beige
+  apollo: {
+    colors: [
+      [1.000, 0.965, 0.120],
+      [1.000, 0.980, 0.180],
+      [1.000, 0.990, 0.240],
+      [1.000, 0.970, 0.140],
+      [1.000, 0.760, 0.830],
+      [0.945, 0.905, 0.820],
+      [1.000, 0.965, 0.120],
+      [1.000, 0.965, 0.120],
+    ],
+    colorCount: 6,
+    seed: 1888.0,
+    timeScale: 0.45,
+    drift: 0.06,
+  },
+  // Eleven v3: icy white-blue bloom → mint → deep forest
+  sky: {
+    colors: [
+      [0.040, 0.090, 0.055],
+      [0.080, 0.160, 0.100],
+      [0.220, 0.380, 0.280],
+      [0.450, 0.680, 0.620],
+      [0.780, 0.900, 0.960],
+      [0.930, 0.970, 1.000],
+      [0.930, 0.970, 1.000],
+      [0.930, 0.970, 1.000],
+    ],
+    colorCount: 6,
+    seed: 2711.0,
+    timeScale: 0.42,
+    drift: 0.05,
+  },
+  // Hourglass: deep aubergine vs hot coral / gold
+  peach: {
+    colors: [
+      [0.180, 0.070, 0.140],
+      [0.310, 0.110, 0.180],
+      [0.620, 0.220, 0.180],
+      [0.960, 0.420, 0.160],
+      [1.000, 0.620, 0.180],
+      [1.000, 0.780, 0.320],
+      [1.000, 0.780, 0.320],
+      [1.000, 0.780, 0.320],
+    ],
+    colorCount: 6,
+    seed: 1881.0,
+    timeScale: 0.42,
+    drift: 0.05,
+  },
+  // Dubbing: near-black olive vs saturated violet / gold
+  ink: {
+    colors: [
+      [0.020, 0.030, 0.020],
+      [0.040, 0.070, 0.035],
+      [0.080, 0.140, 0.060],
+      [0.420, 0.220, 0.720],
+      [0.920, 0.620, 0.120],
+      [1.000, 0.780, 0.280],
+      [1.000, 0.780, 0.280],
+      [1.000, 0.780, 0.280],
+    ],
+    colorCount: 6,
+    seed: 3344.0,
+    timeScale: 0.52,
+    drift: 0.07,
+  },
+  // Report ref: forest → olive → yellow bloom → sky
+  moss: {
+    colors: [
+      [0.145, 0.255, 0.176],
+      [0.220, 0.310, 0.180],
+      [0.780, 0.720, 0.280],
+      [0.910, 0.850, 0.420],
+      [0.557, 0.722, 0.847],
+      [0.863, 0.910, 0.941],
+      [0.863, 0.910, 0.941],
+      [0.863, 0.910, 0.941],
+    ],
+    colorCount: 6,
+    seed: 2744.0,
+    timeScale: 0.40,
+    drift: 0.05,
+  },
+  // Form wash: deep royal → sky → ice
+  wash: {
+    colors: [
+      [0.102, 0.435, 1.000],
+      [0.169, 0.549, 1.000],
+      [0.290, 0.655, 1.000],
+      [0.431, 0.831, 1.000],
+      [0.722, 0.906, 1.000],
+      [0.953, 0.953, 0.953],
+      [0.953, 0.953, 0.953],
+      [0.953, 0.953, 0.953],
+    ],
+    colorCount: 6,
+    seed: 2610.0,
+    timeScale: 0.38,
+    drift: 0.045,
+  },
+  // Welcome lime: white bloom → neon lime
+  floss: {
+    colors: [
+      [1.000, 1.000, 1.000],
+      [0.980, 1.000, 0.820],
+      [0.900, 1.000, 0.380],
+      [0.780, 1.000, 0.080],
+      [0.680, 0.980, 0.000],
+      [0.680, 0.980, 0.000],
+      [0.680, 0.980, 0.000],
+      [0.680, 0.980, 0.000],
+    ],
+    colorCount: 5,
+    seed: 4520.0,
+    timeScale: 0.40,
+    drift: 0.05,
+  },
+  // Product shot: saturated sand + lemon wave, drifting forward
+  plasma: {
+    colors: [
+      [0.906, 0.827, 0.675], // #E7D3AC sand
+      [0.973, 0.878, 0.490],
+      [1.000, 0.886, 0.200],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+    ],
+    colorCount: 4,
+    seed: 8321.0,
+    timeScale: 0.35,
+    drift: 0.045,
+    rotate: 0.28,
+    scale: 0.68,
+    intensity: 0.54,
+    paramA: 0.28,
+    warp: 0.22,
+    detail: 1.34,
+    contrast: 1.04,
+    brightness: 0.02,
+    saturation: 1.22,
+    hue: 0,
+    vignette: 0.05,
+    blur: 0.039,
+    grain: 0.01,
+    offsetX: 0.1,
+    offsetY: 0.18,
+    cursorEnabled: true,
+    cursorEffect: 0,
+    cursorStrength: 0.1,
+    cursorRadius: 0.49,
+    plasma: true,
+  },
+  // Report shot: same sand, reverse drift, opposite angle
+  plasmaReport: {
+    colors: [
+      [0.906, 0.827, 0.675],
+      [0.973, 0.878, 0.490],
+      [1.000, 0.886, 0.200],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+    ],
+    colorCount: 4,
+    seed: 2190.0,
+    timeScale: -0.33,
+    drift: 0.05,
+    rotate: -1.05,
+    scale: 0.64,
+    intensity: 0.5,
+    paramA: 0.28,
+    warp: 0.2,
+    detail: 1.28,
+    contrast: 1.04,
+    brightness: 0.02,
+    saturation: 1.22,
+    hue: 0,
+    vignette: 0.05,
+    blur: 0.039,
+    grain: 0.01,
+    offsetX: -0.28,
+    offsetY: -0.16,
+    cursorEnabled: true,
+    cursorEffect: 0,
+    cursorStrength: 0.1,
+    cursorRadius: 0.49,
+    plasma: true,
+  },
+  // Form: sand field, yellow bloom, slow diagonal
+  plasmaForm: {
+    colors: [
+      [0.898, 0.816, 0.659],
+      [0.910, 0.831, 0.686],
+      [0.910, 0.831, 0.686],
+      [0.922, 0.847, 0.710],
+      [0.961, 0.871, 0.510],
+      [1.000, 0.878, 0.235],
+      [0.910, 0.831, 0.686],
+      [0.898, 0.816, 0.659],
+    ],
+    colorCount: 6,
+    seed: 6110.0,
+    timeScale: 0.26,
+    drift: 0.035,
+    rotate: 1.35,
+    scale: 0.38,
+    intensity: 0.2,
+    paramA: 0.28,
+    warp: 0.14,
+    detail: 1.05,
+    contrast: 1.03,
+    brightness: 0.03,
+    saturation: 1.16,
+    hue: 0,
+    vignette: 0.03,
+    blur: 0.055,
+    grain: 0.008,
+    offsetX: -0.58,
+    offsetY: 0.48,
+    cursorEnabled: true,
+    cursorEffect: 0,
+    cursorStrength: 0.08,
+    cursorRadius: 0.55,
+    plasma: true,
+  },
+  // Trainer left: same rich sand/lemon as other shots, yellow only as a small bloom
+  plasmaMist: {
+    colors: [
+      [0.906, 0.827, 0.675],
+      [0.906, 0.827, 0.675],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.973, 0.878, 0.490],
+      [1.000, 0.886, 0.200],
+      [0.906, 0.827, 0.675],
+      [0.906, 0.827, 0.675],
+    ],
+    colorCount: 6,
+    seed: 7044.0,
+    timeScale: 0.22,
+    drift: 0.03,
+    rotate: 0.55,
+    scale: 0.72,
+    intensity: 0.32,
+    paramA: 0.28,
+    warp: 0.1,
+    detail: 1.05,
+    contrast: 1.04,
+    brightness: 0.02,
+    saturation: 1.22,
+    hue: 0,
+    vignette: 0.03,
+    blur: 0.04,
+    grain: 0.008,
+    offsetX: -0.42,
+    offsetY: 0.32,
+    cursorEnabled: true,
+    cursorEffect: 0,
+    cursorStrength: 0.06,
+    cursorRadius: 0.58,
+    plasma: true,
+  },
+  // Trainer right: reverse + opposite corner so the pair doesn't twin
+  plasmaMistAlt: {
+    colors: [
+      [0.906, 0.827, 0.675],
+      [0.906, 0.827, 0.675],
+      [0.914, 0.839, 0.698],
+      [0.914, 0.839, 0.698],
+      [0.973, 0.878, 0.490],
+      [1.000, 0.886, 0.200],
+      [0.906, 0.827, 0.675],
+      [0.906, 0.827, 0.675],
+    ],
+    colorCount: 6,
+    seed: 4511.0,
+    timeScale: -0.25,
+    drift: 0.032,
+    rotate: 2.45,
+    scale: 0.7,
+    intensity: 0.3,
+    paramA: 0.28,
+    warp: 0.1,
+    detail: 1.05,
+    contrast: 1.04,
+    brightness: 0.02,
+    saturation: 1.22,
+    hue: 0,
+    vignette: 0.03,
+    blur: 0.04,
+    grain: 0.008,
+    offsetX: 0.5,
+    offsetY: -0.36,
+    cursorEnabled: true,
+    cursorEffect: 0,
+    cursorStrength: 0.06,
+    cursorRadius: 0.58,
+    plasma: true,
   },
   // Steel blue → lavender → peach → terracotta
   dusk: {
@@ -370,6 +725,25 @@ export function ShaderBackground({
     const palette = VARIANT_COLORS[variant]
     const timeScale = palette.timeScale ?? UNIFORMS.timeScale
     const drift = palette.drift ?? UNIFORMS.drift
+    const rotate = palette.rotate ?? UNIFORMS.rotate
+    const scale = palette.scale ?? UNIFORMS.scale
+    const intensity = palette.intensity ?? UNIFORMS.intensity
+    const paramA = palette.paramA ?? UNIFORMS.paramA
+    const warp = palette.warp ?? UNIFORMS.warp
+    const detail = palette.detail ?? UNIFORMS.detail
+    const contrast = palette.contrast ?? UNIFORMS.contrast
+    const brightness = palette.brightness ?? UNIFORMS.brightness
+    const saturation = palette.saturation ?? UNIFORMS.saturation
+    const hue = palette.hue ?? UNIFORMS.hue
+    const vignette = palette.vignette ?? UNIFORMS.vignette
+    const blur = palette.blur ?? UNIFORMS.blur
+    const grain = palette.grain ?? UNIFORMS.grain
+    const offsetX = palette.offsetX ?? UNIFORMS.offsetX
+    const offsetY = palette.offsetY ?? UNIFORMS.offsetY
+    const cursorEnabled = palette.cursorEnabled ?? UNIFORMS.cursorEnabled
+    const cursorEffect = palette.cursorEffect ?? UNIFORMS.cursorEffect
+    const cursorStrength = palette.cursorStrength ?? UNIFORMS.cursorStrength
+    const cursorRadius = palette.cursorRadius ?? UNIFORMS.cursorRadius
     const pendingRelease = pendingContextReleases.get(canvas)
     if (pendingRelease !== undefined) window.clearTimeout(pendingRelease)
     pendingContextReleases.delete(canvas)
@@ -384,7 +758,8 @@ export function ShaderBackground({
     }
     const program = gl.createProgram()!
     const vertexShader = compile(gl.VERTEX_SHADER, VERT)
-    const fragmentShader = compile(gl.FRAGMENT_SHADER, FRAG)
+    const fragSrc = palette.plasma ? `#define PLASMA_PATTERN\n${FRAG}` : FRAG
+    const fragmentShader = compile(gl.FRAGMENT_SHADER, fragSrc)
     gl.attachShader(program, vertexShader)
     gl.attachShader(program, fragmentShader)
     gl.linkProgram(program)
@@ -414,41 +789,11 @@ export function ShaderBackground({
       cursor: gl.getUniformLocation(program, "u_cursor"),
     }
     gl.uniform3fv(uni.colors, new Float32Array(palette.colors.flat()))
-    gl.uniform4f(
-      uni.shape,
-      UNIFORMS.scale,
-      UNIFORMS.intensity,
-      UNIFORMS.paramA,
-      UNIFORMS.warp,
-    )
-    gl.uniform4f(
-      uni.surface,
-      UNIFORMS.detail,
-      UNIFORMS.contrast,
-      UNIFORMS.brightness,
-      UNIFORMS.saturation,
-    )
-    gl.uniform4f(
-      uni.finish,
-      UNIFORMS.hue,
-      UNIFORMS.vignette,
-      UNIFORMS.blur,
-      UNIFORMS.grain,
-    )
-    gl.uniform4f(
-      uni.transform,
-      palette.seed,
-      UNIFORMS.rotate,
-      drift,
-      UNIFORMS.oklab,
-    )
-    gl.uniform4f(
-      uni.cursor,
-      0,
-      UNIFORMS.cursorEffect,
-      UNIFORMS.cursorStrength,
-      UNIFORMS.cursorRadius,
-    )
+    gl.uniform4f(uni.shape, scale, intensity, paramA, warp)
+    gl.uniform4f(uni.surface, detail, contrast, brightness, saturation)
+    gl.uniform4f(uni.finish, hue, vignette, blur, grain)
+    gl.uniform4f(uni.transform, palette.seed, rotate, drift, UNIFORMS.oklab)
+    gl.uniform4f(uni.cursor, 0, cursorEffect, cursorStrength, cursorRadius)
 
     let targetX = 0
     let targetY = 0
@@ -534,7 +879,7 @@ export function ShaderBackground({
       requestRender()
     }
     window.addEventListener("resize", updateLayout)
-    if (UNIFORMS.cursorEnabled) {
+    if (cursorEnabled) {
       window.addEventListener("pointermove", onPointerMove, { passive: true })
       window.addEventListener("pointercancel", onPointerLeave)
       window.addEventListener("scroll", updateLayout, true)
@@ -588,19 +933,13 @@ export function ShaderBackground({
         ((now - start) / 1000) * timeScale,
         palette.colorCount,
       )
-      gl.uniform4f(
-        uni.space,
-        UNIFORMS.offsetX,
-        UNIFORMS.offsetY,
-        mouseX,
-        mouseY,
-      )
+      gl.uniform4f(uni.space, offsetX, offsetY, mouseX, mouseY)
       gl.uniform4f(
         uni.cursor,
-        UNIFORMS.cursorEnabled ? cursorPresence : 0,
-        UNIFORMS.cursorEffect,
-        UNIFORMS.cursorStrength,
-        UNIFORMS.cursorRadius,
+        cursorEnabled ? cursorPresence : 0,
+        cursorEffect,
+        cursorStrength,
+        cursorRadius,
       )
       gl.drawArrays(gl.TRIANGLES, 0, 3)
       const pointerSettling =
@@ -618,7 +957,7 @@ export function ShaderBackground({
       intersectionObserver.disconnect()
       document.removeEventListener("visibilitychange", onVisibilityChange)
       window.removeEventListener("resize", updateLayout)
-      if (UNIFORMS.cursorEnabled) {
+      if (cursorEnabled) {
         window.removeEventListener("pointermove", onPointerMove)
         window.removeEventListener("pointercancel", onPointerLeave)
         window.removeEventListener("scroll", updateLayout, true)

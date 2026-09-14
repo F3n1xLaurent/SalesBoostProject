@@ -3,11 +3,13 @@ import { Orb } from '@/components/ui/orb';
 import featAnalytics from '../assets/Analytics.png';
 import featPhone from '../assets/Phone.png';
 import featTrain from '../assets/Train.png';
-import heroDashboardUi from '../assets/hero-dashboard-ui.svg';
-import reportUi from '../assets/report-ui.svg';
+import avatarMan1 from '../assets/avatar-man-1.png';
+import avatarMan2 from '../assets/avatar-man-2.png';
+import avatarWoman from '../assets/avatar-woman.png';
+import heroDashboardUi from '../assets/red-button-dashboard.svg';
+import reportUi from '../assets/employee-evaluation.svg';
 import { FlowButton } from './FlowButton';
 import { SalsaLogo } from './SalsaLogo';
-import { MeshGradient } from './MeshGradient';
 import { ShaderBackground } from './ShaderBackground';
 
 const DEMO_CALL_PATH = '/demo-call';
@@ -152,37 +154,154 @@ const TRY_CLIENTS = [
     id: 'mikhail',
     name: 'Михаил',
     temper: 'Спокойный и дотошный',
-    colors: ['#BFE0F5', '#2F6FBE'] as [string, string],
-    ring: '#2F6FBE',
+    colors: ['#FFDCA8', '#F58A1F'] as [string, string],
+    ring: '#F79A33',
     seed: 41,
   },
   {
     id: 'sergey',
     name: 'Сергей',
     temper: 'Торопится и давит',
-    colors: ['#FFC38A', '#E8590C'] as [string, string],
-    ring: '#E8590C',
+    colors: ['#FFFAC4', '#FBE81B'] as [string, string],
+    ring: '#EFD525',
     seed: 2000,
   },
   {
     id: 'anna',
     name: 'Анна',
     temper: 'Сомневается и сравнивает',
-    colors: ['#EFC3F2', '#9D4EDD'] as [string, string],
-    ring: '#9D4EDD',
+    colors: ['#FFEFB6', '#FEB70D'] as [string, string],
+    ring: '#FDBF2B',
     seed: 7,
   },
 ] as const;
 
+function isValidPhone(value: string) {
+  const digits = value.replace(/\D/g, '');
+  if (digits.length === 10) return true;
+  if (digits.length === 11 && (digits[0] === '7' || digits[0] === '8')) return true;
+  return false;
+}
+
 function TryLiveDemo() {
   const [selected, setSelected] = useState(1);
   const [phone, setPhone] = useState('');
+  const [phoneError, setPhoneError] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const phoneRef = useRef<HTMLInputElement>(null);
   const client = TRY_CLIENTS[selected]!;
+
+  const firstCenter = useRef(true);
+  const selectFromScroll = useRef(false);
+  const lockScrollSync = useRef(false);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+
+  const centerActive = (smooth: boolean) => {
+    const root = pickerRef.current;
+    if (!root || root.scrollWidth <= root.clientWidth + 8) return;
+    const active = root.querySelector<HTMLElement>('.is-active');
+    if (!active) return;
+    const left = active.offsetLeft - (root.clientWidth - active.offsetWidth) / 2;
+    if (smooth) {
+      root.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+    } else {
+      root.scrollLeft = Math.max(0, left);
+    }
+  };
+
+  const nearestClient = () => {
+    const root = pickerRef.current;
+    if (!root) return 0;
+    const mid = root.getBoundingClientRect().left + root.clientWidth / 2;
+    const nodes = root.querySelectorAll<HTMLElement>('.sl-try-client');
+    let best = 0;
+    let dist = Infinity;
+    nodes.forEach((el, i) => {
+      const box = el.getBoundingClientRect();
+      const d = Math.abs(box.left + box.width / 2 - mid);
+      if (d < dist) {
+        dist = d;
+        best = i;
+      }
+    });
+    return best;
+  };
+
+  useEffect(() => {
+    if (selectFromScroll.current) {
+      selectFromScroll.current = false;
+      return;
+    }
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        centerActive(!firstCenter.current);
+        firstCenter.current = false;
+      });
+    });
+    const unlock = window.setTimeout(() => {
+      lockScrollSync.current = false;
+    }, 360);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(unlock);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  useEffect(() => {
+    const root = pickerRef.current;
+    if (!root) return;
+
+    let frame = 0;
+    const sync = () => {
+      frame = 0;
+      const next = nearestClient();
+      if (lockScrollSync.current) {
+        if (next === selectedRef.current) lockScrollSync.current = false;
+        return;
+      }
+      setSelected((prev) => {
+        if (prev === next) return prev;
+        selectFromScroll.current = true;
+        return next;
+      });
+    };
+    const onScroll = () => {
+      if (lockScrollSync.current) return;
+      if (frame) return;
+      frame = requestAnimationFrame(sync);
+    };
+
+    root.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      root.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  // Держим активный шарик по центру при повороте экрана и смене высоты
+  // адресной строки на мобильных (resize сбивает позицию scroll-snap).
+  useEffect(() => {
+    const recenter = () => centerActive(false);
+    window.addEventListener('resize', recenter);
+    window.addEventListener('load', recenter);
+    return () => {
+      window.removeEventListener('resize', recenter);
+      window.removeEventListener('load', recenter);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (!isValidPhone(phone)) {
+      setPhoneError(true);
+      phoneRef.current?.focus();
+      return;
+    }
     const params = new URLSearchParams();
-    if (phone.trim()) params.set('phone', phone.trim());
+    params.set('phone', phone.trim());
     params.set('client', client.id);
     window.location.href = `${DEMO_CALL_PATH}?${params.toString()}`;
   };
@@ -204,8 +323,8 @@ function TryLiveDemo() {
         </p>
       </div>
 
-      <div className="sl-try-panel">
-        <div className="sl-try-picker" role="radiogroup" aria-label="Выберите AI-клиента">
+      <div className="sl-try-panel sl-reveal sl-reveal-delay-1">
+        <div ref={pickerRef} className="sl-try-picker" role="radiogroup" aria-label="Выберите AI-клиента">
           {TRY_CLIENTS.map((c, i) => {
             const isActive = i === selected;
             return (
@@ -216,11 +335,14 @@ function TryLiveDemo() {
                 aria-checked={isActive}
                 className={`sl-try-client${isActive ? ' is-active' : ''}`}
                 style={{ '--sl-client-ring': c.ring } as CSSProperties}
-                onClick={() => setSelected(i)}
+                onClick={() => {
+                  lockScrollSync.current = true;
+                  setSelected(i);
+                }}
               >
                 <span className="sl-try-client-orb" aria-hidden>
                   <span className="sl-try-client-orb-core">
-                    <Orb colors={c.colors} seed={c.seed} agentState={isActive ? 'talking' : null} />
+                    <Orb colors={c.colors} seed={c.seed} agentState="talking" />
                   </span>
                 </span>
                 <strong>{c.name}</strong>
@@ -237,13 +359,19 @@ function TryLiveDemo() {
           <div className="sl-try-call-row">
             <input
               id="sl-try-phone"
-              className="sl-phone-input sl-try-call-input"
+              ref={phoneRef}
+              className={`sl-phone-input sl-try-call-input${phoneError ? ' is-invalid' : ''}`}
               type="tel"
               inputMode="tel"
               autoComplete="tel"
               placeholder="+7 999 000-00-00"
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
+              aria-invalid={phoneError}
+              required
+              onChange={(e) => {
+                setPhone(e.target.value);
+                if (phoneError) setPhoneError(false);
+              }}
             />
             <FlowButton text="Получить звонок" type="submit" variant="solid" />
           </div>
@@ -285,12 +413,8 @@ function HeroCallReview() {
       <div className="sl-hero-review-score">
         <div className="sl-hero-review-ring">
           <strong>74</strong>
-          <span>балл</span>
         </div>
-        <div className="sl-hero-review-score-copy">
-          <em>Оценка по стандарту</em>
-          <p>13 критериев · вес по сценарию</p>
-        </div>
+        <p className="sl-hero-review-score-copy">Контакт есть, визит не назначен</p>
       </div>
 
       <div className="sl-hero-review-cols">
@@ -316,7 +440,7 @@ function HeroCallReview() {
 
 function HowCycleModules() {
   return (
-    <div className="sl-feat-row sl-how-modules">
+    <div className="sl-feat-row sl-how-modules sl-reveal sl-reveal-delay-1">
       {HOW_MODULES.map((mod) => (
         <article key={mod.title} className="sl-feat-cell sl-squircle">
           <div className="sl-how-tags">
@@ -385,7 +509,7 @@ function ReportCards() {
   ] as const;
 
   return (
-    <div className="sl-step-cards sl-report-cards">
+    <div className="sl-step-cards sl-report-cards sl-reveal sl-reveal-delay-2">
       {items.map((item) => (
         <article key={item.title} className="sl-step-card sl-squircle">
           <span className="sl-step-ico" aria-hidden>
@@ -403,15 +527,15 @@ function ReportCards() {
 
 function ReportShot({ onShowExample }: { onShowExample: () => void }) {
   return (
-    <div className="sl-report-shot">
-      <ShaderBackground className="sl-report-shot-canvas" variant="forest" />
+    <div className="sl-report-shot sl-reveal sl-reveal-delay-1">
+      <ShaderBackground className="sl-report-shot-canvas sl-hero-shot-shader" variant="plasmaReport" />
       <img
         className="sl-report-shot-ui"
         src={reportUi}
         alt="Пример отчёта по звонку тайного покупателя"
       />
       <div className="sl-report-shot-action">
-        <FlowButton text="Показать пример отчёта" variant="white" onClick={onShowExample} />
+        <FlowButton text="Показать пример отчёта" onClick={onShowExample} />
       </div>
     </div>
   );
@@ -444,19 +568,20 @@ function DealerChart() {
         <span>Стандарт бренда · {BRAND_STANDARD}</span>
       </div>
       <div className="sl-dealer-rows">
+        <span className="sl-dealer-standard" aria-hidden />
         {DEALER_BARS.map(([name, score, delta], i) => {
           const tone = score >= BRAND_STANDARD ? 'good' : score >= 65 ? 'mid' : 'bad';
           return (
             <div
               key={name}
               className="sl-dealer-row"
-              style={{ animationDelay: `${0.06 * i}s` }}
+              style={{ animationDelay: `${0.06 * i}s`, transitionDelay: `${0.06 * i}s` } as CSSProperties}
             >
               <span className="sl-dealer-name">{name}</span>
               <div className="sl-dealer-track">
                 <span
                   className={`sl-dealer-fill is-${tone}`}
-                  style={{ '--w': `${score}%` } as CSSProperties}
+                  style={{ '--w': score / 100 } as CSSProperties}
                 />
               </div>
               <strong className={`sl-dealer-score is-${tone}`}>{score}</strong>
@@ -471,11 +596,7 @@ function DealerChart() {
   );
 }
 
-const TRAINING_AVATARS = [
-  ['АК', '#F3D9A4'],
-  ['ДС', '#C9DFF5'],
-  ['МП', '#E5D3F0'],
-] as const;
+const TRAINING_AVATARS = [avatarMan1, avatarMan2, avatarWoman] as const;
 
 function NetworkMark({ tone }: { tone: 'good' | 'mid' | 'warn' | 'bad' }) {
   return (
@@ -498,7 +619,7 @@ function NetworkMark({ tone }: { tone: 'good' | 'mid' | 'warn' | 'bad' }) {
 
 function NetworkTable() {
   return (
-    <div className="sl-net-block">
+    <div className="sl-net-block sl-reveal sl-reveal-delay-1">
       <div className="sl-net-table">
         <div className="sl-net-table-cols" aria-hidden>
           <span>Точка</span>
@@ -524,8 +645,8 @@ function NetworkTable() {
               {row.action}
               {row.avatars ? (
                 <span className="sl-net-avatars" aria-hidden>
-                  {TRAINING_AVATARS.map(([initials, bg]) => (
-                    <i key={initials} style={{ background: bg }}>{initials}</i>
+                  {TRAINING_AVATARS.map((src) => (
+                    <img key={src} src={src} alt="" />
                   ))}
                   <i className="sl-net-ava-more">+3</i>
                 </span>
@@ -547,25 +668,22 @@ export function PdfStructureBlocks({
 }) {
   return (
     <>
-      {/* Hero — copy + visual inside product mesh panel */}
+      {/* Hero — copy + visual on the page field, glow sits under the header */}
       <section className="sl-sec sl-hero-v2">
-        <div className="sl-hero-v2-shot">
-          <ShaderBackground className="sl-hero-v2-shot-canvas" />
-          <div className="sl-hero-v2-grid">
-            <div className="sl-hero-v2-copy">
-              <h1 className="sl-h1 sl-hero-v2-title">РОП как технология</h1>
-              <p className="sl-lede sl-hero-v2-lede">
-                AI обучает, допускает к работе, проверяет разговоры
-                <br className="sl-hero-v2-lede-br" />
-                и исправляет ошибки — каждый день во всей сети
-              </p>
-              <div className="sl-hero-v2-actions">
-                <FlowButton text="Получить демо" href="#try" variant="solid" />
-                <FlowButton text="Пример отчёта" variant="white" onClick={onShowExample} />
-              </div>
+        <div className="sl-hero-v2-grid">
+          <div className="sl-hero-v2-copy">
+            <h1 className="sl-h1 sl-hero-v2-title">РОП как технология</h1>
+            <p className="sl-lede sl-hero-v2-lede">
+              AI обучает, допускает к работе, проверяет разговоры
+              <br className="sl-hero-v2-lede-br" />
+              и исправляет ошибки — каждый день во всей сети
+            </p>
+            <div className="sl-hero-v2-actions">
+              <FlowButton text="Получить звонок" href="#try" variant="solid" />
+              <FlowButton text="Пример отчёта" onClick={onShowExample} />
             </div>
-            <HeroCallReview />
           </div>
+          <HeroCallReview />
         </div>
         <GridEnds />
       </section>
@@ -604,9 +722,9 @@ export function PdfStructureBlocks({
             без ручных отчётов снизу
           </p>
         </div>
-        <div className="sl-well-cell">
+        <div className="sl-well-cell sl-reveal sl-reveal-delay-1">
           <div className="sl-hero-shot">
-            <ShaderBackground className="sl-hero-shot-canvas" />
+            <ShaderBackground className="sl-hero-shot-canvas sl-hero-shot-shader" variant="plasma" />
             <img
               className="sl-hero-shot-ui"
               src={heroDashboardUi}
@@ -614,6 +732,26 @@ export function PdfStructureBlocks({
             />
           </div>
         </div>
+        <GridEnds />
+      </section>
+
+      {/* Руководитель */}
+      <section className="sl-sec sl-reveal" id="manager">
+        <div className="sl-band">
+          <div>
+            <div className="sl-section-tag">Что видит руководитель</div>
+            <h2 className="sl-h2">
+              Не тысячи звонков,
+              <br />
+              а несколько причин
+            </h2>
+          </div>
+          <p className="sl-lede">
+            Где проблема и что с ней делать. По фактической работе сети, а не со слов
+            руководителей
+          </p>
+        </div>
+        <NetworkTable />
         <GridEnds />
       </section>
 
@@ -635,26 +773,6 @@ export function PdfStructureBlocks({
         </div>
         <ReportShot onShowExample={onShowExample} />
         <ReportCards />
-        <GridEnds />
-      </section>
-
-      {/* Руководитель */}
-      <section className="sl-sec sl-reveal" id="manager">
-        <div className="sl-band">
-          <div>
-            <div className="sl-section-tag">Что видит руководитель</div>
-            <h2 className="sl-h2">
-              Не тысячи звонков,
-              <br />
-              а несколько причин
-            </h2>
-          </div>
-          <p className="sl-lede">
-            Где проблема и что с ней делать. По фактической работе сети, а не со слов
-            руководителей
-          </p>
-        </div>
-        <NetworkTable />
         <GridEnds />
       </section>
 
@@ -688,7 +806,7 @@ export function PdfStructureBlocks({
             <h2 className="sl-h2">Чем Salsa отличается</h2>
           </div>
         </div>
-        <div className="sl-diff-panel">
+        <div className="sl-diff-panel sl-reveal sl-reveal-delay-1">
           <div className="sl-diff-table" role="table">
             <div className="sl-diff-table-head" role="row">
               <span role="columnheader">Инструмент</span>
@@ -733,8 +851,8 @@ export function PdfStructureBlocks({
 
       {/* Демо */}
       <section className="sl-sec sl-final sl-reveal" id="demo">
-        <div className="sl-final-shot sl-demo-stage">
-          <MeshGradient className="sl-final-shot-canvas" />
+        <div className="sl-final-shot sl-demo-stage sl-reveal sl-reveal-delay-1">
+          <ShaderBackground className="sl-final-shot-canvas sl-hero-shot-shader" variant="plasmaForm" />
           <div className="sl-final-shot-grid">
             <div className="sl-final-shot-copy">
               <div>
@@ -749,12 +867,17 @@ export function PdfStructureBlocks({
                   автомобили и склад, кредит, стандарты, точки и сценарии
                 </p>
               </div>
-              <a className="sl-final-quiet" href="#try">
-                Получить демо-звонок сейчас
-              </a>
+              <FlowButton
+                text="Получить демо-звонок сейчас"
+                href="#try"
+                className="sl-final-cta-desktop"
+              />
             </div>
             <div className="sl-final-card">
               <DemoLeadForm />
+            </div>
+            <div className="sl-final-cta-mobile">
+              <FlowButton text="Получить демо-звонок сейчас" href="#try" />
             </div>
           </div>
         </div>
@@ -808,7 +931,7 @@ function FaqBlock() {
           </h2>
         </div>
       </div>
-      <div className="sl-faq-list">
+      <div className="sl-faq-list sl-reveal sl-reveal-delay-1">
         {FAQ_ITEMS.map((item, i) => {
           const isOpen = open === i;
           return (
@@ -820,9 +943,13 @@ function FaqBlock() {
                 onClick={() => setOpen(isOpen ? -1 : i)}
               >
                 {item.q}
-                <span aria-hidden>{isOpen ? '−' : '+'}</span>
+                <span aria-hidden>+</span>
               </button>
-              {isOpen ? <p className="sl-faq-a">{item.a}</p> : null}
+              <div className="sl-faq-a-wrap">
+                <div className="sl-faq-a-clip">
+                  <p className="sl-faq-a">{item.a}</p>
+                </div>
+              </div>
             </div>
           );
         })}

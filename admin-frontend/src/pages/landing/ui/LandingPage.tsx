@@ -182,6 +182,7 @@ function useSoftReveal() {
       return;
     }
 
+    const mobile = window.matchMedia('(max-width: 900px)').matches;
     const io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -190,7 +191,12 @@ function useSoftReveal() {
           io.unobserve(entry.target);
         }
       },
-      { threshold: 0.14, rootMargin: '0px 0px -6% 0px' },
+      {
+        threshold: 0.02,
+        // Slightly early so the fade is visible as the block enters — not
+        // 32% (animation finishes off-screen) and not negative (late pop).
+        rootMargin: mobile ? '0px 0px 10% 0px' : '0px 0px 8% 0px',
+      },
     );
 
     nodes.forEach((el) => io.observe(el));
@@ -200,20 +206,47 @@ function useSoftReveal() {
 
 /* ─────────────────────────────────── Page ─────────────────────────────────── */
 
+const MOBILE_NAV = [
+  ['#how', 'Как это работает'],
+  ['#pdf-product', 'Система'],
+  ['#manager', 'Руководителю'],
+  ['#report', 'Разбор звонка'],
+  ['#trainer', 'Тренажёр'],
+  ['#importers', 'Импортёрам'],
+  ['#diff', 'Чем отличается'],
+  ['#faq', 'FAQ'],
+] as const;
+
 export function LandingPage() {
   const [reportOpen, setReportOpen] = useState(false);
   const [productOpen, setProductOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const exampleAudit = useMemo(() => buildLandingExampleAudit(), []);
   useSoftReveal();
 
   const openProduct = () => setProductOpen(true);
   const closeProduct = () => setProductOpen(false);
+  const closeMenu = () => setMenuOpen(false);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
 
   return (
     <div className="theme-brutal sl-page">
       {/* Header */}
       <header
-        className={`sl-header${productOpen ? ' is-open' : ''}`}
+        className={`sl-header${productOpen ? ' is-open' : ''}${menuOpen ? ' is-menu' : ''}`}
         onMouseLeave={closeProduct}
       >
         <div className="sl-inner sl-header-inner">
@@ -238,6 +271,18 @@ export function LandingPage() {
             <div className="sl-header-cta">
               <DemoCta label="Получить демо" href="#demo" />
             </div>
+            <button
+              type="button"
+              className="sl-burger"
+              aria-expanded={menuOpen}
+              aria-controls="sl-mobile-nav"
+              aria-label={menuOpen ? 'Закрыть меню' : 'Открыть меню'}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <span />
+              <span />
+              <span />
+            </button>
           </div>
           <div className="sl-mega" aria-label="Разделы продукта" onMouseEnter={openProduct}>
             <div className="sl-mega-panel">
@@ -265,8 +310,18 @@ export function LandingPage() {
           </div>
           <GridEnds />
         </div>
+        <nav id="sl-mobile-nav" className="sl-mobile-nav" aria-label="Меню" hidden={!menuOpen}>
+          {MOBILE_NAV.map(([href, label]) => (
+            <a key={href} href={href} onClick={closeMenu}>
+              {label}
+            </a>
+          ))}
+          <div className="sl-mobile-nav-cta" onClick={closeMenu}>
+            <FlowButton text="Записаться на демо" href="#demo" variant="solid" />
+            <FlowButton text="Получить демо-звонок сейчас" href="#try" />
+          </div>
+        </nav>
       </header>
-
       <div className="sl-inner sl-body">
       <main id="top">
         <PdfStructureBlocks
@@ -287,9 +342,9 @@ export function LandingPage() {
                   до первого реального диалога
                 </p>
               </div>
-              <div className="sl-audience-row sl-trainer-audience">
-                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader">
-                  <ShaderBackground className="sl-audience-shader" variant="amber" />
+              <div className="sl-audience-row sl-trainer-audience sl-reveal sl-reveal-delay-1">
+                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader sl-audience-card--shader-light">
+                  <ShaderBackground className="sl-audience-shader" variant="plasmaMist" />
                   <div className="sl-audience-copy">
                     <span className="sl-audience-kicker">Для бизнеса</span>
                     <h3 className="sl-audience-title">Ваши скрипты. Видимый прогресс</h3>
@@ -299,8 +354,8 @@ export function LandingPage() {
                   </div>
                   <div className="sl-audience-illu" aria-hidden><UiTrainerBiz /></div>
                 </article>
-                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader">
-                  <ShaderBackground className="sl-audience-shader" variant="dusk" />
+                <article className="sl-audience-card sl-audience-card--stack sl-audience-card--shader sl-audience-card--shader-light">
+                  <ShaderBackground className="sl-audience-shader" variant="plasmaMistAlt" />
                   <div className="sl-audience-copy">
                     <span className="sl-audience-kicker">Для менеджера</span>
                     <h3 className="sl-audience-title">Голосовой AI-клиент без подсказок</h3>
@@ -311,7 +366,7 @@ export function LandingPage() {
                   <div className="sl-audience-illu" aria-hidden><UiTrainerMgr /></div>
                 </article>
               </div>
-              <div className="sl-step-cards">
+              <div className="sl-step-cards sl-reveal sl-reveal-delay-2">
                 {([
                   ['box', 'Знание ассортимента', 'Продукт и условия — до первого звонка клиенту'],
                   ['script', 'Разговор по скрипту', 'Сценарий компании голосом, без подсказок и вариантов'],
@@ -370,8 +425,8 @@ export function LandingPage() {
         open={reportOpen}
         onClose={() => setReportOpen(false)}
         title="Пример отчёта"
-        subtitle="Тот же разбор, что открывается после проверки в Salsa"
         width="wide"
+        className="sl-landing-modal"
       >
         <div className="sl-report-modal">
           <AuditAnalyticsReport detail={exampleAudit} />

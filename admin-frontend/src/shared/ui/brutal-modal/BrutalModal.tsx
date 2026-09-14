@@ -14,6 +14,7 @@ type Props = {
   nested?: boolean;
   modalClassName?: string;
   footer?: React.ReactNode;
+  className?: string;
   children: React.ReactNode;
 };
 
@@ -43,6 +44,7 @@ export function BrutalModal({
   nested = false,
   modalClassName,
   footer,
+  className,
   children,
 }: Props) {
   const showHeaderActions = Boolean(headerActions) || !hideClose;
@@ -57,6 +59,7 @@ export function BrutalModal({
         footer ? 'sa-modal--with-footer' : '',
         centeredHeader ? 'sa-modal--centered' : '',
         modalClassName,
+        className,
       ].filter(Boolean).join(' ')}
       overlayClassName={nested ? 'sa-modal-overlay-nested' : undefined}
     >
