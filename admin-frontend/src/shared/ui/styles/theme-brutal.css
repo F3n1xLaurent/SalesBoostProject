@@ -603,6 +603,11 @@
   width: 148px;
 }
 
+.theme-brutal .super-admin-sidebar .sa-sidebar-brand-logo {
+  width: 108px;
+  border-radius: 0;
+}
+
 .theme-brutal .super-admin-sidebar .nav-item {
   border: none;
   border-radius: 10px;

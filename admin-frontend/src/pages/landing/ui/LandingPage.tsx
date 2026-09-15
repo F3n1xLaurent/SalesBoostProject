@@ -8,7 +8,7 @@ import trainerBizUi from '../assets/trainer-biz.png';
 import trainerMgrUi from '../assets/trainer-mgr.png';
 import { FlowButton } from './FlowButton';
 import { PdfStructureBlocks } from './PdfStructure';
-import { SalsaLogo } from './SalsaLogo';
+import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import './landing.css';

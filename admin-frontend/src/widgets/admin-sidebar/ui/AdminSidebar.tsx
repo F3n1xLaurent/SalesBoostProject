@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import type { AdminRole, AdminTab } from '../../../entities/session/model/types';
 import { getDefaultTab } from '../../../shared/routing/adminRoutes';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
-import sidebarLogo from '../../../assets/logo.png';
+import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 
 export type { AdminRole };
 
@@ -138,7 +138,7 @@ export function AdminSidebar({
       }}
     >
       <div className="sa-sidebar-brand-wrap" style={{ marginBottom: 24 }}>
-        <img src={sidebarLogo} alt="Red Button" className="sa-sidebar-brand-logo" />
+        <SalsaLogo className="sa-sidebar-brand-logo" />
       </div>
 
       <nav style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>

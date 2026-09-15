@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
 import './public-voice-demo.css';
 import { computeMockFromTranscript, type TranscriptTurn } from '../lib/demoMockEvaluation';
@@ -9,8 +9,14 @@ import { DemoUnifiedReport } from './DemoUnifiedReport';
 
 const API_BASE = '';
 const CALL_ID_PARAM = 'callId';
+const PHONE_PARAM = 'phone';
+const SCRIPT_PARAM = 'script';
+const LEGACY_CLIENT_PARAM = 'client';
 const MOCK_CALL_ID = 'mock';
 const NATIONAL_LEN = 10;
+const DEMO_CLIENT_IDS = ['mikhail', 'sergey', 'anna'] as const;
+
+type DemoClientId = typeof DEMO_CLIENT_IDS[number];
 
 /** UI-only: open `/demo-call?previewWait=call` or `...&previewWait=processing` to see waiting screens without a call. */
 type PreviewWaitConfig =
@@ -99,10 +105,33 @@ function readCallIdFromUrl(): string | null {
   return value && value.trim() ? value.trim() : null;
 }
 
+function readPhoneFromUrl(): string {
+  return new URLSearchParams(window.location.search).get(PHONE_PARAM)?.trim() || '';
+}
+
+function readDemoClientIdFromUrl(): DemoClientId | null {
+  const params = new URLSearchParams(window.location.search);
+  const value = (params.get(SCRIPT_PARAM) || params.get(LEGACY_CLIENT_PARAM))?.trim().toLowerCase();
+  return DEMO_CLIENT_IDS.includes(value as DemoClientId) ? value as DemoClientId : null;
+}
+
+function shouldAutoStartFromUrl(): boolean {
+  return parseNationalDigits(readPhoneFromUrl()).length === NATIONAL_LEN && readDemoClientIdFromUrl() !== null;
+}
+
 function writeCallIdToUrl(callId: string | null) {
   const url = new URL(window.location.href);
   if (callId) url.searchParams.set(CALL_ID_PARAM, callId);
   else url.searchParams.delete(CALL_ID_PARAM);
+  window.history.replaceState({}, '', url.toString());
+}
+
+function clearDemoCallParamsFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(CALL_ID_PARAM);
+  url.searchParams.delete(PHONE_PARAM);
+  url.searchParams.delete(SCRIPT_PARAM);
+  url.searchParams.delete(LEGACY_CLIENT_PARAM);
   window.history.replaceState({}, '', url.toString());
 }
 
@@ -193,7 +222,10 @@ function formatE164FromNational(national: string): string {
 
 export function PublicVoiceDemoPage() {
   const [previewConfig] = useState<PreviewWaitConfig | null>(() => readPreviewWaitConfig());
-  const [nationalDigits, setNationalDigits] = useState('');
+  const [nationalDigits, setNationalDigits] = useState(() => parseNationalDigits(readPhoneFromUrl()));
+  const [demoClientId] = useState<DemoClientId | null>(() => readDemoClientIdFromUrl());
+  const [autoStartRequested] = useState(() => shouldAutoStartFromUrl());
+  const autoStartAttemptedRef = useRef(false);
   const [callId, setCallId] = useState<string | null>(() => readCallIdFromUrl());
   const [detail, setDetail] = useState<DemoCallState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -296,7 +328,7 @@ export function PublicVoiceDemoPage() {
     return () => window.clearInterval(id);
   }, [waitingPhase, processingSteps.length]);
 
-  async function handleStartCall() {
+  const handleStartCall = useCallback(async () => {
     if (nationalDigits.length !== NATIONAL_LEN) {
       setError('Введите полный номер: 10 цифр после +7.');
       return;
@@ -308,7 +340,7 @@ export function PublicVoiceDemoPage() {
       const response = await fetch(`${API_BASE}/api/public/demo-call/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, scenario: 'realtime_pure' }),
+        body: JSON.stringify({ to, client: demoClientId, scenario: 'realtime_pure' }),
       });
       const text = await response.text();
       const data = text ? JSON.parse(text) : {};
@@ -323,7 +355,13 @@ export function PublicVoiceDemoPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [demoClientId, nationalDigits]);
+
+  useEffect(() => {
+    if (!autoStartRequested || previewConfig || callId || autoStartAttemptedRef.current) return;
+    autoStartAttemptedRef.current = true;
+    void handleStartCall();
+  }, [autoStartRequested, callId, handleStartCall, previewConfig]);
 
   function handleReset() {
     if (previewConfig) {
@@ -335,6 +373,7 @@ export function PublicVoiceDemoPage() {
     setError(null);
     setNationalDigits('');
     setExampleTier(null);
+    clearDemoCallParamsFromUrl();
   }
 
   function handleCloseExampleReport() {

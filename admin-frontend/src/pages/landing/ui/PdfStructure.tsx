@@ -12,7 +12,7 @@ import dashboardMobileUi from '../assets/dashboard-mobile.svg';
 import reportDesktopUi from '../assets/report-desktop.svg';
 import reportMobileUi from '../assets/report-mobile.svg';
 import { FlowButton } from './FlowButton';
-import { SalsaLogo } from './SalsaLogo';
+import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import { ShaderBackground } from './ShaderBackground';
 
 const DEMO_CALL_PATH = '/demo-call';
@@ -340,7 +340,7 @@ function TryLiveDemo() {
     }
     const params = new URLSearchParams();
     params.set('phone', phone.trim());
-    params.set('client', client.id);
+    params.set('script', client.id);
     window.location.href = `${DEMO_CALL_PATH}?${params.toString()}`;
   };
 

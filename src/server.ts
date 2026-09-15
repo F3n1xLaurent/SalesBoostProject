@@ -18,7 +18,12 @@ import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
-import { DEMO_CALL_CRITERIA, DEMO_CALL_PROMPT } from './voice/demoCallPrompt';
+import {
+  buildDemoCallPrompt,
+  DEMO_CALL_CRITERIA,
+  resolveDemoCallClientId,
+  resolveDemoCallElevenLabsVoiceId,
+} from './voice/demoCallPrompt';
 import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
 import { getCallRecordingFilePath, resumePendingRecordingFetches } from './voice/voximplantRecordingService';
@@ -6138,9 +6143,14 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     const scenario = body.scenario === 'dialog' || body.scenario === 'realtime'
       ? body.scenario
       : 'realtime_pure';
-    const result = await startVoiceCall(toRaw, {
+    const toNormalized = normalizeCallPhone(toRaw);
+    const demoClientId = resolveDemoCallClientId(body.client);
+    const demoElevenLabsVoiceId = resolveDemoCallElevenLabsVoiceId(demoClientId);
+    const demoPrompt = buildDemoCallPrompt(demoClientId, toNormalized);
+    const result = await startVoiceCall(toNormalized, {
       scenario,
-      instructions: DEMO_CALL_PROMPT,
+      instructions: demoPrompt,
+      elevenLabsVoiceId: demoElevenLabsVoiceId,
     });
     if ('error' in result) {
       return res.status(400).json({ error: result.error });
@@ -6149,7 +6159,6 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     if (result.callSessionHistoryId) {
       setVoxSessionId(result.callId, result.callSessionHistoryId);
     }
-    const toNormalized = '+' + String(toRaw).replace(/\D/g, '');
     // nginx.prod.conf overwrites X-Real-IP with $remote_addr, so prefer it over a client-supplied X-Forwarded-For chain.
     const realIp = String(req.headers['x-real-ip'] || '').trim();
     const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',').at(-1)?.trim();
@@ -6164,7 +6173,9 @@ app.post('/api/public/demo-call/start', async (req, res) => {
           ipAddress,
           caseContextJson: JSON.stringify({
             kind: 'fixed_demo_call',
-            prompt: DEMO_CALL_PROMPT,
+            demoClientId,
+            elevenLabsVoiceId: demoElevenLabsVoiceId,
+            prompt: demoPrompt,
             criteria: DEMO_CALL_CRITERIA,
           }),
           startedAt: new Date(result.startedAt),
@@ -6173,7 +6184,13 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     } catch (e) {
       console.warn('[demo-call] VoiceCallSession create (may already exist):', e instanceof Error ? e.message : e);
     }
-    res.json({ callId: result.callId, startedAt: result.startedAt, to: toRaw, scenario: result.scenario });
+    res.json({
+      callId: result.callId,
+      startedAt: result.startedAt,
+      to: toNormalized,
+      client: demoClientId,
+      scenario: result.scenario,
+    });
   } catch (err) {
     console.error('public demo-call/start error:', err);
     res.status(500).json({ error: 'Не удалось запустить звонок.' });

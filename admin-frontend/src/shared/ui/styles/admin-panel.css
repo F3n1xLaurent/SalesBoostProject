@@ -37,6 +37,9 @@
   flex-direction: column;
   align-items: flex-start;
 }
+.super-admin-sidebar .sa-sidebar-brand-wrap {
+  padding-inline: 14px;
+}
 .sa-sidebar-brand-logo {
   display: block;
   width: 148px;

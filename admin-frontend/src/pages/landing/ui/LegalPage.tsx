@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { FlowButton } from './FlowButton';
-import { SalsaLogo } from './SalsaLogo';
+import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import {
   LANDING_HOME,
   LEGAL_DOCS,
