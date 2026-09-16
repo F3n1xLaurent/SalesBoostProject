@@ -6224,6 +6224,31 @@ app.post('/api/public/demo-call/evaluate-example', async (req, res) => {
   }
 });
 
+app.get('/api/public/demo-call/:callId/recording', async (req, res) => {
+  try {
+    const callId = String(req.params.callId || '').trim();
+    if (!callId) return res.status(400).json({ error: 'Missing callId.' });
+    const session = await prisma.voiceCallSession.findUnique({
+      where: { callId },
+      select: { recordingStatus: true, source: true },
+    });
+    if (!session || session.source !== 'demo' || session.recordingStatus !== 'ready') {
+      return res.status(404).json({ error: 'Запись звонка не найдена.' });
+    }
+    const filePath = getCallRecordingFilePath(callId);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Файл записи звонка недоступен.' });
+    }
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Disposition', 'inline; filename="recording.mp3"');
+    return res.sendFile(filePath);
+  } catch (error) {
+    console.error('public demo-call recording error:', error instanceof Error ? error.message : error);
+    return res.status(500).json({ error: 'Не удалось получить запись звонка.' });
+  }
+});
+
 app.get('/api/public/demo-call/:callId', async (req, res) => {
   try {
     const callId = String(req.params.callId || '').trim();
@@ -6234,7 +6259,14 @@ app.get('/api/public/demo-call/:callId', async (req, res) => {
     if (!session) {
       return res.status(404).json({ error: 'Звонок не найден.' });
     }
-    res.json(buildVoiceCallDetailResponse(session));
+    const recordingReady = session.recordingStatus === 'ready';
+    res.json({
+      ...buildVoiceCallDetailResponse(session),
+      recordingStatus: session.recordingStatus,
+      recordingUrl: recordingReady
+        ? `/api/public/demo-call/${encodeURIComponent(session.callId)}/recording`
+        : null,
+    });
   } catch (err) {
     console.error('public demo-call/:callId error:', err);
     res.status(500).json({ error: 'Не удалось получить статус звонка.' });

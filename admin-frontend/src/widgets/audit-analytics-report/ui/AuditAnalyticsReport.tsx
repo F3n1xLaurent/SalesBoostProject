@@ -413,18 +413,7 @@ export function AuditAnalyticsReport({
         </div>
       </div>
 
-      {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
-        <CallRecordingPlayer recordingUrl={detail.recordingUrl} />
-      )}
-
-      {!report ? (
-        <section className="sa-call-report-section">
-          <h2 className="sa-section-title">Отчёт</h2>
-          <p className="sa-call-report-section-desc">
-            Для полного отчёта нужны transcript и AI-оценка звонка. Если данные уже есть, откройте страницу позже: backend догенерирует отчёт и сохранит его.
-          </p>
-        </section>
-      ) : (
+      {report ? (
         <>
           <section className="sa-call-report-score">
             <ScoreGauge score={report.totalScore} />
@@ -434,6 +423,10 @@ export function AuditAnalyticsReport({
               {detail.failReason && <div className="sa-audit-fail-reason">{detail.failReason}</div>}
             </div>
           </section>
+
+          {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
+            <CallRecordingPlayer recordingUrl={detail.recordingUrl} />
+          )}
 
           <section className="sa-call-report-block">
             <h2 className="sa-section-title">Категории</h2>
@@ -637,6 +630,18 @@ export function AuditAnalyticsReport({
                 <div className="sa-chart-empty">Рекомендации не сформированы</div>
               )
             ) : null}
+          </section>
+        </>
+      ) : (
+        <>
+          {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
+            <CallRecordingPlayer recordingUrl={detail.recordingUrl} />
+          )}
+          <section className="sa-call-report-section">
+            <h2 className="sa-section-title">Отчёт</h2>
+            <p className="sa-call-report-section-desc">
+              Для полного отчёта нужны transcript и AI-оценка звонка. Если данные уже есть, откройте страницу позже: backend догенерирует отчёт и сохранит его.
+            </p>
           </section>
         </>
       )}

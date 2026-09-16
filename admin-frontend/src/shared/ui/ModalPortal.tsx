@@ -15,13 +15,19 @@ export function ModalPortal(props: Props) {
   const [render, setRender] = useState(props.open);
   const [closing, setClosing] = useState(false);
   const renderRef = useRef(props.open);
+  const ignoreOverlayCloseRef = useRef(false);
 
   useEffect(() => {
     if (props.open) {
       renderRef.current = true;
       setRender(true);
       setClosing(false);
-      return;
+      // Guard against the opening click falling through onto a freshly mounted overlay.
+      ignoreOverlayCloseRef.current = true;
+      const unlock = window.setTimeout(() => {
+        ignoreOverlayCloseRef.current = false;
+      }, 320);
+      return () => window.clearTimeout(unlock);
     }
     if (!renderRef.current) return;
     if (!props.exitDurationMs) {
@@ -54,7 +60,14 @@ export function ModalPortal(props: Props) {
       className={['sa-modal-overlay', 'theme-brutal', props.overlayClassName, closing ? 'is-closing' : '']
         .filter(Boolean)
         .join(' ')}
-      onClick={closing ? undefined : props.onClose}
+      onClick={
+        closing
+          ? undefined
+          : () => {
+              if (ignoreOverlayCloseRef.current) return;
+              props.onClose();
+            }
+      }
     >
       <div
         className={['sa-modal', props.modalClassName].filter(Boolean).join(' ')}

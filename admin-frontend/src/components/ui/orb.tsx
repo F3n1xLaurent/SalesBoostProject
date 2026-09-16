@@ -1,9 +1,56 @@
 "use client"
 
 import { useEffect, useMemo, useRef } from "react"
-import { useTexture } from "@react-three/drei"
 import { Canvas, useFrame, useThree } from "@react-three/fiber"
 import * as THREE from "three"
+
+function hashNoise(x: number, y: number) {
+  let n = x * 374761393 + y * 668265263
+  n = (n ^ (n >>> 13)) * 1274126177
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296
+}
+
+function smoothstep01(t: number) {
+  return t * t * (3 - 2 * t)
+}
+
+function valueNoise(x: number, y: number) {
+  const x0 = Math.floor(x)
+  const y0 = Math.floor(y)
+  const fx = smoothstep01(x - x0)
+  const fy = smoothstep01(y - y0)
+  const a = hashNoise(x0, y0)
+  const b = hashNoise(x0 + 1, y0)
+  const c = hashNoise(x0, y0 + 1)
+  const d = hashNoise(x0 + 1, y0 + 1)
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy
+}
+
+function createPerlinTexture(size = 256) {
+  const data = new Uint8Array(size * size * 4)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n =
+        0.52 * valueNoise(x / 32, y / 32) +
+        0.32 * valueNoise(x / 16, y / 16) +
+        0.16 * valueNoise(x / 8, y / 8)
+      const v = Math.max(0, Math.min(255, Math.round(n * 255)))
+      const i = (y * size + x) * 4
+      data[i] = v
+      data[i + 1] = v
+      data[i + 2] = v
+      data[i + 3] = 255
+    }
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat)
+  texture.wrapS = THREE.RepeatWrapping
+  texture.wrapT = THREE.RepeatWrapping
+  texture.minFilter = THREE.LinearFilter
+  texture.magFilter = THREE.LinearFilter
+  texture.needsUpdate = true
+  texture.colorSpace = THREE.NoColorSpace
+  return texture
+}
 
 export type AgentState = null | "thinking" | "listening" | "talking"
 
@@ -39,7 +86,14 @@ export function Orb({
   className,
 }: OrbProps) {
   return (
-    <div className={className ?? "relative h-full w-full"} style={{ aspectRatio: "1 / 1" }}>
+    <div
+      className={className ?? "relative h-full w-full"}
+      style={{
+        aspectRatio: "1 / 1",
+        borderRadius: "50%",
+        background: `radial-gradient(circle at 36% 32%, ${colors[0]}, ${colors[1]} 72%)`,
+      }}
+    >
       <Canvas
         resize={{ debounce: resizeDebounce }}
         camera={{ position: [0, 0, 6.2], fov: 45 }}
@@ -100,9 +154,13 @@ function Scene({
   const targetColor1Ref = useRef(new THREE.Color(colors[0]))
   const targetColor2Ref = useRef(new THREE.Color(colors[1]))
   const animSpeedRef = useRef(0.1)
-  const perlinNoiseTexture = useTexture(
-    "https://storage.googleapis.com/eleven-public-cdn/images/perlin-noise.png"
-  )
+  const perlinNoiseTexture = useMemo(() => createPerlinTexture(), [])
+
+  useEffect(() => {
+    return () => {
+      perlinNoiseTexture.dispose()
+    }
+  }, [perlinNoiseTexture])
 
   const agentRef = useRef<AgentState>(agentState)
   const modeRef = useRef<"auto" | "manual">(volumeMode)
@@ -248,7 +306,7 @@ function Scene({
       uInverted: new THREE.Uniform(isDark ? 1 : 0),
       uInputVolume: new THREE.Uniform(0),
       uOutputVolume: new THREE.Uniform(0),
-      uOpacity: new THREE.Uniform(0),
+      uOpacity: new THREE.Uniform(1),
     }
   }, [perlinNoiseTexture, offsets])
 

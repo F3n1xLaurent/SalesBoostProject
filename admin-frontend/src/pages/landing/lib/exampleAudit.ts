@@ -35,6 +35,8 @@ export function buildLandingExampleAudit(): AuditDetailItem {
     scenarioName: 'Camry · кредит и trade-in',
     assignedBy: null,
     failReason: null,
+    recordingStatus: 'ready',
+    recordingUrl: '/demo-call-sample.m4a',
     unifiedReport: {
       version: 'call-report-v1',
       source: 'call',

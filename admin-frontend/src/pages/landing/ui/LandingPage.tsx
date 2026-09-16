@@ -6,26 +6,12 @@ import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { buildLandingExampleAudit } from '../lib/exampleAudit';
 import trainerBizUi from '../assets/trainer-biz.png';
 import trainerMgrUi from '../assets/trainer-mgr.png';
-import { FlowButton } from './FlowButton';
+import { LandingHeader } from './LandingHeader';
 import { PdfStructureBlocks } from './PdfStructure';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import './landing.css';
-
-const DEMO_CALL_PATH = '/demo-call';
-
-function DemoCta({
-  label = 'Запросить демо',
-  variant = 'default',
-  href = DEMO_CALL_PATH,
-}: {
-  label?: string;
-  variant?: 'default' | 'white';
-  href?: string;
-}) {
-  return <FlowButton text={label} href={href} variant={variant} />;
-}
 
 function GridEnds() {
   return (
@@ -146,126 +132,21 @@ function useSoftReveal() {
 
 /* ─────────────────────────────────── Page ─────────────────────────────────── */
 
-const MOBILE_NAV = [
-  ['#how', 'Как это работает'],
-  ['#pdf-product', 'Система'],
-  ['#manager', 'Руководителю'],
-  ['#report', 'Разбор звонка'],
-  ['#trainer', 'Тренажёр'],
-  ['#importers', 'Импортёрам'],
-  ['#diff', 'Чем отличается'],
-  ['#faq', 'FAQ'],
-] as const;
-
 export function LandingPage() {
   const [reportOpen, setReportOpen] = useState(false);
-  const [productOpen, setProductOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const exampleAudit = useMemo(() => buildLandingExampleAudit(), []);
   useSoftReveal();
 
-  const openProduct = () => setProductOpen(true);
-  const closeProduct = () => setProductOpen(false);
-  const closeMenu = () => setMenuOpen(false);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.body.style.overflow = prev;
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [menuOpen]);
-
   return (
     <div className="theme-brutal sl-page">
-      {/* Header */}
-      <header
-        className={`sl-header${productOpen ? ' is-open' : ''}${menuOpen ? ' is-menu' : ''}`}
-        onMouseLeave={closeProduct}
-      >
-        <div className="sl-inner sl-header-inner">
-          <div className="sl-header-shell">
-            <a className="sl-logo" href="#top" aria-label="Salsa">
-              <SalsaLogo className="sl-logo-svg" />
-            </a>
-            <nav className="sl-nav">
-              <a href="#how" onMouseEnter={closeProduct}>Как это работает</a>
-              <a
-                className="sl-nav-trigger"
-                href="#pdf-product"
-                onMouseEnter={openProduct}
-                onFocus={openProduct}
-              >
-                Продукт
-              </a>
-              <a href="#manager" onMouseEnter={closeProduct}>Руководителю</a>
-              <a href="#importers" onMouseEnter={closeProduct}>Импортёрам</a>
-              <a href="#faq" onMouseEnter={closeProduct}>FAQ</a>
-            </nav>
-            <div className="sl-header-cta">
-              <DemoCta label="Получить демо" href="#demo" />
-            </div>
-            <button
-              type="button"
-              className="sl-burger"
-              aria-expanded={menuOpen}
-              aria-controls="sl-mobile-nav"
-              aria-label={menuOpen ? 'Закрыть меню' : 'Открыть меню'}
-              onClick={() => setMenuOpen((open) => !open)}
-            >
-              <span />
-              <span />
-              <span />
-            </button>
-          </div>
-          <div className="sl-mega" aria-label="Разделы продукта" onMouseEnter={openProduct}>
-            <div className="sl-mega-panel">
-              <a href="#how">
-                <strong>Как это работает</strong>
-                <em>Допуск, контроль, исправление</em>
-              </a>
-              <a href="#pdf-product">
-                <strong>Система</strong>
-                <em>Дашборд сети, рейтинг точек и динамика</em>
-              </a>
-              <a href="#report">
-                <strong>Разбор звонка</strong>
-                <em>Оценка по вашим стандартам в любое время</em>
-              </a>
-              <a href="#trainer">
-                <strong>Тренажёр</strong>
-                <em>Реальные ситуации до первого клиента</em>
-              </a>
-              <a href="#diff">
-                <strong>Чем отличается</strong>
-                <em>Salsa рядом с CRM, LMS и речевой аналитикой</em>
-              </a>
-            </div>
-          </div>
-          <GridEnds />
-        </div>
-        <nav id="sl-mobile-nav" className="sl-mobile-nav" aria-label="Меню" hidden={!menuOpen}>
-          {MOBILE_NAV.map(([href, label]) => (
-            <a key={href} href={href} onClick={closeMenu}>
-              {label}
-            </a>
-          ))}
-          <div className="sl-mobile-nav-cta" onClick={closeMenu}>
-            <FlowButton text="Записаться на демо" href="#demo" variant="solid" />
-            <FlowButton text="Получить демо-звонок сейчас" href="#try" />
-          </div>
-        </nav>
-      </header>
+      <LandingHeader />
       <div className="sl-inner sl-body">
       <main id="top">
         <PdfStructureBlocks
-          onShowExample={() => setReportOpen(true)}
+          onShowExample={() => {
+            // Defer so the opening click cannot hit the freshly mounted overlay.
+            window.setTimeout(() => setReportOpen(true), 0);
+          }}
           afterManager={
             <section className="sl-sec sl-reveal" id="trainer">
               <div className="sl-band">

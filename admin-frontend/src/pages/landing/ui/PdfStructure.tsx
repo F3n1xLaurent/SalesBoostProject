@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link } from 'react-router';
-import { Orb } from '@/components/ui/orb';
 import featAnalytics from '../assets/Analytics.png';
 import featPhone from '../assets/Phone.png';
 import featTrain from '../assets/Train.png';
@@ -11,9 +10,11 @@ import dashboardDesktopUi from '../assets/dashboard-desktop.svg';
 import dashboardMobileUi from '../assets/dashboard-mobile.svg';
 import reportDesktopUi from '../assets/report-desktop.svg';
 import reportMobileUi from '../assets/report-mobile.svg';
+import { DEFAULT_TRY_CLIENT_ID, TRY_CLIENTS } from '../lib/tryClients';
 import { FlowButton } from './FlowButton';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import { ShaderBackground } from './ShaderBackground';
+import { TryClientPicker } from './TryClientPicker';
 
 const DEMO_CALL_PATH = '/demo-call';
 
@@ -75,10 +76,42 @@ function GridEnds() {
   );
 }
 
+const PHONE_NATIONAL_LEN = 10;
+
+function parseNationalPhoneDigits(input: string): string {
+  const trimmed = input.trim();
+  let digits = trimmed.replace(/\D/g, '');
+  if (trimmed.startsWith('+7') || trimmed.startsWith('+')) {
+    if (digits.startsWith('7')) digits = digits.slice(1);
+  } else if (digits.length >= 11 && (digits.startsWith('8') || digits.startsWith('7'))) {
+    digits = digits.slice(1);
+  }
+  return digits.slice(0, PHONE_NATIONAL_LEN);
+}
+
+function formatNationalPhone(national: string): string {
+  const a = national.slice(0, 3);
+  const b = national.slice(3, 6);
+  const c = national.slice(6, 8);
+  const d = national.slice(8, 10);
+  let out = a;
+  if (b) out += ` ${b}`;
+  if (c) out += `-${c}`;
+  if (d) out += `-${d}`;
+  return out;
+}
+
+function formatPhoneFieldValue(national: string, focused: boolean): string {
+  if (!national && !focused) return '';
+  const rest = formatNationalPhone(national);
+  return rest ? `+7 ${rest}` : '+7 ';
+}
+
 function DemoLeadForm() {
   const [name, setName] = useState('');
   const [company, setCompany] = useState('');
-  const [phone, setPhone] = useState('');
+  const [phoneDigits, setPhoneDigits] = useState('');
+  const [phoneFocused, setPhoneFocused] = useState(false);
   const [comment, setComment] = useState('');
   const [pdnConsent, setPdnConsent] = useState(false);
   const [adsConsent, setAdsConsent] = useState(false);
@@ -86,7 +119,7 @@ function DemoLeadForm() {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !company.trim() || !phone.trim() || !pdnConsent) return;
+    if (!name.trim() || !company.trim() || phoneDigits.length !== PHONE_NATIONAL_LEN || !pdnConsent) return;
     setSent(true);
   };
 
@@ -131,9 +164,11 @@ function DemoLeadForm() {
           inputMode="tel"
           autoComplete="tel"
           placeholder="+7 999 000-00-00"
-          value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-          required
+          value={formatPhoneFieldValue(phoneDigits, phoneFocused)}
+          onFocus={() => setPhoneFocused(true)}
+          onBlur={() => setPhoneFocused(false)}
+          onChange={(e) => setPhoneDigits(parseNationalPhoneDigits(e.target.value))}
+          aria-label="Номер телефона"
         />
       </label>
       <label className="sl-lead-field">
@@ -187,159 +222,27 @@ function DemoLeadForm() {
   );
 }
 
-const TRY_CLIENTS = [
-  {
-    id: 'mikhail',
-    name: 'Михаил',
-    temper: 'Спокойный и дотошный',
-    colors: ['#FFDCA8', '#F58A1F'] as [string, string],
-    ring: '#F79A33',
-    seed: 41,
-  },
-  {
-    id: 'sergey',
-    name: 'Сергей',
-    temper: 'Торопится и давит',
-    colors: ['#FFFAC4', '#FBE81B'] as [string, string],
-    ring: '#EFD525',
-    seed: 2000,
-  },
-  {
-    id: 'anna',
-    name: 'Анна',
-    temper: 'Сомневается и сравнивает',
-    colors: ['#FFEFB6', '#FEB70D'] as [string, string],
-    ring: '#FDBF2B',
-    seed: 7,
-  },
-] as const;
-
-function isValidPhone(value: string) {
-  const digits = value.replace(/\D/g, '');
-  if (digits.length === 10) return true;
-  if (digits.length === 11 && (digits[0] === '7' || digits[0] === '8')) return true;
-  return false;
+function isValidPhone(national: string) {
+  return national.length === PHONE_NATIONAL_LEN;
 }
 
 function TryLiveDemo() {
-  const [selected, setSelected] = useState(1);
-  const [phone, setPhone] = useState('');
+  const [selectedId, setSelectedId] = useState(DEFAULT_TRY_CLIENT_ID);
+  const [phoneDigits, setPhoneDigits] = useState('');
   const [phoneError, setPhoneError] = useState(false);
-  const pickerRef = useRef<HTMLDivElement>(null);
+  const [phoneFocused, setPhoneFocused] = useState(false);
   const phoneRef = useRef<HTMLInputElement>(null);
-  const client = TRY_CLIENTS[selected]!;
-
-  const firstCenter = useRef(true);
-  const selectFromScroll = useRef(false);
-  const lockScrollSync = useRef(false);
-  const selectedRef = useRef(selected);
-  selectedRef.current = selected;
-
-  const centerActive = (smooth: boolean) => {
-    const root = pickerRef.current;
-    if (!root || root.scrollWidth <= root.clientWidth + 8) return;
-    const active = root.querySelector<HTMLElement>('.is-active');
-    if (!active) return;
-    const left = active.offsetLeft - (root.clientWidth - active.offsetWidth) / 2;
-    if (smooth) {
-      root.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
-    } else {
-      root.scrollLeft = Math.max(0, left);
-    }
-  };
-
-  const nearestClient = () => {
-    const root = pickerRef.current;
-    if (!root) return 0;
-    const mid = root.getBoundingClientRect().left + root.clientWidth / 2;
-    const nodes = root.querySelectorAll<HTMLElement>('.sl-try-client');
-    let best = 0;
-    let dist = Infinity;
-    nodes.forEach((el, i) => {
-      const box = el.getBoundingClientRect();
-      const d = Math.abs(box.left + box.width / 2 - mid);
-      if (d < dist) {
-        dist = d;
-        best = i;
-      }
-    });
-    return best;
-  };
-
-  useEffect(() => {
-    if (selectFromScroll.current) {
-      selectFromScroll.current = false;
-      return;
-    }
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        centerActive(!firstCenter.current);
-        firstCenter.current = false;
-      });
-    });
-    const unlock = window.setTimeout(() => {
-      lockScrollSync.current = false;
-    }, 360);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.clearTimeout(unlock);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected]);
-
-  useEffect(() => {
-    const root = pickerRef.current;
-    if (!root) return;
-
-    let frame = 0;
-    const sync = () => {
-      frame = 0;
-      const next = nearestClient();
-      if (lockScrollSync.current) {
-        if (next === selectedRef.current) lockScrollSync.current = false;
-        return;
-      }
-      setSelected((prev) => {
-        if (prev === next) return prev;
-        selectFromScroll.current = true;
-        return next;
-      });
-    };
-    const onScroll = () => {
-      if (lockScrollSync.current) return;
-      if (frame) return;
-      frame = requestAnimationFrame(sync);
-    };
-
-    root.addEventListener('scroll', onScroll, { passive: true });
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      root.removeEventListener('scroll', onScroll);
-    };
-  }, []);
-
-  // Держим активный шарик по центру при повороте экрана и смене высоты
-  // адресной строки на мобильных (resize сбивает позицию scroll-snap).
-  useEffect(() => {
-    const recenter = () => centerActive(false);
-    window.addEventListener('resize', recenter);
-    window.addEventListener('load', recenter);
-    return () => {
-      window.removeEventListener('resize', recenter);
-      window.removeEventListener('load', recenter);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const client = TRY_CLIENTS.find((item) => item.id === selectedId) ?? TRY_CLIENTS[1]!;
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (!isValidPhone(phone)) {
+    if (!isValidPhone(phoneDigits)) {
       setPhoneError(true);
       phoneRef.current?.focus();
       return;
     }
     const params = new URLSearchParams();
-    params.set('phone', phone.trim());
+    params.set('phone', `+7${phoneDigits}`);
     params.set('script', client.id);
     window.location.href = `${DEMO_CALL_PATH}?${params.toString()}`;
   };
@@ -362,56 +265,40 @@ function TryLiveDemo() {
       </div>
 
       <div className="sl-try-panel sl-reveal sl-reveal-delay-1">
-        <div ref={pickerRef} className="sl-try-picker" role="radiogroup" aria-label="Выберите AI-клиента">
-          {TRY_CLIENTS.map((c, i) => {
-            const isActive = i === selected;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                role="radio"
-                aria-checked={isActive}
-                className={`sl-try-client${isActive ? ' is-active' : ''}`}
-                style={{ '--sl-client-ring': c.ring } as CSSProperties}
-                onClick={() => {
-                  lockScrollSync.current = true;
-                  setSelected(i);
-                }}
-              >
-                <span className="sl-try-client-orb" aria-hidden>
-                  <span className="sl-try-client-orb-core">
-                    <Orb colors={c.colors} seed={c.seed} agentState="talking" />
-                  </span>
-                </span>
-                <strong>{c.name}</strong>
-                <em>{c.temper}</em>
-              </button>
-            );
-          })}
-        </div>
+        <TryClientPicker value={selectedId} onChange={setSelectedId} />
 
         <form className="sl-try-call" onSubmit={onSubmit}>
           <label className="sl-try-call-label" htmlFor="sl-try-phone">
             Телефон менеджера или отдела продаж
           </label>
-          <div className="sl-try-call-row">
+          <div className={`sl-try-call-row${phoneError ? ' is-invalid' : ''}`}>
             <input
               id="sl-try-phone"
               ref={phoneRef}
-              className={`sl-phone-input sl-try-call-input${phoneError ? ' is-invalid' : ''}`}
+              className="sl-try-call-input"
               type="tel"
               inputMode="tel"
               autoComplete="tel"
               placeholder="+7 999 000-00-00"
-              value={phone}
+              value={formatPhoneFieldValue(phoneDigits, phoneFocused)}
               aria-invalid={phoneError}
-              required
+              aria-label="Номер телефона"
+              onFocus={() => {
+                setPhoneFocused(true);
+                requestAnimationFrame(() => {
+                  const el = phoneRef.current;
+                  if (!el) return;
+                  const len = el.value.length;
+                  el.setSelectionRange(len, len);
+                });
+              }}
+              onBlur={() => setPhoneFocused(false)}
               onChange={(e) => {
-                setPhone(e.target.value);
+                setPhoneDigits(parseNationalPhoneDigits(e.target.value));
                 if (phoneError) setPhoneError(false);
               }}
             />
-            <FlowButton text="Получить звонок" type="submit" variant="solid" />
+            <FlowButton text="Позвонить" type="submit" variant="solid" />
           </div>
           <p className="sl-try-legal">
             Нажимая кнопку, вы даёте{' '}
