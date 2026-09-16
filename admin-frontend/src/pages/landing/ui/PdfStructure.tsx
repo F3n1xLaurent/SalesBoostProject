@@ -10,8 +10,13 @@ import dashboardDesktopUi from '../assets/dashboard-desktop.svg';
 import dashboardMobileUi from '../assets/dashboard-mobile.svg';
 import reportDesktopUi from '../assets/report-desktop.svg';
 import reportMobileUi from '../assets/report-mobile.svg';
+import {
+  DEPARTMENT_EXAMPLE_CARDS,
+  type DepartmentExampleId,
+} from '../lib/departmentExamples';
 import { DEFAULT_TRY_CLIENT_ID, TRY_CLIENTS } from '../lib/tryClients';
 import { FlowButton } from './FlowButton';
+import { FinalDemoBlock } from './FinalDemoBlock';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import { ShaderBackground } from './ShaderBackground';
 import { TryClientPicker } from './TryClientPicker';
@@ -107,188 +112,6 @@ function formatPhoneFieldValue(national: string, focused: boolean): string {
   return rest ? `+7 ${rest}` : '+7 ';
 }
 
-function DemoLeadForm() {
-  const [name, setName] = useState('');
-  const [company, setCompany] = useState('');
-  const [phoneDigits, setPhoneDigits] = useState('');
-  const [phoneFocused, setPhoneFocused] = useState(false);
-  const [comment, setComment] = useState('');
-  const [pdnConsent, setPdnConsent] = useState(false);
-  const [adsConsent, setAdsConsent] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
-  const [website, setWebsite] = useState('');
-  const submissionKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
-
-  const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSubmitError('');
-    if (!name.trim() || !company.trim() || phoneDigits.length !== PHONE_NATIONAL_LEN || !pdnConsent) {
-      setSubmitError('Проверьте обязательные поля и согласие на обработку данных.');
-      return;
-    }
-
-    const payload = {
-      name: name.trim(),
-      company: company.trim(),
-      phone: `+7${phoneDigits}`,
-      comment: comment.trim(),
-      personalDataConsent: pdnConsent,
-      marketingConsent: adsConsent,
-      website,
-    };
-    const fingerprint = JSON.stringify(payload);
-    if (submissionKeyRef.current?.fingerprint !== fingerprint) {
-      const key = globalThis.crypto?.randomUUID?.()
-        ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      submissionKeyRef.current = { fingerprint, key };
-    }
-
-    setSubmitting(true);
-    try {
-      const response = await fetch('/api/public/landing-leads', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': submissionKeyRef.current.key,
-        },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json().catch(() => null) as { error?: string } | null;
-      if (!response.ok) {
-        throw new Error(result?.error || 'Не удалось отправить заявку. Попробуйте ещё раз.');
-      }
-      setSent(true);
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : 'Не удалось отправить заявку. Попробуйте ещё раз.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (sent) {
-    return (
-      <div className="sl-lead-done" role="status" aria-live="polite">
-        <strong>Заявка отправлена</strong>
-        <p>Свяжемся, чтобы согласовать время демо</p>
-      </div>
-    );
-  }
-
-  return (
-    <form className="sl-lead-form" onSubmit={onSubmit}>
-      <label className="sl-lead-field">
-        <span>Имя</span>
-        <input
-          className="sl-lead-input"
-          type="text"
-          autoComplete="name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          minLength={2}
-          maxLength={100}
-          required
-        />
-      </label>
-      <label className="sl-lead-field">
-        <span>Компания</span>
-        <input
-          className="sl-lead-input"
-          type="text"
-          autoComplete="organization"
-          value={company}
-          onChange={(e) => setCompany(e.target.value)}
-          minLength={2}
-          maxLength={160}
-          required
-        />
-      </label>
-      <label className="sl-lead-field">
-        <span>Телефон</span>
-        <input
-          className="sl-lead-input"
-          type="tel"
-          inputMode="tel"
-          autoComplete="tel"
-          placeholder="+7 999 000-00-00"
-          value={formatPhoneFieldValue(phoneDigits, phoneFocused)}
-          onFocus={() => setPhoneFocused(true)}
-          onBlur={() => setPhoneFocused(false)}
-          onChange={(e) => setPhoneDigits(parseNationalPhoneDigits(e.target.value))}
-          aria-label="Номер телефона"
-          required
-        />
-      </label>
-      <label className="sl-lead-field">
-        <span>
-          Комментарий <em>необязательно</em>
-        </span>
-        <textarea
-          className="sl-lead-area"
-          rows={2}
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          maxLength={2000}
-        />
-      </label>
-      <label className="sl-lead-honeypot" aria-hidden="true">
-        Сайт
-        <input
-          type="text"
-          name="website"
-          value={website}
-          onChange={(e) => setWebsite(e.target.value)}
-          autoComplete="off"
-          tabIndex={-1}
-        />
-      </label>
-      <div className="sl-lead-consents">
-        <label className="sl-lead-check">
-          <input
-            type="checkbox"
-            checked={pdnConsent}
-            onChange={(e) => setPdnConsent(e.target.checked)}
-            required
-          />
-          <span>
-            Даю{' '}
-            <Link to="/landing/consent" target="_blank" rel="noopener noreferrer">
-              согласие на обработку персональных данных
-            </Link>
-            {' '}и принимаю{' '}
-            <Link to="/landing/privacy" target="_blank" rel="noopener noreferrer">
-              политику обработки персональных данных
-            </Link>
-          </span>
-        </label>
-        <label className="sl-lead-check">
-          <input
-            type="checkbox"
-            checked={adsConsent}
-            onChange={(e) => setAdsConsent(e.target.checked)}
-          />
-          <span>
-            Согласен получать{' '}
-            <Link to="/landing/marketing" target="_blank" rel="noopener noreferrer">
-              информационные и рекламные сообщения
-            </Link>
-          </span>
-        </label>
-      </div>
-      <div className="sl-lead-actions">
-        {submitError ? <p className="sl-lead-error" role="alert">{submitError}</p> : null}
-        <FlowButton
-          text={submitting ? 'Отправляем…' : 'Записаться на демо'}
-          type="submit"
-          variant="solid"
-          disabled={submitting}
-        />
-      </div>
-    </form>
-  );
-}
-
 function isValidPhone(national: string) {
   return national.length === PHONE_NATIONAL_LEN;
 }
@@ -320,7 +143,7 @@ function TryLiveDemo() {
         <div>
           <div className="sl-section-tag">Живая проверка</div>
           <h2 className="sl-h2">
-            Проверьте отдел продаж
+            Проверьте свой бизнес
             <br />
             за 30 секунд
           </h2>
@@ -473,7 +296,7 @@ function ReportCards() {
     },
     {
       title: 'Разбор диалога',
-      text: 'Сильные и слабые стороны этого звонка, не общие впечатления',
+      text: 'Сильные и слабые стороны конкретного звонка, не общие впечатления',
       icon: (
         <>
           <path d="M5 5.5h14v9.2H9.2L5 18.2z" />
@@ -494,7 +317,7 @@ function ReportCards() {
     },
     {
       title: 'Одни правила на сеть',
-      text: 'Одна шкала для всей сети: точка, менеджер и дилер',
+      text: 'Одна шкала для всей сети: менеджер, точка, дилер',
       icon: (
         <>
           <circle cx="12" cy="5.6" r="2" />
@@ -662,11 +485,96 @@ function NetworkTable() {
   );
 }
 
+function DirScoreGauge({ score, tone }: { score: number; tone: 'bad' | 'mid' | 'good' }) {
+  const size = 56;
+  const stroke = 5;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.max(0, Math.min(100, score));
+  const offset = circumference - (clamped / 100) * circumference;
+
+  return (
+    <div
+      className={`sl-dir-card-gauge sl-dir-card-gauge--${tone}`}
+      aria-label={`Оценка ${score} из 100`}
+    >
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
+        <circle
+          className="sl-dir-card-gauge-track"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+        />
+        <circle
+          className="sl-dir-card-gauge-fill"
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <div className="sl-dir-card-gauge-center">
+        <strong>{score}</strong>
+      </div>
+    </div>
+  );
+}
+
+function DirectionsBlock({
+  onOpenReport,
+}: {
+  onOpenReport: (id: DepartmentExampleId) => void;
+}) {
+  return (
+    <section className="sl-sec sl-directions sl-reveal" id="directions" aria-labelledby="directions-title">
+      <div className="sl-band sl-directions-band">
+        <div>
+          <div className="sl-section-tag">Направления</div>
+          <h2 className="sl-h2" id="directions-title">
+            Контроль качества в любом отделе
+          </h2>
+        </div>
+        <p className="sl-lede sl-directions-lede">
+          Продажи, оценка, сервис — настраиваем свои скрипты и критерии разбора
+        </p>
+      </div>
+      <div className="sl-directions-grid">
+        {DEPARTMENT_EXAMPLE_CARDS.map((card) => (
+          <button
+            key={card.id}
+            type="button"
+            className={`sl-dir-card sl-dir-card--${card.tone}`}
+            onClick={() => onOpenReport(card.id)}
+          >
+            <div className="sl-dir-card-top">
+              <strong className="sl-dir-card-dept">{card.department}</strong>
+              <DirScoreGauge score={card.score} tone={card.tone} />
+            </div>
+            <span className={`sl-dir-card-level sl-dir-card-level--${card.tone}`}>{card.level}</span>
+            <p className="sl-dir-card-case">{card.caseLine}</p>
+            <span className="sl-dir-card-cta">Смотреть разбор</span>
+          </button>
+        ))}
+      </div>
+      <GridEnds />
+    </section>
+  );
+}
+
 export function PdfStructureBlocks({
   onShowExample,
+  onOpenDepartmentReport,
   afterManager,
 }: {
   onShowExample: () => void;
+  onOpenDepartmentReport: (id: DepartmentExampleId) => void;
   afterManager?: ReactNode;
 }) {
   return (
@@ -675,7 +583,7 @@ export function PdfStructureBlocks({
       <section className="sl-sec sl-hero-v2">
         <div className="sl-hero-v2-grid">
           <div className="sl-hero-v2-copy">
-            <h1 className="sl-h1 sl-hero-v2-title">РОП как технология</h1>
+            <h1 className="sl-h1 sl-hero-v2-title">Бизнес-процессы как технология</h1>
             <p className="sl-lede sl-hero-v2-lede">
               AI обучает, допускает к работе, проверяет разговоры{' '}
               <br className="sl-hero-v2-lede-br" />
@@ -683,13 +591,15 @@ export function PdfStructureBlocks({
             </p>
             <div className="sl-hero-v2-actions">
               <FlowButton text="Получить звонок" href="#try" variant="solid" />
-              <FlowButton text="Пример отчёта" onClick={onShowExample} />
+              <FlowButton text="Записаться на демо" href="#demo" />
             </div>
           </div>
           <HeroCallReview />
         </div>
         <GridEnds />
       </section>
+
+      <DirectionsBlock onOpenReport={onOpenDepartmentReport} />
 
       <TryLiveDemo />
 
@@ -722,7 +632,7 @@ export function PdfStructureBlocks({
           </div>
           <p className="sl-lede">
             Аналитика сети: рейтинг, дозвон, динамика — из реальных звонков и проверок,
-            без ручных отчётов снизу
+            без ручных сводок с точек
           </p>
         </div>
         <div className="sl-well-cell sl-reveal sl-reveal-delay-1">
@@ -798,8 +708,7 @@ export function PdfStructureBlocks({
             </h2>
           </div>
           <p className="sl-lede">
-            Регламент подписан — ещё не ответ. Salsa проверяет, умеют ли продавать по
-            стандарту сегодня
+            Документ — ещё не навык. Salsa проверяет, как продают по стандарту сегодня
           </p>
         </div>
         <DealerChart />
@@ -858,39 +767,7 @@ export function PdfStructureBlocks({
       </section>
 
       {/* Демо */}
-      <section className="sl-sec sl-final sl-reveal" id="demo">
-        <div className="sl-final-shot sl-demo-stage sl-reveal sl-reveal-delay-1">
-          <ShaderBackground className="sl-final-shot-canvas sl-hero-shot-shader" variant="plasma" />
-          <div className="sl-final-shot-grid">
-            <div className="sl-final-shot-copy">
-              <div>
-                <SalsaLogo className="sl-final-logo" />
-                <h2 className="sl-final-title">
-                  Протестируйте
-                  <br />
-                  на своей сети
-                </h2>
-                <p className="sl-final-sub">
-                  За 30 минут покажем весь цикл на вашем бизнесе:
-                  автомобили и склад, кредит, стандарты, точки и сценарии
-                </p>
-              </div>
-              <FlowButton
-                text="Получить демо-звонок сейчас"
-                href="#try"
-                className="sl-final-cta-desktop"
-              />
-            </div>
-            <div className="sl-final-card">
-              <DemoLeadForm />
-            </div>
-            <div className="sl-final-cta-mobile">
-              <FlowButton text="Получить демо-звонок сейчас" href="#try" />
-            </div>
-          </div>
-        </div>
-        <GridEnds />
-      </section>
+      <FinalDemoBlock />
 
       <FaqBlock />
     </>
@@ -903,8 +780,12 @@ const FAQ_ITEMS = [
     a: 'Обычно несколько дней: загружаем стандарты, скрипты и данные компании и запускаем первые проверки.',
   },
   {
-    q: 'Нужно ли менять CRM или телефонию?',
-    a: 'Нет. Salsa работает поверх ваших систем и подтягивает из них автомобили, склад, кредит и скрипты.',
+    q: 'Нужна ли интеграция с CRM, АТС и другими сервисами?',
+    a: 'Не обязательно на старте. Salsa работает самостоятельно и при необходимости подключается к вашим системам.',
+  },
+  {
+    q: 'Нужно ли настраивать телефонию?',
+    a: 'Нет. Достаточно номера менеджера или отдела продаж — отдельная настройка АТС не нужна.',
   },
   {
     q: 'На каких данных строится проверка?',

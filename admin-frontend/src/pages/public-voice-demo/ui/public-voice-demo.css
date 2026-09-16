@@ -22,6 +22,16 @@
   min-width: 0;
 }
 
+.demo-call-brutal .demo-stand-final {
+  margin: 56px auto 0;
+  max-width: min(1140px, 100%);
+  padding-bottom: 8px;
+}
+
+.demo-call-brutal .demo-stand-final .sl-final-shot {
+  margin-top: 0;
+}
+
 .sl-demo-page .sl-inner {
   width: 100%;
   max-width: var(--sl-frame-w, 1240px);

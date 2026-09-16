@@ -149,7 +149,7 @@ export function LegalPage({ slug }: { slug: LegalSlug }) {
               ))}
             </nav>
             <div className="sl-header-cta">
-              <FlowButton text="Получить демо" href={`${LANDING_HOME}#demo`} />
+              <FlowButton text="Записаться на демо" href={`${LANDING_HOME}#demo`} />
             </div>
             <button
               type="button"
