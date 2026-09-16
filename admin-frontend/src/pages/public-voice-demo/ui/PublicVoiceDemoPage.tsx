@@ -1,34 +1,36 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router';
 import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
-import './public-voice-demo.css';
-import { computeMockFromTranscript, type TranscriptTurn } from '../lib/demoMockEvaluation';
-import { buildPrecomputedExampleDetail } from '../lib/demoExampleReportsLoader';
-import { DEMO_REPORT_EXAMPLES, type ExampleTier } from '../model/demoReportExamples';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
-import { DemoUnifiedReport } from './DemoUnifiedReport';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+import { FlowButton } from '../../landing/ui/FlowButton';
+import { LandingHeader } from '../../landing/ui/LandingHeader';
+import { TryClientPicker } from '../../landing/ui/TryClientPicker';
+import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
+import { LANDING_HOME, LEGAL_NAV, OPERATOR_ADDRESS } from '../../landing/lib/legalDocuments';
+import { DEFAULT_TRY_CLIENT_ID, TRY_CLIENTS, isTryClientId, type TryClientId } from '../../landing/lib/tryClients';
+import '../../../shared/ui/styles/admin-panel.css';
+import '../../../shared/ui/styles/theme-brutal.css';
+import '../../landing/ui/landing.css';
+import './public-voice-demo.css';
+
+function GridEnds() {
+  return (
+    <>
+      <span className="sl-x sl-x-l" aria-hidden>+</span>
+      <span className="sl-x sl-x-r" aria-hidden>+</span>
+    </>
+  );
+}
 
 const API_BASE = '';
 const CALL_ID_PARAM = 'callId';
-const MOCK_CALL_ID = 'mock';
+const PHONE_PARAM = 'phone';
+const SCRIPT_PARAM = 'script';
+const LEGACY_CLIENT_PARAM = 'client';
 const NATIONAL_LEN = 10;
 
-/** UI-only: open `/demo-call?previewWait=call` or `...&previewWait=processing` to see waiting screens without a call. */
-type PreviewWaitConfig =
-  | { kind: 'call' }
-  | { kind: 'processing'; stage: 'transcript' | 'evaluation' };
-
-function readPreviewWaitConfig(): PreviewWaitConfig | null {
-  const params = new URLSearchParams(window.location.search);
-  const w = params.get('previewWait')?.trim().toLowerCase();
-  if (!w) return null;
-  if (w === 'call' || w === 'conversation') return { kind: 'call' };
-  if (w === 'processing' || w === 'analytics') {
-    const stage = params.get('previewStage')?.trim().toLowerCase();
-    if (stage === 'transcript') return { kind: 'processing', stage: 'transcript' };
-    return { kind: 'processing', stage: 'evaluation' };
-  }
-  return null;
-}
+type DemoClientId = TryClientId;
 
 type DemoCallState = CallInsightDetail & {
   callId: string;
@@ -37,61 +39,9 @@ type DemoCallState = CallInsightDetail & {
   isProcessing: boolean;
   processingStage: 'transcript' | 'evaluation' | null;
   unifiedReport?: AuditDetailItem['unifiedReport'];
+  recordingStatus?: AuditDetailItem['recordingStatus'];
+  recordingUrl?: string | null;
 };
-
-function buildPreviewCallWaitingDetail(): DemoCallState {
-  const now = Date.now();
-  return {
-    id: -2,
-    to: '+7 999 123 45 67',
-    startedAt: new Date(now - 90_000).toISOString(),
-    endedAt: null,
-    outcome: null,
-    durationSec: null,
-    totalScore: null,
-    qualityTag: null,
-    strengths: [],
-    weaknesses: [],
-    recommendations: [],
-    transcript: [],
-    dimensionScores: null,
-    processingError: null,
-    callSummary: null,
-    replyImprovements: null,
-    callId: 'preview-call',
-    transcriptTurns: 0,
-    hasEvaluation: false,
-    isProcessing: false,
-    processingStage: null,
-  };
-}
-
-function buildPreviewProcessingWaitingDetail(stage: 'transcript' | 'evaluation'): DemoCallState {
-  const now = Date.now();
-  return {
-    id: -3,
-    to: '+7 999 123 45 67',
-    startedAt: new Date(now - 120_000).toISOString(),
-    endedAt: new Date(now - 8000).toISOString(),
-    outcome: 'completed',
-    durationSec: 112,
-    totalScore: null,
-    qualityTag: null,
-    strengths: [],
-    weaknesses: [],
-    recommendations: [],
-    transcript: [],
-    dimensionScores: null,
-    processingError: null,
-    callSummary: null,
-    replyImprovements: null,
-    callId: 'preview-processing',
-    transcriptTurns: 0,
-    hasEvaluation: false,
-    isProcessing: true,
-    processingStage: stage,
-  };
-}
 
 function readCallIdFromUrl(): string | null {
   const params = new URLSearchParams(window.location.search);
@@ -99,11 +49,29 @@ function readCallIdFromUrl(): string | null {
   return value && value.trim() ? value.trim() : null;
 }
 
-function writeCallIdToUrl(callId: string | null) {
-  const url = new URL(window.location.href);
-  if (callId) url.searchParams.set(CALL_ID_PARAM, callId);
-  else url.searchParams.delete(CALL_ID_PARAM);
-  window.history.replaceState({}, '', url.toString());
+function readPhoneFromUrl(): string {
+  return new URLSearchParams(window.location.search).get(PHONE_PARAM)?.trim() || '';
+}
+
+function readDemoClientIdFromUrl(): DemoClientId {
+  const params = new URLSearchParams(window.location.search);
+  const value = (params.get(SCRIPT_PARAM) || params.get(LEGACY_CLIENT_PARAM))?.trim().toLowerCase();
+  return isTryClientId(value) ? value : DEFAULT_TRY_CLIENT_ID;
+}
+
+function shouldAutoStartFromUrl(params: URLSearchParams): boolean {
+  if (params.get(CALL_ID_PARAM)?.trim()) return false;
+  const value = (params.get(SCRIPT_PARAM) || params.get(LEGACY_CLIENT_PARAM))?.trim().toLowerCase();
+  return parseNationalDigits(params.get(PHONE_PARAM)?.trim() || '').length === NATIONAL_LEN && isTryClientId(value);
+}
+
+function stripDemoCallParams(params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.delete(CALL_ID_PARAM);
+  next.delete(PHONE_PARAM);
+  next.delete(SCRIPT_PARAM);
+  next.delete(LEGACY_CLIENT_PARAM);
+  return next;
 }
 
 function isCallFinal(detail: DemoCallState | null): boolean {
@@ -121,108 +89,116 @@ function getWaitingPhase(detail: DemoCallState | null): WaitingPhase {
   return 'processing';
 }
 
-function waitingStatusLabel(phase: WaitingPhase, detail: DemoCallState | null): string {
-  if (phase === 'call_active') return 'На линии';
-  if (detail?.isProcessing && detail.processingStage === 'evaluation') return 'Формируем аналитику и отчёт…';
-  if (detail?.isProcessing && detail.processingStage === 'transcript') return 'Получаем расшифровку…';
-  return 'Завершаем подготовку отчёта…';
+function formatDisplayPhone(raw: string | undefined): string {
+  if (!raw || raw === '—') return '';
+  const national = parseNationalDigits(raw);
+  if (national.length === NATIONAL_LEN) return formatPhoneFieldValue(national, true).trim();
+  return raw;
 }
 
-function buildMockDetail(to: string): DemoCallState {
-  const now = Date.now();
-  const startedAt = new Date(now - 1000 * 62).toISOString();
-  const endedAt = new Date(now - 1000 * 7).toISOString();
-  const transcript: TranscriptTurn[] = [
-    { role: 'client', text: 'Здравствуйте. Подскажите, Toyota Camry есть в наличии?' },
-    { role: 'manager', text: 'Добрый день! Да, Camry есть. Подскажите, какую комплектацию и год рассматриваете?' },
-    { role: 'client', text: 'Скорее 2.5, комплектация побогаче. И сколько стоит?' },
-    { role: 'manager', text: 'Цена зависит от комплектации и пробега. Есть разные варианты.' },
-    { role: 'client', text: 'А в кредит можно? И у меня есть машина в трейд-ин.' },
-    { role: 'manager', text: 'Да, кредит возможен. Трейд-ин тоже делаем.' },
-    { role: 'client', text: 'Дорого получается.' },
-    { role: 'manager', text: 'Ну, цены сейчас такие. Можем посмотреть.' },
-    { role: 'client', text: 'Я бы хотел приехать посмотреть, но не уверен.' },
-    { role: 'manager', text: 'Хорошо, приезжайте.' },
-  ];
-  const computed = computeMockFromTranscript(transcript);
-  return {
-    id: -1,
-    to,
-    startedAt,
-    endedAt,
-    outcome: computed.outcome,
-    durationSec: computed.durationSec,
-    totalScore: computed.totalScore,
-    qualityTag: computed.qualityTag,
-    strengths: computed.strengths,
-    weaknesses: computed.weaknesses,
-    recommendations: computed.recommendations,
-    dimensionScores: computed.dimensionScores,
-    processingError: null,
-    callSummary: computed.callSummary,
-    replyImprovements: computed.replyImprovements,
-    transcript,
-    callId: MOCK_CALL_ID,
-    transcriptTurns: transcript.length,
-    hasEvaluation: true,
-    isProcessing: false,
-    processingStage: null,
-  };
-}
-
-/** 10 digits after country code (RU); strips leading 7/8 when 11 digits pasted. */
 function parseNationalDigits(input: string): string {
-  let d = input.replace(/\D/g, '');
-  if (d.length >= 11 && d.startsWith('8')) d = d.slice(1);
-  if (d.length >= 11 && d.startsWith('7')) d = d.slice(1);
+  const trimmed = input.trim();
+  let d = trimmed.replace(/\D/g, '');
+  if (trimmed.startsWith('+7') || trimmed.startsWith('+')) {
+    if (d.startsWith('7')) d = d.slice(1);
+  } else if (d.length >= 11 && (d.startsWith('8') || d.startsWith('7'))) {
+    d = d.slice(1);
+  }
   return d.slice(0, NATIONAL_LEN);
 }
 
 function formatNationalSpaced(national: string): string {
-  let s = '';
-  for (let i = 0; i < national.length; i++) {
-    if (i === 3 || i === 6 || i === 8) s += ' ';
-    s += national[i];
-  }
+  const a = national.slice(0, 3);
+  const b = national.slice(3, 6);
+  const c = national.slice(6, 8);
+  const d = national.slice(8, 10);
+  let s = a;
+  if (b) s += ` ${b}`;
+  if (c) s += `-${c}`;
+  if (d) s += `-${d}`;
   return s;
+}
+
+function formatPhoneFieldValue(national: string, focused: boolean): string {
+  if (!national && !focused) return '';
+  const rest = formatNationalSpaced(national);
+  return rest ? `+7 ${rest}` : '+7 ';
 }
 
 function formatE164FromNational(national: string): string {
   return `+7${national}`;
 }
 
+function demoCallToAuditDetail(detail: DemoCallState): AuditDetailItem | null {
+  const report = detail.unifiedReport;
+  if (!report) return null;
+  const status: AuditDetailItem['status'] =
+    detail.outcome === 'failed' ? 'failed' : detail.outcome === 'disconnected' ? 'interrupted' : 'completed';
+  return {
+    id: String(detail.callId || detail.id),
+    type: 'call',
+    dateTime: detail.startedAt ?? new Date().toISOString(),
+    employeeId: '',
+    employeeName: 'Менеджер',
+    dealershipId: '',
+    dealershipName: 'Демо-стенд',
+    city: '',
+    totalScore: report.totalScore,
+    verdict: report.verdict,
+    status,
+    duration: detail.durationSec ?? 0,
+    communicationFlag: 'ok',
+    blocksBreakdown: [],
+    checklist: [],
+    transcript: [],
+    events: [],
+    errors: [],
+    topQuestions: [],
+    recommendedTrainings: [],
+    answerTimeSec: null,
+    attempts: 1,
+    callback: false,
+    scenarioName: 'Демо-звонок',
+    assignedBy: null,
+    failReason: detail.processingError ?? null,
+    recordingStatus: detail.recordingStatus ?? (detail.recordingUrl ? 'ready' : null),
+    recordingUrl: detail.recordingUrl ?? null,
+    unifiedReport: report,
+  };
+}
+
 export function PublicVoiceDemoPage() {
-  const [previewConfig] = useState<PreviewWaitConfig | null>(() => readPreviewWaitConfig());
-  const [nationalDigits, setNationalDigits] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [nationalDigits, setNationalDigits] = useState(() => parseNationalDigits(readPhoneFromUrl()));
+  const [phoneFocused, setPhoneFocused] = useState(false);
+  const phoneInputRef = useRef<HTMLInputElement>(null);
+  const [demoClientId, setDemoClientId] = useState<DemoClientId>(() => readDemoClientIdFromUrl());
+  const autoStartRequested = useMemo(() => shouldAutoStartFromUrl(searchParams), [searchParams]);
+  const [autoStartDismissed, setAutoStartDismissed] = useState(false);
+  const autoStartActive = autoStartRequested && !autoStartDismissed;
+  const autoStartAttemptedRef = useRef(false);
   const [callId, setCallId] = useState<string | null>(() => readCallIdFromUrl());
   const [detail, setDetail] = useState<DemoCallState | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(() => shouldAutoStartFromUrl(searchParams));
   const [error, setError] = useState<string | null>(null);
-
-  const previewWaitingDetail = useMemo((): DemoCallState | null => {
-    if (!previewConfig) return null;
-    if (previewConfig.kind === 'call') return buildPreviewCallWaitingDetail();
-    return buildPreviewProcessingWaitingDetail(previewConfig.stage);
-  }, [previewConfig]);
-
-  const effectiveWaitingDetail = previewWaitingDetail ?? detail;
+  const [phoneError, setPhoneError] = useState(false);
 
   useEffect(() => {
-    if (previewConfig) return;
-    writeCallIdToUrl(callId);
-  }, [callId, previewConfig]);
+    if (!callId) return;
+    const urlCallId = searchParams.get(CALL_ID_PARAM)?.trim() || null;
+    if (urlCallId === callId) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set(CALL_ID_PARAM, callId);
+        return next;
+      },
+      { replace: true }
+    );
+  }, [callId, searchParams, setSearchParams]);
 
-  /** Старые ссылки `?callId=mock` без локального state — подставляем единый mock-отчёт. */
   useEffect(() => {
-    if (previewConfig) return;
-    if (callId !== MOCK_CALL_ID || detail) return;
-    const to = nationalDigits.length === NATIONAL_LEN ? formatE164FromNational(nationalDigits) : '+79999999999';
-    setDetail(buildMockDetail(to));
-  }, [callId, detail, previewConfig, nationalDigits]);
-
-  useEffect(() => {
-    if (previewConfig) return;
-    if (!callId || callId === MOCK_CALL_ID || isCallFinal(detail)) return;
+    if (!callId || isCallFinal(detail)) return;
 
     let cancelled = false;
 
@@ -256,59 +232,59 @@ export function PublicVoiceDemoPage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [callId, detail, previewConfig]);
+  }, [callId, detail]);
 
   const screenState = useMemo<'form' | 'waiting' | 'result'>(() => {
-    if (previewConfig) return 'waiting';
-    if (!callId) return 'form';
+    if (!callId) {
+      if (autoStartActive && !error) return 'waiting';
+      return 'form';
+    }
     return isCallFinal(detail) ? 'result' : 'waiting';
-  }, [previewConfig, callId, detail]);
+  }, [callId, detail, autoStartActive, error]);
 
-  const waitingPhase = useMemo(() => getWaitingPhase(effectiveWaitingDetail), [effectiveWaitingDetail]);
-  const waitingStatus = useMemo(
-    () => waitingStatusLabel(waitingPhase, effectiveWaitingDetail),
-    [waitingPhase, effectiveWaitingDetail]
-  );
+  const waitingPhase = useMemo(() => getWaitingPhase(detail), [detail]);
 
   const processingSteps = useMemo(
     () => [
-      { label: 'Оцениваем диалог', kind: 'eval' as const },
-      { label: 'Считаем показатели', kind: 'metrics' as const },
-      { label: 'Собираем рекомендации', kind: 'reco' as const },
-      { label: 'Формируем отчёт', kind: 'final' as const },
+      'Слушаем запись разговора',
+      'Проверяем реплики менеджера',
+      'Анализируем возражения',
+      'Считаем оценки',
+      'Собираем рекомендации',
+      'Формируем отчёт',
     ],
     []
   );
 
   const [processingStep, setProcessingStep] = useState(0);
-  const [exampleTier, setExampleTier] = useState<ExampleTier | null>(null);
-
-  const exampleReportDetail = useMemo((): CallInsightDetail | null => {
-    if (!exampleTier || previewConfig) return null;
-    return buildPrecomputedExampleDetail(exampleTier);
-  }, [exampleTier, previewConfig]);
 
   useEffect(() => {
-    if (waitingPhase !== 'processing') return;
+    if (waitingPhase !== 'processing') {
+      setProcessingStep(0);
+      return;
+    }
     const id = window.setInterval(() => {
       setProcessingStep((s) => (s + 1) % processingSteps.length);
-    }, 950);
+    }, 2400);
     return () => window.clearInterval(id);
   }, [waitingPhase, processingSteps.length]);
 
-  async function handleStartCall() {
+  const handleStartCall = useCallback(async () => {
     if (nationalDigits.length !== NATIONAL_LEN) {
-      setError('Введите полный номер: 10 цифр после +7.');
+      setPhoneError(true);
+      setError(null);
+      phoneInputRef.current?.focus();
       return;
     }
     const to = formatE164FromNational(nationalDigits);
     setLoading(true);
     setError(null);
+    setPhoneError(false);
     try {
       const response = await fetch(`${API_BASE}/api/public/demo-call/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, scenario: 'realtime_pure' }),
+        body: JSON.stringify({ to, client: demoClientId, scenario: 'realtime_pure' }),
       });
       const text = await response.text();
       const data = text ? JSON.parse(text) : {};
@@ -317,216 +293,236 @@ export function PublicVoiceDemoPage() {
       }
       setCallId(data.callId);
       setDetail(null);
-      setExampleTier(null);
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : 'Не удалось запустить звонок.');
     } finally {
       setLoading(false);
     }
-  }
+  }, [demoClientId, nationalDigits]);
+
+  useEffect(() => {
+    if (!autoStartActive || callId || autoStartAttemptedRef.current) return;
+    autoStartAttemptedRef.current = true;
+    void handleStartCall();
+  }, [autoStartActive, callId, handleStartCall]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [screenState, waitingPhase]);
 
   function handleReset() {
-    if (previewConfig) {
-      window.location.assign(window.location.pathname);
-      return;
-    }
+    autoStartAttemptedRef.current = true;
+    setAutoStartDismissed(true);
     setCallId(null);
     setDetail(null);
     setError(null);
+    setPhoneError(false);
     setNationalDigits('');
-    setExampleTier(null);
-  }
-
-  function handleCloseExampleReport() {
-    setExampleTier(null);
+    setLoading(false);
+    setSearchParams((prev) => stripDemoCallParams(prev), { replace: true });
   }
 
   function onPhoneInputChange(raw: string) {
     setNationalDigits(parseNationalDigits(raw));
+    if (phoneError) setPhoneError(false);
   }
 
-  const displayPhone =
-    nationalDigits.length > 0 ? formatNationalSpaced(nationalDigits) : '';
-  const waitingNumber =
-    effectiveWaitingDetail?.to ||
-    (nationalDigits.length ? formatE164FromNational(nationalDigits) : '—');
+  const resultAuditDetail = useMemo(
+    () => (detail ? demoCallToAuditDetail(detail) : null),
+    [detail]
+  );
+
+  const displayPhone = formatPhoneFieldValue(nationalDigits, phoneFocused);
+  const waitingNumber = formatDisplayPhone(
+    detail?.to || (nationalDigits.length ? formatE164FromNational(nationalDigits) : '')
+  );
+  const waitingClient =
+    TRY_CLIENTS.find((client) => client.id === demoClientId) ?? TRY_CLIENTS[1];
+  const innerMode = Boolean(resultAuditDetail)
+    ? 'wide'
+    : screenState === 'form'
+      ? 'form'
+      : screenState === 'waiting'
+        ? 'wait'
+        : '';
 
   return (
-    <div className="admin-app demo-call-brutal min-h-screen">
-      <div className="demo-call-brutal__inner">
-        <div className="demo-call-brutal__hero-block">
-          <div className="demo-call-brutal__brand" aria-label="Sales Boost">
-            Sales Boost
-          </div>
+    <div className="theme-brutal sl-page sl-demo-page demo-call-brutal">
+      <LandingHeader home={LANDING_HOME} />
 
-          <h1 className="demo-call-brutal__title">
-            <span className="demo-call-brutal__title-line">Узнайте, выдержит ли ваш бизнес</span>
-            <span className="demo-call-brutal__title-line">первый разговор</span>
-          </h1>
-          <p className="demo-call-brutal__subtitle">Оставьте номер и получите разбор диалога</p>
-
-          {screenState === 'form' && !exampleTier && (
-            <>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void handleStartCall();
-                }}
-              >
-                <div
-                  className={
-                    previewConfig
-                      ? 'demo-call-brutal__pill'
-                      : 'demo-call-brutal__pill demo-call-brutal__pill--attention'
-                  }
-                >
-                  <span className="demo-call-brutal__prefix" aria-hidden>
-                    +7
-                  </span>
-                  <div className="demo-call-brutal__input-wrap">
-                    <input
-                      className="demo-call-brutal__input"
-                      type="tel"
-                      inputMode="numeric"
-                      autoComplete="tel-national"
-                      placeholder="999 999 99 99"
-                      aria-label="Номер телефона"
-                      value={displayPhone}
-                      onChange={(e) => onPhoneInputChange(e.target.value)}
-                    />
+      <div className="sl-inner sl-body">
+        <main className="sl-demo">
+          <div className={`demo-call-brutal__inner${innerMode ? ` demo-call-brutal__inner--${innerMode}` : ''}`}>
+            {screenState === 'form' && (
+            <div className="demo-call-brutal__hero-block">
+              <div className="sl-section-tag">Живая проверка</div>
+              <h1 className="demo-call-brutal__title">
+                <span className="demo-call-brutal__title-line">Узнайте, выдержит ли</span>
+                <span className="demo-call-brutal__title-line">ваш бизнес первый разговор</span>
+              </h1>
+              <p className="demo-call-brutal__subtitle">
+                Выберите, кто позвонит. Получите звонок и разбор диалога
+              </p>
+                  <div className="demo-stand-picker sl-try-panel">
+                    <TryClientPicker value={demoClientId} onChange={setDemoClientId} />
                   </div>
-                  <button type="submit" className="demo-call-brutal__cta" disabled={loading}>
-                    {loading ? 'Звоним…' : 'Позвонить'}
-                  </button>
-                </div>
-              </form>
-              {error && <div className="demo-call-brutal__error">{error}</div>}
-            </>
-          )}
-        </div>
-
-        {screenState === 'form' && !exampleTier && (
-          <section className="demo-examples" aria-labelledby="demo-examples-heading">
-            <h2 id="demo-examples-heading" className="demo-examples__title">
-              Три звонка — три судьбы
-            </h2>
-            <p className="demo-examples__subtitle">Примеры диалогов</p>
-            <div className="demo-examples__grid">
-              {DEMO_REPORT_EXAMPLES.map((ex) => (
-                <article key={ex.id} className="demo-example-card">
-                  <div className="demo-example-card__tier">
-                    <span className={`demo-example-card__dot ${ex.dotClass}`} aria-hidden />
-                    <span className="demo-example-card__tier-label">{ex.managerLabel}</span>
-                  </div>
-                  <h3 className="demo-example-card__name">{ex.title}</h3>
-                  <p className="demo-example-card__teaser">{ex.teaser}</p>
-                  <button
-                    type="button"
-                    className="demo-example-card__cta"
-                    onClick={() => setExampleTier(ex.id)}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void handleStartCall();
+                    }}
                   >
-                    Открыть отчёт
-                  </button>
-                </article>
+                    <div className={`demo-call-brutal__pill${phoneError ? ' is-invalid' : ''}`}>
+                      <input
+                        ref={phoneInputRef}
+                        className="demo-call-brutal__input"
+                        type="tel"
+                        inputMode="tel"
+                        autoComplete="tel"
+                        placeholder="+7 999 000-00-00"
+                        aria-label="Номер телефона"
+                        aria-invalid={phoneError}
+                        value={displayPhone}
+                        onFocus={() => {
+                          setPhoneFocused(true);
+                          requestAnimationFrame(() => {
+                            const el = phoneInputRef.current;
+                            if (!el) return;
+                            const len = el.value.length;
+                            el.setSelectionRange(len, len);
+                          });
+                        }}
+                        onBlur={() => setPhoneFocused(false)}
+                        onChange={(e) => onPhoneInputChange(e.target.value)}
+                      />
+                      <FlowButton
+                        text={loading ? 'Звоним…' : 'Позвонить'}
+                        type="submit"
+                        variant="solid"
+                        disabled={loading}
+                        className="demo-call-brutal__cta-flow"
+                      />
+                    </div>
+                  </form>
+                  <p className="sl-try-legal">
+                    Нажимая кнопку, вы даёте{' '}
+                    <Link to="/landing/consent" target="_blank" rel="noopener noreferrer">
+                      согласие на обработку персональных данных
+                    </Link>
+                  </p>
+                  {error && <div className="demo-call-brutal__error">{error}</div>}
+            </div>
+            )}
+
+            {screenState === 'waiting' && (
+              <div className="demo-stand-stack demo-wait-scene">
+                <div className="demo-wait-card">
+                  <div className="demo-wait-visual-slot">
+                    {waitingPhase === 'call_active' ? (
+                      <div className="demo-wait-pulse" aria-hidden>
+                        <span className="demo-wait-pulse__ring" />
+                        <span className="demo-wait-pulse__ring" />
+                        <span className="demo-wait-pulse__ring" />
+                        <span className="demo-wait-pulse__ring" />
+                        <span className="demo-wait-pulse__core">
+                          <svg viewBox="0 0 24 24" aria-hidden>
+                            <path
+                              fill="currentColor"
+                              d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"
+                            />
+                          </svg>
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="demo-wait-loader" aria-hidden>
+                        <svg viewBox="0 0 72 72">
+                          <circle className="demo-wait-loader__track" cx="36" cy="36" r="28" />
+                          <circle className="demo-wait-loader__arc" cx="36" cy="36" r="28" />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                  {waitingPhase === 'call_active' ? (
+                    <>
+                      <h2 className="demo-wait-card__title">Сейчас поступит звонок</h2>
+                      <div className="demo-wait-card__copy">
+                        <p className="demo-wait-card__text">
+                          {waitingClient.name} сейчас вам позвонит. Ответьте — после разговора появится отчёт.
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <h2 className="demo-wait-card__title">Разбираем диалог</h2>
+                      <div className="demo-wait-card__copy">
+                        <p className="demo-wait-cycle" aria-live="polite">
+                          <span key={processingSteps[processingStep]}>{processingSteps[processingStep]}</span>
+                        </p>
+                        <p className="demo-wait-card__text">
+                          Обычно это занимает около 15 секунд
+                        </p>
+                      </div>
+                    </>
+                  )}
+                  <div className="demo-wait-phone-slot">
+                    {waitingPhase === 'call_active' && waitingNumber ? (
+                      <div className="demo-wait-phone">{waitingNumber}</div>
+                    ) : null}
+                  </div>
+                  {error && <div className="demo-call-brutal__error" style={{ marginTop: '1rem' }}>{error}</div>}
+                </div>
+                <FlowButton
+                  text="Ввести другой номер"
+                  type="button"
+                  onClick={handleReset}
+                  className="demo-stand-action"
+                />
+              </div>
+            )}
+
+            {screenState === 'result' && detail && (
+              <div className="demo-stand-stack">
+                <div className="demo-stand-report">
+                  {resultAuditDetail ? (
+                    <AuditAnalyticsReport detail={resultAuditDetail} />
+                  ) : (
+                    <div className="demo-brutal-insight-wrap">
+                      <CallInsightCard detail={detail} />
+                    </div>
+                  )}
+                </div>
+                <FlowButton
+                  text="Запустить новый звонок"
+                  type="button"
+                  variant="solid"
+                  onClick={handleReset}
+                  className="demo-stand-action"
+                />
+              </div>
+            )}
+          </div>
+        </main>
+
+        <footer className="sl-footer">
+          <div className="sl-footer-main">
+            <div className="sl-footer-brand">
+              <span className="sl-footer-logo">
+                <SalsaLogo className="sl-footer-logo-svg" />
+              </span>
+              <span className="sl-footer-note">AI-платформа контроля качества продаж</span>
+            </div>
+          </div>
+          <div className="sl-footer-meta">
+            <span className="sl-footer-address">Юридический адрес: {OPERATOR_ADDRESS}</span>
+            <div className="sl-footer-legal">
+              {LEGAL_NAV.map((item) => (
+                <Link key={item.slug} to={item.path}>{item.navLabel}</Link>
               ))}
             </div>
-          </section>
-        )}
-
-        {screenState === 'form' && exampleTier && exampleReportDetail && (
-          <div>
-            <div className="demo-brutal-insight-wrap">
-              <CallInsightCard detail={exampleReportDetail} />
-            </div>
-            <button type="button" className="demo-brutal-btn-secondary" onClick={handleCloseExampleReport}>
-              На главную
-            </button>
+            <span className="sl-footer-copy">© {new Date().getFullYear()}</span>
           </div>
-        )}
-
-        {screenState === 'waiting' && (
-          <div>
-            <div className="demo-brutal-panel">
-              {waitingPhase === 'call_active' ? (
-                <>
-                  <div className="demo-wait-visual demo-wait-visual--call" aria-hidden>
-                    <span className="demo-wait-bars">
-                      <i />
-                      <i />
-                      <i />
-                      <i />
-                    </span>
-                  </div>
-                  <div className="demo-brutal-panel__title">Идёт разговор</div>
-                  <p className="demo-brutal-panel__text demo-brutal-panel__text--compact">
-                    Завершите диалог и мы подготовим отчёт
-                  </p>
-                </>
-              ) : (
-                <>
-                  <div className="demo-wait-visual demo-wait-visual--report" aria-hidden>
-                    <div className="demo-wait-doc demo-wait-doc--lg">
-                      <div className="demo-wait-doc__line" />
-                      <div className="demo-wait-doc__line" />
-                      <div className="demo-wait-doc__line demo-wait-doc__line--short" />
-                      <div className="demo-wait-doc__scan" />
-                    </div>
-                  </div>
-                  <div className="demo-brutal-panel__title">Готовим разбор</div>
-
-                  <div className="demo-wait-steps" aria-label="Этапы обработки">
-                    {processingSteps.map((s, idx) => {
-                      const active = idx === processingStep;
-                      const done = idx < processingStep;
-                      return (
-                        <div
-                          key={s.kind}
-                          className={[
-                            'demo-wait-step',
-                            active ? 'demo-wait-step--active' : '',
-                            done ? 'demo-wait-step--done' : '',
-                          ].filter(Boolean).join(' ')}
-                        >
-                          <span className="demo-wait-step__dot" aria-hidden />
-                          <span className="demo-wait-step__text">{s.label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-              {waitingPhase === 'call_active' && (
-                <div className="demo-first-block__tech demo-wait-details">
-                  <div className="demo-first-block__tech-row">
-                    <div className="demo-first-block__tech-k">Номер</div>
-                    <div className="demo-first-block__tech-v">{waitingNumber}</div>
-                  </div>
-                  <div className="demo-first-block__tech-row">
-                    <div className="demo-first-block__tech-k">Статус</div>
-                    <div className="demo-first-block__tech-v">{waitingStatus}</div>
-                  </div>
-                </div>
-              )}
-              {error && <div className="demo-call-brutal__error" style={{ marginTop: '1rem' }}>{error}</div>}
-            </div>
-            <button type="button" className="demo-brutal-btn-secondary" onClick={handleReset}>
-              Сбросить и ввести другой номер
-            </button>
-          </div>
-        )}
-
-        {screenState === 'result' && detail && (
-          <div>
-            <div className="demo-brutal-insight-wrap">
-              {detail.unifiedReport
-                ? <DemoUnifiedReport report={detail.unifiedReport} />
-                : <CallInsightCard detail={detail} />}
-            </div>
-            <button type="button" className="demo-brutal-btn-primary" onClick={handleReset}>
-              Запустить новый звонок
-            </button>
-          </div>
-        )}
+          <GridEnds />
+        </footer>
       </div>
     </div>
   );

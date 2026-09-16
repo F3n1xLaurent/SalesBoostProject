@@ -18,7 +18,12 @@ import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
-import { DEMO_CALL_CRITERIA, DEMO_CALL_PROMPT } from './voice/demoCallPrompt';
+import {
+  buildDemoCallPrompt,
+  DEMO_CALL_CRITERIA,
+  resolveDemoCallClientId,
+  resolveDemoCallElevenLabsVoiceId,
+} from './voice/demoCallPrompt';
 import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
 import { getCallRecordingFilePath, resumePendingRecordingFetches } from './voice/voximplantRecordingService';
@@ -161,6 +166,7 @@ import {
   type ProductRole,
 } from './analytics/productAnalytics';
 import * as Sentry from '@sentry/node';
+import { createLandingLeadHandler } from './integrations/landingLeadRoute';
 
 type AnalyticsInsight = {
   fact: string;
@@ -1653,6 +1659,11 @@ export function registerTelegramWebhook(bot: Telegraf): void {
     }
   });
 }
+app.post(
+  '/api/public/landing-leads',
+  express.json({ limit: '16kb', type: 'application/json' }),
+  createLandingLeadHandler(config.bitrix24WebhookUrl),
+);
 app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => {
   res.once('finish', () => {
@@ -6138,9 +6149,14 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     const scenario = body.scenario === 'dialog' || body.scenario === 'realtime'
       ? body.scenario
       : 'realtime_pure';
-    const result = await startVoiceCall(toRaw, {
+    const toNormalized = normalizeCallPhone(toRaw);
+    const demoClientId = resolveDemoCallClientId(body.client);
+    const demoElevenLabsVoiceId = resolveDemoCallElevenLabsVoiceId(demoClientId);
+    const demoPrompt = buildDemoCallPrompt(demoClientId, toNormalized);
+    const result = await startVoiceCall(toNormalized, {
       scenario,
-      instructions: DEMO_CALL_PROMPT,
+      instructions: demoPrompt,
+      elevenLabsVoiceId: demoElevenLabsVoiceId,
     });
     if ('error' in result) {
       return res.status(400).json({ error: result.error });
@@ -6149,7 +6165,6 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     if (result.callSessionHistoryId) {
       setVoxSessionId(result.callId, result.callSessionHistoryId);
     }
-    const toNormalized = '+' + String(toRaw).replace(/\D/g, '');
     // nginx.prod.conf overwrites X-Real-IP with $remote_addr, so prefer it over a client-supplied X-Forwarded-For chain.
     const realIp = String(req.headers['x-real-ip'] || '').trim();
     const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',').at(-1)?.trim();
@@ -6164,7 +6179,9 @@ app.post('/api/public/demo-call/start', async (req, res) => {
           ipAddress,
           caseContextJson: JSON.stringify({
             kind: 'fixed_demo_call',
-            prompt: DEMO_CALL_PROMPT,
+            demoClientId,
+            elevenLabsVoiceId: demoElevenLabsVoiceId,
+            prompt: demoPrompt,
             criteria: DEMO_CALL_CRITERIA,
           }),
           startedAt: new Date(result.startedAt),
@@ -6173,7 +6190,13 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     } catch (e) {
       console.warn('[demo-call] VoiceCallSession create (may already exist):', e instanceof Error ? e.message : e);
     }
-    res.json({ callId: result.callId, startedAt: result.startedAt, to: toRaw, scenario: result.scenario });
+    res.json({
+      callId: result.callId,
+      startedAt: result.startedAt,
+      to: toNormalized,
+      client: demoClientId,
+      scenario: result.scenario,
+    });
   } catch (err) {
     console.error('public demo-call/start error:', err);
     res.status(500).json({ error: 'Не удалось запустить звонок.' });
@@ -6207,6 +6230,31 @@ app.post('/api/public/demo-call/evaluate-example', async (req, res) => {
   }
 });
 
+app.get('/api/public/demo-call/:callId/recording', async (req, res) => {
+  try {
+    const callId = String(req.params.callId || '').trim();
+    if (!callId) return res.status(400).json({ error: 'Missing callId.' });
+    const session = await prisma.voiceCallSession.findUnique({
+      where: { callId },
+      select: { recordingStatus: true, source: true },
+    });
+    if (!session || session.source !== 'demo' || session.recordingStatus !== 'ready') {
+      return res.status(404).json({ error: 'Запись звонка не найдена.' });
+    }
+    const filePath = getCallRecordingFilePath(callId);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Файл записи звонка недоступен.' });
+    }
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Disposition', 'inline; filename="recording.mp3"');
+    return res.sendFile(filePath);
+  } catch (error) {
+    console.error('public demo-call recording error:', error instanceof Error ? error.message : error);
+    return res.status(500).json({ error: 'Не удалось получить запись звонка.' });
+  }
+});
+
 app.get('/api/public/demo-call/:callId', async (req, res) => {
   try {
     const callId = String(req.params.callId || '').trim();
@@ -6217,7 +6265,14 @@ app.get('/api/public/demo-call/:callId', async (req, res) => {
     if (!session) {
       return res.status(404).json({ error: 'Звонок не найден.' });
     }
-    res.json(buildVoiceCallDetailResponse(session));
+    const recordingReady = session.recordingStatus === 'ready';
+    res.json({
+      ...buildVoiceCallDetailResponse(session),
+      recordingStatus: session.recordingStatus,
+      recordingUrl: recordingReady
+        ? `/api/public/demo-call/${encodeURIComponent(session.callId)}/recording`
+        : null,
+    });
   } catch (err) {
     console.error('public demo-call/:callId error:', err);
     res.status(500).json({ error: 'Не удалось получить статус звонка.' });
@@ -8953,6 +9008,10 @@ app.use((error: unknown, req: express.Request, res: express.Response, _next: exp
   console.error('Unhandled HTTP error:', error);
   if (res.headersSent) return;
   res.locals.sentryExceptionCaptured = true;
+  const httpError = error as { status?: unknown; type?: unknown };
+  if (httpError.status === 413 || httpError.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Размер запроса превышает допустимый.' });
+  }
   const message = req.path.startsWith('/api/') ? 'Внутренняя ошибка сервера.' : 'Не удалось обработать запрос.';
   res.status(500).json({ error: message });
 });

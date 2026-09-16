@@ -38,6 +38,7 @@ const EnvSchema = z.object({
   SENTRY_ENVIRONMENT: z.string().optional(),
   SENTRY_RELEASE: z.string().optional(),
   SENTRY_TRACES_SAMPLE_RATE: z.string().optional(),
+  BITRIX24_WEBHOOK_URL: z.string().url().optional(),
 });
 
 const raw = EnvSchema.parse(process.env);
@@ -99,4 +100,5 @@ export const env = {
   sentryEnvironment: raw.SENTRY_ENVIRONMENT?.trim() || (process.env.NODE_ENV === 'production' ? 'production' : 'development'),
   sentryRelease: raw.SENTRY_RELEASE?.trim() || undefined,
   sentryTracesSampleRate: ratio(raw.SENTRY_TRACES_SAMPLE_RATE, process.env.NODE_ENV === 'production' ? 0.1 : 0),
+  bitrix24WebhookUrl: raw.BITRIX24_WEBHOOK_URL?.trim() || undefined,
 } as const;

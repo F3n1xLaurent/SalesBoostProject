@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { lockBodyScroll, unlockBodyScroll } from '../lib/body-scroll-lock';
 
@@ -8,23 +8,66 @@ type Props = {
   children: React.ReactNode;
   modalClassName?: string;
   overlayClassName?: string;
+  exitDurationMs?: number;
 };
 
 export function ModalPortal(props: Props) {
+  const [render, setRender] = useState(props.open);
+  const [closing, setClosing] = useState(false);
+  const renderRef = useRef(props.open);
+  const ignoreOverlayCloseRef = useRef(false);
+
   useEffect(() => {
-    if (!props.open) return;
+    if (props.open) {
+      renderRef.current = true;
+      setRender(true);
+      setClosing(false);
+      // Guard against the opening click falling through onto a freshly mounted overlay.
+      ignoreOverlayCloseRef.current = true;
+      const unlock = window.setTimeout(() => {
+        ignoreOverlayCloseRef.current = false;
+      }, 320);
+      return () => window.clearTimeout(unlock);
+    }
+    if (!renderRef.current) return;
+    if (!props.exitDurationMs) {
+      renderRef.current = false;
+      setRender(false);
+      setClosing(false);
+      return;
+    }
+    setClosing(true);
+    const timer = window.setTimeout(() => {
+      renderRef.current = false;
+      setRender(false);
+      setClosing(false);
+    }, props.exitDurationMs);
+    return () => window.clearTimeout(timer);
+  }, [props.open, props.exitDurationMs]);
+
+  useEffect(() => {
+    if (!render) return;
     lockBodyScroll();
     return () => {
       unlockBodyScroll();
     };
-  }, [props.open]);
+  }, [render]);
 
-  if (!props.open) return null;
+  if (!render) return null;
 
   return createPortal(
     <div
-      className={['sa-modal-overlay', 'theme-brutal', props.overlayClassName].filter(Boolean).join(' ')}
-      onClick={props.onClose}
+      className={['sa-modal-overlay', 'theme-brutal', props.overlayClassName, closing ? 'is-closing' : '']
+        .filter(Boolean)
+        .join(' ')}
+      onClick={
+        closing
+          ? undefined
+          : () => {
+              if (ignoreOverlayCloseRef.current) return;
+              props.onClose();
+            }
+      }
     >
       <div
         className={['sa-modal', props.modalClassName].filter(Boolean).join(' ')}

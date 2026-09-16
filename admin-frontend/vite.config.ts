@@ -25,13 +25,13 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       {
-      name: 'clean-generated-assets',
-      apply: 'build',
-      buildStart() {
-        // The output directory also contains maintained favicon/manifest files,
-        // so remove only Vite's generated hashed assets from previous builds.
-        fs.rmSync(generatedAssetsDir, { recursive: true, force: true });
-      },
+        name: 'clean-generated-assets',
+        apply: 'build',
+        buildStart() {
+          // The output directory also contains maintained favicon/manifest files,
+          // so remove only Vite's generated hashed assets from previous builds.
+          fs.rmSync(generatedAssetsDir, { recursive: true, force: true });
+        },
       },
       ...(uploadSourceMaps ? [sentryVitePlugin({
         org: sentryOrg,
@@ -68,6 +68,12 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
+      // Prevent thinking-orbs (and similar) from shipping a second React copy.
+      dedupe: ['react', 'react-dom'],
+    },
+    optimizeDeps: {
+      // Serve ESM as-is so peer `react` resolves to the app instance.
+      exclude: ['thinking-orbs'],
     },
   };
 });

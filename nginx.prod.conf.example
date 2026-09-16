@@ -1,42 +1,34 @@
-# Install as /etc/nginx/conf.d/salesboost.conf.
-# Replace salesboost.example.com and certificate paths before `nginx -t`.
+# Production reverse proxy for:
+#   https://salsa-sales.ru      — public landing and demo call
+#   https://app.salsa-sales.ru  — dashboard, API, voice endpoints and webhooks
+#
+# Install as /etc/nginx/conf.d/salesboost.conf after certificates for BOTH
+# domains exist. The example assumes separate Certbot certificates named after
+# each domain; adjust the certificate paths if a single SAN certificate is used.
 
 map $http_upgrade $connection_upgrade {
     default upgrade;
     ''      close;
 }
 
-# Requests are accepted only for the production domain and its subdomains.
-# Escape dots in regexes and replace salesboost.example.com everywhere below.
 map $host $salesboost_host_allowed {
-    default                                      0;
-    salesboost.example.com                       1;
-    ~^[a-z0-9-]+\.salesboost\.example\.com$     1;
+    default                0;
+    salsa-sales.ru         1;
+    app.salsa-sales.ru     1;
 }
 
-# Browsers send Origin for cross-origin API calls and most state-changing
-# same-origin requests. Empty Origin remains allowed for navigation, health
-# checks, Telegram/Vox webhooks and other server-to-server integrations.
+# Foreign browser origins are rejected. Empty Origin remains available for
+# health checks and trusted server-to-server integrations such as Voximplant.
 map $http_origin $salesboost_origin_allowed {
-    default                                               0;
-    ""                                                    1;
-    https://salesboost.example.com                        1;
-    ~^https://[a-z0-9-]+\.salesboost\.example\.com$      1;
-}
-
-# Modern browsers also identify the relationship between the initiating page
-# and this server. Requests without this browser header remain available to
-# trusted server-to-server integrations.
-map $http_sec_fetch_site $salesboost_fetch_site_allowed {
-    default       0;
-    ""            1;
-    same-origin   1;
-    same-site     1;
-    none          1;
+    default                         0;
+    ""                              1;
+    https://salsa-sales.ru          1;
+    https://app.salsa-sales.ru      1;
 }
 
 limit_req_zone $binary_remote_addr zone=salesboost_api:10m rate=20r/s;
 limit_req_zone $binary_remote_addr zone=salesboost_login:10m rate=5r/m;
+limit_req_zone $binary_remote_addr zone=salesboost_leads:10m rate=5r/m;
 limit_req_zone $binary_remote_addr zone=salesboost_paid_demo:10m rate=2r/m;
 limit_req_zone $binary_remote_addr zone=salesboost_ai:10m rate=10r/m;
 limit_req_zone $binary_remote_addr zone=salesboost_voice_dialog:10m rate=30r/m;
@@ -47,18 +39,19 @@ upstream salesboost_backend {
     keepalive 32;
 }
 
+# Unknown HTTP hosts are dropped.
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
-
     return 444;
 }
 
+# Certbot webroot and HTTPS redirect for both known hosts.
 server {
     listen 80;
     listen [::]:80;
-    server_name salesboost.example.com *.salesboost.example.com;
+    server_name salsa-sales.ru app.salsa-sales.ru;
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/letsencrypt;
@@ -69,13 +62,163 @@ server {
     }
 }
 
+# Unknown HTTPS hosts are dropped after TLS negotiation. The default server
+# needs an existing certificate; the app certificate is reused only here.
 server {
-    listen 443 ssl http2 default_server;
-    listen [::]:443 ssl http2 default_server;
-    server_name salesboost.example.com *.salesboost.example.com;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    http2 on;
+    server_name _;
 
-    ssl_certificate     /etc/letsencrypt/live/salesboost.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/salesboost.example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/app.salsa-sales.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app.salsa-sales.ru/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    return 444;
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public site: landing, legal pages, demo call and only their required APIs.
+# All dashboard/API paths fall through to 404 and never reach the application.
+# ─────────────────────────────────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name salsa-sales.ru;
+
+    ssl_certificate     /etc/letsencrypt/live/salsa-sales.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/salsa-sales.ru/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    server_tokens off;
+    client_max_body_size 64k;
+    client_body_timeout 15s;
+    send_timeout 300s;
+    keepalive_timeout 30s;
+    limit_conn salesboost_conn 30;
+
+    proxy_hide_header Access-Control-Allow-Origin;
+    proxy_hide_header Access-Control-Allow-Credentials;
+
+    if ($salesboost_host_allowed = 0) {
+        return 444;
+    }
+    if ($salesboost_origin_allowed = 0) {
+        return 403;
+    }
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Permissions-Policy "camera=(), geolocation=(), payment=(), usb=()" always;
+    add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https: wss:; upgrade-insecure-requests" always;
+
+    access_log /var/log/nginx/salesboost-public.access.log;
+    error_log  /var/log/nginx/salesboost-public.error.log warn;
+
+    # Root is handled by the SPA and renders the landing only on this hostname.
+    location = / {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+
+    location = /landing {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+
+    location ~ ^/landing/(?:privacy|consent|marketing|cookies)/?$ {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+
+    location = /demo-call {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+
+    location = /demo-call/ {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+    }
+
+    # Hashed Vite assets are shared by the public pages and dashboard bundle.
+    # Exposing the static JavaScript does not grant access to protected APIs.
+    location ^~ /assets/ {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        expires 1y;
+    }
+
+    location ~ ^/(?:favicon(?:-16x16|-32x32)?\.(?:ico|png|svg)|apple-touch-icon\.png|android-chrome-(?:192x192|512x512)\.png|site\.webmanifest)$ {
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        expires 7d;
+    }
+
+    location = /api/public/landing-leads {
+        if ($request_method != POST) {
+            return 405;
+        }
+        limit_req zone=salesboost_leads burst=3 nodelay;
+        client_max_body_size 16k;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 60s;
+    }
+
+    # Starts a real, potentially billable phone call.
+    location = /api/public/demo-call/start {
+        if ($request_method != POST) {
+            return 405;
+        }
+        limit_req zone=salesboost_paid_demo burst=2 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
+    location = /api/public/demo-call/evaluate-example {
+        if ($request_method != POST) {
+            return 405;
+        }
+        limit_req zone=salesboost_ai burst=5 nodelay;
+        client_max_body_size 1m;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
+    location ~ ^/api/public/demo-call/[0-9a-fA-F-]+(?:/recording)?$ {
+        if ($request_method != GET) {
+            return 405;
+        }
+        limit_req zone=salesboost_api burst=40 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
+    # No dashboard, auth, admin API, voice endpoints or webhooks on the public host.
+    location / {
+        return 404;
+    }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Application site: dashboard, authenticated API, voice and webhook endpoints.
+# ─────────────────────────────────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name app.salsa-sales.ru;
+
+    ssl_certificate     /etc/letsencrypt/live/app.salsa-sales.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/app.salsa-sales.ru/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
@@ -87,32 +230,47 @@ server {
     send_timeout 300s;
     keepalive_timeout 30s;
     limit_conn salesboost_conn 30;
-    # Do not let an accidental upstream CORS header reopen browser access.
+
     proxy_hide_header Access-Control-Allow-Origin;
     proxy_hide_header Access-Control-Allow-Credentials;
 
-    # Safe nginx `if` usage: return immediately before proxying. This blocks
-    # direct-IP/forged Host routing and browser requests from foreign origins.
     if ($salesboost_host_allowed = 0) {
         return 444;
     }
     if ($salesboost_origin_allowed = 0) {
         return 403;
     }
-    if ($salesboost_fetch_site_allowed = 0) {
-        return 403;
-    }
-
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy strict-origin-when-cross-origin always;
     add_header Permissions-Policy "camera=(), geolocation=(), payment=(), usb=()" always;
-    # Telegram Web may embed the Mini App, so X-Frame-Options is intentionally
-    # omitted and embedding is controlled with frame-ancestors instead.
+    # The Telegram Mini App can embed the dashboard; frame-ancestors controls it.
     add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; frame-ancestors 'self' https://web.telegram.org https://*.telegram.org; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' https: wss:; upgrade-insecure-requests" always;
 
-    access_log /var/log/nginx/salesboost.access.log;
-    error_log  /var/log/nginx/salesboost.error.log warn;
+    access_log /var/log/nginx/salesboost-app.access.log;
+    error_log  /var/log/nginx/salesboost-app.error.log warn;
+
+    # Keep public pages canonical on salsa-sales.ru.
+    location = /landing {
+        return 301 https://salsa-sales.ru$request_uri;
+    }
+
+    location ^~ /landing/ {
+        return 301 https://salsa-sales.ru$request_uri;
+    }
+
+    location = /demo-call {
+        return 301 https://salsa-sales.ru$request_uri;
+    }
+
+    location ^~ /demo-call/ {
+        return 301 https://salsa-sales.ru$request_uri;
+    }
+
+    # Public browser API is deliberately served only by salsa-sales.ru.
+    location ^~ /api/public/ {
+        return 404;
+    }
 
     location = /health {
         access_log off;
@@ -124,23 +282,6 @@ server {
         limit_req zone=salesboost_login burst=5 nodelay;
         proxy_pass http://salesboost_backend;
         include proxy_params;
-    }
-
-    # This endpoint starts a real, potentially billable phone call. Keep this
-    # location only if the public demo is intentional; application-level auth
-    # or a challenge should still be added.
-    location = /api/public/demo-call/start {
-        limit_req zone=salesboost_paid_demo burst=2 nodelay;
-        proxy_pass http://salesboost_backend;
-        include proxy_params;
-        proxy_read_timeout 300s;
-    }
-
-    location = /api/public/demo-call/evaluate-example {
-        limit_req zone=salesboost_ai burst=5 nodelay;
-        proxy_pass http://salesboost_backend;
-        include proxy_params;
-        proxy_read_timeout 300s;
     }
 
     location /api/training/web/ {
@@ -165,6 +306,13 @@ server {
         proxy_buffering off;
     }
 
+    location = /voice/dialog {
+        limit_req zone=salesboost_voice_dialog burst=20 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 300s;
+    }
+
     location /api/ {
         limit_req zone=salesboost_api burst=40 nodelay;
         proxy_pass http://salesboost_backend;
@@ -175,13 +323,6 @@ server {
 
     location /voice/ {
         limit_req zone=salesboost_api burst=20 nodelay;
-        proxy_pass http://salesboost_backend;
-        include proxy_params;
-        proxy_read_timeout 300s;
-    }
-
-    location = /voice/dialog {
-        limit_req zone=salesboost_voice_dialog burst=20 nodelay;
         proxy_pass http://salesboost_backend;
         include proxy_params;
         proxy_read_timeout 300s;

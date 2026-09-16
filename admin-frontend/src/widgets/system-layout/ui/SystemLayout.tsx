@@ -8,7 +8,7 @@ import '../../../shared/ui/styles/theme-brutal.css';
 import '../../../shared/ui/styles/admin-responsive.css';
 import { AdminSidebar } from '../../admin-sidebar/ui/AdminSidebar';
 import type { AdminTab, AdminRole } from '../../admin-sidebar/ui/AdminSidebar';
-import sidebarLogo from '../../../assets/logo.png';
+import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
 import type { PlatformSummary, PlatformVoice } from '../../../shared/model/adminPanel';
 import { CallBatchTray } from '../../call-batch-tray/ui/CallBatchTray';
@@ -426,7 +426,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
       <main className={`super-admin-main${trainerSessionActive ? ' super-admin-main--trainer-focus' : ''}`}>
         {!trainerSessionActive && (
           <header className="sa-admin-mobile-topbar">
-            <img src={sidebarLogo} alt="Red Button" className="sa-admin-mobile-topbar-logo" />
+            <SalsaLogo className="sa-admin-mobile-topbar-logo" />
             <button
               type="button"
               className="sa-admin-mobile-menu-btn"

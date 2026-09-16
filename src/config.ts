@@ -47,4 +47,5 @@ export const config = {
   sentryEnvironment: env.sentryEnvironment,
   sentryRelease: env.sentryRelease,
   sentryTracesSampleRate: env.sentryTracesSampleRate,
+  bitrix24WebhookUrl: env.bitrix24WebhookUrl,
 };

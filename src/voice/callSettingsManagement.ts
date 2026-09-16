@@ -994,12 +994,28 @@ function buildCallPlanRealtimePrompt(input: {
   ].join('\n');
 }
 
-async function resolveCustomerVoiceForProfile(profile: Prisma.CallCustomerProfileGetPayload<{}> | null) {
+async function resolveCustomerVoiceForProfile(
+  profile: Pick<Prisma.CallCustomerProfileGetPayload<{}>, 'voiceId'> | null,
+) {
   if (!profile?.voiceId) return null;
   return prisma.callCustomerVoice.findFirst({
     where: { id: profile.voiceId, isDeleted: false, isEnabled: true },
     select: { id: true, name: true, elevenLabsCode: true },
   });
+}
+
+async function resolveScheduledCallCustomerVoice(
+  call: Prisma.CallPlanCallGetPayload<{ include: { plan: true } }>,
+) {
+  if (!call.profileId) return null;
+  const profile = await prisma.callCustomerProfile.findFirst({
+    where: {
+      id: call.profileId,
+      holdingId: call.plan.holdingId,
+    },
+    select: { voiceId: true },
+  });
+  return resolveCustomerVoiceForProfile(profile);
 }
 
 async function buildScheduledCallContext(plan: Prisma.CallPlanGetPayload<{}>) {
@@ -1136,9 +1152,13 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
 
   try {
     const phoneNumberSource = await resolvePhoneNumberSourceSnapshot(call.phone, call.phoneNumberTypeId);
+    const customerVoice = await resolveScheduledCallCustomerVoice(call);
+    const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
     const result = await startVoiceCall(call.phone, {
       scenario: 'realtime_pure',
       instructions: call.promptText,
+      elevenLabsVoiceId,
+      customerVoiceId: customerVoice?.id ?? null,
     });
     if ('error' in result) throw new Error(result.error);
     addCall(result.callId, call.phone);
@@ -1169,6 +1189,8 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
             planId: call.planId,
             scriptId: call.scriptId,
             profileId: call.profileId ?? null,
+            customerVoiceId: customerVoice?.id ?? null,
+            elevenLabsVoiceId,
             importedItemId: call.importedItemId ?? null,
             scheduledAt: call.scheduledAt?.toISOString() ?? null,
           }),
@@ -1185,6 +1207,8 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
       planId: call.planId,
       callId: result.callId,
       phone: call.phone,
+      customerVoiceId: customerVoice?.id ?? null,
+      elevenLabsVoiceConfigured: Boolean(elevenLabsVoiceId),
     });
   } catch (error) {
     console.error('[call-plan-scheduler] scheduled call failed', {
