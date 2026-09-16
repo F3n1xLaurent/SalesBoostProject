@@ -116,16 +116,60 @@ function DemoLeadForm() {
   const [pdnConsent, setPdnConsent] = useState(false);
   const [adsConsent, setAdsConsent] = useState(false);
   const [sent, setSent] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [website, setWebsite] = useState('');
+  const submissionKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
-  const onSubmit = (e: FormEvent) => {
+  const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !company.trim() || phoneDigits.length !== PHONE_NATIONAL_LEN || !pdnConsent) return;
-    setSent(true);
+    setSubmitError('');
+    if (!name.trim() || !company.trim() || phoneDigits.length !== PHONE_NATIONAL_LEN || !pdnConsent) {
+      setSubmitError('Проверьте обязательные поля и согласие на обработку данных.');
+      return;
+    }
+
+    const payload = {
+      name: name.trim(),
+      company: company.trim(),
+      phone: `+7${phoneDigits}`,
+      comment: comment.trim(),
+      personalDataConsent: pdnConsent,
+      marketingConsent: adsConsent,
+      website,
+    };
+    const fingerprint = JSON.stringify(payload);
+    if (submissionKeyRef.current?.fingerprint !== fingerprint) {
+      const key = globalThis.crypto?.randomUUID?.()
+        ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      submissionKeyRef.current = { fingerprint, key };
+    }
+
+    setSubmitting(true);
+    try {
+      const response = await fetch('/api/public/landing-leads', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': submissionKeyRef.current.key,
+        },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) {
+        throw new Error(result?.error || 'Не удалось отправить заявку. Попробуйте ещё раз.');
+      }
+      setSent(true);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Не удалось отправить заявку. Попробуйте ещё раз.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (sent) {
     return (
-      <div className="sl-lead-done">
+      <div className="sl-lead-done" role="status" aria-live="polite">
         <strong>Заявка отправлена</strong>
         <p>Свяжемся, чтобы согласовать время демо</p>
       </div>
@@ -142,6 +186,8 @@ function DemoLeadForm() {
           autoComplete="name"
           value={name}
           onChange={(e) => setName(e.target.value)}
+          minLength={2}
+          maxLength={100}
           required
         />
       </label>
@@ -153,6 +199,8 @@ function DemoLeadForm() {
           autoComplete="organization"
           value={company}
           onChange={(e) => setCompany(e.target.value)}
+          minLength={2}
+          maxLength={160}
           required
         />
       </label>
@@ -169,6 +217,7 @@ function DemoLeadForm() {
           onBlur={() => setPhoneFocused(false)}
           onChange={(e) => setPhoneDigits(parseNationalPhoneDigits(e.target.value))}
           aria-label="Номер телефона"
+          required
         />
       </label>
       <label className="sl-lead-field">
@@ -180,6 +229,18 @@ function DemoLeadForm() {
           rows={2}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
+          maxLength={2000}
+        />
+      </label>
+      <label className="sl-lead-honeypot" aria-hidden="true">
+        Сайт
+        <input
+          type="text"
+          name="website"
+          value={website}
+          onChange={(e) => setWebsite(e.target.value)}
+          autoComplete="off"
+          tabIndex={-1}
         />
       </label>
       <div className="sl-lead-consents">
@@ -216,7 +277,13 @@ function DemoLeadForm() {
         </label>
       </div>
       <div className="sl-lead-actions">
-        <FlowButton text="Записаться на демо" type="submit" variant="solid" />
+        {submitError ? <p className="sl-lead-error" role="alert">{submitError}</p> : null}
+        <FlowButton
+          text={submitting ? 'Отправляем…' : 'Записаться на демо'}
+          type="submit"
+          variant="solid"
+          disabled={submitting}
+        />
       </div>
     </form>
   );

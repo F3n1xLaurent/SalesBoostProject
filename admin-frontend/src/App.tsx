@@ -10,12 +10,18 @@ const PublicVoiceDemoPage = lazy(() => import('./pages/public-voice-demo/ui/Publ
 const LoginRoutePage = lazy(() => import('./pages/login/ui/LoginRoutePage').then((module) => ({ default: module.LoginRoutePage })));
 const LegacyTrainRedirect = lazy(() => import('./pages/train/ui/LegacyTrainRedirect').then((module) => ({ default: module.LegacyTrainRedirect })));
 
+const isPublicLandingHost = window.location.hostname.toLowerCase() === 'salsa-sales.ru';
+
 export default function App() {
   return (
     <>
       <AuthBootstrap />
       <Suspense fallback={<div role="status" aria-live="polite">Загрузка…</div>}>
         <Routes>
+          <Route
+            path="/"
+            element={isPublicLandingHost ? <LandingPage /> : <RequireAuth><SystemPage /></RequireAuth>}
+          />
           <Route path="/landing" element={<LandingPage />} />
           <Route path="/landing/privacy" element={<LegalPage slug="privacy" />} />
           <Route path="/landing/consent" element={<LegalPage slug="consent" />} />

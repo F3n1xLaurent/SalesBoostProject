@@ -166,6 +166,7 @@ import {
   type ProductRole,
 } from './analytics/productAnalytics';
 import * as Sentry from '@sentry/node';
+import { createLandingLeadHandler } from './integrations/landingLeadRoute';
 
 type AnalyticsInsight = {
   fact: string;
@@ -1658,6 +1659,11 @@ export function registerTelegramWebhook(bot: Telegraf): void {
     }
   });
 }
+app.post(
+  '/api/public/landing-leads',
+  express.json({ limit: '16kb', type: 'application/json' }),
+  createLandingLeadHandler(config.bitrix24WebhookUrl),
+);
 app.use(express.json({ limit: '12mb' }));
 app.use((req, res, next) => {
   res.once('finish', () => {
@@ -9002,6 +9008,10 @@ app.use((error: unknown, req: express.Request, res: express.Response, _next: exp
   console.error('Unhandled HTTP error:', error);
   if (res.headersSent) return;
   res.locals.sentryExceptionCaptured = true;
+  const httpError = error as { status?: unknown; type?: unknown };
+  if (httpError.status === 413 || httpError.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Размер запроса превышает допустимый.' });
+  }
   const message = req.path.startsWith('/api/') ? 'Внутренняя ошибка сервера.' : 'Не удалось обработать запрос.';
   res.status(500).json({ error: message });
 });
