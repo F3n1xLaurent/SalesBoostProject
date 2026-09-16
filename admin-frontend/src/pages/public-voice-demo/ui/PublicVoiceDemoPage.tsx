@@ -43,6 +43,36 @@ type DemoCallState = CallInsightDetail & {
   recordingUrl?: string | null;
 };
 
+function apiErrorMessage(status: number, fallback: string): string {
+  if (status === 429) return 'Слишком много запросов. Подождите несколько секунд.';
+  if (status === 502 || status === 503 || status === 504) {
+    return 'Сервис временно недоступен. Повторяем запрос…';
+  }
+  return `${fallback} (HTTP ${status}).`;
+}
+
+async function readJsonResponse<T>(response: Response, fallback: string): Promise<T> {
+  const text = await response.text();
+  let data: unknown = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(apiErrorMessage(response.status, fallback));
+    }
+  }
+  if (!response.ok) {
+    const serverMessage = data && typeof data === 'object' && 'error' in data
+      ? String((data as { error?: unknown }).error || '')
+      : '';
+    throw new Error(serverMessage || apiErrorMessage(response.status, fallback));
+  }
+  if (data == null || typeof data !== 'object') {
+    throw new Error(`${fallback}: сервер вернул некорректный ответ.`);
+  }
+  return data as T;
+}
+
 function readCallIdFromUrl(): string | null {
   const params = new URLSearchParams(window.location.search);
   const value = params.get(CALL_ID_PARAM);
@@ -182,6 +212,7 @@ export function PublicVoiceDemoPage() {
   const [loading, setLoading] = useState(() => shouldAutoStartFromUrl(searchParams));
   const [error, setError] = useState<string | null>(null);
   const [phoneError, setPhoneError] = useState(false);
+  const callIsFinal = isCallFinal(detail);
 
   useEffect(() => {
     if (!callId) return;
@@ -198,41 +229,56 @@ export function PublicVoiceDemoPage() {
   }, [callId, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (!callId || isCallFinal(detail)) return;
+    if (!callId || callIsFinal) return;
 
     let cancelled = false;
+    let inFlight = false;
+    let activeController: AbortController | null = null;
+    let consecutiveFailures = 0;
 
     const loadDetail = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const controller = new AbortController();
+      activeController = controller;
       try {
-        const response = await fetch(`${API_BASE}/api/public/demo-call/${encodeURIComponent(callId)}`);
-        const text = await response.text();
-        const data = text ? JSON.parse(text) : null;
-        if (!response.ok) {
-          throw new Error(data?.error || 'Не удалось получить статус звонка.');
-        }
+        const response = await fetch(`${API_BASE}/api/public/demo-call/${encodeURIComponent(callId)}`, {
+          signal: controller.signal,
+        });
+        const data = await readJsonResponse<DemoCallState>(response, 'Не удалось получить статус звонка');
         if (cancelled) return;
-        setDetail(data as DemoCallState);
+        consecutiveFailures = 0;
+        setDetail(data);
         setNationalDigits((current) => {
           if (current.length === NATIONAL_LEN) return current;
           return parseNationalDigits(String(data?.to ?? ''));
         });
         setError(null);
       } catch (loadError) {
-        if (cancelled) return;
-        setError(loadError instanceof Error ? loadError.message : 'Не удалось получить статус звонка.');
+        if (cancelled || (loadError instanceof DOMException && loadError.name === 'AbortError')) return;
+        consecutiveFailures += 1;
+        // A single polling failure is transient and should not flash an error
+        // while the next scheduled request can recover automatically.
+        if (consecutiveFailures >= 2) {
+          setError(loadError instanceof Error ? loadError.message : 'Не удалось получить статус звонка.');
+        }
+      } finally {
+        if (activeController === controller) activeController = null;
+        inFlight = false;
       }
     };
 
-    loadDetail();
+    void loadDetail();
     const interval = window.setInterval(() => {
-      loadDetail().catch(() => {});
+      void loadDetail();
     }, 3000);
 
     return () => {
       cancelled = true;
+      activeController?.abort();
       window.clearInterval(interval);
     };
-  }, [callId, detail]);
+  }, [callId, callIsFinal]);
 
   const screenState = useMemo<'form' | 'waiting' | 'result'>(() => {
     if (!callId) {
@@ -286,11 +332,7 @@ export function PublicVoiceDemoPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ to, client: demoClientId, scenario: 'realtime_pure' }),
       });
-      const text = await response.text();
-      const data = text ? JSON.parse(text) : {};
-      if (!response.ok) {
-        throw new Error(data?.error || `Не удалось запустить звонок (${response.status}).`);
-      }
+      const data = await readJsonResponse<{ callId: string }>(response, 'Не удалось запустить звонок');
       setCallId(data.callId);
       setDetail(null);
     } catch (startError) {

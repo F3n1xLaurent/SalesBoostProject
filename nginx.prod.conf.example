@@ -99,6 +99,7 @@ server {
     send_timeout 300s;
     keepalive_timeout 30s;
     limit_conn salesboost_conn 30;
+    limit_req_status 429;
 
     proxy_hide_header Access-Control-Allow-Origin;
     proxy_hide_header Access-Control-Allow-Credentials;
@@ -119,10 +120,10 @@ server {
     access_log /var/log/nginx/salesboost-public.access.log;
     error_log  /var/log/nginx/salesboost-public.error.log warn;
 
-    # Root is handled by the SPA and renders the landing only on this hostname.
+    # Keep this redirect at nginx level so the public root never falls into an
+    # older cached SPA bundle whose `/` route may still require authentication.
     location = / {
-        proxy_pass http://salesboost_backend;
-        include proxy_params;
+        return 302 /landing;
     }
 
     location = /landing {
