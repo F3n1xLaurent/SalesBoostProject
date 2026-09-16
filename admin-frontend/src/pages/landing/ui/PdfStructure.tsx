@@ -610,7 +610,7 @@ export function PdfStructureBlocks({
           <div className="sl-hero-v2-copy">
             <h1 className="sl-h1 sl-hero-v2-title">РОП как технология</h1>
             <p className="sl-lede sl-hero-v2-lede">
-              AI обучает, допускает к работе, проверяет разговоры
+              AI обучает, допускает к работе, проверяет разговоры{' '}
               <br className="sl-hero-v2-lede-br" />
               и исправляет ошибки — каждый день во всей сети
             </p>

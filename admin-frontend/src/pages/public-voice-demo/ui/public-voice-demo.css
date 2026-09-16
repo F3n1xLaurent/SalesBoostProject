@@ -176,25 +176,6 @@
   padding: 22px 24px;
 }
 
-.demo-call-brutal .demo-mock-entry {
-  margin: 0 0 18px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px 16px;
-  text-align: center;
-  font-size: 13px;
-}
-
-.demo-call-brutal .demo-mock-entry a {
-  color: color-mix(in srgb, var(--tb-ink) 62%, transparent);
-  text-underline-offset: 3px;
-}
-
-.demo-call-brutal .demo-mock-entry a:hover {
-  color: var(--tb-ink);
-}
-
 .demo-call-brutal .demo-stand-stack {
   display: grid;
   gap: 16px;

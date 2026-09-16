@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
-import { computeMockFromTranscript, type TranscriptTurn } from '../lib/demoMockEvaluation';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { FlowButton } from '../../landing/ui/FlowButton';
@@ -9,7 +8,6 @@ import { LandingHeader } from '../../landing/ui/LandingHeader';
 import { TryClientPicker } from '../../landing/ui/TryClientPicker';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import { LANDING_HOME, LEGAL_NAV, OPERATOR_ADDRESS } from '../../landing/lib/legalDocuments';
-import { buildLandingExampleAudit } from '../../landing/lib/exampleAudit';
 import { DEFAULT_TRY_CLIENT_ID, TRY_CLIENTS, isTryClientId, type TryClientId } from '../../landing/lib/tryClients';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
@@ -30,28 +28,9 @@ const CALL_ID_PARAM = 'callId';
 const PHONE_PARAM = 'phone';
 const SCRIPT_PARAM = 'script';
 const LEGACY_CLIENT_PARAM = 'client';
-const MOCK_CALL_ID = 'mock';
 const NATIONAL_LEN = 10;
 
 type DemoClientId = TryClientId;
-
-/** UI-only: open `/demo-call?previewWait=call` or `...&previewWait=processing` to see waiting screens without a call. */
-type PreviewWaitConfig =
-  | { kind: 'call' }
-  | { kind: 'processing'; stage: 'transcript' | 'evaluation' };
-
-function readPreviewWaitConfig(params: URLSearchParams): PreviewWaitConfig | null {
-  if (params.get('previewReport')?.trim()) return null;
-  const w = params.get('previewWait')?.trim().toLowerCase();
-  if (!w) return null;
-  if (w === 'call' || w === 'conversation') return { kind: 'call' };
-  if (w === 'processing' || w === 'analytics') {
-    const stage = params.get('previewStage')?.trim().toLowerCase();
-    if (stage === 'transcript') return { kind: 'processing', stage: 'transcript' };
-    return { kind: 'processing', stage: 'evaluation' };
-  }
-  return null;
-}
 
 type DemoCallState = CallInsightDetail & {
   callId: string;
@@ -63,60 +42,6 @@ type DemoCallState = CallInsightDetail & {
   recordingStatus?: AuditDetailItem['recordingStatus'];
   recordingUrl?: string | null;
 };
-
-function buildPreviewCallWaitingDetail(): DemoCallState {
-  const now = Date.now();
-  return {
-    id: -2,
-    to: '+7 999 123 45 67',
-    startedAt: new Date(now - 90_000).toISOString(),
-    endedAt: null,
-    outcome: null,
-    durationSec: null,
-    totalScore: null,
-    qualityTag: null,
-    strengths: [],
-    weaknesses: [],
-    recommendations: [],
-    transcript: [],
-    dimensionScores: null,
-    processingError: null,
-    callSummary: null,
-    replyImprovements: null,
-    callId: 'preview-call',
-    transcriptTurns: 0,
-    hasEvaluation: false,
-    isProcessing: false,
-    processingStage: null,
-  };
-}
-
-function buildPreviewProcessingWaitingDetail(stage: 'transcript' | 'evaluation'): DemoCallState {
-  const now = Date.now();
-  return {
-    id: -3,
-    to: '+7 999 123 45 67',
-    startedAt: new Date(now - 120_000).toISOString(),
-    endedAt: new Date(now - 8000).toISOString(),
-    outcome: 'completed',
-    durationSec: 112,
-    totalScore: null,
-    qualityTag: null,
-    strengths: [],
-    weaknesses: [],
-    recommendations: [],
-    transcript: [],
-    dimensionScores: null,
-    processingError: null,
-    callSummary: null,
-    replyImprovements: null,
-    callId: 'preview-processing',
-    transcriptTurns: 0,
-    hasEvaluation: false,
-    isProcessing: true,
-    processingStage: stage,
-  };
-}
 
 function readCallIdFromUrl(): string | null {
   const params = new URLSearchParams(window.location.search);
@@ -169,53 +94,6 @@ function formatDisplayPhone(raw: string | undefined): string {
   const national = parseNationalDigits(raw);
   if (national.length === NATIONAL_LEN) return formatPhoneFieldValue(national, true).trim();
   return raw;
-}
-
-function buildMockDetail(to: string): DemoCallState {
-  const now = Date.now();
-  const startedAt = new Date(now - 1000 * 62).toISOString();
-  const endedAt = new Date(now - 1000 * 7).toISOString();
-  const transcript: TranscriptTurn[] = [
-    { role: 'client', text: 'Здравствуйте. Подскажите, Toyota Camry есть в наличии?' },
-    { role: 'manager', text: 'Добрый день! Да, Camry есть. Подскажите, какую комплектацию и год рассматриваете?' },
-    { role: 'client', text: 'Скорее 2.5, комплектация побогаче. И сколько стоит?' },
-    { role: 'manager', text: 'Цена зависит от комплектации и пробега. Есть разные варианты.' },
-    { role: 'client', text: 'А в кредит можно? И у меня есть машина в трейд-ин.' },
-    { role: 'manager', text: 'Да, кредит возможен. Трейд-ин тоже делаем.' },
-    { role: 'client', text: 'Дорого получается.' },
-    { role: 'manager', text: 'Ну, цены сейчас такие. Можем посмотреть.' },
-    { role: 'client', text: 'Я бы хотел приехать посмотреть, но не уверен.' },
-    { role: 'manager', text: 'Хорошо, приезжайте.' },
-  ];
-  const computed = computeMockFromTranscript(transcript);
-  return {
-    id: -1,
-    to,
-    startedAt,
-    endedAt,
-    outcome: computed.outcome,
-    durationSec: computed.durationSec,
-    totalScore: computed.totalScore,
-    qualityTag: computed.qualityTag,
-    strengths: computed.strengths,
-    weaknesses: computed.weaknesses,
-    recommendations: computed.recommendations,
-    dimensionScores: computed.dimensionScores,
-    processingError: null,
-    callSummary: computed.callSummary,
-    replyImprovements: computed.replyImprovements,
-    transcript,
-    callId: MOCK_CALL_ID,
-    transcriptTurns: transcript.length,
-    hasEvaluation: true,
-    isProcessing: false,
-    processingStage: null,
-  };
-}
-
-function readPreviewReport(params: URLSearchParams): boolean {
-  const value = params.get('previewReport')?.trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'report';
 }
 
 function parseNationalDigits(input: string): string {
@@ -291,8 +169,6 @@ function demoCallToAuditDetail(detail: DemoCallState): AuditDetailItem | null {
 
 export function PublicVoiceDemoPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const previewConfig = useMemo(() => readPreviewWaitConfig(searchParams), [searchParams]);
-  const previewReport = useMemo(() => readPreviewReport(searchParams), [searchParams]);
   const [nationalDigits, setNationalDigits] = useState(() => parseNationalDigits(readPhoneFromUrl()));
   const [phoneFocused, setPhoneFocused] = useState(false);
   const phoneInputRef = useRef<HTMLInputElement>(null);
@@ -307,16 +183,8 @@ export function PublicVoiceDemoPage() {
   const [error, setError] = useState<string | null>(null);
   const [phoneError, setPhoneError] = useState(false);
 
-  const previewWaitingDetail = useMemo((): DemoCallState | null => {
-    if (!previewConfig) return null;
-    if (previewConfig.kind === 'call') return buildPreviewCallWaitingDetail();
-    return buildPreviewProcessingWaitingDetail(previewConfig.stage);
-  }, [previewConfig]);
-
-  const effectiveWaitingDetail = previewWaitingDetail ?? detail;
-
   useEffect(() => {
-    if (previewConfig || previewReport || !callId) return;
+    if (!callId) return;
     const urlCallId = searchParams.get(CALL_ID_PARAM)?.trim() || null;
     if (urlCallId === callId) return;
     setSearchParams(
@@ -327,19 +195,10 @@ export function PublicVoiceDemoPage() {
       },
       { replace: true }
     );
-  }, [callId, previewConfig, previewReport, searchParams, setSearchParams]);
-
-  /** Старые ссылки `?callId=mock` без локального state — подставляем единый mock-отчёт. */
-  useEffect(() => {
-    if (previewConfig || previewReport) return;
-    if (callId !== MOCK_CALL_ID || detail) return;
-    const to = nationalDigits.length === NATIONAL_LEN ? formatE164FromNational(nationalDigits) : '+79999999999';
-    setDetail(buildMockDetail(to));
-  }, [callId, detail, previewConfig, nationalDigits]);
+  }, [callId, searchParams, setSearchParams]);
 
   useEffect(() => {
-    if (previewConfig || previewReport) return;
-    if (!callId || callId === MOCK_CALL_ID || isCallFinal(detail)) return;
+    if (!callId || isCallFinal(detail)) return;
 
     let cancelled = false;
 
@@ -373,18 +232,17 @@ export function PublicVoiceDemoPage() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [callId, detail, previewConfig, previewReport]);
+  }, [callId, detail]);
 
   const screenState = useMemo<'form' | 'waiting' | 'result'>(() => {
-    if (previewConfig) return 'waiting';
     if (!callId) {
       if (autoStartActive && !error) return 'waiting';
       return 'form';
     }
     return isCallFinal(detail) ? 'result' : 'waiting';
-  }, [previewConfig, callId, detail, autoStartActive, error]);
+  }, [callId, detail, autoStartActive, error]);
 
-  const waitingPhase = useMemo(() => getWaitingPhase(effectiveWaitingDetail), [effectiveWaitingDetail]);
+  const waitingPhase = useMemo(() => getWaitingPhase(detail), [detail]);
 
   const processingSteps = useMemo(
     () => [
@@ -443,20 +301,16 @@ export function PublicVoiceDemoPage() {
   }, [demoClientId, nationalDigits]);
 
   useEffect(() => {
-    if (!autoStartActive || previewConfig || previewReport || callId || autoStartAttemptedRef.current) return;
+    if (!autoStartActive || callId || autoStartAttemptedRef.current) return;
     autoStartAttemptedRef.current = true;
     void handleStartCall();
-  }, [autoStartActive, callId, handleStartCall, previewConfig, previewReport]);
+  }, [autoStartActive, callId, handleStartCall]);
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  }, [screenState, waitingPhase, previewReport, previewConfig]);
+  }, [screenState, waitingPhase]);
 
   function handleReset() {
-    if (previewConfig) {
-      window.location.assign(window.location.pathname);
-      return;
-    }
     autoStartAttemptedRef.current = true;
     setAutoStartDismissed(true);
     setCallId(null);
@@ -473,10 +327,6 @@ export function PublicVoiceDemoPage() {
     if (phoneError) setPhoneError(false);
   }
 
-  const mockAuditDetail = useMemo(
-    () => (previewReport ? buildLandingExampleAudit() : null),
-    [previewReport]
-  );
   const resultAuditDetail = useMemo(
     () => (detail ? demoCallToAuditDetail(detail) : null),
     [detail]
@@ -484,18 +334,17 @@ export function PublicVoiceDemoPage() {
 
   const displayPhone = formatPhoneFieldValue(nationalDigits, phoneFocused);
   const waitingNumber = formatDisplayPhone(
-    effectiveWaitingDetail?.to || (nationalDigits.length ? formatE164FromNational(nationalDigits) : '')
+    detail?.to || (nationalDigits.length ? formatE164FromNational(nationalDigits) : '')
   );
   const waitingClient =
     TRY_CLIENTS.find((client) => client.id === demoClientId) ?? TRY_CLIENTS[1];
-  const innerMode =
-    previewReport || Boolean(resultAuditDetail)
-      ? 'wide'
-      : screenState === 'form'
-        ? 'form'
-        : screenState === 'waiting'
-          ? 'wait'
-          : '';
+  const innerMode = Boolean(resultAuditDetail)
+    ? 'wide'
+    : screenState === 'form'
+      ? 'form'
+      : screenState === 'waiting'
+        ? 'wait'
+        : '';
 
   return (
     <div className="theme-brutal sl-page sl-demo-page demo-call-brutal">
@@ -504,20 +353,6 @@ export function PublicVoiceDemoPage() {
       <div className="sl-inner sl-body">
         <main className="sl-demo">
           <div className={`demo-call-brutal__inner${innerMode ? ` demo-call-brutal__inner--${innerMode}` : ''}`}>
-            {previewReport && mockAuditDetail ? (
-              <div className="demo-stand-stack">
-                <div className="demo-stand-report">
-                  <AuditAnalyticsReport detail={mockAuditDetail} />
-                </div>
-                <FlowButton
-                  text="Попробовать ещё раз"
-                  type="button"
-                  href="/demo-call"
-                  className="demo-stand-action"
-                />
-              </div>
-            ) : (
-              <>
             {screenState === 'form' && (
             <div className="demo-call-brutal__hero-block">
               <div className="sl-section-tag">Живая проверка</div>
@@ -576,11 +411,6 @@ export function PublicVoiceDemoPage() {
                     </Link>
                   </p>
                   {error && <div className="demo-call-brutal__error">{error}</div>}
-                  <p className="demo-mock-entry">
-                    <Link to="/demo-call?previewReport=1">Открыть макет отчёта</Link>
-                    <Link to="/demo-call?previewWait=call">Экран звонка</Link>
-                    <Link to="/demo-call?previewWait=processing">Подготовка отчёта</Link>
-                  </p>
             </div>
             )}
 
@@ -669,8 +499,6 @@ export function PublicVoiceDemoPage() {
                   className="demo-stand-action"
                 />
               </div>
-            )}
-              </>
             )}
           </div>
         </main>
