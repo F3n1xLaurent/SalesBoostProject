@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 export const TRY_CLIENTS = [
   {
     id: 'mikhail',
@@ -26,9 +28,40 @@ export const TRY_CLIENTS = [
 ] as const;
 
 export type TryClientId = typeof TRY_CLIENTS[number]['id'];
+export type TryClient = Omit<typeof TRY_CLIENTS[number], 'name' | 'temper'> & { name: string; temper: string };
 
 export const DEFAULT_TRY_CLIENT_ID: TryClientId = 'sergey';
 
 export function isTryClientId(value: string | null | undefined): value is TryClientId {
   return TRY_CLIENTS.some((client) => client.id === value);
+}
+
+function loadPublicDemoClients(): Promise<TryClient[]> {
+  return fetch('/api/public/demo-call/config', { headers: { Accept: 'application/json' } })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json() as { voices?: Array<{ id?: unknown; name?: unknown; description?: unknown }> };
+      const byId = new Map((data.voices || []).map((voice) => [String(voice.id || ''), voice]));
+      return TRY_CLIENTS.map((fallback): TryClient => {
+        const remote = byId.get(fallback.id);
+        return {
+          ...fallback,
+          name: typeof remote?.name === 'string' && remote.name.trim() ? remote.name.trim() : fallback.name,
+          temper: typeof remote?.description === 'string' && remote.description.trim() ? remote.description.trim() : fallback.temper,
+        };
+      });
+    })
+    .catch(() => TRY_CLIENTS.map((client): TryClient => ({ ...client })));
+}
+
+export function useDemoClients(): TryClient[] {
+  const [clients, setClients] = useState<TryClient[]>(() => TRY_CLIENTS.map((client) => ({ ...client })));
+  useEffect(() => {
+    let cancelled = false;
+    void loadPublicDemoClients().then((items) => {
+      if (!cancelled) setClients(items);
+    });
+    return () => { cancelled = true; };
+  }, []);
+  return clients;
 }

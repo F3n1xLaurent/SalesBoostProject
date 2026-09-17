@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { createCity, fetchCities, updateCity } from '../../../shared/api/adminPanel';
 import { BrutalModal } from '../../../shared/ui/brutal-modal';
 import { EditIcon } from '../../../shared/ui/icons/ActionIcons';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
+import { DemoCallSettings, type DemoDictionaryTab } from './DemoCallSettings';
 import './dictionaries.css';
 
 const CITY_PAGE_SIZE = 100;
@@ -11,6 +13,13 @@ const CITY_ROW_HEIGHT = 52;
 const CITY_LIST_HEIGHT = 520;
 const CITY_LIST_OVERSCAN = 6;
 const CREATE_CITY_FORM_ID = 'create-dictionary-city-form';
+type DictionaryTab = 'cities' | DemoDictionaryTab;
+const DICTIONARY_TABS: Array<{ value: DictionaryTab; label: string }> = [
+  { value: 'cities', label: 'Города' },
+  { value: 'demo-voices', label: 'Голоса (Демо)' },
+  { value: 'demo-profile', label: 'Профиль клиента (Демо)' },
+  { value: 'demo-script', label: 'Скрипт (Демо)' },
+];
 
 function mergeUniqueCities(current: string[], next: string[]): string[] {
   const seen = new Set(current);
@@ -19,6 +28,7 @@ function mergeUniqueCities(current: string[], next: string[]): string[] {
 
 export function DictionariesPage() {
   const { showToast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const listRef = useRef<HTMLDivElement>(null);
   const requestGenerationRef = useRef(0);
   const [search, setSearch] = useState('');
@@ -165,6 +175,15 @@ export function DictionariesPage() {
   const cityModalOpen = createOpen || editingCity !== null;
   const cityNameUnchanged = editingCity !== null && newCityName.trim() === editingCity;
   const listHeight = cities.length * CITY_ROW_HEIGHT;
+  const requestedTab = searchParams.get('tab') as DictionaryTab | null;
+  const activeTab = DICTIONARY_TABS.some((tab) => tab.value === requestedTab) ? requestedTab! : 'cities';
+
+  function selectTab(tab: DictionaryTab) {
+    const next = new URLSearchParams(searchParams);
+    if (tab === 'cities') next.delete('tab');
+    else next.set('tab', tab);
+    setSearchParams(next, { replace: true });
+  }
 
   return (
     <div className="dictionaries-page">
@@ -176,10 +195,21 @@ export function DictionariesPage() {
       </header>
 
       <div className="sa-dialog-tabs" role="tablist" aria-label="Справочники">
-        <button type="button" role="tab" aria-selected="true" className="sa-dialog-tab sa-dialog-tab-active">Города</button>
+        {DICTIONARY_TABS.map((tab) => (
+          <button
+            key={tab.value}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.value}
+            className={`sa-dialog-tab${activeTab === tab.value ? ' sa-dialog-tab-active' : ''}`}
+            onClick={() => selectTab(tab.value)}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <section className="dictionaries-card">
+      {activeTab === 'cities' ? <><section className="dictionaries-card">
         <div className="dictionaries-toolbar">
           <label className="dictionaries-search">
             <span className="dictionaries-search__icon" aria-hidden><LetsIcon name="search" size={18} /></span>
@@ -289,6 +319,7 @@ export function DictionariesPage() {
           {createError && <div className="dictionaries-notice dictionaries-notice--error">{createError}</div>}
         </form>
       </BrutalModal>
+      </> : <DemoCallSettings tab={activeTab} />}
     </div>
   );
 }

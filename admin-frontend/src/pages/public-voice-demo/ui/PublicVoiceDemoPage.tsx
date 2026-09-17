@@ -9,7 +9,7 @@ import { LandingHeader } from '../../landing/ui/LandingHeader';
 import { TryClientPicker } from '../../landing/ui/TryClientPicker';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import { LANDING_HOME, LEGAL_NAV, OPERATOR_ADDRESS } from '../../landing/lib/legalDocuments';
-import { DEFAULT_TRY_CLIENT_ID, TRY_CLIENTS, isTryClientId, type TryClientId } from '../../landing/lib/tryClients';
+import { DEFAULT_TRY_CLIENT_ID, isTryClientId, useDemoClients, type TryClientId } from '../../landing/lib/tryClients';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import '../../landing/ui/landing.css';
@@ -199,6 +199,7 @@ function demoCallToAuditDetail(detail: DemoCallState): AuditDetailItem | null {
 }
 
 export function PublicVoiceDemoPage() {
+  const demoClients = useDemoClients();
   const [searchParams, setSearchParams] = useSearchParams();
   const [nationalDigits, setNationalDigits] = useState(() => parseNationalDigits(readPhoneFromUrl()));
   const [phoneFocused, setPhoneFocused] = useState(false);
@@ -380,7 +381,7 @@ export function PublicVoiceDemoPage() {
     detail?.to || (nationalDigits.length ? formatE164FromNational(nationalDigits) : '')
   );
   const waitingClient =
-    TRY_CLIENTS.find((client) => client.id === demoClientId) ?? TRY_CLIENTS[1];
+    demoClients.find((client) => client.id === demoClientId) ?? demoClients[1];
   const innerMode = Boolean(resultAuditDetail)
     ? 'wide'
     : screenState === 'form'

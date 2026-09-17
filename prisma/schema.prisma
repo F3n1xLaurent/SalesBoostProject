@@ -218,6 +218,62 @@ model CallCustomerVoice {
   @@map("call_customer_voices")
 }
 
+model DemoCallVoice {
+  id                    String   @id
+  name                  String
+  description           String   @default("")
+  gender                String
+  elevenLabsVoiceId     String
+  communicationModifier String   @default("")
+  sortOrder             Int      @default(0)
+  isEnabled             Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([isEnabled, sortOrder])
+  @@map("demo_call_voices")
+}
+
+model DemoCallProfile {
+  id                 String   @id
+  name               String
+  age                Int
+  ageFrom            Int      @default(35)
+  ageTo              Int      @default(35)
+  character          String   @default("")
+  temperament        String
+  patience           String
+  replyLength        String
+  communicationStyle String   @default("")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  scripts            DemoCallScript[]
+
+  @@map("demo_call_profiles")
+}
+
+model DemoCallScript {
+  id                  String   @id
+  profileId           String
+  name                String
+  companyName         String   @default("")
+  companyDescription  String   @default("")
+  itemTitle           String   @default("")
+  context             String   @default("")
+  dataText            String   @default("")
+  objectionsJson      String   @default("[]")
+  questionsJson       String   @default("[]")
+  successCriteriaJson String   @default("[]")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  profile             DemoCallProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+
+  @@index([profileId])
+  @@map("demo_call_scripts")
+}
+
 model CallReportProblem {
   id        String   @id @default(cuid())
   code      String   @unique

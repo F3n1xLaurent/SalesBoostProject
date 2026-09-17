@@ -14,7 +14,7 @@ import {
   DEPARTMENT_EXAMPLE_CARDS,
   type DepartmentExampleId,
 } from '../lib/departmentExamples';
-import { DEFAULT_TRY_CLIENT_ID, TRY_CLIENTS } from '../lib/tryClients';
+import { DEFAULT_TRY_CLIENT_ID, useDemoClients } from '../lib/tryClients';
 import { FlowButton } from './FlowButton';
 import { FinalDemoBlock } from './FinalDemoBlock';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
@@ -117,12 +117,13 @@ function isValidPhone(national: string) {
 }
 
 function TryLiveDemo() {
+  const demoClients = useDemoClients();
   const [selectedId, setSelectedId] = useState(DEFAULT_TRY_CLIENT_ID);
   const [phoneDigits, setPhoneDigits] = useState('');
   const [phoneError, setPhoneError] = useState(false);
   const [phoneFocused, setPhoneFocused] = useState(false);
   const phoneRef = useRef<HTMLInputElement>(null);
-  const client = TRY_CLIENTS.find((item) => item.id === selectedId) ?? TRY_CLIENTS[1]!;
+  const client = demoClients.find((item) => item.id === selectedId) ?? demoClients[1]!;
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
