@@ -3,6 +3,11 @@ import { Link } from 'react-router';
 import { BrutalModal } from '../../../shared/ui/brutal-modal/BrutalModal';
 import { LEGAL_NAV, OPERATOR_ADDRESS } from '../lib/legalDocuments';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+import {
+  buildDepartmentExampleAudit,
+  DEPARTMENT_EXAMPLE_CARDS,
+  type DepartmentExampleId,
+} from '../lib/departmentExamples';
 import { buildLandingExampleAudit } from '../lib/exampleAudit';
 import trainerBizUi from '../assets/trainer-biz.png';
 import trainerMgrUi from '../assets/trainer-mgr.png';
@@ -133,9 +138,33 @@ function useSoftReveal() {
 /* ─────────────────────────────────── Page ─────────────────────────────────── */
 
 export function LandingPage() {
-  const [reportOpen, setReportOpen] = useState(false);
-  const exampleAudit = useMemo(() => buildLandingExampleAudit(), []);
+  const [reportId, setReportId] = useState<DepartmentExampleId | 'classic' | null>(null);
+  const classicAudit = useMemo(() => buildLandingExampleAudit(), []);
+  const departmentAudits = useMemo(
+    () => ({
+      sales: buildDepartmentExampleAudit('sales'),
+      appraisal: buildDepartmentExampleAudit('appraisal'),
+      service: buildDepartmentExampleAudit('service'),
+    }),
+    [],
+  );
   useSoftReveal();
+
+  const openReport = (id: DepartmentExampleId | 'classic') => {
+    // Defer so the opening click cannot hit the freshly mounted overlay.
+    window.setTimeout(() => setReportId(id), 0);
+  };
+
+  const activeAudit =
+    reportId === 'classic'
+      ? classicAudit
+      : reportId
+        ? departmentAudits[reportId]
+        : null;
+  const modalTitle =
+    reportId && reportId !== 'classic'
+      ? DEPARTMENT_EXAMPLE_CARDS.find((c) => c.id === reportId)?.modalTitle ?? 'Пример отчёта'
+      : 'Пример отчёта';
 
   return (
     <div className="theme-brutal sl-page">
@@ -143,10 +172,8 @@ export function LandingPage() {
       <div className="sl-inner sl-body">
       <main id="top">
         <PdfStructureBlocks
-          onShowExample={() => {
-            // Defer so the opening click cannot hit the freshly mounted overlay.
-            window.setTimeout(() => setReportOpen(true), 0);
-          }}
+          onShowExample={() => openReport('classic')}
+          onOpenDepartmentReport={(id) => openReport(id)}
           afterManager={
             <section className="sl-sec sl-reveal" id="trainer">
               <div className="sl-band">
@@ -194,7 +221,7 @@ export function LandingPage() {
                   ['box', 'Знание ассортимента', 'Продукт и условия — до первого звонка клиенту'],
                   ['script', 'Разговор по скрипту', 'Сценарий компании голосом, без подсказок и вариантов'],
                   ['chat', 'Работа с возражениями', '«Дорого», сравнения и жёсткие вопросы клиентов'],
-                  ['users', 'Сложные клиенты', 'Разные типы клиентов и эмоциональные состояния'],
+                  ['users', 'Сложные клиенты', 'Разные типы клиентов и эмоциональных состояний'],
                 ] as const).map(([icon, title, text]) => (
                   <article key={title} className="sl-step-card sl-squircle">
                     <span className="sl-step-ico" aria-hidden>
@@ -246,16 +273,16 @@ export function LandingPage() {
       </div>
 
       <BrutalModal
-        open={reportOpen}
-        onClose={() => setReportOpen(false)}
-        title="Пример отчёта"
+        open={reportId !== null}
+        onClose={() => setReportId(null)}
+        title={modalTitle}
         width="wide"
         className="sl-landing-modal"
         overlayClassName="sl-landing-modal-overlay"
         exitDurationMs={420}
       >
         <div className="sl-report-modal">
-          <AuditAnalyticsReport detail={exampleAudit} />
+          {activeAudit ? <AuditAnalyticsReport detail={activeAudit} /> : null}
         </div>
       </BrutalModal>
     </div>

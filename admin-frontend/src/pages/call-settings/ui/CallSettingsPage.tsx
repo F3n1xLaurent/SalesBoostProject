@@ -165,18 +165,24 @@ function formatPlanCallDuration(seconds: number | null | undefined): string {
   return `${minutes}:${String(rest).padStart(2, '0')}`;
 }
 
-function formatPlanCallStatus(outcome: string | null | undefined, status: string | null | undefined): string {
-  const value = String(outcome || status || '').trim().toLowerCase();
-  if (value === 'completed' || value === 'disconnected') return 'Завершено';
-  if (value === 'no_answer') return 'Недозвон';
-  if (value === 'busy') return 'Занято';
-  if (value === 'failed') return 'Ошибка';
-  if (value === 'voicemail') return 'Автоответчик';
+function formatPlanCallStatus(
+  outcome: string | null | undefined,
+  status: string | null | undefined,
+  failureReason?: string | null,
+): string {
+  const outcomeValue = String(outcome || '').trim().toLowerCase();
+  const statusValue = String(status || '').trim().toLowerCase();
+  const value = outcomeValue || statusValue;
+  if (outcomeValue === 'no_answer') return 'Недозвон';
+  if (outcomeValue === 'busy') return 'Занято';
+  if (outcomeValue === 'voicemail') return 'Автоответчик';
+  if (outcomeValue === 'cancelled' || outcomeValue === 'canceled' || statusValue === 'cancelled' || statusValue === 'canceled') return 'Отменено';
+  if (outcomeValue === 'failed' || statusValue === 'failed' || String(failureReason || '').trim()) return 'Ошибка';
+  if (outcomeValue === 'completed' || outcomeValue === 'disconnected' || statusValue === 'completed') return 'Завершено';
   if (value === 'scheduled') return 'Не совершен';
   if (value === 'running' || value === 'dialing' || value === 'in_progress' || value === 'progress') return 'В работе';
   if (value === 'retry_wait') return 'Ожидает повтора';
   if (value === 'queued') return 'В очереди';
-  if (value === 'cancelled' || value === 'canceled') return 'Отменено';
   return value || '—';
 }
 
@@ -198,10 +204,16 @@ function formatTimezoneOffset(offsetMinutes: number | undefined): string {
   return `UTC${sign}${hours}${remainder ? `:${String(remainder).padStart(2, '0')}` : ''}`;
 }
 
-function planCallStatusClass(outcome: string | null | undefined, status: string | null | undefined): string {
-  const value = String(outcome || status || '').trim().toLowerCase();
-  if (value === 'completed' || value === 'disconnected') return 'sa-audit-status-completed';
-  if (value === 'failed') return 'sa-audit-status-failed';
+function planCallStatusClass(
+  outcome: string | null | undefined,
+  status: string | null | undefined,
+  failureReason?: string | null,
+): string {
+  const outcomeValue = String(outcome || '').trim().toLowerCase();
+  const statusValue = String(status || '').trim().toLowerCase();
+  if (outcomeValue === 'no_answer' || outcomeValue === 'busy' || outcomeValue === 'voicemail') return 'sa-audit-status-interrupted';
+  if (outcomeValue === 'failed' || statusValue === 'failed' || String(failureReason || '').trim()) return 'sa-audit-status-failed';
+  if (outcomeValue === 'completed' || outcomeValue === 'disconnected' || statusValue === 'completed') return 'sa-audit-status-completed';
   return 'sa-audit-status-interrupted';
 }
 
@@ -2179,7 +2191,7 @@ function CallPlanScheduleModal(props: {
                     <td>{formatScheduleTime(item.scheduledAt, props.plan.timezoneOffsetMinutes)}</td>
                     <td>
                       <span className={`sa-batch-state sa-batch-state-${item.status}`}>
-                        {formatPlanCallStatus(item.outcome, item.status)}
+                        {formatPlanCallStatus(item.outcome, item.status, item.failureReason)}
                       </span>
                     </td>
                     <td className="sa-text-right">
@@ -2936,8 +2948,8 @@ export function CallSettingsPage() {
                           {call.ivrDetected && <span className="sa-ivr-badge" style={{ marginTop: 5 }}>IVR{call.ivrPath.length > 0 ? ` (${call.ivrPath.join('-')})` : ''}</span>}
                         </td>
                         <td>
-                          <span className={`sa-status-badge ${planCallStatusClass(call.outcome, call.status)}`}>
-                            {formatPlanCallStatus(call.outcome, call.status)}
+                          <span className={`sa-status-badge ${planCallStatusClass(call.outcome, call.status, call.failureReason)}`}>
+                            {formatPlanCallStatus(call.outcome, call.status, call.failureReason)}
                           </span>
                         </td>
                         <td>

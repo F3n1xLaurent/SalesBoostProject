@@ -1,1 +1,0 @@
-import{j as a}from"./index-CitGb1xu.js";function c({title:s,className:r="",children:d}){return a.jsxs("div",{className:`sa-card sa-brutal-card ${r}`.trim(),children:[a.jsx("div",{className:"sa-brutal-card-header",children:a.jsx("span",{className:"sa-brutal-card-title",children:s})}),a.jsx("div",{className:"sa-brutal-card-body",children:d})]})}export{c as B};

@@ -1,8 +1,9 @@
 import { prisma } from '../db';
-import { addCall, setVoxSessionId } from './callHistory';
+import { addCall, getRecordByCallId, setVoxSessionId } from './callHistory';
 import { startVoiceCall, type VoiceCallScenario } from './startVoiceCall';
 import type { VoxWebhookPayload } from './voiceCallSession';
 import { listDealershipCallTargets } from './dealershipCallSource';
+import { isUnavailableCallOutcome, resolveVoxCallOutcome } from './voxCallOutcome';
 
 type BatchStatus = 'running' | 'paused' | 'cancelled' | 'completed';
 type JobStatus = 'queued' | 'dialing' | 'in_progress' | 'retry_wait' | 'completed' | 'failed' | 'cancelled';
@@ -58,22 +59,6 @@ function retryDelayMs(attempt: number): number {
   if (attempt <= 1) return 30_000;
   if (attempt === 2) return 90_000;
   return 240_000;
-}
-
-function normalizeWebhookOutcome(event: string | undefined): string {
-  if (!event) return 'disconnected';
-  const normalizedEvent = String(event).trim().toLowerCase();
-  if (normalizedEvent === 'busy' || normalizedEvent === 'no_answer' || normalizedEvent === 'failed') return normalizedEvent;
-  if (
-    normalizedEvent === 'disconnected' ||
-    normalizedEvent === 'hangup' ||
-    normalizedEvent === 'disconnect' ||
-    normalizedEvent === 'completed' ||
-    normalizedEvent === 'ended'
-  ) {
-    return 'disconnected';
-  }
-  return 'disconnected';
 }
 
 function asAuditIdFromVoiceSession(sessionId: number): string {
@@ -745,7 +730,30 @@ export async function onVoxBatchWebhook(payload: VoxWebhookPayload): Promise<voi
 
   if (attempt.status === 'ended') return;
 
-  const outcome = normalizeWebhookOutcome(payload.event);
+  const [session, memoryRecord] = await Promise.all([
+    prisma.voiceCallSession.findUnique({
+      where: { callId },
+      select: { connectedAt: true, transcriptJson: true },
+    }),
+    Promise.resolve(getRecordByCallId(callId)),
+  ]);
+  const payloadTranscriptTurns = Array.isArray(payload.transcript) ? payload.transcript.length : 0;
+  const storedTranscriptTurns = session?.transcriptJson
+    ? (() => {
+        try {
+          const parsed = JSON.parse(session.transcriptJson);
+          return Array.isArray(parsed) ? parsed.length : 0;
+        } catch {
+          return 0;
+        }
+      })()
+    : 0;
+  const outcome = resolveVoxCallOutcome(payload.event, {
+    connected: session?.connectedAt != null || memoryRecord?.connectedAt != null,
+    transcriptTurns: Math.max(payloadTranscriptTurns, storedTranscriptTurns, memoryRecord?.transcript.length ?? 0),
+    reason: payload.details?.reason,
+    code: payload.details?.code,
+  });
   await prisma.callBatchAttempt.update({
     where: { id: attempt.id },
     data: {
@@ -773,9 +781,7 @@ export async function onVoxBatchWebhook(payload: VoxWebhookPayload): Promise<voi
       },
     });
   } else {
-    const finalStatus: JobStatus = outcome === 'busy' || outcome === 'no_answer' || outcome === 'failed'
-      ? 'failed'
-      : 'completed';
+    const finalStatus: JobStatus = isUnavailableCallOutcome(outcome) ? 'failed' : 'completed';
     await prisma.callBatchJob.update({
       where: { id: job.id },
       data: {

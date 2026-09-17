@@ -4,6 +4,7 @@ import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-i
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { FlowButton } from '../../landing/ui/FlowButton';
+import { FinalDemoBlock } from '../../landing/ui/FinalDemoBlock';
 import { LandingHeader } from '../../landing/ui/LandingHeader';
 import { TryClientPicker } from '../../landing/ui/TryClientPicker';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
@@ -543,6 +544,14 @@ export function PublicVoiceDemoPage() {
               </div>
             )}
           </div>
+
+          {(screenState === 'form' || screenState === 'result') && (
+            <FinalDemoBlock
+              showCallCta={false}
+              id="demo-stand-lead"
+              className="demo-stand-final"
+            />
+          )}
         </main>
 
         <footer className="sl-footer">

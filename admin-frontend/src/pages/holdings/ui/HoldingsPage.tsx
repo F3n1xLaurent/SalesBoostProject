@@ -38,6 +38,10 @@ import { MetricComparisonModal } from '../../../shared/ui/metric-comparison-moda
 import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
 import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
 import { RecommendationsBlock } from '../../../shared/ui/recommendations-block';
+import {
+  ORGANIZATION_NAME_MAX_LENGTH,
+  validateOrganizationName,
+} from '../../../shared/lib/organization-name-validation';
 
 type HoldingFormState = {
   name: string;
@@ -931,6 +935,11 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
       showToast({ type: 'error', title: 'Не удалось создать компанию', description: 'Название компании обязательно.' });
       return;
     }
+    const nameValidationError = validateOrganizationName(holdingForm.name, 'holding');
+    if (nameValidationError) {
+      showToast({ type: 'error', title: 'Не удалось создать компанию', description: nameValidationError });
+      return;
+    }
     setSavingHolding(true);
     try {
       await createHolding({
@@ -961,6 +970,11 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     setHoldingFormAttempted(true);
     if (!holdingForm.name.trim()) {
       showToast({ type: 'error', title: 'Не удалось обновить компанию', description: 'Название компании обязательно.' });
+      return false;
+    }
+    const nameValidationError = validateOrganizationName(holdingForm.name, 'holding');
+    if (nameValidationError) {
+      showToast({ type: 'error', title: 'Не удалось обновить компанию', description: nameValidationError });
       return false;
     }
     setSavingHolding(true);
@@ -1061,7 +1075,10 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     const mode = options?.mode ?? 'edit';
     const isCreate = mode === 'create';
     const isDirty = JSON.stringify(normalizeHoldingForm(holdingForm)) !== JSON.stringify(normalizeHoldingForm(initialHoldingForm));
-    const nameInvalid = holdingFormAttempted && !holdingForm.name.trim();
+    const nameValidationError = holdingForm.name.trim()
+      ? validateOrganizationName(holdingForm.name, 'holding')
+      : 'Название компании обязательно.';
+    const nameInvalid = Boolean(nameValidationError) && (holdingFormAttempted || Boolean(holdingForm.name.trim()));
     const isSubmitDisabled = savingHolding || (!isCreate && !isDirty);
 
     return (
@@ -1071,9 +1088,20 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
           <input
             className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
             value={holdingForm.name}
+            maxLength={ORGANIZATION_NAME_MAX_LENGTH}
             onChange={(event) => setHoldingForm((current) => ({ ...current, name: event.target.value }))}
             aria-invalid={nameInvalid || undefined}
+            aria-describedby="holding-name-hint"
           />
+          <span
+            id="holding-name-hint"
+            className="sa-meta"
+            style={nameInvalid ? { color: 'var(--tb-brutal-red)' } : undefined}
+          >
+            {nameInvalid
+              ? nameValidationError
+              : `От 2 до ${ORGANIZATION_NAME_MAX_LENGTH} символов. Разрешены буквы, цифры, пробелы и деловая пунктуация.`}
+          </span>
         </label>
         <label style={{ display: 'grid', gap: 6 }}>
           <span>Описание</span>
@@ -1114,7 +1142,10 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
   function renderHoldingFormFooter(options: { mode: 'create' | 'edit'; submitLabel: string; onRequestClose: () => void }) {
     const isCreate = options.mode === 'create';
     const isDirty = JSON.stringify(normalizeHoldingForm(holdingForm)) !== JSON.stringify(normalizeHoldingForm(initialHoldingForm));
-    const isSubmitDisabled = savingHolding || !holdingForm.name.trim() || (!isCreate && !isDirty);
+    const nameValidationError = holdingForm.name.trim()
+      ? validateOrganizationName(holdingForm.name, 'holding')
+      : 'Название компании обязательно.';
+    const isSubmitDisabled = savingHolding || Boolean(nameValidationError) || (!isCreate && !isDirty);
     return (
       <div className={`sa-modal-footer-row${isCreate ? '' : ''}`}>
         {!isCreate && (

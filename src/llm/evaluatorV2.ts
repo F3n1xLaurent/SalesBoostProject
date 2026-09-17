@@ -12,6 +12,7 @@ import {
   buildChecklistFromLLMClassification,
   computeDeterministicScore,
   detectIssuesFromChecklist,
+  enforceManagerChecklistEvidence,
 } from '../logic/diagnosticScoring';
 import type { BehaviorSignal } from '../logic/behaviorClassifier';
 
@@ -51,6 +52,24 @@ interface LLMClassification {
     bad_tone: boolean;
   };
   recommendations: string[];
+}
+
+function hasCompleteChecklist(value: unknown): value is LLMClassification {
+  if (!value || typeof value !== 'object') return false;
+  const checklist = (value as { checklist?: unknown }).checklist;
+  if (!Array.isArray(checklist)) return false;
+
+  const validCodes = new Set<string>();
+  for (const rawItem of checklist) {
+    if (!rawItem || typeof rawItem !== 'object') continue;
+    const item = rawItem as Record<string, unknown>;
+    const code = String(item.code ?? '').trim().toUpperCase();
+    const status = String(item.status ?? '').trim().toUpperCase();
+    if (CHECKLIST_CODE.includes(code as (typeof CHECKLIST_CODE)[number]) && ['YES', 'PARTIAL', 'NO', 'NA'].includes(status)) {
+      validCodes.add(code);
+    }
+  }
+  return CHECKLIST_CODE.every((code) => validCodes.has(code));
 }
 
 // ── System prompt for the Evaluator Agent ──
@@ -123,6 +142,8 @@ COMMUNICATION_TONE (вес: 5) — Был ли тон общения профе�
 
 === ПРАВИЛА ===
 - evidence ДОЛЖНЫ быть прямыми цитатами из диалога НА РУССКОМ.
+- Для YES и PARTIAL по действиям менеджера evidence должно содержать минимум одну реальную реплику именно менеджера.
+- Реплика клиента никогда не доказывает, что менеджер выполнил пункт. Не засчитывай менеджеру то, что сказал клиент.
 - Если цитату найти невозможно, поставь evidence: [] и объясни в comment.
 - ВСЕ тексты (evidence, comment, recommendations) СТРОГО НА РУССКОМ ЯЗЫКЕ.
 - НЕ угадывай — оценивай только то, что есть в стенограмме.
@@ -181,31 +202,49 @@ ${behaviorEvidence}
 === ЗАДАНИЕ ===
 Оцени каждый пункт чеклиста. Верни JSON.`;
 
-  let classification: LLMClassification;
+  let classification: LLMClassification | null = null;
 
-  try {
-    const response = await openai.chat.completions.create({
-      model: config.openaiChatModel,
-      messages: [
-        { role: 'system', content: EVALUATOR_SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-      max_tokens: 2000,
-    });
+  for (let attempt = 1; attempt <= 2 && !classification; attempt += 1) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: config.openaiChatModel,
+        messages: [
+          { role: 'system', content: EVALUATOR_SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: attempt === 1
+              ? userPrompt
+              : `${userPrompt}\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ был неполным или невалидным. Обязательно верни все ${CHECKLIST_CODE.length} уникальных пунктов checklist.`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: attempt === 1 ? 0.2 : 0.1,
+        max_tokens: 3500,
+      });
 
-    const text = response.choices[0]?.message?.content?.trim();
-    if (!text) throw new Error('Empty evaluator response');
-    classification = JSON.parse(text) as LLMClassification;
-  } catch (err) {
-    console.error('[evaluatorV2] LLM error:', err instanceof Error ? err.message : err);
+      const text = response.choices[0]?.message?.content?.trim();
+      if (!text) throw new Error('Empty evaluator response');
+      const parsed = JSON.parse(text) as unknown;
+      if (!hasCompleteChecklist(parsed)) {
+        throw new Error(`Incomplete evaluator checklist: expected ${CHECKLIST_CODE.length} unique valid items`);
+      }
+      classification = parsed;
+    } catch (err) {
+      console.warn(`[evaluatorV2] attempt=${attempt} failed:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  if (!classification) {
+    console.error('[evaluatorV2] all LLM attempts failed, using fallback classification');
     classification = buildFallbackClassification(input);
   }
 
   // Normalize + build typed checklist
-  const checklist = buildChecklistFromLLMClassification(
-    Array.isArray(classification.checklist) ? classification.checklist : []
+  const checklist = enforceManagerChecklistEvidence(
+    buildChecklistFromLLMClassification(
+      Array.isArray(classification.checklist) ? classification.checklist : [],
+    ),
+    input.dialogHistory,
   );
 
   const extra = classification.extra_signals ?? {

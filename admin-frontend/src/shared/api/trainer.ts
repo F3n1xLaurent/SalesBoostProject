@@ -178,10 +178,14 @@ export async function fetchTrainerDialog(id: string): Promise<{ session: Trainer
   return apiJson(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/dialog`);
 }
 
-export async function abandonTrainerSession(id: string): Promise<{ session: TrainerSessionSummary }> {
-  return apiJson(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/abandon`, {
+export async function finishTrainerSession(
+  id: string,
+  options?: { keepalive?: boolean },
+): Promise<{ session: TrainerSessionSummary }> {
+  return apiJson(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/finish`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    keepalive: options?.keepalive ?? false,
   });
 }
 

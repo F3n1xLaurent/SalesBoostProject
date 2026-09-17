@@ -16,8 +16,17 @@ import { generateCallAnalyticsBundle } from './callAnalyticsBundle';
 import { resolvePhoneNumberSourceSnapshot } from './phoneNumberStats';
 import { scheduleRecordingFetch } from './voximplantRecordingService';
 import { extractIvrPath, parseStoredIvrPath } from './ivrWebhook';
+import {
+  isUnavailableCallOutcome,
+  normalizeVoxWebhookEvent,
+  resolveCallPlanStatus,
+  resolveVoxCallOutcome,
+} from './voxCallOutcome';
+import { sanitizeTranscriptTurns } from './transcriptSanitizer';
 import * as Sentry from '@sentry/node';
 import { recordProductEvent, type ProductEventProperty } from '../analytics/productAnalytics';
+
+const TRANSCRIPT_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 
 export type VoxWebhookEvent = 'progress' | 'connected' | 'disconnected' | 'failed' | 'busy' | 'no_answer' | 'cancelled';
 
@@ -39,24 +48,6 @@ export interface VoxWebhookPayload {
   ivr_path?: unknown;
 }
 
-function normalizeWebhookEventName(rawEvent: unknown): string {
-  const event = String(rawEvent ?? '').trim().toLowerCase();
-  if (!event) return '';
-  if (event === 'hangup' || event === 'disconnect' || event === 'completed' || event === 'ended') {
-    return 'disconnected';
-  }
-  if (event === 'answer') return 'connected';
-  if (event === 'ringing') return 'progress';
-  return event;
-}
-
-function normalizeOutcome(event: string, details?: { reason?: string; code?: number }): string {
-  const normalizedEvent = normalizeWebhookEventName(event);
-  if (normalizedEvent === 'no_answer' || normalizedEvent === 'busy' || normalizedEvent === 'failed' || normalizedEvent === 'cancelled') return normalizedEvent;
-  if (normalizedEvent === 'disconnected') return 'disconnected';
-  return 'completed';
-}
-
 function parseWebhookDate(value: unknown, fallback = new Date()): Date {
   if (typeof value !== 'string' || !value.trim()) return fallback;
   const date = new Date(value);
@@ -69,6 +60,13 @@ function secondsBetween(from: Date, to: Date): number {
 
 function elapsedMs(startedAt: number): number {
   return Math.round(performance.now() - startedAt);
+}
+
+function waitForTranscriptRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
 }
 
 function dialogHistoryFromTranscript(transcript: TranscriptTurn[]): Array<{ role: 'client' | 'manager'; content: string }> {
@@ -275,18 +273,27 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
     },
   });
   if (!existing) return;
+  const sanitizedTranscript = patch.transcript == null
+    ? patch.transcript
+    : sanitizeTranscriptTurns(patch.transcript);
   const phoneNumberSource = await resolvePhoneNumberSourceSnapshot(existing.phone, existing.phoneNumberTypeId);
   const analyticsFields = extractAnalyticsEvaluationFields(patch.evaluation);
   await prisma.callPlanCall.update({
     where: { callId },
     data: {
-      status: patch.endedAt ? 'completed' : undefined,
-      outcome: patch.outcome ?? undefined,
-      endedAt: patch.endedAt ?? undefined,
-      transcriptJson: patch.transcript ? JSON.stringify(patch.transcript) : undefined,
-      evaluationJson: patch.evaluation ? JSON.stringify(patch.evaluation) : undefined,
-      totalScore: patch.totalScore ?? undefined,
-      failureReason: patch.failureReason ?? undefined,
+      status: patch.endedAt
+        ? resolveCallPlanStatus('completed', patch.outcome, patch.failureReason)
+        : undefined,
+      outcome: patch.outcome === undefined ? undefined : patch.outcome,
+      endedAt: patch.endedAt === undefined ? undefined : patch.endedAt,
+      transcriptJson: patch.transcript === undefined
+        ? undefined
+        : sanitizedTranscript === null ? null : JSON.stringify(sanitizedTranscript),
+      evaluationJson: patch.evaluation === undefined
+        ? undefined
+        : patch.evaluation === null ? null : JSON.stringify(patch.evaluation),
+      totalScore: patch.totalScore === undefined ? undefined : patch.totalScore,
+      failureReason: patch.failureReason === undefined ? undefined : patch.failureReason,
     },
   });
   await prisma.voiceCallSession.update({
@@ -317,7 +324,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
  */
 export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Promise<void> {
   const callId = payload.call_id;
-  const event = (normalizeWebhookEventName(payload.event) || 'disconnected') as VoxWebhookEvent;
+  const event = (normalizeVoxWebhookEvent(payload.event) || 'disconnected') as VoxWebhookEvent;
 
   if (!callId) {
     console.warn('[voice/session] finalizeVoiceCallSession: missing call_id', payload);
@@ -371,22 +378,10 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   const answerTimeSec = existingSession?.answerTimeSec ?? (connectedAt ? secondsBetween(startedAt, connectedAt) : null);
   const talkDurationSec = connectedAt ? secondsBetween(connectedAt, endedAt) : null;
   const durationSec = talkDurationSec ?? (record ? secondsBetween(startedAt, endedAt) : 0);
-  const outcome = normalizeOutcome(event, payload.details);
-  console.log('[voice/session] finalize start', {
-    callId,
-    event,
-    to,
-    hasPayloadTranscript: Array.isArray(payload.transcript) ? payload.transcript.length : 0,
-    hasMemoryTranscript: record?.transcript?.length ?? 0,
-    voxSessionId: resolvedVoxSessionId,
-    voxSessionIdSource: recordVoxSessionId ? 'record' : (payloadVoxSessionId ? 'webhook' : 'none'),
-    payloadVoxSessionId,
-    recordVoxSessionId,
-  });
 
   // Prefer transcript from webhook payload (e.g. realtime_pure sends it); fallback to in-memory record (dialog scenario)
   const rawPayloadTranscript = payload.transcript;
-  let payloadTranscript: TranscriptTurn[] =
+  const parsedPayloadTranscript: TranscriptTurn[] =
     Array.isArray(rawPayloadTranscript) &&
     rawPayloadTranscript.length > 0 &&
     rawPayloadTranscript.every(
@@ -399,12 +394,35 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
     )
       ? (rawPayloadTranscript as TranscriptTurn[])
       : [];
+  const payloadTranscript = sanitizeTranscriptTurns(parsedPayloadTranscript);
 
   const toNormalized = '+' + String(to).replace(/\D/g, '');
   const phoneNumberSource = existingSession?.phoneNumberId ? null : await resolvePhoneNumberSourceSnapshot(toNormalized);
 
   // 1) Save session immediately so admin shows "Processing..." right after hangup
-  const initialTranscript = payloadTranscript.length > 0 ? payloadTranscript : (record?.transcript ?? []);
+  const initialTranscript = payloadTranscript.length > 0
+    ? payloadTranscript
+    : sanitizeTranscriptTurns(record?.transcript ?? []);
+  const outcome = resolveVoxCallOutcome(event, {
+    connected: connectedAt != null,
+    transcriptTurns: initialTranscript.length,
+    reason: payload.details?.reason,
+    code: payload.details?.code,
+  });
+  const unavailable = isUnavailableCallOutcome(outcome);
+  console.log('[voice/session] finalize start', {
+    callId,
+    event,
+    outcome,
+    connected: connectedAt != null,
+    to,
+    hasPayloadTranscript: payloadTranscript.length,
+    hasMemoryTranscript: record?.transcript?.length ?? 0,
+    voxSessionId: resolvedVoxSessionId,
+    voxSessionIdSource: recordVoxSessionId ? 'record' : (payloadVoxSessionId ? 'webhook' : 'none'),
+    payloadVoxSessionId,
+    recordVoxSessionId,
+  });
   try {
     await prisma.voiceCallSession.upsert({
       where: { callId },
@@ -436,6 +454,9 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         durationSec,
         talkDurationSec: talkDurationSec ?? undefined,
         transcriptJson: JSON.stringify(initialTranscript),
+        evaluationJson: unavailable ? null : undefined,
+        totalScore: unavailable ? null : undefined,
+        failureReason: unavailable ? null : undefined,
         voxSessionId: resolvedVoxSessionId != null ? String(resolvedVoxSessionId) : undefined,
         recordingStatus: nextRecordingStatus,
         ivrDetected: ivrDetected || undefined,
@@ -464,35 +485,63 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       extra: { callId, outcome, event },
     });
   }
-  await syncCallPlanCallFromSession(callId, { outcome, endedAt, transcript: initialTranscript });
+  await syncCallPlanCallFromSession(callId, {
+    outcome,
+    endedAt,
+    transcript: initialTranscript,
+    ...(unavailable ? { evaluation: null, totalScore: null, failureReason: null } : {}),
+  });
 
-  // 2) If transcript missing but we have vox_session_id (realtime_pure), fetch from Voximplant log and update
+  if (unavailable) {
+    console.info('[voice/session] unavailable call; transcript and evaluation skipped', {
+      callId,
+      event,
+      outcome,
+    });
+    return;
+  }
+
+  // 2) If transcript is missing/incomplete but we have vox_session_id (realtime_pure),
+  // retry the Voximplant log because it can take a few seconds to finalize.
   let transcript: TranscriptTurn[] = initialTranscript;
   let transcriptSource: 'webhook' | 'memory' | 'vox_log' | 'none' =
     payloadTranscript.length > 0 ? 'webhook' : (record?.transcript?.length ? 'memory' : 'none');
 
-  if (transcript.length === 0 && resolvedVoxSessionId != null) {
-    try {
-      await new Promise((r) => setTimeout(r, 2000));
-      const { transcript: logTranscript, error: voxLogError } = await getTranscriptFromVoxLog(resolvedVoxSessionId);
-      if (logTranscript.length > 0) {
-        transcript = logTranscript;
-        transcriptSource = 'vox_log';
-        await prisma.voiceCallSession.update({
-          where: { callId },
-          data: { transcriptJson: JSON.stringify(transcript) },
+  if (transcript.length < 2 && resolvedVoxSessionId != null) {
+    for (let attemptIndex = 0; attemptIndex < TRANSCRIPT_RETRY_DELAYS_MS.length; attemptIndex += 1) {
+      await waitForTranscriptRetry(TRANSCRIPT_RETRY_DELAYS_MS[attemptIndex]);
+      console.info('[voice/session] transcript fetch attempt', {
+        callId,
+        sessionId: resolvedVoxSessionId,
+        attempt: attemptIndex + 1,
+      });
+      try {
+        const { transcript: rawLogTranscript, error: voxLogError } = await getTranscriptFromVoxLog(resolvedVoxSessionId);
+        const logTranscript = sanitizeTranscriptTurns(rawLogTranscript);
+        if (logTranscript.length > transcript.length) {
+          transcript = logTranscript;
+          transcriptSource = 'vox_log';
+          await prisma.voiceCallSession.update({
+            where: { callId },
+            data: { transcriptJson: JSON.stringify(transcript) },
+          });
+        }
+        if (transcript.length >= 2) break;
+        console.warn('[voice/session] transcript fetch returned insufficient data', {
+          callId,
+          sessionId: resolvedVoxSessionId,
+          attempt: attemptIndex + 1,
+          turns: logTranscript.length,
+          error: voxLogError ?? null,
         });
-      } else if (voxLogError === 'log_unauthorized') {
-        await prisma.voiceCallSession.update({
-          where: { callId },
-          data: {
-            failureReason:
-              'Transcript unavailable: Vox log is protected (401). Set VOX_SERVICE_ACCOUNT_CREDENTIALS in .env to allow JWT log access.',
-          },
+      } catch (err) {
+        console.warn('[voice/session] getTranscriptFromVoxLog attempt failed', {
+          callId,
+          sessionId: resolvedVoxSessionId,
+          attempt: attemptIndex + 1,
+          error: err instanceof Error ? err.message : err,
         });
       }
-    } catch (err) {
-      console.warn('[voice/session] getTranscriptFromVoxLog failed:', err instanceof Error ? err.message : err);
     }
   }
 

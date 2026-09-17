@@ -37,7 +37,8 @@ const EMPTY_ANALYTICS: AnalyticsOverview = {
 
 type ComparableDealership = NonNullable<AnalyticsOverview['dealershipRows']>[number];
 
-function formatSignedHundredths(value: number): string {
+function formatSignedHundredths(value: number | null): string {
+  if (value === null) return '—';
   const rounded = Math.round(value * 100) / 100;
   return `${rounded > 0 ? '+' : ''}${rounded.toFixed(2)}`;
 }
@@ -55,7 +56,7 @@ function trendColorClass(value: number | null): 'sa-score-green' | 'sa-score-red
 }
 
 function BestWorstCards({ rows, onOpen }: { rows: ComparableDealership[]; onOpen?: (id: string) => void }) {
-  const active = rows.filter((row) => row.calls > 0);
+  const active = rows.filter((row) => row.scoredCalls > 0);
   const best = [...active].sort((a, b) => b.score - a.score).slice(0, 3);
   const worst = [...active].sort((a, b) => a.score - b.score).slice(0, 3);
   const renderTable = (items: ComparableDealership[]) => items.length === 0
@@ -329,16 +330,22 @@ export function Analytics({ summary: _summary, loading = false, onDrill }: Analy
 
   const isLoading = loading || holdingsLoading || analyticsLoading;
   const dealershipRows = data.dealershipRows ?? [];
+  const phoneNumberTypeRows = data.phoneNumberTypeComparison ?? [];
+  const scoredPhoneNumberTypeRows = phoneNumberTypeRows.filter((row) => row.scoredCalls > 0);
   const rankedRows = useMemo(
-    () => [...dealershipRows].sort((a, b) => b.score - a.score),
+    () => [...dealershipRows].sort((a, b) => {
+      if (a.scoredCalls === 0 && b.scoredCalls > 0) return 1;
+      if (b.scoredCalls === 0 && a.scoredCalls > 0) return -1;
+      return b.score - a.score;
+    }),
     [dealershipRows],
   );
   const ownAvg = useMemo(() => {
-    const own = dealershipRows.filter((row) => row.type === 'own' && row.calls > 0);
+    const own = dealershipRows.filter((row) => row.type === 'own' && row.scoredCalls > 0);
     return own.length ? Math.round(own.reduce((sum, row) => sum + row.score, 0) / own.length) : 0;
   }, [dealershipRows]);
   const franchiseAvg = useMemo(() => {
-    const franchise = dealershipRows.filter((row) => row.type === 'franchised' && row.calls > 0);
+    const franchise = dealershipRows.filter((row) => row.type === 'franchised' && row.scoredCalls > 0);
     return franchise.length ? Math.round(franchise.reduce((sum, row) => sum + row.score, 0) / franchise.length) : 0;
   }, [dealershipRows]);
   const typeComparisonInsight = ownAvg || franchiseAvg
@@ -410,15 +417,15 @@ export function Analytics({ summary: _summary, loading = false, onDrill }: Analy
           <table className="sa-table">
             <thead><tr><th>Источник</th><th>Владение</th><th className="sa-text-right">AI-рейтинг</th><th className="sa-text-right">Откл. от сети</th><th className="sa-text-right">Динамика 30d</th><th className="sa-text-right">Звонков</th><th className="sa-text-right">Недозвоны</th></tr></thead>
             <tbody>
-              {(data.phoneNumberTypeComparison ?? []).length === 0 ? <tr><td colSpan={7} className="sa-meta" style={{ padding: 24 }}>Недостаточно звонков с определённым типом номера</td></tr> : (data.phoneNumberTypeComparison ?? []).map((row, index, all) => (
+              {phoneNumberTypeRows.length === 0 ? <tr><td colSpan={7} className="sa-meta" style={{ padding: 24 }}>Недостаточно звонков с определённым типом номера</td></tr> : phoneNumberTypeRows.map((row, index) => (
                 <tr key={row.id}>
                   {(() => {
                     const trend = deltaDisplay(row.trend);
                     return (
                       <>
-                  <td><div className="sa-cell-name">{row.name}</div><div className="sa-cell-city">{index === 0 ? 'Лидер' : index === all.length - 1 && all.length > 1 ? 'Отстающий' : '—'}</div></td>
+                  <td><div className="sa-cell-name">{row.name}</div><div className="sa-cell-city">{row.scoredCalls === 0 ? 'Нет оценки' : index === 0 ? 'Лидер' : index === scoredPhoneNumberTypeRows.length - 1 && scoredPhoneNumberTypeRows.length > 1 ? 'Отстающий' : '—'}</div></td>
                   <td>{row.ownership === 'dealership' ? 'Для точек' : row.ownership === 'user' ? 'Для пользователей' : '—'}</td>
-                  <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
+                  <td className="sa-text-right">{row.scoredCalls > 0 ? <span className={ratingClass(row.score)}>{row.score}</span> : '—'}</td>
                   <td className="sa-text-right">{formatSignedHundredths(row.delta)}</td>
                   <td className="sa-text-right"><span className={trend.cls}>{trend.text}</span></td>
                   <td className="sa-text-right">{row.calls}</td>
@@ -464,8 +471,12 @@ export function Analytics({ summary: _summary, loading = false, onDrill }: Analy
                       <td style={{ fontWeight: 600 }}>{row.name}</td>
                       <td>{row.dealer}</td>
                       <td>{row.type === 'franchised' ? 'Франшиза' : 'Собственная'}</td>
-                      <td className="sa-text-right"><span className={ratingClass(row.score)}>{row.score}</span></td>
-                      <td className="sa-text-right">{formatSignedHundredths(row.score - data.avgScore)}</td>
+                      <td className="sa-text-right">{row.scoredCalls > 0 ? <span className={ratingClass(row.score)}>{row.score}</span> : '—'}</td>
+                      <td className="sa-text-right">{formatSignedHundredths(
+                        row.scoredCalls > 0 && (data.meta?.scoredCalls ?? 0) > 0
+                          ? row.score - data.avgScore
+                          : null,
+                      )}</td>
                       <td className="sa-text-right"><span className={trend.cls}>{trend.text}</span></td>
                       <td className="sa-text-right">{row.calls}</td>
                       <td className="sa-text-right">{row.noAnswers ?? 0}</td>

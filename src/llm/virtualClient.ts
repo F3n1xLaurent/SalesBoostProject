@@ -193,6 +193,12 @@ Set end_conversation=true when:
 === FIRST MESSAGE ===
 If manager_last_message is empty, start as a buyer who saw the ad and wants to check availability.`;
 
+const ACTIVE_SCENARIO_SYSTEM_OVERRIDE = `=== ACTIVE SCENARIO OVERRIDE (HIGHEST PRIORITY) ===
+The request contains a PHONE SCENARIO PROMPT. It defines the customer's actual role, topic, needs, questions and desired next step.
+Follow that scenario exactly. Treat every car-sales assumption in the generic prompt as legacy fallback guidance only.
+Do not mention buying a car, an advertisement, availability, credit, trade-in, a test drive or competitors unless the active scenario explicitly requires it.
+Remain a realistic customer speaking Russian, never switch to the employee/manager role, and keep the strict JSON output format.`;
+
 // ── Helpers ──
 
 function carSummary(car: Car): string {
@@ -238,20 +244,20 @@ function topicSummary(state: DialogState): string {
 
 // ── Parse ──
 
-function extractMessageFromRaw(raw: string): string {
+function extractMessageFromRaw(raw: string, fallbackMessage = FALLBACK_CLIENT_MESSAGE): string {
   const cleaned = raw.trim();
   const jsonMatch = cleaned.match(/"client_message"\s*:\s*"((?:[^"\\]|\\.)*)"/);
   if (jsonMatch?.[1]) {
-    return jsonMatch[1].replace(/\\"/g, '"').trim() || FALLBACK_CLIENT_MESSAGE;
+    return jsonMatch[1].replace(/\\"/g, '"').trim() || fallbackMessage;
   }
   const firstLine = cleaned.split('\n')[0]?.trim() || '';
   if (firstLine.length > 5 && firstLine.length < 500 && !firstLine.startsWith('{')) {
     return firstLine;
   }
-  return FALLBACK_CLIENT_MESSAGE;
+  return fallbackMessage;
 }
 
-function parseVirtualClientOutput(raw: string, currentState: DialogState): VirtualClientOutput {
+function parseVirtualClientOutput(raw: string, currentState: DialogState, fallbackMessage = FALLBACK_CLIENT_MESSAGE): VirtualClientOutput {
   let cleaned = raw.replace(/^```json\s*|\s*```$/g, '').trim();
   let parsed: any;
 
@@ -267,7 +273,7 @@ function parseVirtualClientOutput(raw: string, currentState: DialogState): Virtu
         parsed = JSON.parse(cleaned);
       } catch {
         console.warn('[virtualClient] JSON.parse failed, fallback. Raw:', cleaned.slice(0, 300));
-        return buildFallbackOutput(extractMessageFromRaw(cleaned), currentState);
+        return buildFallbackOutput(extractMessageFromRaw(cleaned, fallbackMessage), currentState);
       }
     }
   }
@@ -275,7 +281,7 @@ function parseVirtualClientOutput(raw: string, currentState: DialogState): Virtu
   const o = parsed && typeof parsed === 'object' ? parsed : {};
   let msg = typeof o.client_message === 'string' ? o.client_message.trim() : '';
   if (!msg) {
-    msg = extractMessageFromRaw(cleaned);
+    msg = extractMessageFromRaw(cleaned, fallbackMessage);
   }
 
   const endConv = o.end_conversation === true;
@@ -327,7 +333,7 @@ function parseVirtualClientOutput(raw: string, currentState: DialogState): Virtu
   }
 
   return {
-    client_message: msg || FALLBACK_CLIENT_MESSAGE,
+    client_message: msg || fallbackMessage,
     end_conversation: endConv,
     reason,
     diagnostics,
@@ -373,7 +379,11 @@ export async function getVirtualClientReply(input: VirtualClientInput): Promise<
   const objType: ObjectionType = input.state.objection_triggered ?? 'price';
 
   const profileDesc = profileToPromptDescription(profile);
+  const hasActiveScenario = Boolean(input.scenarioPrompt?.trim());
   const systemPrompt = SYSTEM_PROMPT.replace('{PROFILE_DESCRIPTION}', profileDesc);
+  const fallbackMessage = hasActiveScenario
+    ? 'Подскажите, пожалуйста, можете подробнее ответить по моему вопросу?'
+    : FALLBACK_CLIENT_MESSAGE;
 
   // Build behavior alert for the CustomerAgent
   const beh = input.behaviorSignal;
@@ -396,11 +406,18 @@ export async function getVirtualClientReply(input: VirtualClientInput): Promise<
     ].filter(Boolean).join('\n');
   }
 
-  const userContent = `=== CAR DATA ===
+  const defaultSalesContext = hasActiveScenario ? '' : `=== CAR DATA ===
 ${carStr}
 
 === DEALERSHIP ===
 ${input.dealership}
+`;
+  const activeScenarioContext = hasActiveScenario
+    ? `=== PHONE SCENARIO PROMPT (PRIORITY) ===\n${input.scenarioPrompt}\n`
+    : '';
+
+  const userContent = `${activeScenarioContext}
+${defaultSalesContext}
 
 === SESSION STATE ===
 phase: ${input.state.phase}
@@ -412,8 +429,6 @@ max_client_turns: ${maxClientTurns}
 
 === BEHAVIOR ALERT (react to this!) ===
 ${behaviorAlert}
-
-${input.scenarioPrompt ? `=== PHONE SCENARIO PROMPT (PRIORITY) ===\n${input.scenarioPrompt}\n` : ''}
 
 === TOPIC STATUS ===
 ${topicSummary(input.state)}
@@ -430,7 +445,9 @@ INSTRUCTIONS:
 - If PHONE SCENARIO PROMPT is provided, follow it as the primary dialog script. Generic phase rules only fill gaps.
 - In this JSON environment, never include end_call(...) in client_message; use end_conversation=true and reason instead.
 - Progress through phases naturally. Current phase: ${input.state.phase}.
-- In phase money_and_objections, trigger objection type: ${objType}.
+${hasActiveScenario
+    ? '- Ignore automotive topic and objection fields when they are not part of the active scenario.'
+    : `- In phase money_and_objections, trigger objection type: ${objType}.`}
 - REACT TO BEHAVIOR ALERT: if toxic/low_effort/evasion, respond firmly per the rules.
 - Report diagnostics accurately.
 - Return ONLY valid JSON.`;
@@ -442,6 +459,7 @@ INSTRUCTIONS:
       model: config.openaiChatModel,
       messages: [
         { role: 'system', content: systemPrompt },
+        ...(hasActiveScenario ? [{ role: 'system' as const, content: ACTIVE_SCENARIO_SYSTEM_OVERRIDE }] : []),
         { role: 'user', content: userContent },
       ],
       response_format: { type: 'json_object' },
@@ -478,8 +496,8 @@ INSTRUCTIONS:
 
   if (!content?.trim()) {
     console.warn('[virtualClient] empty response, fallback');
-    return buildFallbackOutput(FALLBACK_CLIENT_MESSAGE, input.state);
+    return buildFallbackOutput(fallbackMessage, input.state);
   }
 
-  return parseVirtualClientOutput(content, input.state);
+  return parseVirtualClientOutput(content, input.state, fallbackMessage);
 }

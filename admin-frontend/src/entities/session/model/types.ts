@@ -13,6 +13,7 @@ export type AdminTab =
   | 'analytics'
   | 'callSettings'
   | 'internalAnalytics'
+  | 'dictionaries'
   | 'settings'
   | 'dealer-companies'
   | 'dealer-calls'

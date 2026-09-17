@@ -141,7 +141,7 @@ export async function generateCallAnalyticsBundle(input: {
     replyImprovements: null,
     unifiedCallReport: normalizeUnifiedCallReport(
       parsed,
-      { totalScore, transcript: input.transcript, source: 'call' },
+      { totalScore, transcript: input.transcript, source: 'call', evaluation: input.evaluation },
       catalog,
     ),
   };

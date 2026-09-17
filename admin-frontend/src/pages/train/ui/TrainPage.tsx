@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router';
 import {
-  abandonTrainerSession,
   fetchTrainerAuditDetail,
   fetchTrainerDialog,
   fetchTrainerHistory,
   fetchTrainerProfile,
   fetchTrainerScenarios,
+  finishTrainerSession,
   sendTrainerVoiceMessage,
   startTrainerSession,
   waitForTrainerReport,
@@ -24,6 +24,7 @@ import { SingleSelectFilterPicker } from '../../../shared/ui/filter-picker/Singl
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { SlideOver } from '../../../shared/ui/slide-over';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+import { countTodayCompletedTrainings } from '../model/trainerDailyProgress';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import './train-page.css';
@@ -99,26 +100,6 @@ const RECORD_LEVEL_BARS = 16;
 const DAILY_FREE_GOAL = 3;
 const HISTORY_PAGE_SIZE = 15;
 
-function isLocalToday(iso: string | null | undefined): boolean {
-  if (!iso) return false;
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return false;
-  const now = new Date();
-  return (
-    date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate()
-  );
-}
-
-function countTodayFreeCompleted(history: TrainerSessionSummary[]): number {
-  return history.filter((item) => (
-    item.type === 'free'
-    && item.status === 'completed'
-    && isLocalToday(item.completedAt || item.startedAt)
-  )).length;
-}
-
 function TrainerDoneCircle(props: { size: 'plan' | 'quest' }) {
   const iconSize = props.size === 'plan' ? 28 : 22;
   return (
@@ -165,7 +146,7 @@ function TrainerHub(props: {
   const [filterType, setFilterType] = useState<'all' | 'free' | 'plan'>('all');
   const [filterGrade, setFilterGrade] = useState<HistoryGradeFilter>('all');
   const [historyPage, setHistoryPage] = useState(1);
-  const todayFreeCompleted = useMemo(() => countTodayFreeCompleted(props.history), [props.history]);
+  const todayCompleted = useMemo(() => countTodayCompletedTrainings(props.history), [props.history]);
 
   const scenarioOptions = useMemo(() => {
     const names = [...new Set(props.history.map((item) => item.scenarioName || 'Тренировка'))]
@@ -247,12 +228,12 @@ function TrainerHub(props: {
         <div className="train-hub-plan-hero-card">
           <div className="train-hub-plan-hero-label">План дня</div>
           <TrainerProgressDots
-            completed={todayFreeCompleted}
+            completed={todayCompleted}
             total={DAILY_FREE_GOAL}
             size="lg"
           />
           <p className="train-hub-plan-hero-hint">
-            {Math.min(todayFreeCompleted, DAILY_FREE_GOAL)} из {DAILY_FREE_GOAL} выполнено
+            {Math.min(todayCompleted, DAILY_FREE_GOAL)} из {DAILY_FREE_GOAL} выполнено
           </p>
           <button
             type="button"
@@ -334,7 +315,7 @@ function TrainerHub(props: {
                           }
                         } : undefined}
                       >
-                        <td>{item.displayName || item.title || item.scenarioName || 'Тренировка'}</td>
+                        <td>{item.scenarioName || item.displayName || 'Тренировка'}</td>
                         <td className="sa-meta">{formatDateShort(item.completedAt || item.startedAt)}</td>
                         <td>{item.type === 'plan' ? 'План' : 'Свободная'}</td>
                         <td>
@@ -395,7 +376,7 @@ function TrainerHub(props: {
 }
 
 function trainerSessionLabel(session: Pick<TrainerSessionSummary, 'displayName' | 'title' | 'scenarioName'>): string {
-  return session.displayName || session.title || session.scenarioName || 'Тренировка';
+  return session.scenarioName || session.displayName || 'Тренировка';
 }
 
 function voiceBubbleWidthPx(durationSec?: number | null): number {
@@ -1319,8 +1300,8 @@ function SessionPreview(props: {
         nested
         hideClose
         onClose={() => { if (!leaving) setLeaveConfirmOpen(false); }}
-        title="Прервать тренировку?"
-        subtitle="Результаты и отчёт не сохранятся."
+        title="Завершить тренировку?"
+        subtitle="Сформируем результат и отчёт по уже записанным репликам."
         width="narrow"
         footer={(
           <div className="sa-unsaved-actions">
@@ -1338,7 +1319,7 @@ function SessionPreview(props: {
               onClick={() => { void confirmLeave(); }}
               disabled={leaving}
             >
-              {leaving ? 'Выходим…' : 'Выйти'}
+              {leaving ? 'Завершаем…' : 'Завершить'}
             </button>
           </div>
         )}
@@ -1410,6 +1391,32 @@ export function TrainPage(props: { embedded?: boolean }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    const sessionId = selectedSessionId;
+    const finishOnExit = () => {
+      void finishTrainerSession(sessionId, { keepalive: true }).catch(() => {
+        // The page may already be unloading. The backend endpoint is idempotent,
+        // so another exit signal or a repeated request can safely retry it.
+      });
+    };
+    const handlePageHide = () => finishOnExit();
+    const handleHistoryNavigation = () => finishOnExit();
+
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('popstate', handleHistoryNavigation);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('popstate', handleHistoryNavigation);
+      // Defer the route check so React StrictMode's development remount does not
+      // finish a session that is still open on the same URL.
+      window.setTimeout(() => {
+        const currentSessionId = parseAdminPath(window.location.pathname).trainerSessionId ?? null;
+        if (currentSessionId !== sessionId) finishOnExit();
+      }, 0);
+    };
+  }, [selectedSessionId]);
 
   useEffect(() => {
     if (selectedSessionId) return;
@@ -1485,16 +1492,21 @@ export function TrainPage(props: { embedded?: boolean }) {
 
   async function startFree() {
     if (!firstScenarioId || startInFlightRef.current) return;
+    const requestedScenarioId = firstScenarioId;
     startInFlightRef.current = true;
     setBusy(true);
     setError(null);
     try {
       const data = await startTrainerSession({
         sessionType: 'free',
-        scenarioId: firstScenarioId,
+        scenarioId: requestedScenarioId,
         difficulty,
         clientType,
       });
+      if (data.session.scenarioId !== requestedScenarioId) {
+        await finishTrainerSession(data.session.id).catch(() => undefined);
+        throw new Error('Сервер попытался запустить другой сценарий. Тренировка отменена, попробуйте ещё раз.');
+      }
       setActiveSession(data.session);
       setActiveInitialMessage(null);
       setActiveTranscript([]);
@@ -1563,9 +1575,10 @@ export function TrainPage(props: { embedded?: boolean }) {
               onClose={async () => {
                 if (activeSession?.status === 'in_progress') {
                   try {
-                    await abandonTrainerSession(activeSession.id);
+                    const result = await finishTrainerSession(activeSession.id);
+                    setActiveSession(result.session);
                   } catch {
-                    // ignore — user is leaving anyway
+                    // The route cleanup retries with a keepalive request.
                   }
                 }
                 await load({ silent: true });

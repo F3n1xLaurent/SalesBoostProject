@@ -2,6 +2,7 @@ import { config } from '../config';
 import { prisma } from '../db';
 import { openai } from '../lib/openaiClient';
 import type { TranscriptTurn } from './callHistory';
+import { buildEvaluationHighlights } from '../logic/evaluationHighlights';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
   getCallReportProblemCatalog,
@@ -56,6 +57,7 @@ type EvaluationInput = {
   recommendations?: unknown[];
   call_summary?: unknown;
   reply_improvements?: unknown;
+  plan_criteria?: unknown;
 };
 
 export const UNIFIED_REPORT_CATEGORIES: UnifiedReportCategory[] = [
@@ -138,9 +140,18 @@ function meaningfulText(value: unknown): string {
 }
 
 function arrayOfText(value: unknown, limit: number): string[] {
-  return Array.isArray(value)
-    ? value.map(asText).filter(Boolean).slice(0, limit)
-    : [];
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    const raw = item && typeof item === 'object' ? item as Record<string, unknown> : null;
+    const text = meaningfulText(raw ? raw.text || raw.title || raw.comment : item);
+    const key = text.toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
+    if (text && !result.some((existing) => existing.toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ') === key)) {
+      result.push(text);
+    }
+    if (result.length >= limit) break;
+  }
+  return result;
 }
 
 function normalizeCategory(value: unknown, fallback: UnifiedReportCategory): UnifiedReportCategory {
@@ -167,6 +178,7 @@ export function normalizeUnifiedCallReport(
     transcript: TranscriptTurn[];
     source?: UnifiedCallReport['source'];
     dimensionScores?: Record<string, number>;
+    evaluation?: EvaluationInput | Record<string, unknown> | null;
   },
   catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
 ): UnifiedCallReport | null {
@@ -261,15 +273,24 @@ export function normalizeUnifiedCallReport(
     .filter((item) => item.text)
     .slice(0, 8);
 
+  const reportSource = source.source === 'trainer' || fallback.source === 'trainer' ? 'trainer' : 'call';
+  const aiStrengths = arrayOfText(source.strengths, 8);
+  const aiWeaknesses = arrayOfText(source.weaknesses, 8);
+  const evaluatedHighlights = buildEvaluationHighlights(
+    fallback.evaluation,
+    8,
+    fallback.transcript,
+  );
+
   return {
     version: 'call-report-v1',
-    source: source.source === 'trainer' || fallback.source === 'trainer' ? 'trainer' : 'call',
+    source: reportSource,
     summary: asText(source.summary) || 'Резюме разговора не сформировано.',
     totalScore,
     verdict: unifiedVerdict(totalScore),
     categories,
-    strengths: arrayOfText(source.strengths, 8),
-    weaknesses: arrayOfText(source.weaknesses, 8),
+    strengths: evaluatedHighlights.hasClassification ? evaluatedHighlights.strengths : aiStrengths,
+    weaknesses: evaluatedHighlights.hasClassification ? evaluatedHighlights.weaknesses : aiWeaknesses,
     keyFindings: findings,
     dialog,
     recommendations,
@@ -307,6 +328,9 @@ export async function generateUnifiedCallReport(input: {
     '- Общий балл 0-100 и verdict: Хорошо для 76-100, Средне для 50-75, Плохо для 0-49.',
     '- categories должны быть ровно 5 и только: Контакт, Диагностика, Продукт, Закрытие, Коммуникация.',
     '- Для каждой категории score — реалистичное число 0-100 на основе dimension_scores / checklist / issues. Не ставь 0 всем категориям, если общий балл > 0.',
+    '- strengths включают только пункты checklist со статусом YES и условия plan_criteria, выполненные минимум на 80%.',
+    '- weaknesses включают только пункты checklist со статусом PARTIAL/NO и условия plan_criteria, выполненные менее чем на 80%.',
+    '- Пункты checklist со статусом NA не включай ни в strengths, ни в weaknesses. Один пункт не может одновременно быть сильной и слабой стороной.',
     '- keyFindings: problemTitle выбирай ТОЛЬКО из справочника ниже. Нельзя придумывать новые названия проблем.',
     '- keyFindings.quote должна быть реальной цитатой из диалога. Если точной цитаты нет, возьми самый близкий фрагмент из стенограммы.',
     '- dialog должен содержать ВСЕ реплики исходного диалога в том же порядке.',
@@ -375,7 +399,7 @@ export async function generateUnifiedCallReport(input: {
     : undefined;
   const normalized = normalizeUnifiedCallReport(
     parsed,
-    { totalScore, transcript: input.transcript, source, dimensionScores },
+    { totalScore, transcript: input.transcript, source, dimensionScores, evaluation: input.evaluation },
     catalog,
   );
   if (!normalized) throw new Error('Invalid unified report JSON');

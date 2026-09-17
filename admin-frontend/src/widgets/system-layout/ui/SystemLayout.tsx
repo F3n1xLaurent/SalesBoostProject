@@ -66,6 +66,7 @@ const AuditBatchDetail = lazyNamed(() => import('../../../pages/audit-batch-deta
 const Analytics = lazyNamed(() => import('../../../pages/analytics/ui/AnalyticsPage'), 'Analytics');
 const CallSettingsPage = lazyNamed(() => import('../../../pages/call-settings/ui/CallSettingsPage'), 'CallSettingsPage');
 const InternalAnalyticsPage = lazyNamed(() => import('../../../pages/internal-analytics/ui/InternalAnalyticsPage'), 'InternalAnalyticsPage');
+const DictionariesPage = lazyNamed(() => import('../../../pages/dictionaries/ui/DictionariesPage'), 'DictionariesPage');
 const Settings = lazyNamed(() => import('../../../pages/settings/ui/SettingsPage'), 'Settings');
 const DealerContent = lazyNamed(() => import('../../../pages/dealer/ui/DealerContent'), 'DealerContent');
 const TrainPage = lazyNamed(() => import('../../../pages/train/ui/TrainPage'), 'TrainPage');
@@ -591,6 +592,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
               )}
               {activeTab === 'internalAnalytics' && role === 'super' && (
                 <InternalAnalyticsPage />
+              )}
+              {activeTab === 'dictionaries' && role === 'super' && (
+                <DictionariesPage />
               )}
             </>
           )}

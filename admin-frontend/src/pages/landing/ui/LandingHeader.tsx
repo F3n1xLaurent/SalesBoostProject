@@ -72,7 +72,7 @@ export function LandingHeader({ home = '' }: { home?: string }) {
             <a href={hashHref(home, '#faq')} onMouseEnter={closeProduct}>FAQ</a>
           </nav>
           <div className="sl-header-cta">
-            <FlowButton text="Получить демо" href={hashHref(home, '#demo')} />
+            <FlowButton text="Записаться на демо" href={hashHref(home, '#demo')} />
           </div>
           <button
             type="button"

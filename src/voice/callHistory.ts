@@ -3,6 +3,8 @@
  * Persists only for process lifetime.
  */
 
+import { sanitizeTranscriptText } from './transcriptSanitizer';
+
 export interface TranscriptTurn {
   role: 'manager' | 'client';
   text: string;
@@ -61,10 +63,11 @@ export function setVoxSessionId(callId: string, voxSessionId: number): void {
 }
 
 export function appendTranscript(callId: string, role: 'manager' | 'client', text: string): void {
-  if (!text || !text.trim()) return;
+  const sanitizedText = sanitizeTranscriptText(text);
+  if (!sanitizedText) return;
   const record = byCallId.get(callId);
   if (!record) return;
-  record.transcript.push({ role, text: text.trim() });
+  record.transcript.push({ role, text: sanitizedText });
 }
 
 export function getCallHistory(limit: number = 50): VoiceCallRecord[] {
