@@ -5,6 +5,7 @@ import { prisma } from '../db';
 import { normalizeCitySearchName, seedCityDictionaryIfNeeded } from '../data/cityDictionary';
 import { MOCK_DEALERSHIP_SEEDS, MOCK_HOLDING_SEEDS } from '../super-admin/mockOrganization';
 import { APP_ROLES } from './permissions';
+import { validateOrganizationName } from './organizationNameValidation';
 
 type ScopedAccount = NonNullable<Express.Request['authAccount']>;
 type HoldingType = 'own' | 'franchised';
@@ -16,6 +17,35 @@ const DEFAULT_WORKING_HOURS_FROM = '09:00';
 const DEFAULT_WORKING_HOURS_TO = '21:00';
 const CITY_SEARCH_DEFAULT_LIMIT = 100;
 const CITY_SEARCH_MAX_LIMIT = 100;
+const HOLDING_ALREADY_EXISTS_ERROR = 'Данная компания уже существует в системе';
+const DEALERSHIP_ALREADY_EXISTS_ERROR = 'Точка с таким названием уже существует в данной компании.';
+
+function normalizeHoldingNameForComparison(name: string): string {
+  return name
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase('ru-RU');
+}
+
+function normalizeDealershipNameForComparison(name: string): string {
+  return name
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase('ru-RU');
+}
+
+function normalizeCityName(name: string): string {
+  return name
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeCityNameForComparison(name: string): string {
+  return normalizeCityName(name).toLocaleLowerCase('ru-RU');
+}
 
 function isPlatformSuperadmin(account: ScopedAccount): boolean {
   return account.memberships.some((membership) => membership.role === APP_ROLES.platformSuperadmin);
@@ -599,8 +629,23 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
     res.status(400).json({ error: 'Название компании обязательно.' });
     return;
   }
+  const nameValidationError = validateOrganizationName(name, 'holding');
+  if (nameValidationError) {
+    res.status(400).json({ error: nameValidationError });
+    return;
+  }
 
   try {
+    const normalizedName = normalizeHoldingNameForComparison(name);
+    const existingHoldingNames = await prisma.holding.findMany({
+      select: { name: true },
+    });
+
+    if (existingHoldingNames.some((holding) => normalizeHoldingNameForComparison(holding.name) === normalizedName)) {
+      res.status(409).json({ error: HOLDING_ALREADY_EXISTS_ERROR });
+      return;
+    }
+
     const created = await prisma.$transaction(async (tx) => {
       const resolvedCode = code ?? await generateUniqueHoldingCode(tx, name);
       const holding = await tx.holding.create({
@@ -662,6 +707,13 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
   if (body.name != null && !name) {
     res.status(400).json({ error: 'Название компании не может быть пустым.' });
     return;
+  }
+  if (name) {
+    const nameValidationError = validateOrganizationName(name, 'holding');
+    if (nameValidationError) {
+      res.status(400).json({ error: nameValidationError });
+      return;
+    }
   }
 
   try {
@@ -776,6 +828,7 @@ export async function handleListCities(req: Request, res: Response): Promise<voi
                 WHEN "searchName" LIKE ? THEN 1
                 ELSE 2
               END,
+              "searchName" ASC,
               "name" ASC
             LIMIT ? OFFSET ?
           `,
@@ -785,12 +838,16 @@ export async function handleListCities(req: Request, res: Response): Promise<voi
           limit + 1,
           offset,
         )
-      : await prisma.cityDictionary.findMany({
-          orderBy: { name: 'asc' },
-          skip: offset,
-          take: limit + 1,
-          select: { name: true },
-        });
+      : await prisma.$queryRawUnsafe<Array<{ name: string }>>(
+          `
+            SELECT "name"
+            FROM "city_dictionary"
+            ORDER BY "searchName" ASC, "name" ASC
+            LIMIT ? OFFSET ?
+          `,
+          limit + 1,
+          offset,
+        );
     const hasMore = items.length > limit;
 
     res.json({
@@ -802,6 +859,134 @@ export async function handleListCities(req: Request, res: Response): Promise<voi
   } catch (error) {
     console.error('List cities error:', error);
     res.status(500).json({ error: 'Не удалось загрузить города.' });
+  }
+}
+
+export async function handleCreateCity(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  try {
+    assertSuperadmin(account);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
+    return;
+  }
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const name = normalizeCityName(typeof body.name === 'string' ? body.name : '');
+  if (!name) {
+    res.status(400).json({ error: 'Название города обязательно.' });
+    return;
+  }
+  if (name.length > 160) {
+    res.status(400).json({ error: 'Название города не должно превышать 160 символов.' });
+    return;
+  }
+
+  try {
+    await seedCityDictionaryIfNeeded(prisma);
+    const searchName = normalizeCitySearchName(name);
+    const candidates = await prisma.cityDictionary.findMany({
+      where: { searchName },
+      select: { name: true },
+    });
+    const comparisonName = normalizeCityNameForComparison(name);
+    if (candidates.some((candidate) => normalizeCityNameForComparison(candidate.name) === comparisonName)) {
+      res.status(409).json({ error: 'Данный город уже существует в системе.' });
+      return;
+    }
+
+    const created = await prisma.cityDictionary.create({
+      data: { name, searchName },
+      select: { name: true },
+    });
+    res.status(201).json({ item: created.name });
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === 'P2002') {
+      res.status(409).json({ error: 'Данный город уже существует в системе.' });
+      return;
+    }
+    console.error('Create city error:', error);
+    res.status(500).json({ error: 'Не удалось добавить город.' });
+  }
+}
+
+export async function handleUpdateCity(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+
+  try {
+    assertSuperadmin(account);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
+    return;
+  }
+
+  const body = (req.body || {}) as Record<string, unknown>;
+  const currentName = typeof body.currentName === 'string' ? body.currentName : '';
+  const name = normalizeCityName(typeof body.name === 'string' ? body.name : '');
+  if (!currentName) {
+    res.status(400).json({ error: 'Исходное название города обязательно.' });
+    return;
+  }
+  if (!name) {
+    res.status(400).json({ error: 'Название города обязательно.' });
+    return;
+  }
+  if (name.length > 160) {
+    res.status(400).json({ error: 'Название города не должно превышать 160 символов.' });
+    return;
+  }
+
+  try {
+    const existing = await prisma.cityDictionary.findUnique({
+      where: { name: currentName },
+      select: { id: true, name: true },
+    });
+    if (!existing) {
+      res.status(404).json({ error: 'Город не найден.' });
+      return;
+    }
+
+    const searchName = normalizeCitySearchName(name);
+    const candidates = await prisma.cityDictionary.findMany({
+      where: { searchName },
+      select: { id: true, name: true },
+    });
+    const comparisonName = normalizeCityNameForComparison(name);
+    if (candidates.some((candidate) => candidate.id !== existing.id && normalizeCityNameForComparison(candidate.name) === comparisonName)) {
+      res.status(409).json({ error: 'Данный город уже существует в системе.' });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.cityDictionary.update({
+        where: { id: existing.id },
+        data: { name, searchName },
+        select: { name: true },
+      });
+      const dealerships = await tx.dealership.updateMany({
+        where: { city: existing.name },
+        data: { city: name },
+      });
+      return { name: updated.name, updatedDealerships: dealerships.count };
+    });
+
+    res.json({ item: result.name, updatedDealerships: result.updatedDealerships });
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === 'P2002') {
+      res.status(409).json({ error: 'Данный город уже существует в системе.' });
+      return;
+    }
+    console.error('Update city error:', error);
+    res.status(500).json({ error: 'Не удалось переименовать город.' });
   }
 }
 
@@ -1035,6 +1220,11 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
     res.status(400).json({ error: 'Название точки обязательно.' });
     return;
   }
+  const nameValidationError = validateOrganizationName(name, 'dealership');
+  if (nameValidationError) {
+    res.status(400).json({ error: nameValidationError });
+    return;
+  }
   if (!holdingId) {
     res.status(400).json({ error: 'Перед созданием точки выберите компанию.' });
     return;
@@ -1053,6 +1243,16 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   }
 
   try {
+    const normalizedName = normalizeDealershipNameForComparison(name);
+    const existingDealershipNames = await prisma.dealership.findMany({
+      where: { holdingId },
+      select: { name: true },
+    });
+    if (existingDealershipNames.some((dealership) => normalizeDealershipNameForComparison(dealership.name) === normalizedName)) {
+      res.status(409).json({ error: DEALERSHIP_ALREADY_EXISTS_ERROR });
+      return;
+    }
+
     const activeDirections = await prisma.dealershipDirection.findMany({
       where: { holdingId, isActive: true },
       select: { id: true, code: true },
@@ -1140,6 +1340,13 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
     res.status(400).json({ error: 'Название точки не может быть пустым.' });
     return;
   }
+  if (name) {
+    const nameValidationError = validateOrganizationName(name, 'dealership');
+    if (nameValidationError) {
+      res.status(400).json({ error: nameValidationError });
+      return;
+    }
+  }
   if ((body.workingHoursFrom != null && !workingHoursFrom) || (body.workingHoursTo != null && !workingHoursTo)) {
     res.status(400).json({ error: 'Укажите время работы точки в формате 00:00.' });
     return;
@@ -1148,7 +1355,7 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
   try {
     const existing = await prisma.dealership.findUnique({
       where: { id: dealershipId },
-      select: { id: true, holdingId: true, workingHoursFrom: true, workingHoursTo: true },
+      select: { id: true, holdingId: true, name: true, workingHoursFrom: true, workingHoursTo: true },
     });
     if (!existing) {
       res.status(404).json({ error: 'Точка не найдена.' });
@@ -1157,6 +1364,20 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
     if (!canManageDealershipForAccount(account, { dealershipId: existing.id, holdingId: existing.holdingId })) {
       res.status(403).json({ error: 'Нет доступа к этой точке.' });
       return;
+    }
+
+    const nextHoldingId = holdingId !== undefined ? holdingId : existing.holdingId;
+    const nextName = name ?? existing.name;
+    if (nextHoldingId) {
+      const normalizedName = normalizeDealershipNameForComparison(nextName);
+      const existingDealershipNames = await prisma.dealership.findMany({
+        where: { holdingId: nextHoldingId, id: { not: existing.id } },
+        select: { name: true },
+      });
+      if (existingDealershipNames.some((dealership) => normalizeDealershipNameForComparison(dealership.name) === normalizedName)) {
+        res.status(409).json({ error: DEALERSHIP_ALREADY_EXISTS_ERROR });
+        return;
+      }
     }
 
     const nextWorkingHoursFrom = workingHoursFrom !== undefined ? workingHoursFrom : existing.workingHoursFrom;

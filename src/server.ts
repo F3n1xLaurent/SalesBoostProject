@@ -16,6 +16,7 @@ import { handleVoiceStreamMessage } from './voice/voiceStream';
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
+import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
 import {
@@ -87,6 +88,10 @@ import {
 import type { TtsVoice } from './state/userPreferences';
 import { transcribeVoice, transcribeVoiceFast } from './voice/stt';
 import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifier';
+import {
+  buildTrainerInitialClientMessage,
+  importedItemMatchesTrainerTags,
+} from './trainer/trainerScenario';
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
 import {
@@ -110,6 +115,7 @@ import {
   handleCreateDealership,
   handleCreateDealershipDirection,
   handleCreateDealershipPhoneNumber,
+  handleCreateCity,
   handleCreateHolding,
   handleCreatePhoneNumberType,
   handleDeleteDealership,
@@ -127,6 +133,7 @@ import {
   handleUpdateDealership,
   handleUpdateDealershipDirection,
   handleUpdateDealershipPhoneNumber,
+  handleUpdateCity,
   handleUpdateHolding,
   handleUpdatePhoneNumberType,
 } from './auth/organizationManagement';
@@ -165,6 +172,8 @@ import {
   recordProductEvent,
   type ProductRole,
 } from './analytics/productAnalytics';
+import { splitDashboardEmployeeRatings } from './analytics/dashboardEmployeeRatings';
+import { sanitizeTranscriptTurns } from './voice/transcriptSanitizer';
 import * as Sentry from '@sentry/node';
 import { createLandingLeadHandler } from './integrations/landingLeadRoute';
 
@@ -277,6 +286,11 @@ function buildVoiceCallSessionScopeWhere(
     return holdingIds.length > 0 ? { dealership: { holdingId: { in: holdingIds } } } : { id: -1 };
   }
 
+  if (activeRole === 'staff') {
+    const isManager = account.memberships.some((membership) => membership.role === 'manager');
+    return isManager ? { manager: { accountId: account.id } } : { id: -1 };
+  }
+
   if (account.memberships.some((membership) => membership.role === 'platform_superadmin')) return {};
 
   const holdingIds = [
@@ -297,6 +311,9 @@ function buildVoiceCallSessionScopeWhere(
   }
   if (dealershipIds.length > 0) {
     or.push({ dealershipId: { in: dealershipIds } });
+  }
+  if (account.memberships.some((membership) => membership.role === 'manager')) {
+    or.push({ manager: { accountId: account.id } });
   }
 
   return or.length > 0 ? { OR: or } : { id: -1 };
@@ -343,6 +360,11 @@ function buildTrainerSessionScopeWhere(
       : noAccess;
   }
 
+  if (activeRole === 'staff') {
+    const isManager = account.memberships.some((membership) => membership.role === 'manager');
+    return isManager ? { employee: { accountId: account.id } } : noAccess;
+  }
+
   if (account.memberships.some((membership) => membership.role === 'platform_superadmin')) return {};
 
   const holdingIds = [
@@ -367,6 +389,9 @@ function buildTrainerSessionScopeWhere(
   }
   if (dealershipIds.length > 0) {
     or.push({ branchId: { in: dealershipIds } }, { employee: { dealershipId: { in: dealershipIds } } });
+  }
+  if (account.memberships.some((membership) => membership.role === 'manager')) {
+    or.push({ employee: { accountId: account.id } });
   }
 
   return or.length > 0 ? { OR: or } : noAccess;
@@ -619,11 +644,11 @@ async function pickTrainerImportedSampleForScript(script: Prisma.CallScriptGetPa
   const pool = tags.length
     ? candidates.filter((item) => {
       const itemTags = safeJsonParseLocal<string[]>(item.tagsJson, []);
-      return tags.every((tag) => itemTags.includes(tag));
+      return importedItemMatchesTrainerTags(itemTags, tags);
     })
     : candidates;
-  const source = pool.length ? pool : candidates;
-  return source[Math.floor(Math.random() * source.length)] ?? null;
+  if (pool.length === 0) return null;
+  return pool[Math.floor(Math.random() * pool.length)] ?? null;
 }
 
 function buildTrainerCaseContext(params: {
@@ -2010,19 +2035,28 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
   const scenarioCriteria = Array.isArray(scenario.successCriteria)
     ? scenario.successCriteria as Array<{ expectedAnswer?: string; score?: number }>
     : [];
+  const scenarioName = String(scenario.name || '').trim();
+  const importedTitle = String(importedItem.title || '').trim();
+  const importedDescription = String(importedItem.description || '').trim();
   const scenarioCore = buildCustomerScenarioPromptCore({
+    mode: 'generic',
     age: ageLabel,
     temperament: String(clientProfile.temperament || ''),
     patience: String(clientProfile.patience || ''),
     replyLength: String(clientProfile.replyLength || ''),
     communicationStyle: String(clientProfile.communicationStyle || ''),
     context: String(scenario.context || ''),
-    itemTitle: String(importedItem.title || scenario.name || ''),
-    itemDescription: String(importedItem.description || company.branchName || company.name || ''),
+    itemTitle: scenarioName,
+    itemDescription: [
+      importedTitle ? `Связанные данные из выборки: ${importedTitle}.` : '',
+      importedDescription,
+      String(company.branchName || company.name || ''),
+    ].filter(Boolean).join(' '),
     voiceName,
     questions: scenarioQuestions,
     objections: scenarioObjections,
     criteria: scenarioCriteria,
+    includeFirstMessage: false,
   });
   const previous = transcript.length
     ? transcript.map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`).join('\n')
@@ -2031,9 +2065,15 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
   const companyDescription = String(company.description || company.branchDescription || '').trim() || 'Описание не указано.';
 
   return [
+    '=== ВЫБРАННЫЙ СЦЕНАРИЙ (НАИВЫСШИЙ ПРИОРИТЕТ) ===',
+    `Название: ${scenarioName || 'не указано'}.`,
+    `Контекст: ${String(scenario.context || '').trim() || 'не указан'}.`,
+    'Название сценария — внутренняя служебная метка. Никогда не произноси его вслух, не цитируй и не сообщай сотруднику. Сразу говори как обычный клиент по сути обращения.',
+    'Веди разговор только в рамках этого сценария. Данные из импортированной выборки являются вспомогательными и не могут заменить тему сценария или переключить разговор на покупку автомобиля, если выбран другой сценарий.',
+    '',
     '=== РОЛЬ (КРИТИЧНО) ===',
-    'Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ сотруднику компании по конкретному предложению/данным из выборки. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы, отрабатывает возражения и доводит до следующего шага.',
-    'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы по предложению, условиям, деталям и следующему шагу.',
+    'Ты — КЛИЕНТ, который САМ ЗВОНИТ сотруднику компании по теме выбранного сценария. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь, насколько хорошо он общается, даёт информацию, отвечает на вопросы и доводит разговор до следующего шага.',
+    'Ты НИКОГДА не сотрудник и не менеджер. Запрещено говорить фразы менеджера: «Слушаю вас», «Для чего вам нужно?», «Какой у вас бюджет?», «Понял, вам важно…». Ты — клиент: отвечаешь на вопросы о себе и задаёшь вопросы строго по выбранному сценарию.',
     'Формируй ответы не как письменный текст, а как текст, предназначенный для озвучивания. Если слово может быть неправильно произнесено TTS - напиши его в фонетически более удобной форме для сохранения естественного звучания (например, ударение пишется большой буквой, скажем "перспектИва"). Задавая вопросы формулируй их по разному, чтобы звучало как реальный диалог, а не как анкета.',
     '',
     '=== ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК (КРИТИЧНО) ===',
@@ -2058,7 +2098,7 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     '- продолжать разговор;',
     '- задавать вопросы;',
     '- повторять первую реплику;',
-    '- пытаться пройти сценарий продажи;',
+    '- пытаться пройти обычный сценарий разговора;',
     '- вызывать end_call с любой другой причиной.',
     '',
     'Исключение: если обнаружен голосовой помощник или автоответчик, не выполняй обычный сценарий завершения разговора. Вместо этого используй только сценарий "ГОЛОСОВОЙ ПОМОЩНИК / АВТООТВЕТЧИК".',
@@ -2081,31 +2121,6 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     '',
     `=== ИСТОРИЯ ДИАЛОГА ===\n${previous}`,
   ].filter(Boolean).join('\n\n');
-}
-
-function trainerInitialClientMessage(caseContext: Record<string, unknown>): string {
-  const scenario = caseContext.scenario && typeof caseContext.scenario === 'object'
-    ? caseContext.scenario as Record<string, unknown>
-    : {};
-  const company = caseContext.company && typeof caseContext.company === 'object'
-    ? caseContext.company as Record<string, unknown>
-    : {};
-  const clientProfile = caseContext.clientProfile && typeof caseContext.clientProfile === 'object'
-    ? caseContext.clientProfile as Record<string, unknown>
-    : {};
-  const importedItem = caseContext.importedItem && typeof caseContext.importedItem === 'object'
-    ? caseContext.importedItem as Record<string, unknown>
-    : {};
-  const itemTitle = String(importedItem.title || '').trim();
-  const scenarioName = String(scenario.name || '').trim();
-  const city = String(company.city || clientProfile.city || '').trim();
-  if (itemTitle) {
-    return `Да, здравствуйте. Я звоню по поводу ${itemTitle}. Скажите, он еще в наличии и предложение актуально?`;
-  }
-  if (scenarioName) {
-    return `Да, здравствуйте. Я звоню по поводу ${scenarioName.toLowerCase()}${city ? ` в городе ${city}` : ''}. Скажите, предложение еще актуально?`;
-  }
-  return `Здравствуйте. Я выбираю автомобиль${city ? ` в городе ${city}` : ''} и хочу уточнить несколько моментов.`;
 }
 
 type TrainerRuntimeContext = {
@@ -2476,13 +2491,13 @@ async function initializeTrainerDialog(params: {
     });
     audioBase64 = ensured.audioBase64;
     audioMimeType = ensured.audioMimeType;
-    const transcript: TrainerTranscriptTurn[] = [{
+    const transcript: TrainerTranscriptTurn[] = sanitizeTranscriptTurns([{
       role: 'client',
       text: input.clientMessage,
       createdAt: new Date().toISOString(),
       audioBase64,
       audioMimeType,
-    }];
+    }]);
     const quickTitle = fallbackTrainerDialogTitle(transcript);
     const caseContextWithTitle = quickTitle
       ? { ...input.caseContext, dialogTitle: quickTitle }
@@ -2530,7 +2545,7 @@ async function initializeTrainerDialog(params: {
 
   if (USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
     try {
-      const firstMessage = trainerInitialClientMessage(caseContext);
+      const firstMessage = buildTrainerInitialClientMessage(caseContext);
       const agentOut = await runElevenLabsAgentTurn({
         sessionId: session.id,
         prompt: trainerScenarioPrompt(caseContext, existingTranscript, params.ttsVoice),
@@ -2567,7 +2582,7 @@ async function initializeTrainerDialog(params: {
   };
   const nextRuntime = { ...runtime, state: nextState };
   return finalizeFirstTurn({
-    clientMessage: trainerInitialClientMessage(caseContext),
+    clientMessage: buildTrainerInitialClientMessage(caseContext),
     audioBase64: null,
     caseContext: withTrainerRuntime(caseContext, nextRuntime),
   });
@@ -2762,7 +2777,7 @@ async function runTrainerSessionTurn(params: {
   });
   clientAudioBase64 = clientAudio.audioBase64;
   clientAudioMimeType = clientAudio.audioMimeType;
-  const transcript: TrainerTranscriptTurn[] = [
+  const transcript: TrainerTranscriptTurn[] = sanitizeTranscriptTurns([
     ...transcriptBefore,
     {
       role: 'manager',
@@ -2779,7 +2794,7 @@ async function runTrainerSessionTurn(params: {
       audioBase64: clientAudioBase64,
       audioMimeType: clientAudioMimeType,
     },
-  ];
+  ]);
   const nextRuntime = { ...runtime, state: nextState, behaviorSignals, elevenLabsConversationId: nextElevenLabsConversationId };
   const updateData: Parameters<typeof prisma.trainerSession.update>[0]['data'] = {
     transcriptJson: jsonStringify(transcript),
@@ -2788,7 +2803,6 @@ async function runTrainerSessionTurn(params: {
     durationSec: transcript.reduce((sum, turn) => sum + (turn.durationSec ?? 0), 0),
   };
   if (endConversation && result) {
-    const forcedFail = result.verdict === 'fail' && Boolean(result.reasonCode);
     updateData.status = result.verdict === 'fail' && result.reasonCode ? 'failed' : 'completed';
     updateData.completedAt = new Date();
     updateData.failureReason = result.reasonCode;
@@ -2799,19 +2813,8 @@ async function runTrainerSessionTurn(params: {
     include: { scenario: { select: { id: true, name: true } } },
   });
   if (endConversation && result) {
-    const forcedFail = result.verdict === 'fail' && Boolean(result.reasonCode);
     closeElevenLabsAgentConversation(updated.id);
-    void finalizeTrainerSessionEvaluation({
-      sessionId: updated.id,
-      caseContext,
-      runtime: nextRuntime,
-      transcript,
-      forcedFail,
-      failureReason: result.reasonCode,
-      multiplier: session.multiplier,
-    }).catch((error) => {
-      console.error('trainer finalize evaluation error:', error);
-    });
+    scheduleTrainerSessionFinalization(updated.id);
   }
 
   return {
@@ -2879,7 +2882,7 @@ async function runTrainerSessionAudioTurn(params: {
     : null;
   const behaviorSignals = behavior ? [...runtime.behaviorSignals, behavior] : runtime.behaviorSignals;
   const nowIso = new Date().toISOString();
-  const transcript: TrainerTranscriptTurn[] = [
+  const transcript: TrainerTranscriptTurn[] = sanitizeTranscriptTurns([
     ...transcriptBefore,
     {
       role: 'manager',
@@ -2896,7 +2899,7 @@ async function runTrainerSessionAudioTurn(params: {
       audioBase64: clientAudio.audioBase64,
       audioMimeType: clientAudio.audioMimeType,
     },
-  ];
+  ]);
   const state = { ...runtime.state };
   const maxClientTurns = (state.strictnessState?.max_client_turns as number) ?? 12;
   const endConversation = agentOut.endedByAgent || shouldForceConversationEnd(clientMessage) || history.filter((turn) => turn.role === 'manager').length >= maxClientTurns;
@@ -2928,17 +2931,7 @@ async function runTrainerSessionAudioTurn(params: {
   });
   if (endConversation && result) {
     closeElevenLabsAgentConversation(updated.id);
-    void finalizeTrainerSessionEvaluation({
-      sessionId: updated.id,
-      caseContext,
-      runtime: nextRuntime,
-      transcript,
-      forcedFail: false,
-      failureReason: null,
-      multiplier: session.multiplier,
-    }).catch((error) => {
-      console.error('trainer finalize evaluation error:', error);
-    });
+    scheduleTrainerSessionFinalization(updated.id);
   }
 
   return {
@@ -2976,28 +2969,6 @@ async function updateTrainerStreakOnCompletion(employeeId: string, sessionStarte
       longestStreak: Math.max(current?.longestStreak ?? 0, nextCurrent),
       lastActiveDate: today,
     },
-  });
-}
-
-async function resetTrainerPlanItemForSession(employeeId: string, sessionId: string): Promise<void> {
-  const session = await prisma.trainerSession.findUnique({ where: { id: sessionId } });
-  if (!session || session.sessionType !== 'plan' || session.employeeId !== employeeId) return;
-
-  const planDate = trainerPlanDate(session.startedAt);
-  const plan = await prisma.trainerDailyPlan.findUnique({
-    where: { employeeId_planDate: { employeeId, planDate } },
-  });
-  if (!plan) return;
-
-  const items = safeArray<Record<string, unknown>>(plan.sessionsJson);
-  const nextItems = items.map((item) => (
-    item.trainerSessionId === sessionId && String(item.status) === 'in_progress'
-      ? { ...item, status: 'not_started', trainerSessionId: null }
-      : item
-  ));
-  await prisma.trainerDailyPlan.update({
-    where: { id: plan.id },
-    data: { sessionsJson: jsonStringify(nextItems) },
   });
 }
 
@@ -3081,6 +3052,58 @@ async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<voi
       console.warn('[analytics] failed to record training completion:', error instanceof Error ? error.message : error);
     });
   }
+}
+
+const trainerSessionFinalizationTasks = new Map<string, Promise<void>>();
+
+function scheduleTrainerSessionFinalization(sessionId: string): void {
+  if (trainerSessionFinalizationTasks.has(sessionId)) return;
+
+  const task = (async () => {
+    const initializationTask = trainerDialogInitializationTasks.get(sessionId);
+    if (initializationTask) {
+      await withTimeout(initializationTask, 60_000, 'Trainer dialog initialization before finalization')
+        .catch((error) => {
+          console.warn('[trainer] finalization continued without dialog initialization:', error instanceof Error ? error.message : error);
+        });
+    }
+
+    const turnDeadline = Date.now() + 60_000;
+    while (trainerTurnTasks.has(sessionId) && Date.now() < turnDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    const session = await prisma.trainerSession.findUnique({ where: { id: sessionId } });
+    if (!session || !['completed', 'failed'].includes(session.status)) return;
+    if (session.evaluationJson?.trim() && session.evaluationJson !== '{}' && session.evaluationJson !== 'null') {
+      await finalizeTrainerSessionSideEffects(session.id);
+      return;
+    }
+
+    const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+    const transcript = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+    const forcedFail = session.status === 'failed' || Boolean(session.failureReason);
+    await finalizeTrainerSessionEvaluation({
+      sessionId: session.id,
+      caseContext,
+      runtime: getTrainerRuntime(caseContext),
+      transcript,
+      forcedFail,
+      failureReason: session.failureReason,
+      multiplier: session.multiplier,
+    });
+  })();
+
+  trainerSessionFinalizationTasks.set(sessionId, task);
+  void task
+    .catch((error) => {
+      console.error(`[trainer] session finalization failed session=${sessionId}:`, error instanceof Error ? error.message : error);
+    })
+    .finally(() => {
+      if (trainerSessionFinalizationTasks.get(sessionId) === task) {
+        trainerSessionFinalizationTasks.delete(sessionId);
+      }
+    });
 }
 
 // Resolve absolute path to public/index.html (works for tsx and compiled)
@@ -3192,6 +3215,7 @@ function buildVoiceCallDetailResponse(session: {
       dimensionScores: dimensionScores && typeof dimensionScores === 'object'
         ? dimensionScores as Record<string, number>
         : undefined,
+      evaluation,
     },
   );
   const qualityTag = score != null ? (score >= 76 ? 'Хорошо' : score >= 50 ? 'Средне' : 'Плохо') : null;
@@ -3692,7 +3716,10 @@ function trainerSessionSummary(session: {
     scenarioId: session.scenarioId,
     scenarioName,
     title,
-    displayName: title || scenarioName,
+    // The scenario name is the canonical label shown both in history and in
+    // the report. `title` is an AI-generated dialog summary and must not
+    // replace the selected scenario in the UI.
+    displayName: scenarioName,
     score: session.score,
     finalPoints: session.finalPoints,
     failureReason: session.failureReason,
@@ -3880,6 +3907,14 @@ app.get('/api/trainer/history', async (req, res) => {
       orderBy: { startedAt: 'desc' },
       take: limit,
     });
+    for (const session of sessions) {
+      if (
+        (session.status === 'completed' || session.status === 'failed')
+        && (!session.evaluationJson?.trim() || session.evaluationJson === '{}' || session.evaluationJson === 'null')
+      ) {
+        scheduleTrainerSessionFinalization(session.id);
+      }
+    }
     const catalog = await getCallReportProblemCatalog(prisma);
     res.json({ items: sessions.map(trainerSessionSummary) });
   } catch (error) {
@@ -3916,20 +3951,19 @@ app.post('/api/trainer/session/start', async (req, res) => {
       scenarioId = typeof planItem.scenarioId === 'string' ? planItem.scenarioId : scenarioId;
     }
 
-    const scenario = scenarioId
-      ? await prisma.callScript.findFirst({
-        where: {
-          id: scenarioId,
-          holdingId: manager.dealership.holdingId ?? '',
-        },
-      })
-      : await prisma.callScript.findFirst({
-        where: { holdingId: manager.dealership.holdingId ?? '' },
-        orderBy: { updatedAt: 'desc' },
-      });
+    if (!scenarioId) {
+      return res.status(400).json({ error: 'Выберите сценарий тренировки.' });
+    }
+
+    const scenario = await prisma.callScript.findFirst({
+      where: {
+        id: scenarioId,
+        holdingId: manager.dealership.holdingId ?? '',
+      },
+    });
 
     if (!scenario) {
-      return res.status(400).json({ error: 'Для компании не найден доступный сценарий.' });
+      return res.status(400).json({ error: 'Выбранный сценарий не найден или недоступен для вашей компании.' });
     }
 
     const importedItem = await pickTrainerImportedSampleForScript(scenario);
@@ -4183,6 +4217,12 @@ app.get('/api/trainer/session/:id/report', async (req, res) => {
       include: { scenario: { select: { id: true, name: true } } },
     });
     if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+    if (
+      (session.status === 'completed' || session.status === 'failed')
+      && (!session.evaluationJson?.trim() || session.evaluationJson === '{}' || session.evaluationJson === 'null')
+    ) {
+      scheduleTrainerSessionFinalization(session.id);
+    }
 
     res.json({
       item: {
@@ -4229,32 +4269,47 @@ app.get('/api/trainer/session/:id/audit-detail', async (req, res) => {
   }
 });
 
-app.post('/api/trainer/session/:id/abandon', async (req, res) => {
+async function handleFinishTrainerSession(req: express.Request, res: express.Response) {
   try {
     const manager = await resolveTrainerManager(req);
     if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
+    const sessionId = String(req.params.id);
     const session = await prisma.trainerSession.findFirst({
-      where: { id: String(req.params.id), employeeId: manager.id },
-      include: { scenario: { select: { id: true, name: true } } },
+      where: { id: sessionId, employeeId: manager.id },
+      select: { id: true },
     });
     if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
-    if (session.status !== 'in_progress') {
-      return res.json({ session: trainerSessionSummary(session) });
-    }
 
-    const updated = await prisma.trainerSession.update({
+    const completed = await prisma.trainerSession.updateMany({
+      where: { id: session.id, employeeId: manager.id, status: 'in_progress' },
+      data: { status: 'completed', completedAt: new Date() },
+    });
+    const updated = await prisma.trainerSession.findUnique({
       where: { id: session.id },
-      data: { status: 'cancelled', completedAt: new Date() },
       include: { scenario: { select: { id: true, name: true } } },
     });
-    await resetTrainerPlanItemForSession(manager.id, session.id);
-    closeElevenLabsAgentConversation(session.id);
+    if (!updated) return res.status(404).json({ error: 'Тренировка не найдена.' });
+
+    if (completed.count > 0) {
+      console.log(`[trainer] session completed on page exit session=${session.id}`);
+      closeElevenLabsAgentConversation(session.id);
+    }
+    if (
+      (updated.status === 'completed' || updated.status === 'failed')
+      && (!updated.evaluationJson?.trim() || updated.evaluationJson === '{}' || updated.evaluationJson === 'null')
+    ) {
+      scheduleTrainerSessionFinalization(updated.id);
+    }
     res.json({ session: trainerSessionSummary(updated) });
   } catch (error) {
-    console.error('trainer/session/abandon error:', error);
-    res.status(500).json({ error: 'Не удалось прервать тренировку.' });
+    console.error('trainer/session/finish error:', error);
+    res.status(500).json({ error: 'Не удалось завершить тренировку.' });
   }
-});
+}
+
+app.post('/api/trainer/session/:id/finish', handleFinishTrainerSession);
+// Backward compatibility for an already loaded frontend bundle.
+app.post('/api/trainer/session/:id/abandon', handleFinishTrainerSession);
 
 app.post('/api/imports/analyze-source', (req, res) => {
   handleAnalyzeImportSource(req, res).catch((error) => {
@@ -4543,6 +4598,20 @@ app.get('/api/admin/cities', (req, res) => {
   handleListCities(req, res).catch((error) => {
     console.error('List cities route error:', error);
     res.status(500).json({ error: 'Не удалось загрузить города.' });
+  });
+});
+
+app.post('/api/admin/cities', (req, res) => {
+  handleCreateCity(req, res).catch((error) => {
+    console.error('Create city route error:', error);
+    res.status(500).json({ error: 'Не удалось добавить город.' });
+  });
+});
+
+app.patch('/api/admin/cities', (req, res) => {
+  handleUpdateCity(req, res).catch((error) => {
+    console.error('Update city route error:', error);
+    res.status(500).json({ error: 'Не удалось переименовать город.' });
   });
 });
 
@@ -5683,7 +5752,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
 
     const employeeRatings = new Map<string, { id: string; name: string; auditsCount: number; scores: number[] }>();
     const employeeKeyByProfileId = new Map<string, string>();
-    for (const dealership of dealerships) {
+    for (const dealership of filteredDealerships) {
       for (const manager of dealership.managerProfiles) {
         if (manager.status !== 'active') continue;
         const key = manager.accountId ? `account:${manager.accountId}` : `profile:${manager.id}`;
@@ -5701,7 +5770,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       employee.auditsCount += 1;
       if (typeof score === 'number' && Number.isFinite(score)) employee.scores.push(score);
     };
-    for (const session of sessions) addEmployeeAudit(session.managerId, scoreFromAnalyticsSession(session));
+    for (const session of filteredSessions) addEmployeeAudit(session.managerId, scoreFromAnalyticsSession(session));
     const employeeRatingRows = [...employeeRatings.values()]
       .filter((employee) => employee.scores.length > 0)
       .map((employee) => ({
@@ -5709,8 +5778,8 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         name: employee.name,
         auditsCount: employee.auditsCount,
         aiRating: round1(employee.scores.reduce((sum, score) => sum + score, 0) / employee.scores.length),
-      }))
-      .filter((employee) => employee.aiRating > 0);
+      }));
+    const { topEmployees, lowEmployees } = splitDashboardEmployeeRatings(employeeRatingRows);
 
     const checklistCounts = new Map<string, { count: number; total: number }>();
     for (const session of filteredSessions) {
@@ -5807,12 +5876,8 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         .filter((row) => row.totalAudits > 0)
         .sort((a, b) => a.avgAiScore - b.avgAiScore)
         .slice(0, 5),
-      topEmployees: [...employeeRatingRows]
-        .sort((a, b) => b.aiRating - a.aiRating || b.auditsCount - a.auditsCount || a.name.localeCompare(b.name, 'ru'))
-        .slice(0, 10),
-      lowEmployees: [...employeeRatingRows]
-        .sort((a, b) => a.aiRating - b.aiRating || b.auditsCount - a.auditsCount || a.name.localeCompare(b.name, 'ru'))
-        .slice(0, 10),
+      topEmployees,
+      lowEmployees,
       topWeakness: topWeakness ? { weakness: topWeakness.weakness, count: topWeakness.count } : null,
       riskLabel: lowDealerships[0]?.name ?? topWeakness?.weakness ?? null,
     });
@@ -6575,17 +6640,6 @@ app.post('/api/admin/call-batches/:id/cancel', async (req, res) => {
   }
 });
 
-function normalizeVoxWebhookEvent(rawEvent: unknown): string {
-  const event = String(rawEvent ?? '').trim().toLowerCase();
-  if (!event) return '';
-  if (event === 'hangup' || event === 'disconnect' || event === 'completed' || event === 'ended') {
-    return 'disconnected';
-  }
-  if (event === 'answer') return 'connected';
-  if (event === 'ringing') return 'progress';
-  return event;
-}
-
 async function recordVoxIvrEvent(event: string, payload: Record<string, unknown>): Promise<void> {
   const callId = String(payload.call_id ?? '').trim();
   if (!callId) {
@@ -6996,12 +7050,13 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
       : [];
     const scriptsById = new Map(scripts.map((script) => [script.id, script]));
 
-    const scored = sessions.filter((session) => typeof session.totalScore === 'number');
-    const totalCalls = sessions.length;
-    const avgScore = scored.length ? round1(scored.reduce((sum, session) => sum + (session.totalScore ?? 0), 0) / scored.length) : 0;
-    const failedCount = scored.filter((session) => (session.totalScore ?? 0) < 50).length;
-    const noAnswerCount = sessions.filter((session) => session.outcome === 'no_answer').length;
-    const answeredCount = sessions.filter((session) => session.outcome !== 'no_answer' && session.outcome !== 'busy' && session.outcome !== 'failed').length;
+    const currentSessions = sessions.filter((session) => session.startedAt >= currentStart);
+    const scored = currentSessions.filter((session) => typeof scoreFromAnalyticsSession(session) === 'number');
+    const totalCalls = currentSessions.length;
+    const avgScore = scored.length ? scoreFromSessions(scored) : 0;
+    const failedCount = scored.filter((session) => (scoreFromAnalyticsSession(session) ?? 0) < 50).length;
+    const noAnswerCount = currentSessions.filter((session) => session.outcome === 'no_answer').length;
+    const answeredCount = currentSessions.filter((session) => session.outcome !== 'no_answer' && session.outcome !== 'busy' && session.outcome !== 'failed').length;
 
     const checklistCounts = new Map<string, { count: number; total: number }>();
     const dimensionSums = new Map<string, { sum: number; count: number }>();
@@ -7009,7 +7064,7 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
     let communicationMedium = 0;
     let communicationWeak = 0;
 
-    for (const session of sessions) {
+    for (const session of currentSessions) {
       const checklist = extractChecklistFromSession(session);
       for (const item of checklist) {
         const key = item.comment || item.code || 'Неизвестный блок';
@@ -7040,14 +7095,16 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
       .slice(0, 10)
       .map(([error, value]) => ({ error, count: value.count, percent: percent(value.count, value.total) }));
 
-    const scriptCompliance = dimensionBreakdownFromSessions(sessions).map((item) => ({
+    const scriptCompliance = dimensionBreakdownFromSessions(currentSessions).map((item) => ({
       block: item.block,
       rate: item.score,
     }));
 
     const dealershipStats = dealerships.map((dealership) => {
-      const dealershipSessions = sessions.filter((session) => session.dealershipId === dealership.id);
-      const score = scoreFromSessions(dealershipSessions);
+      const historicalDealershipSessions = sessions.filter((session) => session.dealershipId === dealership.id);
+      const dealershipSessions = historicalDealershipSessions.filter((session) => session.startedAt >= currentStart);
+      const scoredSessions = dealershipSessions.filter((session) => typeof scoreFromAnalyticsSession(session) === 'number');
+      const score = scoredSessions.length ? scoreFromSessions(scoredSessions) : 0;
       return {
         id: dealership.id,
         name: dealership.name,
@@ -7055,14 +7112,15 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         type: dealership.type,
         city: dealership.city,
         score,
-        delta: deltaFromSessions(dealershipSessions) ?? 0,
+        scoredCalls: scoredSessions.length,
+        delta: deltaFromSessions(historicalDealershipSessions),
         calls: dealershipSessions.length,
         noAnswers: dealershipSessions.filter((session) => session.outcome === 'no_answer').length,
       };
     });
     const holdingRows = holdings.map((holding) => {
       const dealershipIds = new Set(holding.dealerships.map((dealership) => dealership.id));
-      const holdingSessions = sessions.filter((session) => session.dealershipId && dealershipIds.has(session.dealershipId));
+      const holdingSessions = currentSessions.filter((session) => session.dealershipId && dealershipIds.has(session.dealershipId));
       return {
         id: holding.id,
         name: holding.name,
@@ -7079,19 +7137,19 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
     });
 
     const comparedDealerships = dealershipStats
-      .filter((item) => item.calls > 0)
+      .filter((item) => item.scoredCalls > 0)
       .sort((a, b) => a.score - b.score);
     const worstDealership = comparedDealerships[0] ?? null;
     const bestDealership = comparedDealerships[comparedDealerships.length - 1] ?? null;
-    const lowDealerships = dealershipStats.filter((item) => item.calls > 0 && item.score < 50).length;
+    const lowDealerships = dealershipStats.filter((item) => item.scoredCalls > 0 && item.score < 50).length;
     const topProblem = topErrors[0] ?? null;
     const worstDimension = scriptCompliance[0] ?? null;
-    const ownSessions = sessions.filter((session) => !isFranchisedSession(session));
-    const franchiseSessions = sessions.filter((session) => isFranchisedSession(session));
+    const ownSessions = currentSessions.filter((session) => !isFranchisedSession(session));
+    const franchiseSessions = currentSessions.filter((session) => isFranchisedSession(session));
     const leaderIds = new Set(comparedDealerships.slice(-3).map((item) => item.id));
     const laggardIds = new Set(comparedDealerships.slice(0, 3).map((item) => item.id));
-    const leaderSessions = sessions.filter((session) => session.dealershipId && leaderIds.has(session.dealershipId));
-    const laggardSessions = sessions.filter((session) => session.dealershipId && laggardIds.has(session.dealershipId));
+    const leaderSessions = currentSessions.filter((session) => session.dealershipId && leaderIds.has(session.dealershipId));
+    const laggardSessions = currentSessions.filter((session) => session.dealershipId && laggardIds.has(session.dealershipId));
     const sourceByPhone = new Map(phoneNumbers.map((phone) => [normalizeCallPhone(phone.phone), phone]));
     const sourceGroups = new Map<string, { id: string; name: string; ownership: string; sessions: typeof sessions }>();
     for (const session of sessions) {
@@ -7120,12 +7178,17 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
         name: group.name,
         ownership: group.ownership,
         calls: currentSessions.length,
+        scoredCalls: current.length,
         noAnswers: currentSessions.filter((session) => session.outcome === 'no_answer').length,
         score,
-        delta: round1(score - currentNetworkScore),
-        trend: previousScore === null ? null : round1(score - previousScore),
+        delta: current.length && currentScored.length ? round1(score - currentNetworkScore) : null,
+        trend: current.length && previousScore !== null ? round1(score - previousScore) : null,
       };
-    }).filter((item) => item.calls > 0).sort((a, b) => b.score - a.score || b.calls - a.calls);
+    }).filter((item) => item.calls > 0).sort((a, b) => (
+      Number(b.scoredCalls > 0) - Number(a.scoredCalls > 0)
+      || b.score - a.score
+      || b.calls - a.calls
+    ));
 
     const errorsInsight: AnalyticsInsight = topProblem
       ? {
@@ -7279,7 +7342,9 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
       meta: {
         linkedCalls: totalCalls,
         scoredCalls: scored.length,
-        ignoredUnlinkedCalls: await prisma.voiceCallSession.count({ where: { dealershipId: null } }),
+        ignoredUnlinkedCalls: await prisma.voiceCallSession.count({
+          where: { dealershipId: null, startedAt: { gte: currentStart } },
+        }),
       },
     });
   } catch (err) {
@@ -7580,7 +7645,7 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
             score,
             verdict: session.status === 'failed' || !!session.failureReason
               ? 'Провал'
-              : session.status === 'abandoned'
+              : session.status === 'abandoned' || session.status === 'cancelled'
                 ? 'Прервано'
                 : session.status === 'completed'
                   ? 'Пройдено'
@@ -8527,7 +8592,13 @@ async function buildTrainerAuditDetailItem(session: {
     .filter((line) => line.text);
   let unifiedReport = normalizeUnifiedCallReport(
     evaluation?.unified_call_report,
-    { totalScore: score, transcript: reportTranscript, source: 'trainer', dimensionScores: dimensions },
+    {
+      totalScore: score,
+      transcript: reportTranscript,
+      source: 'trainer',
+      dimensionScores: dimensions,
+      evaluation,
+    },
     catalog,
   );
   if (!unifiedReport && reportTranscript.length >= 2) {
@@ -8763,7 +8834,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
     const catalog = await getCallReportProblemCatalog(prisma);
     let unifiedReport = normalizeUnifiedCallReport(
       evaluation?.unified_call_report,
-      { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions },
+      { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions, evaluation },
       catalog,
     );
     if (!unifiedReport && type === 'call' && evaluation && reportTranscript.length >= 2) {

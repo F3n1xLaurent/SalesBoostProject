@@ -282,7 +282,7 @@ export interface AnalyticsOverview {
   timeSeries?: TimeSeriesPoint[];
   weeklyTypeTrend?: { week: string; ownScore: number; franchiseScore: number; ownCount: number; franchiseCount: number }[];
   typeCategoryComparison?: { category: string; ownScore: number; franchiseScore: number }[];
-  phoneNumberTypeComparison?: { id: string; name: string; ownership: string; calls: number; noAnswers: number; score: number; delta: number; trend: number | null }[];
+  phoneNumberTypeComparison?: { id: string; name: string; ownership: string; calls: number; scoredCalls: number; noAnswers: number; score: number; delta: number | null; trend: number | null }[];
   typeTopErrors?: {
     own: { issue: string; count: number; percent: number }[];
     franchise: { issue: string; count: number; percent: number }[];
@@ -293,7 +293,7 @@ export interface AnalyticsOverview {
     leadersQuestions: { question: string; count: number; percent: number }[];
     laggardsQuestions: { question: string; count: number; percent: number }[];
   };
-  dealershipComparison: { id?: string; name: string; score: number; delta: number }[];
+  dealershipComparison: { id?: string; name: string; score: number; delta: number | null }[];
   dealershipTimeSeries?: { id: string; name: string; points: TimeSeriesPoint[] }[];
   dealershipRows?: Array<{
     id: string;
@@ -302,7 +302,8 @@ export interface AnalyticsOverview {
     type: DealershipType;
     city: string | null;
     score: number;
-    delta: number;
+    scoredCalls: number;
+    delta: number | null;
     calls: number;
     noAnswers: number;
   }>;
@@ -1332,6 +1333,28 @@ export async function fetchCities(params?: { search?: string; limit?: number; of
     offset: typeof data.offset === 'number' ? data.offset : params?.offset ?? 0,
     limit: typeof data.limit === 'number' ? data.limit : params?.limit ?? 100,
   };
+}
+
+export async function createCity(name: string): Promise<string> {
+  const res = await apiFetch(`${API_BASE}/api/admin/cities`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось добавить город.');
+  return String(data.item || name);
+}
+
+export async function updateCity(currentName: string, name: string): Promise<string> {
+  const res = await apiFetch(`${API_BASE}/api/admin/cities`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ currentName, name }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось переименовать город.');
+  return String(data.item || name);
 }
 
 export async function createHolding(payload: {

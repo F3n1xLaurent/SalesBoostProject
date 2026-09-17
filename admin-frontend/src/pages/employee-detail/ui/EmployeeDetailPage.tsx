@@ -623,6 +623,9 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
     setAnalyticsDrawerDetail(null);
     try {
       const detail = await fetchAuditDetail(auditId);
+      if (!detail) {
+        throw new Error('Аналитика звонка не найдена или недоступна.');
+      }
       setAnalyticsDrawerDetail(detail);
     } catch (error) {
       setAnalyticsDrawerError(error instanceof Error ? error.message : 'Не удалось загрузить аналитику');

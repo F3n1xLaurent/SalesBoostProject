@@ -17,6 +17,10 @@ import { BrutalModal } from '../brutal-modal';
 import { BrutalSegmented } from '../brutal-segmented';
 import { UnsavedChangesModal } from '../unsaved-changes-modal';
 import { DeleteConfirmModal } from '../delete-confirm-modal';
+import {
+  ORGANIZATION_NAME_MAX_LENGTH,
+  validateOrganizationName,
+} from '../../lib/organization-name-validation';
 
 function normalizeTimeValue(value: string): string {
   const match = /^(\d{1,2}):(\d{1,2})$/.exec((value || '').trim());
@@ -313,13 +317,16 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
     [form, initialForm],
   );
 
-  const nameInvalid = attempted && !form.name.trim();
+  const nameValidationError = form.name.trim()
+    ? validateOrganizationName(form.name, 'dealership')
+    : 'Название точки обязательно.';
+  const nameInvalid = Boolean(nameValidationError) && (attempted || Boolean(form.name.trim()));
   const cityInvalid = attempted && !form.city.trim();
   const holdingInvalid = attempted && mode === 'create' && !lockedHoldingId && !form.holdingId;
   const directionsInvalid = attempted && mode === 'create' && form.directions.length === 0;
   const hoursInvalid = attempted && form.workingHoursTo < form.workingHoursFrom;
   const requiredFieldsFilled = Boolean(
-    form.name.trim()
+    !nameValidationError
     && form.city.trim()
     && form.workingHoursFrom
     && form.workingHoursTo
@@ -398,6 +405,12 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
     if (!form.name.trim()) {
       setAttempted(true);
       showToast({ type: 'error', title: 'Не удалось сохранить точку', description: 'Название точки обязательно.' });
+      return false;
+    }
+    const currentNameValidationError = validateOrganizationName(form.name, 'dealership');
+    if (currentNameValidationError) {
+      setAttempted(true);
+      showToast({ type: 'error', title: 'Не удалось сохранить точку', description: currentNameValidationError });
       return false;
     }
     if (!form.city.trim()) {
@@ -563,9 +576,20 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
             <input
               className={`sa-input${nameInvalid ? ' sa-field-invalid' : ''}`}
               value={form.name}
+              maxLength={ORGANIZATION_NAME_MAX_LENGTH}
               onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
               aria-invalid={nameInvalid || undefined}
+              aria-describedby="dealership-name-hint"
             />
+            <span
+              id="dealership-name-hint"
+              className="sa-meta"
+              style={nameInvalid ? { color: 'var(--tb-brutal-red)' } : undefined}
+            >
+              {nameInvalid
+                ? nameValidationError
+                : `От 2 до ${ORGANIZATION_NAME_MAX_LENGTH} символов. Разрешены буквы, цифры, пробелы и деловая пунктуация.`}
+            </span>
           </label>
 
           <label style={{ display: 'grid', gap: 6 }}>

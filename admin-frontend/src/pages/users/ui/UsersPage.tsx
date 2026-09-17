@@ -2039,33 +2039,31 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
             )}
           </div>
 
-          <div className={`sa-audit-history-pagination${userEmployeeRows.length > USERS_PAGE_SIZE ? '' : ' is-empty'}`}>
-            {userEmployeeRows.length > USERS_PAGE_SIZE ? (
-              <>
-                <span className="sa-meta">
-                  Показаны {userPageStart + 1}-{Math.min(userPageStart + USERS_PAGE_SIZE, userEmployeeRows.length)} из {userEmployeeRows.length}
-                </span>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button
-                    type="button"
-                    className="sa-btn-field sa-btn-sm"
-                    disabled={currentUserPage === 1}
-                    onClick={() => setUserPage((current) => Math.max(1, current - 1))}
-                  >
-                    Назад
-                  </button>
-                  <span className="sa-metric-chip">Стр. {currentUserPage} из {userTotalPages}</span>
-                  <button
-                    type="button"
-                    className="sa-btn-field sa-btn-sm"
-                    disabled={currentUserPage === userTotalPages}
-                    onClick={() => setUserPage((current) => Math.min(userTotalPages, current + 1))}
-                  >
-                    Вперёд
-                  </button>
-                </div>
-              </>
-            ) : null}
+          <div className="sa-audit-history-pagination">
+            <span className="sa-meta">
+              {userEmployeeRows.length === 0
+                ? 'Показано 0 из 0'
+                : `Показаны ${userPageStart + 1}-${Math.min(userPageStart + USERS_PAGE_SIZE, userEmployeeRows.length)} из ${userEmployeeRows.length}`}
+            </span>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="sa-btn-field sa-btn-sm"
+                disabled={currentUserPage === 1}
+                onClick={() => setUserPage((current) => Math.max(1, current - 1))}
+              >
+                Назад
+              </button>
+              <span className="sa-metric-chip">Стр. {currentUserPage} из {userTotalPages}</span>
+              <button
+                type="button"
+                className="sa-btn-field sa-btn-sm"
+                disabled={currentUserPage === userTotalPages}
+                onClick={() => setUserPage((current) => Math.min(userTotalPages, current + 1))}
+              >
+                Вперёд
+              </button>
+            </div>
           </div>
         </>
       )}

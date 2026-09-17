@@ -4,6 +4,10 @@ import { getPhoneCallStats, normalizeCallPhone, type PhoneCallStats } from '../v
 import { prisma } from '../db';
 import { hashPassword } from './password';
 import {
+  assertEmployeePhoneUniqueWithinDealerships,
+  EmployeePhoneConflictError,
+} from './employeePhoneUniqueness';
+import {
   ALL_PERMISSIONS,
   APP_ROLES,
   PERMISSION_DEFINITIONS,
@@ -11,6 +15,7 @@ import {
   type AppRole,
   type PermissionKey,
 } from './permissions';
+import { buildUserListScopeWhere } from './userListScope';
 
 type ScopedAccount = NonNullable<Express.Request['authAccount']>;
 
@@ -656,54 +661,11 @@ export async function handleListUsers(req: Request, res: Response): Promise<void
   const holdingIds = getHoldingIds(account);
   const dealershipIds = getDealershipIds(account);
 
-  const where: Prisma.AccountWhereInput = isPlatformSuperadmin(account)
-    ? {}
-    : {
-        OR: [
-          ...(holdingIds.length
-            ? [
-                {
-                  memberships: {
-                    some: {
-                      role: APP_ROLES.manager,
-                      dealership: {
-                        holdingId: { in: holdingIds },
-                      },
-                    },
-                  },
-                },
-                {
-                  managerProfiles: {
-                    some: {
-                      dealership: {
-                        holdingId: { in: holdingIds },
-                      },
-                    },
-                  },
-                },
-              ]
-            : []),
-          ...(dealershipIds.length
-            ? [
-                {
-                  memberships: {
-                    some: {
-                      role: APP_ROLES.manager,
-                      dealershipId: { in: dealershipIds },
-                    },
-                  },
-                },
-                {
-                  managerProfiles: {
-                    some: {
-                      dealershipId: { in: dealershipIds },
-                    },
-                  },
-                },
-              ]
-            : []),
-        ],
-      };
+  const where = buildUserListScopeWhere({
+    isPlatformSuperadmin: isPlatformSuperadmin(account),
+    holdingIds,
+    dealershipIds,
+  });
 
   let accounts = await prisma.account.findMany({
     where,
@@ -1218,12 +1180,19 @@ export async function handleCreateUserPhoneNumber(req: Request, res: Response): 
       return;
     }
 
-    const created = await prisma.phoneNumber.create({
-      data: { accountId, typeId, phone, isActive },
-      include: { type: true },
+    const created = await prisma.$transaction(async (tx) => {
+      await assertEmployeePhoneUniqueWithinDealerships(tx, { accountId, phone });
+      return tx.phoneNumber.create({
+        data: { accountId, typeId, phone, isActive },
+        include: { type: true },
+      });
     });
     res.status(201).json({ item: normalizePhoneNumberResponse(created) });
   } catch (error) {
+    if (error instanceof EmployeePhoneConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     console.error('Create user phone number error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Не удалось добавить номер телефона.' });
   }
@@ -1270,17 +1239,28 @@ export async function handleUpdateUserPhoneNumber(req: Request, res: Response): 
       }
     }
 
-    const updated = await prisma.phoneNumber.update({
-      where: { id: phoneNumberId },
-      data: {
-        ...(typeId !== undefined ? { typeId } : {}),
-        ...(phone !== undefined && phone !== null ? { phone } : {}),
-        ...(isActive !== undefined ? { isActive } : {}),
-      },
-      include: { type: true },
+    const updated = await prisma.$transaction(async (tx) => {
+      await assertEmployeePhoneUniqueWithinDealerships(tx, {
+        accountId: existing.accountId!,
+        phone: phone ?? existing.phone,
+        excludePhoneNumberId: phoneNumberId,
+      });
+      return tx.phoneNumber.update({
+        where: { id: phoneNumberId },
+        data: {
+          ...(typeId !== undefined ? { typeId } : {}),
+          ...(phone !== undefined && phone !== null ? { phone } : {}),
+          ...(isActive !== undefined ? { isActive } : {}),
+        },
+        include: { type: true },
+      });
     });
     res.json({ item: normalizePhoneNumberResponse(updated) });
   } catch (error) {
+    if (error instanceof EmployeePhoneConflictError) {
+      res.status(409).json({ error: error.message });
+      return;
+    }
     console.error('Update user phone number error:', error);
     res.status(500).json({ error: 'Не удалось обновить номер телефона.' });
   }

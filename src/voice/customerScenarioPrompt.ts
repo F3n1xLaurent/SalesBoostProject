@@ -3,6 +3,7 @@ type ScenarioPromptObjection = { phrase?: string; whenAppropriate?: string };
 type ScenarioPromptCriterion = { expectedAnswer?: string; score?: number };
 
 export type CustomerScenarioPromptInput = {
+  mode?: 'sales' | 'generic';
   age?: string | number | null;
   temperament?: string | null;
   patience?: string | null;
@@ -18,8 +19,50 @@ export type CustomerScenarioPromptInput = {
   includeFirstMessage?: boolean;
 };
 
+export type CallTargetLocation = {
+  name?: string | null;
+  city?: string | null;
+  address?: string | null;
+};
+
+const TARGET_LOCATION_SECTION_START = '=== ЦЕЛЕВАЯ ТОЧКА ЗВОНКА (КРИТИЧНО) ===';
+const TARGET_LOCATION_SECTION_END = '=== КОНЕЦ ЦЕЛЕВОЙ ТОЧКИ ===';
+
 function asText(value: unknown): string {
   return String(value ?? '').trim();
+}
+
+export function buildCallTargetLocationSection(target: CallTargetLocation | null | undefined): string {
+  if (!target) return '';
+  const name = asText(target.name);
+  const city = asText(target.city);
+  const address = asText(target.address);
+  if (!name && !city && !address) return '';
+
+  return [
+    TARGET_LOCATION_SECTION_START,
+    `Целевая точка: ${name || 'название не указано'}.`,
+    `Целевой город звонка: ${city || 'не указан'}.`,
+    address ? `Адрес целевой точки: ${address}.` : '',
+    city
+      ? `Ты звонишь именно в точку города ${city}. Считай ${city} единственным целевым городом этого звонка.`
+      : 'Город точки не указан: не придумывай его и не называй другой город целевым.',
+    'Не заменяй целевой город городом из описания компании, общего контекста скрипта или данных импортированной выборки.',
+    'Не проси соединить с другим городом. Другой город можно упомянуть только если сотрудник сам сообщил о нём в текущем разговоре и это необходимо для уточнения.',
+    TARGET_LOCATION_SECTION_END,
+  ].filter(Boolean).join('\n');
+}
+
+export function upsertCallTargetLocationSection(prompt: string, target: CallTargetLocation | null | undefined): string {
+  const section = buildCallTargetLocationSection(target);
+  if (!section) return prompt;
+  const startIndex = prompt.indexOf(TARGET_LOCATION_SECTION_START);
+  const endIndex = prompt.indexOf(TARGET_LOCATION_SECTION_END, Math.max(0, startIndex));
+  if (startIndex >= 0 && endIndex >= startIndex) {
+    const afterIndex = endIndex + TARGET_LOCATION_SECTION_END.length;
+    return `${prompt.slice(0, startIndex)}${section}${prompt.slice(afterIndex)}`;
+  }
+  return `${section}\n\n${prompt}`;
 }
 
 function buildQuestionLines(questions: ScenarioPromptQuestion[] = []): string {
@@ -41,20 +84,25 @@ function buildCriteriaLines(criteria: ScenarioPromptCriterion[] = []): string {
 }
 
 export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInput): string {
+  const genericMode = input.mode === 'generic';
   const age = asText(input.age) || '35';
   const temperament = asText(input.temperament) || 'реалистичный';
   const patience = asText(input.patience) || 'среднее';
   const replyLength = asText(input.replyLength) || 'средние';
   const communicationStyle = asText(input.communicationStyle) || 'Говори естественно, как реальный клиент по телефону.';
-  const context = asText(input.context) || 'Потребность клиента не указана. Веди себя как реалистичный покупатель и уточняй детали по предложению.';
-  const itemTitle = asText(input.itemTitle) || 'предложение из выборки';
+  const context = asText(input.context) || (genericMode
+    ? 'Потребность клиента не указана. Веди себя как реалистичный клиент и уточняй детали строго по выбранному сценарию.'
+    : 'Потребность клиента не указана. Веди себя как реалистичный покупатель и уточняй детали по предложению.');
+  const itemTitle = asText(input.itemTitle) || (genericMode ? 'тема выбранного сценария' : 'предложение из выборки');
   const itemDescription = asText(input.itemDescription);
   const voiceName = asText(input.voiceName);
   const questionLines = buildQuestionLines(input.questions);
   const objectionLines = buildObjectionLines(input.objections);
   const criteriaLines = buildCriteriaLines(input.criteria);
   const firstMessageInstruction = [
-    `Смысл первой реплики: поздороваться, сказать что звонишь по поводу «${itemTitle}», и уточнить, актуально ли предложение.`,
+    genericMode
+      ? `Смысл первой реплики: поздороваться, сказать что звонишь по вопросу «${itemTitle}», кратко обозначить потребность из контекста и задать один уместный вопрос.`
+      : `Смысл первой реплики: поздороваться, сказать что звонишь по поводу «${itemTitle}», и уточнить, актуально ли предложение.`,
     `Сформулируй эту реплику НЕ шаблонно, а в стиле профиля клиента: ${communicationStyle}`,
     'Не копируй дословно пример из prompt. Сохрани смысл, но подстрой лексику, длину и тон под профиль клиента.',
   ].join(' ');
@@ -62,13 +110,15 @@ export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInp
   return [
     '=== ПРОФИЛЬ КЛИЕНТА ===',
     `Возраст: ${age}. Темперамент: ${temperament}. Терпение: ${patience}. Длина реплик: ${replyLength}.`,
-    voiceName ? `Голос клиента: ${voiceName}. Подстраивай естественность речи под этот голос, но не упоминай название голоса вслух. От голоса зависит твой стиль обращения. Т.е. образно говоря, если женский - то говорим в формате "Я купила", "Я продала", и так далее. Как бы подчеркивая что звонит женщина. Если мужской голос - то в речи используем мужской стиль общения."` : '',
+    voiceName ? (genericMode
+      ? `Голос клиента: ${voiceName}. Подстраивай естественность речи под этот голос, но не упоминай название голоса вслух. Согласуй речь с полом голоса нейтральными фразами по выбранной теме, например «я записалась/записался»; не добавляй контекст покупки или продажи, если его нет в сценарии.`
+      : `Голос клиента: ${voiceName}. Подстраивай естественность речи под этот голос, но не упоминай название голоса вслух. От голоса зависит твой стиль обращения. Т.е. образно говоря, если женский - то говорим в формате "Я купила", "Я продала", и так далее. Как бы подчеркивая что звонит женщина. Если мужской голос - то в речи используем мужской стиль общения."`) : '',
     `Стиль коммуникации (пример реплик, которые в общем разговоре использовались клиентом, их использовать не нужно, главное скопировать стиль диалога с учетом пола речи): ${communicationStyle}`,
     '',
     '=== КОНТЕКСТ И ПОТРЕБНОСТЬ ===',
     context,
     '',
-    '=== ДАННЫЕ ИЗ ВЫБОРКИ ===',
+    genericMode ? '=== ТЕМА ВЫБРАННОГО СЦЕНАРИЯ ===' : '=== ДАННЫЕ ИЗ ВЫБОРКИ ===',
     `Основной объект разговора: ${itemTitle}.`,
     itemDescription ? `Описание: ${itemDescription}` : 'Описание отсутствует. Используй только те детали, которые есть в разговоре или данных ниже.',
     input.includeFirstMessage === false ? '' : [
@@ -82,15 +132,21 @@ export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInp
     'Когда сотрудник тебя перебил, НЕ повторяй длинную фразу с начала. Если перебили на приветствии — ответь коротко: «Да, здравствуйте» / «Добрый день» и перейди к сути. Если перебили в середине другой фразы — продолжай мысль коротко или ответь на реплику сотрудника. Никогда не копируй одну и ту же длинную реплику дважды.',
     '',
     '=== ФАЗЫ ДИАЛОГА ===',
-    '1) first_contact — ты позвонил по конкретному предложению. Дождись, что сотрудник поздоровается, представится и уточнит предмет разговора. Если не представился — не упрекай вслух.',
+    genericMode
+      ? '1) first_contact — ты позвонил по теме выбранного сценария. Дождись, что сотрудник поздоровается, представится и уточнит предмет разговора. Если не представился — не упрекай вслух.'
+      : '1) first_contact — ты позвонил по конкретному предложению. Дождись, что сотрудник поздоровается, представится и уточнит предмет разговора. Если не представился — не упрекай вслух.',
     '2) needs_discovery — расскажи потребность из контекста, если сотрудник спросит. Не задавай сам вопросы менеджера клиенту.',
-    '3) product_presentation — слушай презентацию. Задавай вопросы по данным выборки и своей потребности. Если информация выглядит неверной или неполной — вырази сомнение.',
+    genericMode
+      ? '3) solution_presentation — слушай объяснение сотрудника. Задавай вопросы по выбранному сценарию и своей потребности. Если информация выглядит неверной или неполной — вырази сомнение.'
+      : '3) product_presentation — слушай презентацию. Задавай вопросы по данным выборки и своей потребности. Если информация выглядит неверной или неполной — вырази сомнение.',
     '4) objections_and_questions — задай обязательные вопросы из списка по очереди и подними одно уместное возражение. Не возвращайся к закрытой теме.',
     '5) closing_attempt — если сотрудник предлагает следующий шаг, согласись и попробуй зафиксировать дату/время или формат связи. Если не предлагает — подожди 1–2 реплики, потом скажи, что подумаешь.',
     '',
     '=== ВОПРОСЫ, КОТОРЫЕ НУЖНО ПРОВЕРИТЬ ===',
     questionLines,
-    'Порядок вопросов не фиксирован, тебе нужно менять их местами (в любом порядке, не обязательно по порядку в промпте), а также менять структуру вопроса, сохраняя смысл. Например: "Есть ли в наличии" можно перефразировать "В данный момент есть у вас на точке". Смысл тот же, но другим текстом. Это важно!',
+    genericMode
+      ? 'Порядок вопросов не фиксирован: меняй их местами и перефразируй, сохраняя исходный смысл. Не добавляй вопросы из другого сценария.'
+      : 'Порядок вопросов не фиксирован, тебе нужно менять их местами (в любом порядке, не обязательно по порядку в промпте), а также менять структуру вопроса, сохраняя смысл. Например: "Есть ли в наличии" можно перефразировать "В данный момент есть у вас на точке". Смысл тот же, но другим текстом. Это важно!',
     '',
     '=== КАК ЗАДАВАТЬ ВОПРОСЫ (КРИТИЧНО) ===',
     'Задавай только ОДИН вопрос за одну свою реплику. Запрещено задавать 2–3 вопроса подряд в одной реплике, даже если они перечислены рядом в списке.',

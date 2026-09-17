@@ -3,6 +3,7 @@ import {
   computeDeterministicScore,
   buildChecklistFromLLMClassification,
   detectIssuesFromChecklist,
+  enforceManagerChecklistEvidence,
   CHECKLIST_WEIGHTS,
   type ChecklistItem,
   type ChecklistStatus,
@@ -177,12 +178,68 @@ describe('diagnosticScoring', () => {
       expect(intro?.evidence).toHaveLength(1);
     });
 
+    it('normalizes code, status and string evidence returned in a non-canonical form', () => {
+      const checklist = buildChecklistFromLLMClassification([
+        {
+          code: ' introduction ',
+          status: ' yes ',
+          evidence: 'Здравствуйте, меня зовут Иван',
+          comment: '  Менеджер представился  ',
+        },
+      ]);
+      const intro = checklist.find((item) => item.code === 'INTRODUCTION');
+      expect(intro).toMatchObject({
+        status: 'YES',
+        evidence: ['Здравствуйте, меня зовут Иван'],
+        comment: 'Менеджер представился',
+      });
+    });
+
     it('normalizes invalid status to NO', () => {
       const checklist = buildChecklistFromLLMClassification([
         { code: 'SALON_NAME', status: 'MAYBE' as any, evidence: [], comment: '' },
       ]);
       const salon = checklist.find((c) => c.code === 'SALON_NAME');
       expect(salon?.status).toBe('NO');
+    });
+
+    it('rejects a positive status supported only by a client quote', () => {
+      const checklist = buildChecklistFromLLMClassification([
+        {
+          code: 'CAR_IDENTIFICATION',
+          status: 'YES',
+          evidence: ['Клиент: Я звоню насчёт Toyota Corolla Cross'],
+          comment: 'Менеджер уточнил автомобиль.',
+        },
+      ]);
+
+      const validated = enforceManagerChecklistEvidence(checklist, [
+        { role: 'manager', content: 'Алло!' },
+        { role: 'client', content: 'Я звоню насчёт Toyota Corolla Cross' },
+      ]);
+
+      expect(validated.find((item) => item.code === 'CAR_IDENTIFICATION')).toMatchObject({
+        status: 'NO',
+        evidence: [],
+        comment: 'В стенограмме нет подтверждающей реплики менеджера.',
+      });
+    });
+
+    it('keeps a positive status backed by a real manager quote', () => {
+      const checklist = buildChecklistFromLLMClassification([
+        {
+          code: 'CAR_IDENTIFICATION',
+          status: 'YES',
+          evidence: ['Менеджер: Какая модель вас интересует?'],
+          comment: 'Менеджер уточнил автомобиль.',
+        },
+      ]);
+
+      const validated = enforceManagerChecklistEvidence(checklist, [
+        { role: 'manager', content: 'Какая модель вас интересует?' },
+      ]);
+
+      expect(validated.find((item) => item.code === 'CAR_IDENTIFICATION')?.status).toBe('YES');
     });
   });
 

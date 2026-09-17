@@ -175,14 +175,27 @@ export function computeDeterministicScore(
 
 export function buildChecklistFromLLMClassification(
   classification: Array<{
-    code: string;
-    status: string;
-    evidence: string[];
-    comment: string;
+    code?: unknown;
+    status?: unknown;
+    evidence?: unknown;
+    comment?: unknown;
   }>
 ): ChecklistItem[] {
+  const normalized = classification
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      code: String(item.code ?? '').trim().toUpperCase(),
+      status: String(item.status ?? '').trim().toUpperCase(),
+      evidence: Array.isArray(item.evidence)
+        ? item.evidence.map((value) => String(value ?? '').trim()).filter(Boolean)
+        : typeof item.evidence === 'string' && item.evidence.trim()
+          ? [item.evidence.trim()]
+          : [],
+      comment: typeof item.comment === 'string' ? item.comment.trim() : '',
+    }));
+
   return CHECKLIST_CODE.map((code) => {
-    const match = classification.find((c) => c.code === code);
+    const match = normalized.find((item) => item.code === code);
     const weight = CHECKLIST_WEIGHTS[code];
     if (!match) {
       return { code, weight, status: 'NA' as ChecklistStatus, evidence: [], comment: '' };
@@ -196,6 +209,71 @@ export function buildChecklistFromLLMClassification(
       status,
       evidence: Array.isArray(match.evidence) ? match.evidence : [],
       comment: typeof match.comment === 'string' ? match.comment : '',
+    };
+  });
+}
+
+export type ChecklistTranscriptTurn = {
+  role: string;
+  content?: unknown;
+  text?: unknown;
+};
+
+const CONDITIONAL_CHECKLIST_CODES = new Set<ChecklistCode>([
+  'CREDIT_EXPLANATION',
+  'TRADEIN_OFFER',
+  'OBJECTION_HANDLING',
+]);
+
+function normalizeEvidenceText(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('ru-RU')
+    .replace(/ё/g, 'е')
+    .replace(/[\u00ab\u00bb"'`]/g, '')
+    .replace(/[^a-zа-я0-9]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function evidenceQuote(value: unknown): { speaker: 'manager' | 'client' | null; text: string } {
+  const raw = String(value ?? '').trim();
+  const match = raw.match(/^\s*(менеджер|сотрудник|продавец|консультант|клиент|покупатель)\s*:\s*/i);
+  if (!match) return { speaker: null, text: normalizeEvidenceText(raw) };
+
+  const label = match[1].toLocaleLowerCase('ru-RU');
+  const speaker = label === 'клиент' || label === 'покупатель' ? 'client' : 'manager';
+  return { speaker, text: normalizeEvidenceText(raw.slice(match[0].length)) };
+}
+
+function isManagerEvidence(value: unknown, managerTurns: string[]): boolean {
+  const evidence = evidenceQuote(value);
+  if (evidence.speaker === 'client' || evidence.text.length < 2) return false;
+  return managerTurns.some((turn) => turn === evidence.text || turn.includes(evidence.text) || evidence.text.includes(turn));
+}
+
+/**
+ * Prevents an LLM from crediting the manager for something said only by the
+ * client. Positive checklist statuses must be backed by a real manager quote.
+ */
+export function enforceManagerChecklistEvidence(
+  checklist: ChecklistItem[],
+  transcript: ChecklistTranscriptTurn[],
+): ChecklistItem[] {
+  const managerTurns = transcript
+    .filter((turn) => turn.role === 'manager' || turn.role === 'assistant')
+    .map((turn) => normalizeEvidenceText(turn.content ?? turn.text))
+    .filter(Boolean);
+
+  return checklist.map((item) => {
+    if (item.status !== 'YES' && item.status !== 'PARTIAL') return item;
+    if (item.evidence.some((evidence) => isManagerEvidence(evidence, managerTurns))) return item;
+
+    return {
+      ...item,
+      status: CONDITIONAL_CHECKLIST_CODES.has(item.code) ? 'NA' : 'NO',
+      evidence: [],
+      comment: 'В стенограмме нет подтверждающей реплики менеджера.',
     };
   });
 }

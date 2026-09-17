@@ -9,6 +9,7 @@ import { request } from 'undici';
 import { createSign } from 'crypto';
 import type { TranscriptTurn } from './callHistory';
 import { config } from '../config';
+import { sanitizeTranscriptTurns } from './transcriptSanitizer';
 
 const VOX_API_BASE = 'https://api.voximplant.com/platform_api';
 
@@ -240,5 +241,5 @@ function parseTranscriptFromLogText(logText: string): TranscriptTurn[] {
     }
   }
 
-  return turns;
+  return sanitizeTranscriptTurns(turns);
 }

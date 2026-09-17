@@ -310,6 +310,12 @@ export function Audits({
   const [reportDrawerLoading, setReportDrawerLoading] = useState(false);
   const [reportDrawerError, setReportDrawerError] = useState<string | null>(null);
   const [reportDrawerDetail, setReportDrawerDetail] = useState<AuditDetailItem | null>(null);
+  const reportAuditId = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const callId = params.get('callId')?.trim();
+    if (callId) return callId.startsWith('call-') ? callId : `call-${callId}`;
+    return params.get('auditId')?.trim() ?? '';
+  }, [location.search]);
 
   useEffect(() => {
     let cancelled = false;
@@ -513,6 +519,43 @@ export function Audits({
     setPage((current) => Math.min(current, totalPages));
   }, [totalPages]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!reportAuditId) {
+      setReportDrawerOpen(false);
+      setReportDrawerLoading(false);
+      setReportDrawerError(null);
+      setReportDrawerDetail(null);
+      return () => { cancelled = true; };
+    }
+
+    setReportDrawerOpen(true);
+    setReportDrawerLoading(true);
+    setReportDrawerError(null);
+    setReportDrawerDetail(null);
+
+    fetchAuditDetail(reportAuditId)
+      .then((detail) => {
+        if (cancelled) return;
+        if (!detail) {
+          setReportDrawerError('Отчёт не найден');
+          return;
+        }
+        setReportDrawerDetail(detail);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setReportDrawerError(error instanceof Error ? error.message : 'Не удалось загрузить отчёт');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReportDrawerLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [reportAuditId]);
+
   function formatDateTime(iso: string) {
     const d = new Date(iso);
     return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -529,25 +572,27 @@ export function Audits({
     setReportDrawerLoading(false);
     setReportDrawerError(null);
     setReportDrawerDetail(null);
+
+    const params = new URLSearchParams(location.search);
+    params.delete('callId');
+    params.delete('auditId');
+    const search = params.toString();
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : '' },
+      { replace: true },
+    );
   }
 
-  async function openReportDrawer(auditId: string) {
-    setReportDrawerOpen(true);
-    setReportDrawerLoading(true);
-    setReportDrawerError(null);
-    setReportDrawerDetail(null);
-    try {
-      const detail = await fetchAuditDetail(auditId);
-      if (!detail) {
-        setReportDrawerError('Отчёт не найден');
-        return;
-      }
-      setReportDrawerDetail(detail);
-    } catch (error) {
-      setReportDrawerError(error instanceof Error ? error.message : 'Не удалось загрузить отчёт');
-    } finally {
-      setReportDrawerLoading(false);
+  function openReportDrawer(auditId: string) {
+    const params = new URLSearchParams(location.search);
+    params.delete('callId');
+    params.delete('auditId');
+    if (auditId.startsWith('call-')) {
+      params.set('callId', auditId.slice('call-'.length));
+    } else {
+      params.set('auditId', auditId);
     }
+    navigate({ pathname: location.pathname, search: `?${params.toString()}` });
   }
 
   function setCategoryProblems(categoryTitles: string[], nextSelectedInCategory: string[]) {

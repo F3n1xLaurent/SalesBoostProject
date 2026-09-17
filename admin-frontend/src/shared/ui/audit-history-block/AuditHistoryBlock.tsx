@@ -204,7 +204,7 @@ export function mapTrainerHistoryToAuditItems(
       ? 'Пройдено'
       : item.status === 'failed'
         ? 'Провал'
-        : item.status === 'abandoned'
+        : item.status === 'abandoned' || item.status === 'cancelled'
           ? 'Прервано'
           : 'В процессе',
   }));

@@ -50,6 +50,7 @@ const SUPER_NAV: NavEntry[] = [
   ...buildNav(SUPER_NAV_MAIN, SUPER_NAV_SECONDARY),
   { type: 'separator' },
   { id: 'internalAnalytics', label: 'Внутренняя аналитика', icon: 'chart' },
+  { id: 'dictionaries', label: 'Справочники', icon: 'book-open' },
 ];
 
 const COMPANY_NAV: NavEntry[] = buildNav(
