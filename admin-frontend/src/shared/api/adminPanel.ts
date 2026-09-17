@@ -785,6 +785,56 @@ export interface CallScriptItem {
   updatedAt: string;
 }
 
+export interface DemoCallVoiceItem {
+  id: 'mikhail' | 'sergey' | 'anna';
+  name: string;
+  description: string;
+  gender: 'male' | 'female';
+  elevenLabsVoiceId: string;
+  communicationModifier: string;
+  sortOrder: number;
+  isEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DemoCallProfileItem {
+  id: string;
+  name: string;
+  age: number;
+  ageFrom: number;
+  ageTo: number;
+  character: string;
+  temperament: CustomerTemperament;
+  patience: CustomerPatience;
+  replyLength: ReplyLength;
+  communicationStyle: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DemoCallScriptItem {
+  id: string;
+  profileId: string;
+  name: string;
+  companyName: string;
+  companyDescription: string;
+  itemTitle: string;
+  context: string;
+  dataText: string;
+  objections: CallScriptObjection[];
+  questions: CallScriptQuestion[];
+  successCriteria: CallScriptSuccessCriterion[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DemoCallConfiguration {
+  voices: DemoCallVoiceItem[];
+  profile: DemoCallProfileItem;
+  script: DemoCallScriptItem;
+}
+
 export type CallPlanTargetType = 'employees' | 'dealerships';
 export type CallPlanPhoneScope = 'employees' | 'dealerships' | 'all';
 export type CallPlanFrequency = 'manual' | 'daily' | 'weekly';
@@ -1355,6 +1405,53 @@ export async function updateCity(currentName: string, name: string): Promise<str
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось переименовать город.');
   return String(data.item || name);
+}
+
+export async function fetchDemoCallConfiguration(): Promise<DemoCallConfiguration> {
+  const res = await apiFetch(`${API_BASE}/api/admin/demo-call/config`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить настройки демо-стенда.');
+  return data as DemoCallConfiguration;
+}
+
+export async function updateDemoCallVoice(
+  id: DemoCallVoiceItem['id'],
+  payload: Pick<DemoCallVoiceItem, 'name' | 'description' | 'gender' | 'elevenLabsVoiceId' | 'communicationModifier'>,
+): Promise<DemoCallVoiceItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/demo-call/voices/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить голос демо-стенда.');
+  return data.item as DemoCallVoiceItem;
+}
+
+export async function updateDemoCallProfile(
+  payload: Omit<DemoCallProfileItem, 'id' | 'createdAt' | 'updatedAt'>,
+): Promise<DemoCallProfileItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/demo-call/profile`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить профиль демо-стенда.');
+  return data.item as DemoCallProfileItem;
+}
+
+export async function updateDemoCallScript(
+  payload: Pick<DemoCallScriptItem, 'name' | 'itemTitle' | 'context' | 'dataText' | 'objections' | 'questions' | 'successCriteria'>,
+): Promise<DemoCallScriptItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/demo-call/script`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить скрипт демо-стенда.');
+  return data.item as DemoCallScriptItem;
 }
 
 export async function createHolding(payload: {

@@ -230,6 +230,187 @@
   font-size: 12px;
 }
 
+.demo-settings-stack,
+.demo-settings-form,
+.demo-field,
+.demo-source-list {
+  display: grid;
+  gap: 14px;
+}
+
+.demo-settings-form,
+.demo-voice-card {
+  padding: 20px;
+}
+
+.demo-settings-form h2,
+.demo-settings-form h3,
+.demo-settings-intro h2,
+.demo-section-heading h3 {
+  margin: 0;
+}
+
+.demo-settings-intro,
+.demo-section-heading,
+.demo-voice-card__heading,
+.demo-settings-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.demo-settings-intro .sa-meta {
+  margin-top: 5px;
+}
+
+.demo-settings-error {
+  margin-block: 20px;
+}
+
+.demo-voices-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.demo-voice-card {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.demo-field > span {
+  color: #30302c;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.demo-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.demo-mono-input {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+.demo-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.demo-age-range {
+  position: relative;
+  display: grid;
+  align-items: center;
+  height: 28px;
+}
+
+.demo-age-range__track,
+.demo-age-range__fill {
+  position: absolute;
+  height: 4px;
+  border-radius: 999px;
+}
+
+.demo-age-range__track {
+  inset-inline: 0;
+  background: rgba(22, 22, 19, .12);
+}
+
+.demo-age-range__fill {
+  background: var(--tb-ink, #161613);
+}
+
+.demo-age-range input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.demo-age-range input::-webkit-slider-thumb {
+  pointer-events: auto;
+}
+
+.demo-age-range input::-moz-range-thumb {
+  pointer-events: auto;
+}
+
+.demo-fixed-profile {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--sa-divider, #deded8);
+  border-radius: 12px;
+  background: #f8f8f5;
+}
+
+.demo-add-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.demo-add-grid--question {
+  grid-template-columns: minmax(240px, 1fr) auto auto;
+}
+
+.demo-add-grid .sa-btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.demo-source-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--sa-divider, #deded8);
+  border-radius: 12px;
+}
+
+.demo-source-row .sa-meta {
+  margin-top: 4px;
+}
+
+.demo-criteria-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.demo-criteria-table th:first-child {
+  width: 260px;
+}
+
+.demo-criteria-table th:last-child {
+  width: 150px;
+}
+
+.demo-criteria-table td:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.demo-settings-actions {
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 720px) {
   .dictionaries-toolbar {
     align-items: stretch;
@@ -242,5 +423,39 @@
 
   .dictionaries-add-button {
     width: 100%;
+  }
+
+  .dictionaries-page > .sa-dialog-tabs {
+    overflow-x: auto;
+  }
+
+  .dictionaries-page > .sa-dialog-tabs .sa-dialog-tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .demo-voices-grid,
+  .demo-form-grid,
+  .demo-add-grid,
+  .demo-add-grid--question {
+    grid-template-columns: 1fr;
+  }
+
+  .demo-settings-intro,
+  .demo-settings-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .demo-settings-actions button {
+    width: 100%;
+  }
+
+  .demo-criteria-table th:first-child {
+    width: 180px;
+  }
+
+  .demo-criteria-table th:last-child {
+    width: 110px;
   }
 }

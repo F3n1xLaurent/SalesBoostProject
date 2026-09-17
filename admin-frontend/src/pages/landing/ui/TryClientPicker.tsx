@@ -1,6 +1,6 @@
 import { useEffect, useRef, type CSSProperties } from 'react';
 import { Orb } from '@/components/ui/orb';
-import { TRY_CLIENTS, type TryClientId } from '../lib/tryClients';
+import { useDemoClients, type TryClientId } from '../lib/tryClients';
 
 type TryClientPickerProps = {
   value: TryClientId;
@@ -8,6 +8,7 @@ type TryClientPickerProps = {
 };
 
 export function TryClientPicker({ value, onChange }: TryClientPickerProps) {
+  const clients = useDemoClients();
   const pickerRef = useRef<HTMLDivElement>(null);
   const firstCenter = useRef(true);
   const selectFromScroll = useRef(false);
@@ -75,10 +76,10 @@ export function TryClientPicker({ value, onChange }: TryClientPickerProps) {
       frame = 0;
       const next = nearestClient();
       if (lockScrollSync.current) {
-        if (TRY_CLIENTS[next]?.id === valueRef.current) lockScrollSync.current = false;
+        if (clients[next]?.id === valueRef.current) lockScrollSync.current = false;
         return;
       }
-      const nextId = TRY_CLIENTS[next]?.id;
+      const nextId = clients[next]?.id;
       if (!nextId || nextId === valueRef.current) return;
       selectFromScroll.current = true;
       onChange(nextId);
@@ -94,7 +95,7 @@ export function TryClientPicker({ value, onChange }: TryClientPickerProps) {
       if (frame) cancelAnimationFrame(frame);
       root.removeEventListener('scroll', onScroll);
     };
-  }, [onChange]);
+  }, [clients, onChange]);
 
   useEffect(() => {
     const recenter = () => centerActive(false);
@@ -122,7 +123,7 @@ export function TryClientPicker({ value, onChange }: TryClientPickerProps) {
 
   return (
     <div ref={pickerRef} className="sl-try-picker" role="radiogroup" aria-label="Выберите AI-клиента">
-      {TRY_CLIENTS.map((c) => {
+      {clients.map((c) => {
         const isActive = c.id === value;
         return (
           <button

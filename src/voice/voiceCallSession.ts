@@ -10,7 +10,6 @@ import { getRecordByCallId, markCallConnected, type TranscriptTurn } from './cal
 import { loadCar } from '../data/carLoader';
 import { getDefaultState } from '../state/defaultState';
 import { evaluateSessionV2 } from '../llm/evaluatorV2';
-import { DEMO_CALL_CRITERIA, DEMO_CALL_PROMPT } from './demoCallPrompt';
 import { getTranscriptFromVoxLog } from './voxLogTranscript';
 import { generateCallAnalyticsBundle } from './callAnalyticsBundle';
 import { resolvePhoneNumberSourceSnapshot } from './phoneNumberStats';
@@ -215,7 +214,7 @@ async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]
     : null;
   const criteria = planCall
     ? safeJsonParse<Array<{ expectedAnswer?: string; score?: number }>>(planCall.criteriaJson, [])
-    : demoContext?.criteria ?? (session?.source === 'demo' ? [...DEMO_CALL_CRITERIA] : []);
+    : demoContext?.criteria ?? [];
   const meaningfulCriteria = criteria.filter((item) => String(item.expectedAnswer || '').trim());
   if (meaningfulCriteria.length === 0) return null;
   const prompt = [
@@ -590,7 +589,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       earlyFail: false,
       behaviorSignals: [],
       scenarioContext: existingSession?.source === 'demo'
-        ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || DEMO_CALL_PROMPT)
+        ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || undefined)
         : undefined,
     });
     console.log('[voice/session] evaluation base done', { callId, ms: elapsedMs(evaluationStartedAt) });
@@ -619,7 +618,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
             recommendations,
           },
           scenarioContext: existingSession?.source === 'demo'
-            ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || DEMO_CALL_PROMPT)
+            ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || undefined)
             : undefined,
         }),
         evaluatePlanCriteria(callId, transcript),

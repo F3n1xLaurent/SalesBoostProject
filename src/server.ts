@@ -20,11 +20,13 @@ import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
 import {
-  buildDemoCallPrompt,
-  DEMO_CALL_CRITERIA,
-  resolveDemoCallClientId,
-  resolveDemoCallElevenLabsVoiceId,
-} from './voice/demoCallPrompt';
+  handleGetDemoCallAdminConfiguration,
+  handleGetPublicDemoCallConfiguration,
+  handleUpdateDemoCallProfile,
+  handleUpdateDemoCallScript,
+  handleUpdateDemoCallVoice,
+  resolveDemoCallRuntime,
+} from './voice/demoCallConfiguration';
 import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
 import { getCallRecordingFilePath, resumePendingRecordingFetches } from './voice/voximplantRecordingService';
@@ -176,6 +178,7 @@ import { splitDashboardEmployeeRatings } from './analytics/dashboardEmployeeRati
 import { sanitizeTranscriptTurns } from './voice/transcriptSanitizer';
 import * as Sentry from '@sentry/node';
 import { createLandingLeadHandler } from './integrations/landingLeadRoute';
+import { createDemoCallBitrix24Notifier } from './integrations/bitrix24DemoCall';
 
 type AnalyticsInsight = {
   fact: string;
@@ -1666,6 +1669,7 @@ import { getTunnelUrl } from './tunnel';
 import { getCallSourceInfo } from './voice/dealershipCallSource';
 
 const app = express();
+const notifyBitrix24AboutDemoCall = createDemoCallBitrix24Notifier(config.bitrix24WebhookUrl);
 
 /** Path for Telegram webhook (production). Call registerTelegramWebhook(bot) before startServer(). */
 export const WEBHOOK_PATH = '/telegram-webhook';
@@ -4440,6 +4444,34 @@ app.get('/api/admin/call-settings/scripts', (req, res) => {
   });
 });
 
+app.get('/api/admin/demo-call/config', (req, res) => {
+  handleGetDemoCallAdminConfiguration(req, res).catch((error) => {
+    console.error('Get demo call configuration error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить настройки демо-стенда.' });
+  });
+});
+
+app.put('/api/admin/demo-call/voices/:id', (req, res) => {
+  handleUpdateDemoCallVoice(req, res).catch((error) => {
+    console.error('Update demo call voice error:', error);
+    res.status(500).json({ error: 'Не удалось обновить голос демо-стенда.' });
+  });
+});
+
+app.put('/api/admin/demo-call/profile', (req, res) => {
+  handleUpdateDemoCallProfile(req, res).catch((error) => {
+    console.error('Update demo call profile error:', error);
+    res.status(500).json({ error: 'Не удалось обновить профиль демо-стенда.' });
+  });
+});
+
+app.put('/api/admin/demo-call/script', (req, res) => {
+  handleUpdateDemoCallScript(req, res).catch((error) => {
+    console.error('Update demo call script error:', error);
+    res.status(500).json({ error: 'Не удалось обновить скрипт демо-стенда.' });
+  });
+});
+
 app.post('/api/admin/call-settings/scripts', (req, res) => {
   handleCreateCallScript(req, res).catch((error) => {
     console.error('Create call script error:', error);
@@ -6204,6 +6236,13 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
   }
 });
 
+app.get('/api/public/demo-call/config', (req, res) => {
+  handleGetPublicDemoCallConfiguration(req, res).catch((error) => {
+    console.error('Public demo call configuration error:', error);
+    res.status(503).json({ error: 'Демо-стенд временно не настроен.' });
+  });
+});
+
 app.post('/api/public/demo-call/start', async (req, res) => {
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
@@ -6215,9 +6254,10 @@ app.post('/api/public/demo-call/start', async (req, res) => {
       ? body.scenario
       : 'realtime_pure';
     const toNormalized = normalizeCallPhone(toRaw);
-    const demoClientId = resolveDemoCallClientId(body.client);
-    const demoElevenLabsVoiceId = resolveDemoCallElevenLabsVoiceId(demoClientId);
-    const demoPrompt = buildDemoCallPrompt(demoClientId, toNormalized);
+    const demoRuntime = await resolveDemoCallRuntime(body.client, toNormalized);
+    const demoClientId = demoRuntime.voice.id;
+    const demoElevenLabsVoiceId = demoRuntime.voice.elevenLabsVoiceId;
+    const demoPrompt = demoRuntime.prompt;
     const result = await startVoiceCall(toNormalized, {
       scenario,
       instructions: demoPrompt,
@@ -6246,8 +6286,13 @@ app.post('/api/public/demo-call/start', async (req, res) => {
             kind: 'fixed_demo_call',
             demoClientId,
             elevenLabsVoiceId: demoElevenLabsVoiceId,
+            demoVoiceUpdatedAt: demoRuntime.voice.updatedAt,
+            demoProfileId: demoRuntime.profile.id,
+            demoProfileUpdatedAt: demoRuntime.profile.updatedAt,
+            demoScriptId: demoRuntime.script.id,
+            demoScriptUpdatedAt: demoRuntime.script.updatedAt,
             prompt: demoPrompt,
-            criteria: DEMO_CALL_CRITERIA,
+            criteria: demoRuntime.criteria,
           }),
           startedAt: new Date(result.startedAt),
         },
@@ -6255,6 +6300,7 @@ app.post('/api/public/demo-call/start', async (req, res) => {
     } catch (e) {
       console.warn('[demo-call] VoiceCallSession create (may already exist):', e instanceof Error ? e.message : e);
     }
+    notifyBitrix24AboutDemoCall({ callId: result.callId, phone: toNormalized });
     res.json({
       callId: result.callId,
       startedAt: result.startedAt,

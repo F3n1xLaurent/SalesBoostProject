@@ -10,6 +10,7 @@ import {
   type CallTargetLocation,
 } from './customerScenarioPrompt';
 import { resolvePhoneNumberSourceSnapshot } from './phoneNumberStats';
+import { withRealtimeCallGuardrails } from './realtimeCallGuardrails';
 import { resolveCallPlanStatus } from './voxCallOutcome';
 
 type CustomerTemperament = 'calm' | 'doubtful' | 'irritated' | 'hurried';
@@ -899,11 +900,25 @@ async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{
   return tags.length === 0 ? fallback : null;
 }
 
-function buildCallPlanRealtimePrompt(input: {
-  script: Prisma.CallScriptGetPayload<{}>;
-  profile: Prisma.CallCustomerProfileGetPayload<{}> | null;
-  importedItem: Prisma.ImportedItemGetPayload<{}> | null;
+export type RealtimeCallPromptProfile = Pick<
+  Prisma.CallCustomerProfileGetPayload<{}>,
+  'age' | 'ageFrom' | 'ageTo' | 'temperament' | 'patience' | 'replyLength' | 'communicationStyle'
+>;
+
+export type RealtimeCallPromptScript = Pick<
+  Prisma.CallScriptGetPayload<{}>,
+  'context' | 'objectionsJson' | 'questionsJson' | 'successCriteriaJson'
+>;
+
+export type RealtimeCallPromptItem = Pick<Prisma.ImportedItemGetPayload<{}>, 'title' | 'description'>;
+
+export function buildRealtimeCallPrompt(input: {
+  script: RealtimeCallPromptScript;
+  profile: RealtimeCallPromptProfile | null;
+  importedItem: RealtimeCallPromptItem | null;
   customerVoiceName?: string | null;
+  clientName?: string | null;
+  destinationPhone?: string | null;
   holding: Pick<Prisma.HoldingGetPayload<{}>, 'name' | 'description'>;
   target?: CallTargetLocation | null;
 }) {
@@ -936,7 +951,7 @@ function buildCallPlanRealtimePrompt(input: {
   });
   const targetLocationSection = buildCallTargetLocationSection(input.target);
 
-  return [
+  return withRealtimeCallGuardrails([
     targetLocationSection,
     '=== РОЛЬ (КРИТИЧНО) ===',
     'Ты — ПОКУПАТЕЛЬ (клиент), который САМ ЗВОНИТ сотруднику компании по конкретному предложению/данным из выборки. На другом конце провода — СОТРУДНИК/МЕНЕДЖЕР. Ты тестируешь: насколько хорошо он общается, даёт информацию, отвечает на вопросы, отрабатывает возражения и доводит до следующего шага.',
@@ -1262,6 +1277,9 @@ function buildCallPlanRealtimePrompt(input: {
     `Название компании: ${input.holding.name}`,
     `Описание компании: ${input.holding.description?.trim() || 'Описание не указано.'}`,
     '',
+    input.clientName ? '=== ДЕМО-ПЕРСОНА ===' : '',
+    input.clientName ? `Имя клиента: ${input.clientName}. Используй это имя только от своего лица и не путай его с именем сотрудника.` : '',
+    input.destinationPhone ? `Номер, на который совершается звонок: ${input.destinationPhone}. Не произноси номер без необходимости.` : '',
     scenarioCore,
     '',
     '',
@@ -1285,7 +1303,7 @@ function buildCallPlanRealtimePrompt(input: {
 '',
     '=== ЯЗЫК И СТИЛЬ ===',
     'Язык: только русский. Тон: реалистичный клиент, не поддакивающий. Длина: 1–3 предложения на реплику. Без эмодзи, без мета-комментариев. Не выходи из роли.',
-  ].join('\n');
+  ].join('\n'));
 }
 
 async function resolveCustomerVoiceForProfile(
@@ -1388,7 +1406,7 @@ async function createScheduledPlanCall(
 ): Promise<Prisma.CallPlanCallGetPayload<{}>> {
   const profile = pickRandom(context.profiles);
   const customerVoice = await resolveCustomerVoiceForProfile(profile);
-  const prompt = buildCallPlanRealtimePrompt({
+  const prompt = buildRealtimeCallPrompt({
     script: context.script,
     profile,
     importedItem: context.importedItem,
@@ -1612,7 +1630,7 @@ async function launchManualPlanTarget(
   const profile = pickRandom(context.profiles);
   const customerVoice = await resolveCustomerVoiceForProfile(profile);
   const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
-  const prompt = buildCallPlanRealtimePrompt({
+  const prompt = buildRealtimeCallPrompt({
     script: context.script,
     profile,
     importedItem: context.importedItem,
@@ -1775,7 +1793,7 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
     const importedItem = await pickImportedSampleForScript(script);
     const customerVoice = await resolveCustomerVoiceForProfile(profile);
     const previewTarget = (await buildCallPlanTargets(plan))[0] ?? null;
-    const prompt = buildCallPlanRealtimePrompt({
+    const prompt = buildRealtimeCallPrompt({
       script,
       profile,
       importedItem,
