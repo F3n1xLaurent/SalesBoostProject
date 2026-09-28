@@ -125,11 +125,11 @@ async function assertCanAccessProfile(req: Request, id: string): Promise<string>
   return item.holdingId;
 }
 
-async function assertCanAccessScript(req: Request, id: string): Promise<string> {
-  const item = await prisma.callScript.findUnique({ where: { id }, select: { holdingId: true } });
+async function assertCanAccessScript(req: Request, id: string): Promise<{ holdingId: string; checklistId: string | null }> {
+  const item = await prisma.callScript.findUnique({ where: { id }, select: { holdingId: true, checklistId: true } });
   if (!item) throw new Error('Скрипт не найден.');
   await assertCanAccessHolding(req, item.holdingId);
-  return item.holdingId;
+  return item;
 }
 
 async function assertCanAccessPlan(req: Request, id: string): Promise<string> {
@@ -197,6 +197,7 @@ function normalizeScript(script: Prisma.CallScriptGetPayload<{}>) {
     objections: safeJsonParse(script.objectionsJson, []),
     questions: safeJsonParse(script.questionsJson, []),
     successCriteria: safeJsonParse(script.successCriteriaJson, []),
+    checklistId: script.checklistId,
     createdAt: script.createdAt,
     updatedAt: script.updatedAt,
   };
@@ -362,7 +363,17 @@ function parseScriptPayload(body: Record<string, unknown>, holdingId: string) {
     objectionsJson: JSON.stringify(Array.isArray(body.objections) ? body.objections : []),
     questionsJson: JSON.stringify(Array.isArray(body.questions) ? body.questions : []),
     successCriteriaJson: JSON.stringify(Array.isArray(body.successCriteria) ? body.successCriteria : []),
+    checklistId: parseString(body.checklistId),
   };
+}
+
+async function assertChecklistForHolding(checklistId: string | null, holdingId: string): Promise<void> {
+  if (!checklistId) return;
+  const checklist = await prisma.evaluationChecklist.findFirst({
+    where: { id: checklistId, holdingId, isTemplate: false, isArchived: false },
+    select: { id: true },
+  });
+  if (!checklist) throw new Error('Выбранный чек-лист недоступен для этой компании.');
 }
 
 function timeToMinutes(value: string): number {
@@ -637,6 +648,8 @@ export async function handleCreateCallScript(req: Request, res: Response): Promi
   try {
     const holdingId = await getRequestedHoldingId(req);
     const data = parseScriptPayload((req.body || {}) as Record<string, unknown>, holdingId);
+    if (!data.checklistId) throw new Error('Для создания скрипта выберите чек-лист оценки.');
+    await assertChecklistForHolding(data.checklistId, holdingId);
     const created = await prisma.callScript.create({ data: { holdingId, ...data } });
     res.status(201).json({ item: normalizeScript(created) });
   } catch (error) {
@@ -647,8 +660,9 @@ export async function handleCreateCallScript(req: Request, res: Response): Promi
 export async function handleUpdateCallScript(req: Request, res: Response): Promise<void> {
   try {
     const id = String(req.params.id || '').trim();
-    const holdingId = await assertCanAccessScript(req, id);
-    const data = parseScriptPayload((req.body || {}) as Record<string, unknown>, holdingId);
+    const existing = await assertCanAccessScript(req, id);
+    const data = parseScriptPayload((req.body || {}) as Record<string, unknown>, existing.holdingId);
+    if (data.checklistId !== existing.checklistId) await assertChecklistForHolding(data.checklistId, existing.holdingId);
     const updated = await prisma.callScript.update({ where: { id }, data });
     res.json({ item: normalizeScript(updated) });
   } catch (error) {

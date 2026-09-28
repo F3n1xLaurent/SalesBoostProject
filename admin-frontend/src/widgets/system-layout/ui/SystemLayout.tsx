@@ -55,6 +55,7 @@ const HoldingsPage = lazyNamed(() => import('../../../pages/holdings/ui/Holdings
 const Companies = lazyNamed(() => import('../../../pages/companies/ui/CompaniesPage'), 'Companies');
 const DealershipDirectionsPage = lazyNamed(() => import('../../../pages/dealership-directions/ui/DealershipDirectionsPage'), 'DealershipDirectionsPage');
 const ImportsPage = lazyNamed(() => import('../../../pages/imports/ui/ImportsPage'), 'ImportsPage');
+const ChecklistsPage = lazyNamed(() => import('../../../pages/checklists/ui/ChecklistsPage'), 'ChecklistsPage');
 const DealershipDetail = lazyNamed(() => import('../../../pages/dealership-detail/ui/DealershipDetailPage'), 'DealershipDetail');
 const UsersPage = lazyNamed(() => import('../../../pages/users/ui/UsersPage'), 'UsersPage');
 const TypesNumbersPage = lazyNamed(() => import('../../../pages/types-numbers/ui/TypesNumbersPage'), 'TypesNumbersPage');
@@ -170,6 +171,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
 
   const handleDealershipSaved = (dealership: DealershipItem) => {
     setRealDealerships((current) => {
+      if (dealership.isDeleted || dealership.holdingIsDeleted) {
+        return current.filter((item) => item.id !== dealership.id);
+      }
       const exists = current.some((item) => item.id === dealership.id);
       const next = exists
         ? current.map((item) => (item.id === dealership.id ? dealership : item))
@@ -480,6 +484,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                   onOpenBatchInAudits={navigateToBatch}
                   onDealershipSaved={handleDealershipSaved}
                   onDealershipDeleted={handleDealershipDeleted}
+                  isSuperadmin={role === 'super'}
                 />
               )}
               {activeTab === 'companies' && selectedDealershipId && (
@@ -504,6 +509,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
               )}
               {activeTab === 'imports' && (
                 <ImportsPage />
+              )}
+              {activeTab === 'checklists' && (
+                <ChecklistsPage isSuperadmin={role === 'super'} />
               )}
               {activeTab === 'users' && (
                 <UsersPage

@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import { apiFetch } from '../../../entities/session';
+import { fetchAuditDetail, type AuditDetailItem } from '../../../shared/api/adminPanel';
+import { SlideOver } from '../../../shared/ui/slide-over';
+import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import './internal-analytics.css';
 
 type DemoAnalytics = {
@@ -100,6 +104,8 @@ function formatDate(value: string): string {
 }
 
 export function InternalAnalyticsPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<'demo' | 'activity'>('demo');
   const [filters, setFilters] = useState({ q: '', minDuration: '', maxDuration: '', minScore: '', maxScore: '', dateFrom: '', dateTo: '' });
   const [appliedFilters, setAppliedFilters] = useState(filters);
@@ -110,6 +116,11 @@ export function InternalAnalyticsPage() {
   const [activityData, setActivityData] = useState<ActivityAnalytics | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
+  const [reportDrawerOpen, setReportDrawerOpen] = useState(false);
+  const [reportDrawerLoading, setReportDrawerLoading] = useState(false);
+  const [reportDrawerError, setReportDrawerError] = useState<string | null>(null);
+  const [reportDrawerDetail, setReportDrawerDetail] = useState<AuditDetailItem | null>(null);
+  const reportCallId = useMemo(() => new URLSearchParams(location.search).get('callId')?.trim() ?? '', [location.search]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setAppliedFilters(filters), 350);
@@ -156,6 +167,60 @@ export function InternalAnalyticsPage() {
       });
     return () => { cancelled = true; };
   }, [activityPeriod, tab]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!reportCallId) {
+      setReportDrawerOpen(false);
+      setReportDrawerLoading(false);
+      setReportDrawerError(null);
+      setReportDrawerDetail(null);
+      return () => { cancelled = true; };
+    }
+
+    setReportDrawerOpen(true);
+    setReportDrawerLoading(true);
+    setReportDrawerError(null);
+    setReportDrawerDetail(null);
+
+    fetchAuditDetail(`call-${reportCallId}`)
+      .then((detail) => {
+        if (cancelled) return;
+        if (!detail) {
+          setReportDrawerError('Отчёт не найден');
+          return;
+        }
+        setReportDrawerDetail(detail);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setReportDrawerError(reason instanceof Error ? reason.message : 'Не удалось загрузить отчёт');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReportDrawerLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [reportCallId]);
+
+  function openReportDrawer(callId: number) {
+    const params = new URLSearchParams(location.search);
+    params.set('callId', String(callId));
+    navigate({ pathname: location.pathname, search: `?${params.toString()}` });
+  }
+
+  function closeReportDrawer() {
+    setReportDrawerOpen(false);
+    const params = new URLSearchParams(location.search);
+    params.delete('callId');
+    const search = params.toString();
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : '' },
+      { replace: true },
+    );
+  }
 
   const maxDaily = useMemo(() => Math.max(1, ...(data?.daily.map((item) => item.calls) ?? [1])), [data]);
 
@@ -268,7 +333,7 @@ export function InternalAnalyticsPage() {
             <div className="internal-calls-table-wrap">
               <table className="internal-calls-table">
                 <thead><tr><th>Дата и время (МСК)</th><th>IP-адрес</th><th>Телефон</th><th>Результат</th><th>Длительность</th><th>Балл</th></tr></thead>
-                <tbody>{data.recentCalls.map((call) => <tr key={call.id} title={call.error || undefined}>
+                <tbody>{data.recentCalls.map((call) => <tr key={call.id} className="internal-call-row" title={call.error || undefined} onClick={() => openReportDrawer(call.id)}>
                   <td>{formatDate(call.startedAt)}</td><td className="mono">{call.ipAddress || '—'}</td><td>{call.phone}{call.ivrDetected && <span className="sa-ivr-badge" style={{ marginLeft: 6 }}>IVR{call.ivrPath.length > 0 ? ` (${call.ivrPath.join('-')})` : ''}</span>}</td>
                   <td><span className={`internal-outcome internal-outcome--${call.outcome}`}>{outcomeLabels[call.outcome] || call.outcome}</span></td>
                   <td>{formatDuration(call.durationSec)}</td><td>{call.totalScore == null ? '—' : `${Math.round(call.totalScore)}/100`}</td>
@@ -278,6 +343,26 @@ export function InternalAnalyticsPage() {
           </section>
         </div>
       )}
+
+      <SlideOver
+        open={reportDrawerOpen}
+        title="Аналитика звонка"
+        width="xl"
+        onClose={closeReportDrawer}
+      >
+        {reportDrawerLoading ? (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Загрузка отчёта...</div>
+        ) : reportDrawerError ? (
+          <div className="sa-card" style={{ padding: 20 }}>
+            <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть отчёт</div>
+            <div className="sa-meta" style={{ marginTop: 8 }}>{reportDrawerError}</div>
+          </div>
+        ) : reportDrawerDetail ? (
+          <AuditAnalyticsReport detail={reportDrawerDetail} />
+        ) : (
+          <div className="sa-meta" style={{ padding: 48, textAlign: 'center' }}>Выберите звонок.</div>
+        )}
+      </SlideOver>
     </div>
   );
 }

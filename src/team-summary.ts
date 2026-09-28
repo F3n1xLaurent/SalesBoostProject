@@ -1,4 +1,4 @@
-import { openai } from './lib/openaiClient';
+import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import { config } from './config';
 
 export interface TeamSummaryData {
@@ -99,7 +99,7 @@ ${i + 1}. ${a.userName} (${a.level}, ${a.score.toFixed(1)}/100)
         },
       ],
       response_format: { type: 'json_object' },
-      temperature: 0.7,
+      ...compatibleChatTemperature(config.openaiChatModel, 0.7),
     });
 
     const content = response.choices[0]?.message?.content;

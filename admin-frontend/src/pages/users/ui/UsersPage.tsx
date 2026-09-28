@@ -320,10 +320,23 @@ function isPlatformSuperadminUser(user: UserAccountItem): boolean {
 }
 
 function userDealershipNames(user: UserAccountItem): string[] {
-  const names = [
-    ...user.memberships.map((membership) => membership.dealershipName || ''),
-    ...user.managerProfiles.map((profile) => profile.dealershipName),
-  ].map((name) => name.trim()).filter(Boolean);
+  const directMembershipNames = user.memberships
+    .map((membership) => membership.dealershipName || '')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const companyWideHoldingIds = new Set(
+    user.memberships
+      .filter((membership) => membership.holdingId && !membership.dealershipId)
+      .map((membership) => membership.holdingId),
+  );
+  const companyWideProfileNames = user.managerProfiles
+    .filter((profile) => profile.holdingId && companyWideHoldingIds.has(profile.holdingId))
+    .map((profile) => profile.dealershipName.trim())
+    .filter(Boolean);
+  const scopedNames = [...directMembershipNames, ...companyWideProfileNames];
+  const names = scopedNames.length > 0
+    ? scopedNames
+    : user.managerProfiles.map((profile) => profile.dealershipName.trim()).filter(Boolean);
   return [...new Set(names)];
 }
 

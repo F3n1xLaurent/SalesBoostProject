@@ -10,6 +10,7 @@ import {
   fetchDealerships,
   fetchHoldings,
   fetchHoldingRecommendations,
+  restoreHolding,
   updateHolding,
   type AnalyticsHoldingDealershipRow,
   type AnalyticsHoldingDetail,
@@ -747,6 +748,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [holdingTypeFilter, setHoldingTypeFilter] = useState<'all' | HoldingType>('all');
   const [holdingStatusFilter, setHoldingStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [showDeleted, setShowDeleted] = useState(false);
 
   const [createHoldingOpen, setCreateHoldingOpen] = useState(false);
   const [editHoldingOpen, setEditHoldingOpen] = useState(false);
@@ -775,6 +777,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
           search: debouncedSearch,
           type: holdingTypeFilter,
           status: holdingStatusFilter,
+          includeDeleted: showDeleted,
         }),
         fetchDealerships(),
       ]);
@@ -810,7 +813,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
 
   useEffect(() => {
     loadData().catch(() => undefined);
-  }, [debouncedSearch, holdingStatusFilter, holdingTypeFilter]);
+  }, [debouncedSearch, holdingStatusFilter, holdingTypeFilter, showDeleted]);
 
   const unassignedDealerships = useMemo(
     () => dealerships.filter((item) => !item.holdingId),
@@ -823,7 +826,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
   const hasActiveFilters =
     searchInput.trim() !== '' ||
     holdingTypeFilter !== 'all' ||
-    holdingStatusFilter !== 'all';
+    holdingStatusFilter !== 'all' ||
+    showDeleted;
   const sortedHoldings = useMemo(
     () => [...holdings].sort(holdingComparator(sortKey, sortDir, analyticsByHoldingId)),
     [analyticsByHoldingId, holdings, sortDir, sortKey],
@@ -1030,14 +1034,35 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
       await deleteHolding(activeHolding.id);
       setEditDeleteConfirm(false);
       setEditHoldingOpen(false);
+      setSelectedHoldingIds((current) => current.filter((id) => id !== activeHolding.id));
       setActiveHolding(null);
-      showToast({ type: 'success', title: 'Компания удалена', description: 'Точки отвязаны.' });
+      showToast({ type: 'success', title: 'Компания скрыта', description: 'Все связанные данные сохранены.' });
       await loadData();
     } catch (submitError) {
       showToast({
         type: 'error',
         title: 'Не удалось удалить компанию',
         description: submitError instanceof Error ? submitError.message : 'Попробуйте повторить действие.',
+      });
+    } finally {
+      setSavingHolding(false);
+    }
+  }
+
+  async function handleRestoreHolding() {
+    if (!activeHolding) return;
+    setSavingHolding(true);
+    try {
+      await restoreHolding(activeHolding.id);
+      setEditHoldingOpen(false);
+      setActiveHolding(null);
+      showToast({ type: 'success', title: 'Компания восстановлена', description: activeHolding.name });
+      await loadData();
+    } catch (restoreError) {
+      showToast({
+        type: 'error',
+        title: 'Не удалось восстановить компанию',
+        description: restoreError instanceof Error ? restoreError.message : 'Попробуйте повторить действие.',
       });
     } finally {
       setSavingHolding(false);
@@ -1148,11 +1173,15 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     const isSubmitDisabled = savingHolding || Boolean(nameValidationError) || (!isCreate && !isDirty);
     return (
       <div className={`sa-modal-footer-row${isCreate ? '' : ''}`}>
-        {!isCreate && (
+        {!isCreate && activeHolding?.isDeleted ? (
+          <button type="button" className="sa-btn-outline" onClick={() => { void handleRestoreHolding(); }} disabled={savingHolding}>
+            Восстановить компанию
+          </button>
+        ) : !isCreate ? (
           <button type="button" className="sa-btn-danger" onClick={() => setEditDeleteConfirm(true)}>
             Удалить компанию
           </button>
-        )}
+        ) : null}
         <div className="sa-modal-footer-row__right">
           <button type="button" className="sa-btn-outline" onClick={options.onRequestClose} disabled={savingHolding}>
             Отмена
@@ -1204,7 +1233,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
     return (
       <DeleteConfirmModal
         open={editDeleteConfirm && !!activeHolding}
-        title="Удалить компанию?"
+        title="Скрыть компанию?"
+        confirmLabel="Скрыть"
         saving={savingHolding}
         onCancel={() => setEditDeleteConfirm(false)}
         onConfirm={() => { void handleDeleteHoldingConfirm(); }}
@@ -1283,6 +1313,10 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
               onChange={setHoldingStatusFilter}
             />
           </div>
+          <label className="sa-filter-check">
+            <input type="checkbox" checked={showDeleted} onChange={(event) => setShowDeleted(event.target.checked)} />
+            Показывать удалённые
+          </label>
           {hasActiveFilters && (
             <button
               type="button"
@@ -1292,6 +1326,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                 setDebouncedSearch('');
                 setHoldingTypeFilter('all');
                 setHoldingStatusFilter('all');
+                setShowDeleted(false);
               }}
             >
               Сбросить
@@ -1348,17 +1383,17 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                 return (
                   <tr
                     key={item.id}
-                    className="sa-row-clickable"
-                    onClick={() => openHoldingAnalytics(item)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(event) => event.key === 'Enter' && openHoldingAnalytics(item)}
+                    className={item.isDeleted ? undefined : 'sa-row-clickable'}
+                    onClick={() => { if (!item.isDeleted) openHoldingAnalytics(item); }}
+                    role={item.isDeleted ? undefined : 'button'}
+                    tabIndex={item.isDeleted ? undefined : 0}
+                    onKeyDown={(event) => { if (!item.isDeleted && event.key === 'Enter') openHoldingAnalytics(item); }}
                   >
                     <td onClick={(event) => event.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selectedHoldingIds.includes(item.id)}
-                        disabled={!selectedHoldingIds.includes(item.id) && selectedHoldingIds.length >= 6}
+                        disabled={item.isDeleted || (!selectedHoldingIds.includes(item.id) && selectedHoldingIds.length >= 6)}
                         onChange={() => toggleHoldingCompare(item.id)}
                         aria-label={`Выбрать ${item.name}`}
                       />
@@ -1373,8 +1408,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                     <td className="sa-text-right">{analytics?.noAnswers ?? '—'}</td>
                     <td className="sa-text-right">{analytics?.lowDealerships ?? '—'}</td>
                     <td>
-                      <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
-                        {item.isActive ? 'Активен' : 'Выключен'}
+                      <span className={`sa-status-badge ${item.isDeleted ? 'sa-status-critical' : item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                        {item.isDeleted ? 'Удалена' : item.isActive ? 'Активен' : 'Выключен'}
                       </span>
                     </td>
                     <td className="sa-holdings-actions-cell">
@@ -1404,17 +1439,17 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
               <div
                 key={item.id}
                 className="sa-mobile-row"
-                onClick={() => openHoldingAnalytics(item)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(event) => event.key === 'Enter' && openHoldingAnalytics(item)}
+                onClick={() => { if (!item.isDeleted) openHoldingAnalytics(item); }}
+                role={item.isDeleted ? undefined : 'button'}
+                tabIndex={item.isDeleted ? undefined : 0}
+                onKeyDown={(event) => { if (!item.isDeleted && event.key === 'Enter') openHoldingAnalytics(item); }}
               >
                 <div onClick={(event) => event.stopPropagation()} style={{ marginBottom: 8 }}>
                   <label className="sa-filter-check" style={{ width: 'fit-content' }}>
                     <input
                       type="checkbox"
                       checked={selectedHoldingIds.includes(item.id)}
-                      disabled={!selectedHoldingIds.includes(item.id) && selectedHoldingIds.length >= 6}
+                      disabled={item.isDeleted || (!selectedHoldingIds.includes(item.id) && selectedHoldingIds.length >= 6)}
                       onChange={() => toggleHoldingCompare(item.id)}
                     />
                     Сравнить
@@ -1424,8 +1459,8 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
                   <div>
                     <div className="sa-cell-name">{item.name}</div>
                   </div>
-                  <span className={`sa-status-badge ${item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
-                    {item.isActive ? 'Активен' : 'Выключен'}
+                  <span className={`sa-status-badge ${item.isDeleted ? 'sa-status-critical' : item.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                    {item.isDeleted ? 'Удалена' : item.isActive ? 'Активен' : 'Выключен'}
                   </span>
                 </div>
                 <div className="sa-mobile-chips">

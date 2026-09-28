@@ -47,6 +47,14 @@ function shortName(name: string): string {
   return name.replace(/^Точка\s+/i, '');
 }
 
+function formatCallDuration(seconds: number, compact = false): string {
+  const value = Math.max(0, Math.round(seconds));
+  if (value < 60) return `${value} с`;
+  const minutes = Math.floor(value / 60);
+  const rest = value % 60;
+  return compact ? `${minutes}:${String(rest).padStart(2, '0')}` : `${minutes} мин ${rest} с`;
+}
+
 function KPICard({
   label,
   value,
@@ -376,8 +384,8 @@ function EmployeeRatingTable({ rows, onOpenEmployee }: { rows: DashboardEmployee
   );
 }
 
-/* ─── Average Answer Time — SVG bar chart with clamped tooltip ─── */
-function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: string; avgSec: number; totalCalls: number }[]; embedded?: boolean }) {
+/* ─── Average Call Duration — SVG bar chart with clamped tooltip ─── */
+function AverageCallDurationChart({ data, embedded = false }: { data: { name: string; avgSec: number; totalCalls: number }[]; embedded?: boolean }) {
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   if (!data || data.length === 0) {
@@ -419,7 +427,7 @@ function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: stri
           return (
             <g key={v}>
               <line x1={pad.left} y1={y} x2={pad.left + chartW} y2={y} stroke="var(--sa-divider)" strokeWidth="1" strokeDasharray="4" />
-              <text x={pad.left - 8} y={y + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{v}с</text>
+              <text x={pad.left - 8} y={y + 4} textAnchor="end" fontSize="11" fill="var(--sa-text-secondary)">{formatCallDuration(v, true)}</text>
             </g>
           );
         })}
@@ -446,7 +454,7 @@ function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: stri
               />
               {isHover && (
                 <text x={x + barW / 2} y={y - 6} textAnchor="middle" fontSize="11" fill="var(--sa-text)" fontWeight="600">
-                  {d.avgSec}с
+                  {formatCallDuration(d.avgSec, true)}
                 </text>
               )}
               <text
@@ -469,7 +477,7 @@ function AverageAnswerTimeChart({ data, embedded = false }: { data: { name: stri
                   <g>
                     <rect x={tooltipX} y={tooltipY} width={tooltipW} height={tooltipH} rx="10" fill="var(--tb-ink)" />
                     <text x={tooltipX + 10} y={tooltipY + 16} fontSize="11" fill="#F1F0EC" fontWeight="600">{d.name}</text>
-                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="rgba(241, 240, 236, 0.78)">Длительность: {d.avgSec} сек</text>
+                    <text x={tooltipX + 10} y={tooltipY + 32} fontSize="11" fill="rgba(241, 240, 236, 0.78)">Длительность: {formatCallDuration(d.avgSec)}</text>
                     <text x={tooltipX + 10} y={tooltipY + 46} fontSize="11" fill="rgba(241, 240, 236, 0.78)">Звонков: {d.totalCalls}</text>
                   </g>
                 );
@@ -603,7 +611,7 @@ export function Dashboard({ loading }: DashboardProps) {
   const totalCalls = overview?.totalCalls ?? 0;
   const displayTimeSeries = overview?.timeSeries ?? [];
   const hourly = overview?.hourlyAnswerRate ?? [];
-  const answerTimeByCompany = overview?.answerTimeByCompany ?? [];
+  const callDurationByCompany = overview?.callDurationByCompany ?? [];
 
   const topSalons = (overview?.topDealerships ?? [])
     .map((c, i) => ({
@@ -767,7 +775,7 @@ export function Dashboard({ loading }: DashboardProps) {
             <AnswerRateByHour hourly={hourly.length === 24 ? hourly : []} embedded />
           </BrutalCard>
           <BrutalCard title="Средняя длительность звонка" className="sa-grid-card sa-chart-equal">
-            <AverageAnswerTimeChart data={answerTimeByCompany} embedded />
+            <AverageCallDurationChart data={callDurationByCompany} embedded />
           </BrutalCard>
         </div>
       </section>

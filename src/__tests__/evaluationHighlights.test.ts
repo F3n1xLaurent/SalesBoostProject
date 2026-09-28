@@ -27,9 +27,9 @@ describe('evaluation highlights', () => {
     const result = buildEvaluationHighlights({
       plan_criteria: {
         items: [
-          { expectedAnswer: 'Назвать преимущество модели', maxScore: 100, score: 80 },
-          { expectedAnswer: 'Пригласить на тест-драйв', maxScore: 100, score: 50 },
-          { expectedAnswer: 'Зафиксировать дату', maxScore: 100, score: 0 },
+          { expectedAnswer: 'Назвать преимущество модели', maxScore: 100, score: 80, status: 'YES' },
+          { expectedAnswer: 'Пригласить на тест-драйв', maxScore: 100, score: 50, status: 'PARTIAL' },
+          { expectedAnswer: 'Зафиксировать дату', maxScore: 100, score: 0, status: 'NO' },
         ],
       },
     });
@@ -39,6 +39,34 @@ describe('evaluation highlights', () => {
       'Пригласить на тест-драйв — выполнено частично',
       'Зафиксировать дату — не выполнено',
     ]);
+  });
+
+  it('does not count script questions that were not reached as weaknesses', () => {
+    const result = buildEvaluationHighlights({
+      plan_criteria: {
+        items: [
+          { expectedAnswer: 'Рассказать об условиях гарантии', maxScore: 100, score: 0, status: 'NA' },
+          { expectedAnswer: 'Назвать стоимость', maxScore: 100, score: 0, status: 'NO' },
+        ],
+      },
+    });
+
+    expect(result.weaknesses).toEqual(['Назвать стоимость — не выполнено']);
+    expect(result.weaknesses.join(' ')).not.toContain('гарантии');
+  });
+
+  it('does not turn an ambiguous legacy zero into a weakness', () => {
+    const result = buildEvaluationHighlights({
+      plan_criteria: {
+        items: [
+          { expectedAnswer: 'Ответить на вопрос, который мог не прозвучать', maxScore: 100, score: 0 },
+          { expectedAnswer: 'Подтверждённый хороший ответ', maxScore: 100, score: 100 },
+        ],
+      },
+    });
+
+    expect(result.strengths).toEqual(['Подтверждённый хороший ответ — выполнено']);
+    expect(result.weaknesses).toEqual([]);
   });
 
   it('does not claim a classification when only NA items exist', () => {

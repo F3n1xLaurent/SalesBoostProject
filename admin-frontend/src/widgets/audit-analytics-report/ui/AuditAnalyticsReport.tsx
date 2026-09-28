@@ -420,6 +420,11 @@ export function AuditAnalyticsReport({
             <div className="sa-call-report-score-body">
               <div className="sa-call-report-verdict">{report.verdict}</div>
               <p>{report.summary}</p>
+              {detail.type === 'trainer' && detail.scriptComplianceScore != null ? (
+                <div className="sa-call-report-script-score">
+                  Знание сценария: <strong>{Math.round(detail.scriptComplianceScore)}%</strong>
+                </div>
+              ) : null}
               {detail.failReason && <div className="sa-audit-fail-reason">{detail.failReason}</div>}
             </div>
           </section>

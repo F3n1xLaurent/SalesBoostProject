@@ -18,6 +18,7 @@ import {
   fetchCallCustomerProfiles,
   fetchCallCustomerVoices,
   fetchCallScripts,
+  fetchEvaluationChecklists,
   fetchHoldings,
   fetchImportedItems,
   fetchImportedTags,
@@ -42,6 +43,7 @@ import {
   type CallCustomerVoiceItem,
   type CallScriptItem,
   type CallScriptSuccessCriterion,
+  type EvaluationChecklistItem,
   type CustomerPatience,
   type CustomerTemperament,
   type AuditDetailItem,
@@ -238,6 +240,7 @@ const EMPTY_SCRIPT_FORM: CallScriptForm = {
   objections: [],
   questions: [],
   successCriteria: [],
+  checklistId: null,
 };
 
 function normalizeScriptForm(form: CallScriptForm) {
@@ -266,6 +269,7 @@ function normalizeScriptForm(form: CallScriptForm) {
       expectedAnswer: item.expectedAnswer.trim(),
       score: item.score,
     })),
+    checklistId: form.checklistId || null,
   };
 }
 
@@ -1092,6 +1096,7 @@ function ScriptEditor(props: {
   onSave: (script: Omit<CallScript, 'id' | 'createdAt' | 'updatedAt'>) => void;
   onDelete?: () => void;
 }) {
+  const navigate = useNavigate();
   const [form, setForm] = useState<CallScriptForm>(EMPTY_SCRIPT_FORM);
   const [tags, setTags] = useState<string[]>([]);
   const [tagsLoading, setTagsLoading] = useState(false);
@@ -1104,6 +1109,9 @@ function ScriptEditor(props: {
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [initialSnapshot, setInitialSnapshot] = useState('');
+  const [checklists, setChecklists] = useState<EvaluationChecklistItem[]>([]);
+  const [checklistsLoading, setChecklistsLoading] = useState(true);
+  const [checklistsLoadFailed, setChecklistsLoadFailed] = useState(false);
   const isEdit = Boolean(props.initialScript);
 
   useEffect(() => {
@@ -1117,6 +1125,7 @@ function ScriptEditor(props: {
         objections: source.objections.map((item) => ({ ...item })),
         questions: source.questions.map((item) => ({ ...item })),
         successCriteria: source.successCriteria.map((item) => ({ ...item })),
+        checklistId: source.checklistId,
       }
       : {
         ...EMPTY_SCRIPT_FORM,
@@ -1125,6 +1134,7 @@ function ScriptEditor(props: {
         objections: [],
         questions: [],
         successCriteria: [],
+        checklistId: null,
       };
     setForm(nextForm);
     setScoreDrafts(Object.fromEntries((nextForm.successCriteria || []).map((item) => [item.id, String(item.score)])));
@@ -1132,6 +1142,23 @@ function ScriptEditor(props: {
     setAttempted(false);
     setTagSearch('');
   }, [props.initialScript, props.holdingId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setChecklists([]);
+    setChecklistsLoading(true);
+    setChecklistsLoadFailed(false);
+    fetchEvaluationChecklists(props.holdingId)
+      .then((loaded) => { if (!cancelled) setChecklists(loaded.filter((item) => !item.isTemplate)); })
+      .catch(() => {
+        if (!cancelled) {
+          setChecklists([]);
+          setChecklistsLoadFailed(true);
+        }
+      })
+      .finally(() => { if (!cancelled) setChecklistsLoading(false); });
+    return () => { cancelled = true; };
+  }, [props.holdingId]);
 
   useEffect(() => {
     setForm((current) => ({
@@ -1297,6 +1324,7 @@ function ScriptEditor(props: {
     event.preventDefault();
     setAttempted(true);
     if (!form.name.trim()) return;
+    if (!isEdit && !form.checklistId) return;
     if (isEdit && !isDirty) return;
     props.onSave({
       holdingId: props.holdingId,
@@ -1323,6 +1351,9 @@ function ScriptEditor(props: {
     })),
   })) !== initialSnapshot;
   const nameInvalid = attempted && !form.name.trim();
+  const checklistInvalid = !isEdit && attempted && !form.checklistId;
+  const currentChecklistUnavailable = Boolean(form.checklistId) && !checklists.some((item) => item.id === form.checklistId);
+  const checklistCreationBlocked = !isEdit && (checklistsLoading || checklists.length === 0 || !form.checklistId);
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
@@ -1345,6 +1376,44 @@ function ScriptEditor(props: {
               aria-invalid={nameInvalid || undefined}
             />
           </label>
+
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span>Чек-лист оценки</span>
+            <select
+              className={`sa-input${checklistInvalid ? ' sa-field-invalid' : ''}`}
+              value={form.checklistId || ''}
+              onChange={(event) => updateForm({ checklistId: event.target.value })}
+              disabled={checklistsLoading || (!isEdit && checklists.length === 0)}
+              required={!isEdit}
+              aria-invalid={checklistInvalid || undefined}
+            >
+              {!isEdit && <option value="" disabled>{checklistsLoading ? 'Загружаем чек-листы…' : 'Выберите чек-лист'}</option>}
+              {isEdit && !form.checklistId && <option value="" disabled>Чек-лист не назначен</option>}
+              {isEdit && currentChecklistUnavailable && form.checklistId && <option value={form.checklistId} disabled>Ранее выбранный чек-лист недоступен</option>}
+              {checklists.map((checklist) => <option key={checklist.id} value={checklist.id}>{checklist.name} · {checklist.totalPoints} баллов</option>)}
+            </select>
+            {checklistInvalid && <span style={{ color: '#b91c1c', fontSize: 12 }}>Выберите чек-лист оценки.</span>}
+            <span className="sa-meta">По этому чек-листу будут оцениваться звонки и тренировки данного скрипта.</span>
+          </label>
+
+          {!checklistsLoading && checklists.length === 0 && (
+            <div
+              role="alert"
+              style={{ padding: 14, border: '1px solid #f59e0b', borderRadius: 12, background: '#fffbeb', color: '#92400e', display: 'grid', gap: 6 }}
+            >
+              <strong>{checklistsLoadFailed ? 'Не удалось загрузить чек-листы' : 'У компании нет чек-листов'}</strong>
+              <span style={{ fontSize: 13 }}>
+                {checklistsLoadFailed
+                  ? 'Повторите попытку позже. Новый скрипт нельзя создать без выбранного чек-листа.'
+                  : isEdit
+                    ? 'Можно продолжить редактирование ранее созданного скрипта, но для новых скриптов потребуется чек-лист.'
+                    : 'Сначала создайте чек-лист оценки, затем вернитесь к созданию скрипта.'}
+              </span>
+              {!checklistsLoadFailed && !isEdit && (
+                <div><button type="button" className="sa-btn-text" onClick={() => navigate('/checklists/new')}>Создать чек-лист →</button></div>
+              )}
+            </div>
+          )}
 
           <div style={{ display: 'grid', gap: 8 }}>
             <span>Профили клиента</span>
@@ -1576,7 +1645,7 @@ function ScriptEditor(props: {
           ) : <span />}
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <button type="button" className="sa-btn-outline" onClick={props.onBack}>Отмена</button>
-            <button type="submit" className="sa-btn-primary" disabled={isEdit && !isDirty}>
+            <button type="submit" className="sa-btn-primary" disabled={(isEdit && !isDirty) || checklistCreationBlocked}>
               {isEdit ? 'Сохранить изменения' : 'Сохранить скрипт'}
             </button>
           </div>
@@ -2222,6 +2291,10 @@ export function CallSettingsPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const route = useMemo(() => parseCallSettingsRoute(location.pathname), [location.pathname]);
+  const reportCallId = useMemo(
+    () => new URLSearchParams(location.search).get('callId')?.trim() ?? '',
+    [location.search],
+  );
   const [activeTab, setActiveTab] = useState<CallSettingsTab>(route.tab);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
@@ -2394,6 +2467,25 @@ export function CallSettingsPage() {
       void openPlanHistory(plan, { skipNavigate: true });
     }
   }, [loading, navigate, plans, route, selectedPlan?.id, selectedPlan?.updatedAt]);
+
+  useEffect(() => {
+    if (!reportCallId) {
+      resetAnalyticsDrawer();
+      return;
+    }
+    if (route.tab !== 'plan' || !route.planId || selectedPlan?.id !== route.planId || planCallsLoading) return;
+
+    const call = planCalls.find((item) => item.callId === reportCallId);
+    if (!call) {
+      setAnalyticsDrawerOpen(true);
+      setAnalyticsDrawerLoading(false);
+      setAnalyticsDrawerDetail(null);
+      setAnalyticsDrawerError('Звонок не найден в истории этого плана прозвона.');
+      return;
+    }
+
+    void loadCallAnalyticsDrawer(call);
+  }, [planCalls, planCallsLoading, reportCallId, route, selectedPlan?.id]);
 
   const sortedProfiles = useMemo(
     () => [...profiles].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
@@ -2670,14 +2762,33 @@ export function CallSettingsPage() {
     }
   }
 
-  function closeAnalyticsDrawer() {
+  function resetAnalyticsDrawer() {
     setAnalyticsDrawerOpen(false);
     setAnalyticsDrawerLoading(false);
     setAnalyticsDrawerError(null);
     setAnalyticsDrawerDetail(null);
   }
 
-  async function openCallAnalyticsDrawer(call: CallPlanCallItem) {
+  function closeAnalyticsDrawer() {
+    resetAnalyticsDrawer();
+
+    const params = new URLSearchParams(location.search);
+    if (!params.has('callId')) return;
+    params.delete('callId');
+    const search = params.toString();
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : '' },
+      { replace: true },
+    );
+  }
+
+  function openCallAnalyticsDrawer(call: CallPlanCallItem) {
+    const params = new URLSearchParams(location.search);
+    params.set('callId', call.callId);
+    navigate({ pathname: location.pathname, search: `?${params.toString()}` });
+  }
+
+  async function loadCallAnalyticsDrawer(call: CallPlanCallItem) {
     setAnalyticsDrawerOpen(true);
     setAnalyticsDrawerLoading(true);
     setAnalyticsDrawerError(null);

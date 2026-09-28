@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createDealership,
   deleteDealership,
+  restoreDealership,
   fetchCities,
   fetchDealershipDirections,
   fetchHoldings,
@@ -347,7 +348,7 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
       setUnsavedOpen(false);
       setDeleteConfirmOpen(false);
       if (!lockedHoldingId) {
-        fetchHoldings()
+        fetchHoldings({ includeDeleted: mode === 'edit' })
           .then(setHoldings)
           .catch(() => setHoldings([]));
       }
@@ -488,14 +489,37 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
       onClose();
       showToast({
         type: 'success',
-        title: 'Точка удалена',
-        description: dealership.name,
+        title: 'Точка скрыта',
+        description: 'Все связанные данные сохранены.',
       });
     } catch (deleteError) {
       showToast({
         type: 'error',
         title: 'Не удалось удалить точку',
         description: deleteError instanceof Error ? deleteError.message : 'Попробуйте повторить действие.',
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRestore() {
+    if (!dealership?.id) return;
+    setSaving(true);
+    try {
+      await restoreDealership(dealership.id);
+      onSaved({ ...dealership, isDeleted: false });
+      onClose();
+      showToast({
+        type: 'success',
+        title: 'Точка восстановлена',
+        description: dealership.name,
+      });
+    } catch (restoreError) {
+      showToast({
+        type: 'error',
+        title: 'Не удалось восстановить точку',
+        description: restoreError instanceof Error ? restoreError.message : 'Попробуйте повторить действие.',
       });
     } finally {
       setSaving(false);
@@ -530,7 +554,11 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
         width="medium"
         footer={(
           <div className="sa-modal-footer-row">
-            {mode === 'edit' ? (
+            {mode === 'edit' && dealership?.isDeleted ? (
+              <button type="button" className="sa-btn-outline" onClick={() => { void handleRestore(); }} disabled={saving}>
+                Восстановить точку
+              </button>
+            ) : mode === 'edit' ? (
               <button type="button" className="sa-btn-danger" onClick={() => setDeleteConfirmOpen(true)} disabled={saving}>
                 Удалить точку
               </button>
@@ -564,8 +592,8 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
                 aria-invalid={holdingInvalid || undefined}
               >
                 <option value="">Без компании</option>
-                {holdings.map((holding) => (
-                  <option key={holding.id} value={holding.id}>{holding.name}</option>
+                {holdings.filter((holding) => !holding.isDeleted || holding.id === form.holdingId).map((holding) => (
+                  <option key={holding.id} value={holding.id}>{holding.name}{holding.isDeleted ? ' · удалена' : ''}</option>
                 ))}
               </select>
             </label>
@@ -721,7 +749,8 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
 
       <DeleteConfirmModal
         open={deleteConfirmOpen && mode === 'edit'}
-        title="Удалить точку?"
+        title="Скрыть точку?"
+        confirmLabel="Скрыть"
         saving={saving}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={() => { void handleDeleteConfirm(); }}

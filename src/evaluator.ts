@@ -1,4 +1,4 @@
-import { openai } from './lib/openaiClient';
+import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import { config } from './config';
 import { EvaluationResult, EvaluationResultSchema } from './types';
 import { prisma } from './db';
@@ -43,7 +43,7 @@ export async function evaluateAttempt(input: EvaluationInput): Promise<Evaluatio
         },
       ],
       response_format: { type: 'json_object' },
-      temperature: 0.3,
+      ...compatibleChatTemperature(config.openaiChatModel, 0.3),
     });
 
     const content = response.choices[0]?.message?.content;
@@ -70,7 +70,7 @@ export async function evaluateAttempt(input: EvaluationInput): Promise<Evaluatio
           },
         ],
         response_format: { type: 'json_object' },
-        temperature: 0.1,
+        ...compatibleChatTemperature(config.openaiChatModel, 0.1),
       });
 
       const fixedContent = fixedResponse.choices[0]?.message?.content;

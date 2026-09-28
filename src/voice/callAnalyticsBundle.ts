@@ -1,6 +1,6 @@
 import { config } from '../config';
 import { prisma } from '../db';
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import type { CallSummary, ReplyImprovement } from './callSummary';
 import type { TranscriptTurn } from './callHistory';
 import {
@@ -61,6 +61,7 @@ export async function generateCallAnalyticsBundle(input: {
     '- Логика скоринга уже рассчитана, не переоценивай с нуля.',
     '- Используй totalScore, dimension_scores, checklist, issues и transcript как источник фактов.',
     '- Не придумывай цитаты. Цитаты бери только из диалога.',
+    '- Для проблем приветствия, представления или названия компании используй в quote первую живую реплику менеджера, а не случайную реплику из середины разговора.',
     '- Отвечай кратко: без длинных абзацев, без повторения полной стенограммы.',
     '',
     `Исход звонка: ${input.outcome ?? '—'}`,
@@ -87,6 +88,9 @@ export async function generateCallAnalyticsBundle(input: {
     '- version строго "call-report-v1"; source строго "call".',
     '- categories должны быть ровно 5 и только: Контакт, Диагностика, Продукт, Закрытие, Коммуникация.',
     '- keyFindings.problemTitle выбирай ТОЛЬКО из справочника проблем.',
+    '- Заголовок, comment, quote и betterExample одной keyFinding должны описывать одну и ту же проблему. Не объединяй имя клиента и уточнение его запроса в одной находке.',
+    '- Не добавляй проблему «Не уточнил / не подтвердил имя клиента», если менеджер спросил «Как вас зовут?» или «Как я могу к вам обращаться?».',
+    '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
     '- dialog не должен повторять текст реплик: верни только элементы с mark/comment в том же количестве и порядке, что исходный диалог.',
     '- Для реплики клиента mark=null и comment=null.',
     '- Для реплики менеджера mark: positive | normal | negative, comment короткий, до 90 символов.',
@@ -129,8 +133,8 @@ export async function generateCallAnalyticsBundle(input: {
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.25,
-    max_tokens: 2200,
+    ...compatibleChatTemperature(config.openaiChatModel, 0.25),
+    max_completion_tokens: 2200,
   });
 
   const content = response.choices[0]?.message?.content?.trim();

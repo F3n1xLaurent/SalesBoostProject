@@ -82,13 +82,20 @@ export function buildEvaluationHighlights(
   for (const rawItem of planItems) {
     const item = recordOf(rawItem);
     if (!item) continue;
+    const status = cleanText(item.status).toUpperCase();
+    if (status === 'NA') continue;
     const label = cleanText(item.expectedAnswer || item.title || item.name || item.question);
     const maxScore = numeric(item.maxScore);
     const score = numeric(item.score);
     if (!label || maxScore === null || maxScore <= 0 || score === null) continue;
 
-    hasClassification = true;
     const ratio = Math.max(0, Math.min(1, score / maxScore));
+    // Legacy evaluations did not record whether the client actually reached
+    // the linked script question. Keep confirmed successes, but do not turn an
+    // ambiguous old zero into a manager weakness.
+    if (!status && ratio < 0.8) continue;
+
+    hasClassification = true;
     if (ratio >= 0.8) {
       appendUnique(strengths, `${label} — выполнено`, limit);
     } else if (ratio >= 0.4) {

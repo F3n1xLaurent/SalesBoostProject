@@ -1994,6 +1994,8 @@
   width: fit-content;
   max-width: min(420px, 92%);
   min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
   border-radius: 16px;
   padding: 10px 12px 11px;
   box-shadow: none;
@@ -2005,12 +2007,13 @@
 }
 
 .theme-brutal.train-app .train-voice-main {
-  width: max-content;
+  width: 100%;
   max-width: 100%;
+  overflow: hidden;
 }
 
 .theme-brutal.train-app .train-voice-wave {
-  width: max-content;
+  width: 100%;
   max-width: 100%;
 }
 

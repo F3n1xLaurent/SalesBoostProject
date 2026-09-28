@@ -17,6 +17,7 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
   'companies',
   'dealershipDirections',
   'imports',
+  'checklists',
   'typesNumbers',
   'users',
   'autodealers',
@@ -62,6 +63,8 @@ export function tabToPath(tab: AdminTab): string {
       return '/dealership-directions';
     case 'imports':
       return '/data';
+    case 'checklists':
+      return '/checklists';
     case 'typesNumbers':
       return '/typesNumbers';
     case 'users':
@@ -115,6 +118,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'companies') return { tab: 'companies', dealershipId: resource };
   if (section === 'dealership-directions') return { tab: 'dealershipDirections' };
   if (section === 'data' || section === 'imports') return { tab: 'imports' };
+  if (section === 'checklists') return { tab: 'checklists' };
   if (section === 'typesNumbers') return { tab: 'typesNumbers' };
   if (section === 'users') return { tab: 'users', employeeId: resource };
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };

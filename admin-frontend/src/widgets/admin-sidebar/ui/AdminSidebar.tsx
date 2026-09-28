@@ -37,6 +37,7 @@ const SUPER_NAV_MAIN: NavItem[] = [
 
 const SUPER_NAV_SECONDARY: NavItem[] = [
   { id: 'imports', label: 'Данные', icon: 'database' },
+  { id: 'checklists', label: 'Чек-листы', icon: 'check-ring' },
   { id: 'dealershipDirections', label: 'Направления точек', icon: 'filter' },
   { id: 'typesNumbers', label: 'Типы номеров', icon: 'phone' },
   { id: 'callSettings', label: 'Настройки обзвона', icon: 'setting-alt-line' },

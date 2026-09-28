@@ -14,6 +14,7 @@ export const DEFAULT_CALL_REPORT_PROBLEMS: ProblemCatalogItem[] = [
   { code: 'NO_CLIENT_NAME', title: 'Не уточнил / не подтвердил имя клиента', category: 'Контакт', sortOrder: 20 },
   { code: 'WEAK_DIALOG_OPENING', title: 'Не открыл диалог грамотно после приветствия (сухо передал слово клиенту, не задал открывающий вопрос)', category: 'Контакт', sortOrder: 30 },
   { code: 'NO_NEEDS_DISCOVERY', title: 'Не выявил потребности клиента (поверхностные вопросы)', category: 'Диагностика', sortOrder: 40 },
+  { code: 'NO_REQUEST_CLARIFICATION', title: 'Не уточнил запрос клиента', category: 'Диагностика', sortOrder: 45 },
   { code: 'NO_KEY_PARAMS', title: 'Не уточнил ключевые параметры (город, бюджет, сроки и т.п.)', category: 'Диагностика', sortOrder: 50 },
   { code: 'PRODUCT_MISINFORMATION', title: 'Слабое знание характеристик / фактическая ошибка (дезинформация)', category: 'Продукт', sortOrder: 60 },
   { code: 'WEAK_BENEFIT_PRESENTATION', title: 'Презентация не структурирована, нет акцента на выгодах', category: 'Продукт', sortOrder: 70 },

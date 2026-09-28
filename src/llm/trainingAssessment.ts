@@ -1,4 +1,4 @@
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { config } from '../config';
 
 export interface TrainingAssessmentInput {
@@ -66,8 +66,8 @@ export async function generateTrainingAssessment(input: TrainingAssessmentInput)
       },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.5,
-    max_tokens: 1500,
+    ...compatibleChatTemperature(config.openaiChatModel, 0.5),
+    max_completion_tokens: 1500,
   });
 
   const text = response.choices[0]?.message?.content?.trim();

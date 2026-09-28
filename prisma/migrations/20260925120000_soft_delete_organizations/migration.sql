@@ -1,0 +1,2 @@
+ALTER TABLE "holdings" ADD COLUMN "isDeleted" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "dealerships" ADD COLUMN "isDeleted" BOOLEAN NOT NULL DEFAULT false;

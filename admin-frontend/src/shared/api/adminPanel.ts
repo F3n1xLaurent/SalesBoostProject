@@ -81,7 +81,7 @@ export interface DashboardOverview {
   totalCalls: number;
   timeSeries: TimeSeriesPoint[];
   hourlyAnswerRate: number[];
-  answerTimeByCompany: { id: string; name: string; avgSec: number; totalCalls: number }[];
+  callDurationByCompany: { id: string; name: string; avgSec: number; totalCalls: number }[];
   topDealerships: DashboardDealershipRow[];
   lowDealerships: DashboardDealershipRow[];
   topEmployees: DashboardEmployeeRatingRow[];
@@ -146,6 +146,7 @@ export interface AuditDetailItem {
   dealershipName: string;
   city: string;
   totalScore: number;
+  scriptComplianceScore?: number | null;
   verdict: string;
   status: 'completed' | 'failed' | 'interrupted';
   duration: number;
@@ -576,6 +577,7 @@ export interface HoldingItem {
   description: string | null;
   type: HoldingType;
   isActive: boolean;
+  isDeleted: boolean;
   createdAt: string;
   updatedAt: string;
   dealershipsCount: number;
@@ -588,6 +590,7 @@ export interface HoldingItem {
     workingHoursFrom: string | null;
     workingHoursTo: string | null;
     isActive: boolean;
+    isDeleted: boolean;
     holdingId: string | null;
   }>;
 }
@@ -604,10 +607,12 @@ export interface DealershipItem {
   workingHoursFrom: string | null;
   workingHoursTo: string | null;
   isActive: boolean;
+  isDeleted: boolean;
   createdAt: string;
   updatedAt: string;
   holdingId: string | null;
   holdingName: string | null;
+  holdingIsDeleted: boolean;
   managersCount: number;
 }
 
@@ -781,6 +786,29 @@ export interface CallScriptItem {
   objections: CallScriptObjection[];
   questions: CallScriptQuestion[];
   successCriteria: CallScriptSuccessCriterion[];
+  checklistId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EvaluationChecklistItemDefinition {
+  id: string;
+  title: string;
+  instruction: string;
+  category: string;
+  points: number;
+  allowNa: boolean;
+}
+
+export interface EvaluationChecklistItem {
+  id: string;
+  holdingId: string | null;
+  name: string;
+  isTemplate: boolean;
+  sourceTemplateId: string | null;
+  items: EvaluationChecklistItemDefinition[];
+  totalPoints: number;
+  isArchived: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -1291,12 +1319,14 @@ export async function fetchHoldings(filters?: {
   search?: string;
   type?: 'all' | HoldingType;
   status?: 'all' | 'active' | 'inactive';
+  includeDeleted?: boolean;
 }): Promise<HoldingItem[]> {
   const params = new URLSearchParams();
   const search = filters?.search?.trim();
   if (search) params.set('search', search);
   if (filters?.type && filters.type !== 'all') params.set('type', filters.type);
   if (filters?.status && filters.status !== 'all') params.set('status', filters.status);
+  if (filters?.includeDeleted) params.set('includeDeleted', 'true');
   const suffix = params.toString() ? `?${params.toString()}` : '';
   const res = await apiFetch(`${API_BASE}/api/admin/holdings${suffix}`);
   if (!res.ok) return [];
@@ -1304,8 +1334,11 @@ export async function fetchHoldings(filters?: {
   return data.items ?? [];
 }
 
-export async function fetchDealerships(): Promise<DealershipItem[]> {
-  const res = await apiFetch(`${API_BASE}/api/admin/dealerships`);
+export async function fetchDealerships(filters?: { includeDeleted?: boolean }): Promise<DealershipItem[]> {
+  const params = new URLSearchParams();
+  if (filters?.includeDeleted) params.set('includeDeleted', 'true');
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/dealerships${suffix}`);
   if (!res.ok) return [];
   const data = await res.json();
   return data.items ?? [];
@@ -1501,6 +1534,14 @@ export async function deleteHolding(holdingId: string): Promise<void> {
   if (!res.ok) throw new Error(relabelHoldingError(data?.error) || 'Не удалось удалить компанию.');
 }
 
+export async function restoreHolding(holdingId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/holdings/${holdingId}/restore`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(relabelHoldingError(data?.error) || 'Не удалось восстановить компанию.');
+}
+
 export async function createDealership(payload: {
   name: string;
   code?: string | null;
@@ -1556,6 +1597,14 @@ export async function deleteDealership(dealershipId: string): Promise<void> {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(relabelDealershipError(data?.error) || 'Не удалось удалить точку.');
+}
+
+export async function restoreDealership(dealershipId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/dealerships/${dealershipId}/restore`, {
+    method: 'POST',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(relabelDealershipError(data?.error) || 'Не удалось восстановить точку.');
 }
 
 export async function fetchPhoneNumberTypes(filters?: {
@@ -1793,6 +1842,46 @@ export async function fetchCallScripts(params: { holdingId: string }): Promise<C
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить скрипты.');
   return Array.isArray(data.items) ? data.items as CallScriptItem[] : [];
+}
+
+export async function fetchEvaluationChecklists(holdingId?: string | null): Promise<EvaluationChecklistItem[]> {
+  const query = new URLSearchParams();
+  if (holdingId) query.set('holdingId', holdingId);
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const res = await apiFetch(`${API_BASE}/api/admin/evaluation-checklists${suffix}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить чек-листы.');
+  return Array.isArray(data.items) ? data.items as EvaluationChecklistItem[] : [];
+}
+
+export async function createEvaluationChecklist(payload: {
+  holdingId?: string | null;
+  name: string;
+  isTemplate?: boolean;
+  sourceTemplateId?: string | null;
+  items: EvaluationChecklistItemDefinition[];
+}): Promise<EvaluationChecklistItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/evaluation-checklists`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось создать чек-лист.');
+  return data.item as EvaluationChecklistItem;
+}
+
+export async function updateEvaluationChecklist(id: string, payload: { name: string; items: EvaluationChecklistItemDefinition[] }): Promise<EvaluationChecklistItem> {
+  const res = await apiFetch(`${API_BASE}/api/admin/evaluation-checklists/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить чек-лист.');
+  return data.item as EvaluationChecklistItem;
+}
+
+export async function archiveEvaluationChecklist(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/evaluation-checklists/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось архивировать чек-лист.');
 }
 
 export async function createCallScript(payload: Omit<CallScriptItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<CallScriptItem> {

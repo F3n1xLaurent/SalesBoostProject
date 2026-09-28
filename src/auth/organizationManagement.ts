@@ -100,6 +100,7 @@ function normalizeHoldingResponse(
   holding: Prisma.HoldingGetPayload<{
     include: {
       dealerships: {
+        where: { isDeleted: false };
         orderBy: [{ city: 'asc' }, { name: 'asc' }];
       };
     };
@@ -112,6 +113,7 @@ function normalizeHoldingResponse(
     description: holding.description,
     type: holding.type as HoldingType,
     isActive: holding.isActive,
+    isDeleted: holding.isDeleted,
     createdAt: holding.createdAt,
     updatedAt: holding.updatedAt,
     dealershipsCount: holding.dealerships.length,
@@ -126,6 +128,7 @@ function normalizeHoldingResponse(
       workingHoursFrom: dealership.workingHoursFrom,
       workingHoursTo: dealership.workingHoursTo,
       isActive: dealership.isActive,
+      isDeleted: dealership.isDeleted,
       holdingId: dealership.holdingId,
     })),
   };
@@ -153,10 +156,12 @@ function normalizeDealershipResponse(
     workingHoursFrom: dealership.workingHoursFrom,
     workingHoursTo: dealership.workingHoursTo,
     isActive: dealership.isActive,
+    isDeleted: dealership.isDeleted,
     createdAt: dealership.createdAt,
     updatedAt: dealership.updatedAt,
     holdingId: dealership.holdingId,
     holdingName: dealership.holding?.name ?? null,
+    holdingIsDeleted: dealership.holding?.isDeleted ?? false,
     managersCount: dealership._count.managerProfiles,
   };
 }
@@ -373,8 +378,10 @@ async function generateUniqueDirectionCode(tx: Prisma.TransactionClient, holding
 
 async function getHoldingsSnapshot() {
   return prisma.holding.findMany({
+    where: { isDeleted: false },
     include: {
       dealerships: {
+        where: { isDeleted: false },
         orderBy: [{ city: 'asc' }, { name: 'asc' }],
       },
     },
@@ -383,11 +390,12 @@ async function getHoldingsSnapshot() {
 }
 
 function buildHoldingWhere(
-  filters: { search?: string | null; type?: HoldingType | null; isActive?: boolean | null },
+  filters: { search?: string | null; type?: HoldingType | null; isActive?: boolean | null; includeDeleted?: boolean },
   scope: Prisma.HoldingWhereInput = {},
 ): Prisma.HoldingWhereInput {
   const and: Prisma.HoldingWhereInput[] = [];
 
+  if (!filters.includeDeleted) and.push({ isDeleted: false });
   if (filters.type) and.push({ type: filters.type });
   if (filters.isActive != null) and.push({ isActive: filters.isActive });
   if (filters.search) {
@@ -395,8 +403,8 @@ function buildHoldingWhere(
       OR: [
         { name: { contains: filters.search } },
         { code: { contains: filters.search } },
-        { dealerships: { some: { name: { contains: filters.search } } } },
-        { dealerships: { some: { code: { contains: filters.search } } } },
+        { dealerships: { some: { isDeleted: false, name: { contains: filters.search } } } },
+        { dealerships: { some: { isDeleted: false, code: { contains: filters.search } } } },
       ],
     });
   }
@@ -405,8 +413,15 @@ function buildHoldingWhere(
   return { AND: [scope, ...and] };
 }
 
-async function getDealershipsSnapshot() {
+async function getDealershipsSnapshot(includeDeleted = false) {
   return prisma.dealership.findMany({
+    where: includeDeleted ? {} : {
+      isDeleted: false,
+      OR: [
+        { holdingId: null },
+        { holding: { is: { isDeleted: false } } },
+      ],
+    },
     include: {
       holding: true,
       _count: {
@@ -521,12 +536,14 @@ export async function handleListHoldings(req: Request, res: Response): Promise<v
     const type = req.query.type != null ? parseHoldingType(req.query.type, 'own') : null;
     const statusRaw = parseString(req.query.status);
     const isActive = statusRaw === 'active' ? true : statusRaw === 'inactive' ? false : null;
+    const includeDeleted = isPlatformSuperadmin(account) && parseBoolean(req.query.includeDeleted, false);
     let items;
     if (isPlatformSuperadmin(account)) {
       items = await prisma.holding.findMany({
-        where: buildHoldingWhere({ search, type, isActive }),
+        where: buildHoldingWhere({ search, type, isActive, includeDeleted }),
         include: {
           dealerships: {
+            where: { isDeleted: false },
             orderBy: [{ city: 'asc' }, { name: 'asc' }],
           },
         },
@@ -537,6 +554,7 @@ export async function handleListHoldings(req: Request, res: Response): Promise<v
         where: buildHoldingWhere({ search, type, isActive }, { id: { in: getHoldingIds(account) } }),
         include: {
           dealerships: {
+            where: { isDeleted: false },
             orderBy: [{ city: 'asc' }, { name: 'asc' }],
           },
         },
@@ -544,7 +562,7 @@ export async function handleListHoldings(req: Request, res: Response): Promise<v
       });
     } else if (isDealershipAdmin(account)) {
       const dealerships = await prisma.dealership.findMany({
-        where: { id: { in: getDealershipIds(account) }, holdingId: { not: null } },
+        where: { id: { in: getDealershipIds(account) }, holdingId: { not: null }, isDeleted: false, holding: { is: { isDeleted: false } } },
         select: { holdingId: true },
       });
       const holdingIds = [...new Set(dealerships.map((item) => item.holdingId).filter(Boolean))] as string[];
@@ -554,6 +572,7 @@ export async function handleListHoldings(req: Request, res: Response): Promise<v
             where: buildHoldingWhere({ search, type, isActive }, { id: { in: holdingIds } }),
             include: {
               dealerships: {
+                where: { isDeleted: false },
                 orderBy: [{ city: 'asc' }, { name: 'asc' }],
               },
             },
@@ -576,12 +595,13 @@ export async function handleListDealerships(req: Request, res: Response): Promis
   }
 
   try {
+    const includeDeleted = isPlatformSuperadmin(account) && parseBoolean(req.query.includeDeleted, false);
     let items;
     if (isPlatformSuperadmin(account)) {
-      items = await getDealershipsSnapshot();
+      items = await getDealershipsSnapshot(includeDeleted);
     } else if (isHoldingAdmin(account)) {
       items = await prisma.dealership.findMany({
-        where: { holdingId: { in: getHoldingIds(account) } },
+        where: { holdingId: { in: getHoldingIds(account) }, isDeleted: false, holding: { is: { isDeleted: false } } },
         include: {
           holding: true,
           _count: {
@@ -592,7 +612,7 @@ export async function handleListDealerships(req: Request, res: Response): Promis
       });
     } else if (isDealershipAdmin(account)) {
       items = await prisma.dealership.findMany({
-        where: { id: { in: getDealershipIds(account) } },
+        where: { id: { in: getDealershipIds(account) }, isDeleted: false, OR: [{ holdingId: null }, { holding: { is: { isDeleted: false } } }] },
         include: {
           holding: true,
           _count: {
@@ -782,23 +802,43 @@ export async function handleDeleteHolding(req: Request, res: Response): Promise<
   }
 
   try {
-    await prisma.$transaction(async (tx) => {
-      await tx.dealership.updateMany({
-        where: { holdingId },
-        data: { holdingId: null },
-      });
-      await tx.accountMembership.deleteMany({
-        where: { holdingId },
-      });
-      await tx.holding.delete({
-        where: { id: holdingId },
-      });
+    await prisma.holding.update({
+      where: { id: holdingId },
+      data: { isDeleted: true },
     });
 
     res.json({ success: true });
   } catch (error) {
     console.error('Delete holding error:', error);
     res.status(500).json({ error: 'Не удалось удалить компанию.' });
+  }
+}
+
+export async function handleRestoreHolding(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+  try {
+    assertSuperadmin(account);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
+    return;
+  }
+
+  const holdingId = String(req.params.holdingId || '').trim();
+  if (!holdingId) {
+    res.status(400).json({ error: 'Некорректный holdingId.' });
+    return;
+  }
+
+  try {
+    await prisma.holding.update({ where: { id: holdingId }, data: { isDeleted: false } });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Restore holding error:', error);
+    res.status(500).json({ error: 'Не удалось восстановить компанию.' });
   }
 }
 
@@ -1443,17 +1483,43 @@ export async function handleDeleteDealership(req: Request, res: Response): Promi
   }
 
   try {
-    await prisma.accountMembership.deleteMany({
-      where: { dealershipId },
-    });
-    await prisma.dealership.delete({
+    await prisma.dealership.update({
       where: { id: dealershipId },
+      data: { isDeleted: true },
     });
 
     res.json({ success: true });
   } catch (error) {
     console.error('Delete dealership error:', error);
     res.status(500).json({ error: 'Не удалось удалить точку.' });
+  }
+}
+
+export async function handleRestoreDealership(req: Request, res: Response): Promise<void> {
+  const account = req.authAccount;
+  if (!account) {
+    res.status(401).json({ error: 'Требуется авторизация.' });
+    return;
+  }
+  try {
+    assertSuperadmin(account);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : 'Нет доступа.' });
+    return;
+  }
+
+  const dealershipId = String(req.params.dealershipId || '').trim();
+  if (!dealershipId) {
+    res.status(400).json({ error: 'Некорректный dealershipId.' });
+    return;
+  }
+
+  try {
+    await prisma.dealership.update({ where: { id: dealershipId }, data: { isDeleted: false } });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Restore dealership error:', error);
+    res.status(500).json({ error: 'Не удалось восстановить точку.' });
   }
 }
 

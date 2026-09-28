@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../db';
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { config } from '../config';
 
 type ImportFormat = 'json' | 'xml' | 'csv';
@@ -791,8 +791,8 @@ async function applyAiAutotagsToImportedItems(importSourceId: string, itemIds: s
             }).slice(0, 18000),
           },
         ],
-        temperature: 0,
-        max_tokens: 800,
+        ...compatibleChatTemperature(config.openaiImportModel, 0),
+        max_completion_tokens: 800,
       }),
       AI_AUTOTAG_TIMEOUT_MS,
       `OpenAI import autotag request timed out after ${AI_AUTOTAG_TIMEOUT_MS}ms.`,
@@ -862,8 +862,8 @@ async function generateAiConfig(sampleItems: unknown[]): Promise<ImportAIConfig>
             }).slice(0, 12000),
           },
         ],
-        temperature: 0.1,
-        max_tokens: 800,
+        ...compatibleChatTemperature(config.openaiImportModel, 0.1),
+        max_completion_tokens: 800,
       }),
       AI_CONFIG_TIMEOUT_MS,
       `OpenAI import config request timed out after ${AI_CONFIG_TIMEOUT_MS}ms.`,
@@ -1012,8 +1012,8 @@ export async function handleGenerateImportTagRule(req: Request, res: Response): 
           },
           { role: 'user', content: JSON.stringify({ text, availableFields, operators: Array.from(TAG_OPERATORS) }) },
         ],
-        temperature: 0,
-        max_tokens: 300,
+        ...compatibleChatTemperature(config.openaiImportModel, 0),
+        max_completion_tokens: 300,
       }),
       AI_TAG_RULE_TIMEOUT_MS,
       `OpenAI tag rule request timed out after ${AI_TAG_RULE_TIMEOUT_MS}ms.`,
@@ -1121,8 +1121,8 @@ export async function handleGenerateImportTagRules(req: Request, res: Response):
             }).slice(0, 18000),
           },
         ],
-        temperature: 0.1,
-        max_tokens: 1600,
+        ...compatibleChatTemperature(config.openaiImportModel, 0.1),
+        max_completion_tokens: 1600,
       }),
       AI_TAG_RULES_TIMEOUT_MS,
       `OpenAI tag rules request timed out after ${AI_TAG_RULES_TIMEOUT_MS}ms.`,

@@ -1,7 +1,8 @@
 import { config } from '../config';
 import { prisma } from '../db';
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import type { TranscriptTurn } from './callHistory';
+import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { buildEvaluationHighlights } from '../logic/evaluationHighlights';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
@@ -139,6 +140,15 @@ function meaningfulText(value: unknown): string {
   return text && !isPlaceholderText(text) ? text : '';
 }
 
+export function normalizeCompanyWording(value: string): string {
+  return value
+    .replace(/название автосалона/giu, 'название компании')
+    .replace(/название салона/giu, 'название компании')
+    .replace(/не назвал автосалон/giu, 'не назвал компанию')
+    .replace(/назвать автосалон/giu, 'назвать компанию')
+    .replace(/называйте автосалон/giu, 'называйте компанию');
+}
+
 function arrayOfText(value: unknown, limit: number): string[] {
   if (!Array.isArray(value)) return [];
   const result: string[] = [];
@@ -166,6 +176,53 @@ function normalizeImportance(value: unknown): UnifiedFindingImportance {
   return text === 'Критично' || text === 'Важно' || text === 'Средне' ? text : 'Важно';
 }
 
+function isClientNameRequest(value: unknown): boolean {
+  const text = asText(value).toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/\s+/g, ' ');
+  return /(как (?:я )?могу к вам обращаться|как к вам обращаться|как вас зовут|назовите,? пожалуйста,? ваше имя|подскажите[^?.!]*(?:ваше имя|как[^?.!]*обращаться))/u.test(text);
+}
+
+function managerRequestedClientName(transcript: TranscriptTurn[]): boolean {
+  return transcript.some((turn) => turn.role === 'manager' && isClientNameRequest(turn.text));
+}
+
+function resolveFindingQuote(
+  problem: ProblemCatalogItem,
+  rawQuote: unknown,
+  transcript: TranscriptTurn[],
+): string {
+  if (problem.code === 'NO_INTRO_COMPANY' || problem.code === 'WEAK_DIALOG_OPENING') {
+    const liveTranscript = prepareTranscriptForAnalysis(transcript).transcript;
+    const openingManagerTurn = liveTranscript.find((turn) => turn.role === 'manager' && meaningfulText(turn.text));
+    if (openingManagerTurn) return openingManagerTurn.text.trim();
+  }
+  return meaningfulText(rawQuote);
+}
+
+function resolveFindingProblem(
+  catalog: ProblemCatalogItem[],
+  raw: Record<string, unknown>,
+  transcript: TranscriptTurn[],
+): ProblemCatalogItem | null {
+  const selected = problemByTitle(catalog, raw.problemTitle);
+  if (!selected) return null;
+
+  if (selected.code === 'NO_CLIENT_NAME' && managerRequestedClientName(transcript)) {
+    return null;
+  }
+
+  const evidenceText = `${meaningfulText(raw.comment)} ${meaningfulText(raw.quote)}`.toLocaleLowerCase('ru-RU');
+  const isAboutClientName = /(имя|зовут|обращаться|представился клиент)/u.test(evidenceText);
+  const isAboutRequest = /(запрос|интересует|интересовал|какой именно|товар|продукт|услуг|автомоб|модел|издели)/u.test(evidenceText);
+
+  if (selected.code === 'NO_CLIENT_NAME' && !isAboutClientName && isAboutRequest) {
+    return catalog.find((problem) => problem.code === 'NO_REQUEST_CLARIFICATION')
+      ?? catalog.find((problem) => problem.code === 'NO_KEY_PARAMS')
+      ?? selected;
+  }
+
+  return selected;
+}
+
 function normalizeMark(value: unknown): UnifiedDialogMark | null {
   const text = asText(value);
   return text === 'positive' || text === 'negative' || text === 'normal' ? text : null;
@@ -179,58 +236,85 @@ export function normalizeUnifiedCallReport(
     source?: UnifiedCallReport['source'];
     dimensionScores?: Record<string, number>;
     evaluation?: EvaluationInput | Record<string, unknown> | null;
+    recommendations?: unknown[];
   },
   catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
 ): UnifiedCallReport | null {
   if (!value || typeof value !== 'object') return null;
   const source = value as Record<string, unknown>;
-  const totalScore = clampScore(source.totalScore ?? fallback.totalScore);
+  // The score supplied by application code is authoritative. The LLM may copy
+  // an inconsistent score into its JSON even though scoring has already been
+  // completed by the evaluator.
+  const totalScore = clampScore(fallback.totalScore);
+  const sourceScoreValue = Number(source.totalScore);
+  const scoreMismatch = Number.isFinite(sourceScoreValue) && clampScore(sourceScoreValue) !== totalScore;
   const categoriesSource = Array.isArray(source.categories) ? source.categories : [];
   const fromDimensions = categoryScoresFromDimensions(fallback.dimensionScores);
-  let categories = UNIFIED_REPORT_CATEGORIES.map((name) => {
+  const categories = UNIFIED_REPORT_CATEGORIES.map((name) => {
     const raw = categoriesSource.find((item) => item && typeof item === 'object' && asText((item as Record<string, unknown>).name) === name) as Record<string, unknown> | undefined;
-    const rawScore = raw?.score;
-    const hasNumericScore = rawScore !== undefined && rawScore !== null && String(rawScore).trim() !== '' && Number.isFinite(Number(rawScore));
-    const parsedScore = hasNumericScore ? clampScore(rawScore) : null;
+    const score = fromDimensions[name] ?? totalScore;
     return {
       name,
-      score: parsedScore ?? fromDimensions[name] ?? totalScore,
-      comment: asText(raw?.comment) || 'Комментарий по категории не сформирован.',
+      // Category scores are calculated data as well. Use the model only for
+      // the explanatory comment, never for the numeric value.
+      score,
+      comment: scoreMismatch
+        ? `Оценка блока по рассчитанным метрикам: ${score}/100.`
+        : asText(raw?.comment) || 'Комментарий по категории не сформирован.',
     };
   });
-
-  // LLM often copies schema stub with score: 0 for every category.
-  const allZero = categories.every((item) => item.score === 0);
-  if (allZero && totalScore > 0) {
-    categories = categories.map((item) => ({
-      ...item,
-      score: clampScore(fromDimensions[item.name] ?? totalScore),
-    }));
-  }
 
   const findings = (Array.isArray(source.keyFindings) ? source.keyFindings : [])
     .map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
-      const problem = problemByTitle(catalog, raw.problemTitle);
+      const problem = resolveFindingProblem(catalog, raw, fallback.transcript);
       if (!problem) return null;
       return {
         problemTitle: problem.title,
         importance: normalizeImportance(raw.importance),
-        category: normalizeCategory(raw.category, problem.category),
-        quote: meaningfulText(raw.quote),
-        comment: meaningfulText(raw.comment),
-        betterExample: meaningfulText(raw.betterExample),
+        category: problem.category,
+        quote: resolveFindingQuote(problem, raw.quote, fallback.transcript),
+        comment: normalizeCompanyWording(meaningfulText(raw.comment)),
+        betterExample: normalizeCompanyWording(meaningfulText(raw.betterExample)),
       };
     })
     .filter((item): item is UnifiedCallReport['keyFindings'][number] => Boolean(item))
     .slice(0, 8);
 
   const dialogSource = Array.isArray(source.dialog) ? source.dialog : [];
+  let dialogSourceCursor = 0;
   const dialog = fallback.transcript.map((turn, index) => {
-    const raw = dialogSource[index] && typeof dialogSource[index] === 'object'
-      ? dialogSource[index] as Record<string, unknown>
-      : {};
+    let raw: Record<string, unknown> = {};
+    if (dialogSource.length === fallback.transcript.length) {
+      raw = dialogSource[index] && typeof dialogSource[index] === 'object'
+        ? dialogSource[index] as Record<string, unknown>
+        : {};
+    } else {
+      const normalizedTurnText = asText(turn.text).toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
+      for (let sourceIndex = dialogSourceCursor; sourceIndex < dialogSource.length; sourceIndex += 1) {
+        const candidate = dialogSource[sourceIndex] && typeof dialogSource[sourceIndex] === 'object'
+          ? dialogSource[sourceIndex] as Record<string, unknown>
+          : null;
+        if (!candidate) continue;
+        const candidateText = asText(candidate.text).toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
+        const candidateRole = asText(candidate.role);
+        if (candidateText === normalizedTurnText && (!candidateRole || candidateRole === turn.role)) {
+          raw = candidate;
+          dialogSourceCursor = sourceIndex + 1;
+          break;
+        }
+      }
+    }
     const role = turn.role;
+    if (role === 'manager' && isClientNameRequest(turn.text)) {
+      return {
+        role,
+        text: turn.text,
+        mark: 'positive' as const,
+        comment: 'Менеджер уточнил имя клиента.',
+        betterExample: null,
+      };
+    }
     const betterExample = role === 'manager' ? meaningfulText(raw.betterExample) || null : null;
     const comment = role === 'manager' ? meaningfulText(raw.comment) || null : null;
     const rawMark = role === 'manager' ? normalizeMark(raw.mark) : null;
@@ -260,18 +344,30 @@ export function normalizeUnifiedCallReport(
     };
   });
 
-  const recommendations = (Array.isArray(source.recommendations) ? source.recommendations : [])
+  const normalizeRecommendations = (items: unknown[]) => items
     .map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       const problem = raw.problemTitle ? problemByTitle(catalog, raw.problemTitle) : null;
       return {
-        text: asText(raw.text || item),
+        text: asText(raw.text || raw.recommendation || raw.title || raw.description || item),
         category: normalizeCategory(raw.category, problem?.category ?? 'Коммуникация'),
         problemTitle: problem?.title ?? null,
       };
     })
     .filter((item) => item.text)
     .slice(0, 8);
+  const reportRecommendations = normalizeRecommendations(
+    Array.isArray(source.recommendations) ? source.recommendations : [],
+  );
+  const evaluationRecommendations = fallback.evaluation
+    && Array.isArray((fallback.evaluation as EvaluationInput).recommendations)
+    ? (fallback.evaluation as EvaluationInput).recommendations as unknown[]
+    : [];
+  const recommendations = reportRecommendations.length > 0
+    ? reportRecommendations
+    : normalizeRecommendations(
+      fallback.recommendations?.length ? fallback.recommendations : evaluationRecommendations,
+    );
 
   const reportSource = source.source === 'trainer' || fallback.source === 'trainer' ? 'trainer' : 'call';
   const aiStrengths = arrayOfText(source.strengths, 8);
@@ -281,11 +377,19 @@ export function normalizeUnifiedCallReport(
     8,
     fallback.transcript,
   );
+  const weaknessSummary = evaluatedHighlights.weaknesses.slice(0, 2).join('; ');
+  const correctedSummary = totalScore < 50
+    ? `Разговор требует существенной доработки.${weaknessSummary ? ` Основные зоны роста: ${weaknessSummary}.` : ''}`
+    : totalScore < 76
+      ? `Разговор проведён на среднем уровне.${weaknessSummary ? ` Зоны роста: ${weaknessSummary}.` : ''}`
+      : 'Разговор проведён на хорошем уровне.';
 
   return {
     version: 'call-report-v1',
     source: reportSource,
-    summary: asText(source.summary) || 'Резюме разговора не сформировано.',
+    summary: scoreMismatch
+      ? correctedSummary
+      : asText(source.summary) || 'Резюме разговора не сформировано.',
     totalScore,
     verdict: unifiedVerdict(totalScore),
     categories,
@@ -332,7 +436,11 @@ export async function generateUnifiedCallReport(input: {
     '- weaknesses включают только пункты checklist со статусом PARTIAL/NO и условия plan_criteria, выполненные менее чем на 80%.',
     '- Пункты checklist со статусом NA не включай ни в strengths, ни в weaknesses. Один пункт не может одновременно быть сильной и слабой стороной.',
     '- keyFindings: problemTitle выбирай ТОЛЬКО из справочника ниже. Нельзя придумывать новые названия проблем.',
+    '- Заголовок, comment, quote и betterExample одной keyFinding должны описывать одну и ту же проблему. Не объединяй имя клиента и уточнение его запроса в одной находке.',
+    '- Не добавляй проблему «Не уточнил / не подтвердил имя клиента», если менеджер спросил «Как вас зовут?» или «Как я могу к вам обращаться?».',
     '- keyFindings.quote должна быть реальной цитатой из диалога. Если точной цитаты нет, возьми самый близкий фрагмент из стенограммы.',
+    '- Для проблем приветствия, представления или названия компании keyFindings.quote должна быть первой живой репликой менеджера, а не случайной репликой из середины разговора.',
+    '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
     '- dialog должен содержать ВСЕ реплики исходного диалога в том же порядке.',
     '- Для каждой реплики менеджера mark: positive | normal | negative. Для клиента mark=null, comment=null, betterExample=null.',
     '- Для реплик менеджера с mark=normal или negative добавь comment и, если уместно, betterExample — короткий пример, как стоило сказать.',
@@ -387,8 +495,10 @@ export async function generateUnifiedCallReport(input: {
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.2,
-    max_tokens: 3500,
+    ...compatibleChatTemperature(config.openaiChatModel, 0.2),
+    // Reasoning models count hidden reasoning and the full dialog JSON against
+    // this limit. A smaller cap can produce an empty visible response.
+    max_completion_tokens: 8000,
   });
 
   const content = response.choices[0]?.message?.content?.trim();

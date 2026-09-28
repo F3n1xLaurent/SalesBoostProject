@@ -19,3 +19,10 @@ function createOpenAIClient(): OpenAI {
 }
 
 export const openai = createOpenAIClient();
+
+/** New reasoning/GPT-5 models only accept the default temperature and reject custom values. */
+export function compatibleChatTemperature(model: string, temperature: number): { temperature?: number } {
+  const modelName = model.trim().toLowerCase().split('/').pop() || '';
+  const requiresDefaultTemperature = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/.test(modelName);
+  return requiresDefaultTemperature ? {} : { temperature };
+}

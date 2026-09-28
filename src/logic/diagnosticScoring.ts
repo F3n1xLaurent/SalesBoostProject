@@ -308,8 +308,8 @@ export function detectIssuesFromChecklist(
     issues.push({
       issue_type: 'NO_SALON_NAME',
       severity: 'MEDIUM',
-      evidence: salon.evidence[0] ?? 'Название салона не было озвучено.',
-      recommendation: 'Называйте автосалон в начале разговора — это повышает доверие клиента.',
+      evidence: salon.evidence[0] ?? 'Название компании не было озвучено.',
+      recommendation: 'Называйте компанию в начале разговора — это повышает доверие клиента.',
     });
   }
 
