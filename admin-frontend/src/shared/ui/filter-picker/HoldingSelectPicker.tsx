@@ -4,6 +4,7 @@ import { SingleSelectFilterPicker } from './SingleSelectFilterPicker';
 type HoldingOption = {
   id: string;
   name: string;
+  isDeleted?: boolean;
 };
 
 type Props = {
@@ -19,7 +20,7 @@ type Props = {
 
 export function HoldingSelectPicker(props: Props) {
   const options = useMemo(
-    () => props.holdings.map((holding) => ({ value: holding.id, label: holding.name })),
+    () => props.holdings.map((holding) => ({ value: holding.id, label: `${holding.name}${holding.isDeleted ? ' · удалена' : ''}` })),
     [props.holdings],
   );
 

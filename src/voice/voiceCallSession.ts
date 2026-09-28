@@ -4,7 +4,7 @@
  */
 
 import { prisma } from '../db';
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { config } from '../config';
 import { getRecordByCallId, markCallConnected, type TranscriptTurn } from './callHistory';
 import { loadCar } from '../data/carLoader';
@@ -22,6 +22,7 @@ import {
   resolveVoxCallOutcome,
 } from './voxCallOutcome';
 import { sanitizeTranscriptTurns } from './transcriptSanitizer';
+import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import * as Sentry from '@sentry/node';
 import { recordProductEvent, type ProductEventProperty } from '../analytics/productAnalytics';
 
@@ -177,22 +178,45 @@ export async function recordVoiceCallConnected(payload: VoxWebhookPayload): Prom
   });
 }
 
-function normalizePlanCriteriaEvaluation(value: unknown): unknown | null {
+type PlanCriterionDefinition = {
+  sourceType?: string;
+  sourceId?: string;
+  sourcePrompt?: string;
+  expectedAnswer?: string;
+  score?: number;
+};
+
+function normalizePlanCriteriaEvaluation(value: unknown, definitions: PlanCriterionDefinition[] = []): unknown | null {
   if (!value || typeof value !== 'object') return value ?? null;
   const source = value as Record<string, unknown>;
-  const sourceItems = Array.isArray(source.items) ? source.items : [];
-  const items = sourceItems.map((raw) => {
+  const rawItems = Array.isArray(source.items) ? source.items : [];
+  const items = rawItems.map((raw, index) => {
     const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
-    const maxScore = clampNumber(item.maxScore, 0, 100);
+    const expectedAnswer = String(item.expectedAnswer || '').trim();
+    const definition = definitions.find((candidate) => String(candidate.expectedAnswer || '').trim() === expectedAnswer)
+      ?? definitions[index]
+      ?? {};
+    const maxScore = clampNumber(item.maxScore ?? definition.score, 0, 100);
     const score = clampNumber(item.score, 0, maxScore);
+    const rawStatus = String(item.status || '').trim().toUpperCase();
+    const status = ['YES', 'PARTIAL', 'NO', 'NA'].includes(rawStatus)
+      ? rawStatus
+      : score >= maxScore * 0.8
+        ? 'YES'
+        : score >= maxScore * 0.4
+          ? 'PARTIAL'
+          : 'NO';
     return {
+      ...definition,
       ...item,
       maxScore,
-      score,
+      score: status === 'NA' ? 0 : score,
+      status,
     };
   });
-  const maxScore = items.reduce((sum, item) => sum + item.maxScore, 0);
-  const totalScore = items.reduce((sum, item) => sum + item.score, 0);
+  const applicableItems = items.filter((item) => item.status !== 'NA');
+  const maxScore = applicableItems.reduce((sum, item) => sum + item.maxScore, 0);
+  const totalScore = applicableItems.reduce((sum, item) => sum + item.score, 0);
   const percent = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
   return {
     ...source,
@@ -204,7 +228,7 @@ function normalizePlanCriteriaEvaluation(value: unknown): unknown | null {
 }
 
 async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]): Promise<unknown | null> {
-  const planCall = await prisma.callPlanCall.findUnique({ where: { callId }, select: { criteriaJson: true } });
+  const planCall = await prisma.callPlanCall.findUnique({ where: { callId }, select: { criteriaJson: true, scriptId: true } });
   const session = planCall ? null : await prisma.voiceCallSession.findUnique({
     where: { callId },
     select: { source: true, caseContextJson: true },
@@ -212,18 +236,38 @@ async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]
   const demoContext = session?.source === 'demo'
     ? safeJsonParse<{ criteria?: Array<{ expectedAnswer?: string; score?: number }> }>(session.caseContextJson, {})
     : null;
-  const criteria = planCall
-    ? safeJsonParse<Array<{ expectedAnswer?: string; score?: number }>>(planCall.criteriaJson, [])
+  const criteria: PlanCriterionDefinition[] = planCall
+    ? safeJsonParse<PlanCriterionDefinition[]>(planCall.criteriaJson, [])
     : demoContext?.criteria ?? [];
-  const meaningfulCriteria = criteria.filter((item) => String(item.expectedAnswer || '').trim());
+  const script = planCall
+    ? await prisma.callScript.findUnique({
+      where: { id: planCall.scriptId },
+      select: { questionsJson: true, objectionsJson: true },
+    })
+    : null;
+  const questions = safeJsonParse<Array<{ id?: string; text?: string }>>(script?.questionsJson, []);
+  const objections = safeJsonParse<Array<{ id?: string; phrase?: string }>>(script?.objectionsJson, []);
+  const meaningfulCriteria = criteria
+    .filter((item) => String(item.expectedAnswer || '').trim())
+    .map((item) => ({
+      ...item,
+      sourcePrompt: item.sourceType === 'question'
+        ? questions.find((question) => question.id === item.sourceId)?.text
+        : item.sourceType === 'objection'
+          ? objections.find((objection) => objection.id === item.sourceId)?.phrase
+          : undefined,
+    }));
   if (meaningfulCriteria.length === 0) return null;
   const prompt = [
     'Ты оцениваешь разговор сотрудника с виртуальным клиентом по условиям успеха скрипта.',
     'Для каждого условия сравни ответ сотрудника с эталоном.',
-    'Правила: если ответил также или почти также — полный балл; если близко — половина; если не ответил — 0.',
+    'Сначала проверь, возникло ли условие: был ли соответствующий вопрос или возражение реально озвучено клиентом в диалоге.',
+    'Если связанный вопрос/возражение не прозвучали и диалог до них не дошёл — status=NA, score=0. Это НЕ ошибка сотрудника.',
+    'Если вопрос/возражение прозвучали, но сотрудник не ответил — status=NO, score=0.',
+    'Если сотрудник ответил близко к эталону — status=PARTIAL и половина баллов; если полно — status=YES и полный балл.',
     'Критично: score по каждому пункту НЕ МОЖЕТ быть больше maxScore этого пункта. Если maxScore=80, максимум score=80.',
-    'totalScore должен быть суммой score, maxScore должен быть суммой maxScore, percent = totalScore / maxScore * 100.',
-    'Верни только JSON: {"items":[{"expectedAnswer":"...","maxScore":100,"score":0,"evidence":"цитата или причина"}],"totalScore":0,"maxScore":0,"percent":0}.',
+    'При расчёте totalScore/maxScore полностью исключай пункты со status=NA.',
+    'Верни только JSON: {"items":[{"expectedAnswer":"...","maxScore":100,"score":0,"status":"YES|PARTIAL|NO|NA","evidence":"цитата или причина"}],"totalScore":0,"maxScore":0,"percent":0}.',
     '',
     `Условия:\n${JSON.stringify(meaningfulCriteria, null, 2)}`,
     '',
@@ -232,7 +276,7 @@ async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]
   try {
     const response = await openai.chat.completions.create({
       model: config.openaiChatModel,
-      temperature: 0.1,
+      ...compatibleChatTemperature(config.openaiChatModel, 0.1),
       messages: [
         { role: 'system', content: 'Ты строгий оценщик продаж. Отвечай только валидным JSON.' },
         { role: 'user', content: prompt },
@@ -240,7 +284,7 @@ async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]
     });
     const content = response.choices[0]?.message?.content || '';
     const jsonText = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
-    return normalizePlanCriteriaEvaluation(JSON.parse(jsonText));
+    return normalizePlanCriteriaEvaluation(JSON.parse(jsonText), meaningfulCriteria);
   } catch (error) {
     console.warn('[voice/session] plan criteria evaluation failed:', error instanceof Error ? error.message : error);
     return null;
@@ -339,6 +383,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       connectedAt: true,
       answerTimeSec: true,
       phoneNumberId: true,
+      planId: true,
       source: true,
       caseContextJson: true,
       voxSessionId: true,
@@ -577,20 +622,46 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
 
   // 3) Run evaluation (can take time) and update session when ready
   try {
+    const analysisTranscriptResult = prepareTranscriptForAnalysis(transcript, { ivrDetected });
+    const analysisTranscript = analysisTranscriptResult.transcript;
+    console.info('[voice/session] analysis transcript prepared', {
+      callId,
+      sourceTurns: transcript.length,
+      analysisTurns: analysisTranscript.length,
+      removedPrefixTurns: analysisTranscriptResult.removedPrefixTurns,
+      boundaryReason: analysisTranscriptResult.reason,
+    });
     const car = loadCar();
     const state = getDefaultState('normal');
-    const dialogHistory = dialogHistoryFromTranscript(transcript);
+    const dialogHistory = dialogHistoryFromTranscript(analysisTranscript);
+    const plan = existingSession?.planId
+      ? await prisma.callPlan.findUnique({ where: { id: existingSession.planId }, select: { scriptId: true } })
+      : null;
+    const evaluationScript = plan?.scriptId
+      ? await prisma.callScript.findUnique({ where: { id: plan.scriptId }, include: { checklist: true } })
+      : null;
+    const evaluationChecklist = evaluationScript?.checklist && !evaluationScript.checklist.isArchived
+      ? {
+        id: evaluationScript.checklist.id,
+        name: evaluationScript.checklist.name,
+        items: safeJsonParse<any[]>(evaluationScript.checklist.itemsJson, []),
+      }
+      : null;
+    const evaluationScenarioContext = existingSession?.source === 'demo'
+      ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || undefined)
+      : evaluationScript
+        ? JSON.stringify({ name: evaluationScript.name, context: evaluationScript.context })
+        : undefined;
     const evaluationStartedAt = performance.now();
-    console.log('[voice/session] evaluation start', { callId, turns: transcript.length });
+    console.log('[voice/session] evaluation start', { callId, turns: analysisTranscript.length });
     const { evaluation } = await evaluateSessionV2({
       dialogHistory,
       car,
       state,
       earlyFail: false,
       behaviorSignals: [],
-      scenarioContext: existingSession?.source === 'demo'
-        ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || undefined)
-        : undefined,
+      scenarioContext: evaluationScenarioContext,
+      evaluationChecklist,
     });
     console.log('[voice/session] evaluation base done', { callId, ms: elapsedMs(evaluationStartedAt) });
 
@@ -607,7 +678,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       const analyticsStartedAt = performance.now();
       const [analyticsBundle, criteria] = await Promise.all([
         generateCallAnalyticsBundle({
-          transcript,
+          transcript: analysisTranscript,
           outcome,
           totalScore: evaluation.overall_score_0_100 ?? null,
           evaluation: {
@@ -617,11 +688,9 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
             issues,
             recommendations,
           },
-          scenarioContext: existingSession?.source === 'demo'
-            ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || undefined)
-            : undefined,
+          scenarioContext: evaluationScenarioContext,
         }),
-        evaluatePlanCriteria(callId, transcript),
+        evaluatePlanCriteria(callId, analysisTranscript),
       ]);
       callSummary = analyticsBundle.callSummary;
       replyImprovements = analyticsBundle.replyImprovements;
@@ -631,7 +700,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
     } catch (err) {
       console.warn('[voice/session] analytics bundle generation failed:', err instanceof Error ? err.message : err);
       const criteriaStartedAt = performance.now();
-      planCriteria = await evaluatePlanCriteria(callId, transcript);
+      planCriteria = await evaluatePlanCriteria(callId, analysisTranscript);
       console.log('[voice/session] plan criteria done after bundle failure', { callId, ms: elapsedMs(criteriaStartedAt) });
     }
 

@@ -1,4 +1,4 @@
-import { openai } from './lib/openaiClient';
+import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import { config } from './config';
 
 export const INITIAL_CHECKLIST = {
@@ -153,7 +153,7 @@ Return ONLY valid JSON (no markdown, no extra text).`;
       { role: 'user', content: userContent },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.8,
+    ...compatibleChatTemperature(config.openaiChatModel, 0.8),
   });
 
   const content = response.choices[0]?.message?.content;

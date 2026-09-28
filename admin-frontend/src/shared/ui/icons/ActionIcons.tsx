@@ -63,3 +63,13 @@ export function TrashIcon() {
     </svg>
   );
 }
+
+export function ArchiveIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M3 5h18v4H3z" />
+      <path d="M5 9v11h14V9" />
+      <path d="M10 13h4" />
+    </svg>
+  );
+}

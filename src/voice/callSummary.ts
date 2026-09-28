@@ -1,4 +1,4 @@
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { config } from '../config';
 
 export type CallSummaryFinding = { title: string; description: string; examples?: string[] };
@@ -117,8 +117,8 @@ ${transcriptStr}
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.6,
-    max_tokens: 1600,
+    ...compatibleChatTemperature(config.openaiChatModel, 0.6),
+    max_completion_tokens: 1600,
   });
 
   const content = response.choices[0]?.message?.content?.trim();
@@ -175,8 +175,8 @@ ${pairsStr}
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
-    temperature: 0.5,
-    max_tokens: 1800,
+    ...compatibleChatTemperature(config.openaiChatModel, 0.5),
+    max_completion_tokens: 1800,
   });
 
   const content = response.choices[0]?.message?.content?.trim();

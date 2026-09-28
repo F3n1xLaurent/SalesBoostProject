@@ -6,6 +6,7 @@ export type AdminTab =
   | 'companies'
   | 'dealershipDirections'
   | 'imports'
+  | 'checklists'
   | 'typesNumbers'
   | 'users'
   | 'autodealers'

@@ -97,6 +97,7 @@ function getDealershipIds(account: ScopedAccount): string[] {
 async function getAccessibleDealerships(account: ScopedAccount) {
   if (isPlatformSuperadmin(account)) {
     return prisma.dealership.findMany({
+      where: { isDeleted: false, OR: [{ holdingId: null }, { holding: { is: { isDeleted: false } } }] },
       include: { holding: true },
       orderBy: [{ holding: { name: 'asc' } }, { name: 'asc' }],
     });
@@ -107,9 +108,13 @@ async function getAccessibleDealerships(account: ScopedAccount) {
   if (holdingIds.length === 0 && dealershipIds.length === 0) return [];
   return prisma.dealership.findMany({
     where: {
-      OR: [
-        ...(holdingIds.length ? [{ holdingId: { in: holdingIds } }] : []),
-        ...(dealershipIds.length ? [{ id: { in: dealershipIds } }] : []),
+      AND: [
+        { isDeleted: false },
+        { OR: [{ holdingId: null }, { holding: { is: { isDeleted: false } } }] },
+        { OR: [
+          ...(holdingIds.length ? [{ holdingId: { in: holdingIds } }] : []),
+          ...(dealershipIds.length ? [{ id: { in: dealershipIds } }] : []),
+        ] },
       ],
     },
     include: { holding: true },
@@ -119,7 +124,7 @@ async function getAccessibleDealerships(account: ScopedAccount) {
 
 async function getAccessibleHoldingIds(account: ScopedAccount): Promise<string[]> {
   if (isPlatformSuperadmin(account)) {
-    const holdings = await prisma.holding.findMany({ select: { id: true } });
+    const holdings = await prisma.holding.findMany({ where: { isDeleted: false }, select: { id: true } });
     return holdings.map((holding) => holding.id);
   }
   const holdingIds = getHoldingIds(account);
@@ -209,13 +214,25 @@ function dealershipIdsFromMemberships(memberships: Array<{ dealershipId?: string
   return [...new Set(memberships.map((membership) => membership.dealershipId).filter((id): id is string => Boolean(id)))];
 }
 
-async function dealershipIdsForMemberships(memberships: Array<{ holdingId?: string | null; dealershipId?: string | null }>): Promise<string[]> {
+export function splitDealershipScopeFromMemberships(
+  memberships: Array<{ holdingId?: string | null; dealershipId?: string | null }>,
+): { directDealershipIds: string[]; holdingIds: string[] } {
   const directDealershipIds = dealershipIdsFromMemberships(memberships);
-  const holdingIds = [...new Set(memberships.map((membership) => membership.holdingId).filter((id): id is string => Boolean(id)))];
+  const holdingIds = [...new Set(
+    memberships
+      .filter((membership) => !membership.dealershipId)
+      .map((membership) => membership.holdingId)
+      .filter((id): id is string => Boolean(id)),
+  )];
+  return { directDealershipIds, holdingIds };
+}
+
+async function dealershipIdsForMemberships(memberships: Array<{ holdingId?: string | null; dealershipId?: string | null }>): Promise<string[]> {
+  const { directDealershipIds, holdingIds } = splitDealershipScopeFromMemberships(memberships);
   if (holdingIds.length === 0) return directDealershipIds;
 
   const dealerships = await prisma.dealership.findMany({
-    where: { holdingId: { in: holdingIds } },
+    where: { holdingId: { in: holdingIds }, isDeleted: false },
     select: { id: true },
   });
   return [...new Set([...directDealershipIds, ...dealerships.map((dealership) => dealership.id)])];
@@ -548,9 +565,14 @@ async function assertMembershipsAllowed(account: ScopedAccount, memberships: Use
     if (membership.role !== APP_ROLES.manager) {
       throw new Error('Руководитель компании или точки может создавать и редактировать только менеджеров.');
     }
-    if (!membership.dealershipId || !dealershipIds.has(membership.dealershipId)) {
+    if (membership.dealershipId) {
+      if (dealershipIds.has(membership.dealershipId)) continue;
       throw new Error('Нельзя назначить менеджера вне доступных вам точек.');
     }
+    if (membership.holdingId && isHoldingAdmin(account) && getHoldingIds(account).includes(membership.holdingId)) {
+      continue;
+    }
+    throw new Error('Нужно выбрать доступную компанию или точку.');
   }
 }
 
@@ -623,9 +645,9 @@ export async function handleRbacMeta(req: Request, res: Response): Promise<void>
   ]);
   const holdingIds = [...new Set(dealerships.map((dealership) => dealership.holdingId).filter((id): id is string => Boolean(id)))];
   const holdings = isPlatformSuperadmin(account)
-    ? await prisma.holding.findMany({ orderBy: { name: 'asc' } })
+    ? await prisma.holding.findMany({ where: { isDeleted: false }, orderBy: { name: 'asc' } })
     : holdingIds.length
-      ? await prisma.holding.findMany({ where: { id: { in: holdingIds } }, orderBy: { name: 'asc' } })
+      ? await prisma.holding.findMany({ where: { id: { in: holdingIds }, isDeleted: false }, orderBy: { name: 'asc' } })
       : [];
 
   res.json({
@@ -934,18 +956,23 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
       }
 
       if (managerProfiles) {
-        await tx.managerProfile.deleteMany({ where: { accountId } });
-        if (managerProfiles.length > 0) {
-          await tx.managerProfile.createMany({
-            data: managerProfiles.map((profile) => ({
-              accountId,
-              fullName: profile.fullName,
-              dealershipId: profile.dealershipId,
-              email: profile.email || null,
-              phone: profile.phone || null,
-              status: profile.status || 'active',
-            })),
+        for (const profile of managerProfiles) {
+          const existingProfile = await tx.managerProfile.findFirst({
+            where: { accountId, dealershipId: profile.dealershipId },
+            select: { id: true },
           });
+          const data = {
+            fullName: profile.fullName,
+            dealershipId: profile.dealershipId,
+            email: profile.email || null,
+            phone: profile.phone || null,
+            status: profile.status || 'active',
+          };
+          if (existingProfile) {
+            await tx.managerProfile.update({ where: { id: existingProfile.id }, data });
+          } else {
+            await tx.managerProfile.create({ data: { accountId, ...data } });
+          }
         }
       }
 

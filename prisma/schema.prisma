@@ -72,6 +72,7 @@ model Holding {
   description String?
   type        String   @default("own") // "own" | "franchised"
   isActive    Boolean  @default(true)
+  isDeleted   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -82,6 +83,7 @@ model Holding {
   importSources ImportSource[]
   callCustomerProfiles CallCustomerProfile[]
   callScripts CallScript[]
+  evaluationChecklists EvaluationChecklist[]
   callPlans CallPlan[]
   trainerSessions TrainerSession[]
   trainerDailyPlans TrainerDailyPlan[]
@@ -103,6 +105,7 @@ model Dealership {
   workingHoursFrom String   @default("09:00")
   workingHoursTo   String   @default("21:00")
   isActive    Boolean  @default(true)
+  isDeleted   Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -299,14 +302,36 @@ model CallScript {
   objectionsJson      String   @default("[]")
   questionsJson       String   @default("[]")
   successCriteriaJson String   @default("[]")
+  checklistId         String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
   holding             Holding  @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  checklist           EvaluationChecklist? @relation(fields: [checklistId], references: [id], onDelete: SetNull)
   trainerSessions     TrainerSession[]
 
   @@index([holdingId, updatedAt])
+  @@index([checklistId])
   @@map("call_scripts")
+}
+
+model EvaluationChecklist {
+  id               String   @id @default(cuid())
+  holdingId        String?
+  name             String
+  isTemplate       Boolean  @default(false)
+  sourceTemplateId String?
+  itemsJson        String   @default("[]")
+  isArchived       Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  holding          Holding? @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+  scripts          CallScript[]
+
+  @@index([holdingId, isArchived, updatedAt])
+  @@index([isTemplate, isArchived])
+  @@map("evaluation_checklists")
 }
 
 model CallPlan {

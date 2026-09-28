@@ -8,7 +8,7 @@ import type { Prisma } from '@prisma/client';
 import { WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { config } from './config';
-import { openai } from './lib/openaiClient';
+import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { handleVoiceDialog } from './voice/voiceDialog';
@@ -59,7 +59,6 @@ import {
   closeElevenLabsAgentConversation,
   hasElevenLabsAgentConversation,
   isElevenLabsAgentEnabled,
-  runElevenLabsAgentAudioTurn,
   runElevenLabsAgentTurn,
 } from './voice/elevenLabsAgent';
 import {
@@ -88,6 +87,12 @@ import {
   startCallPlanScheduler,
 } from './voice/callSettingsManagement';
 import type { TtsVoice } from './state/userPreferences';
+import {
+  handleArchiveEvaluationChecklist,
+  handleCreateEvaluationChecklist,
+  handleListEvaluationChecklists,
+  handleUpdateEvaluationChecklist,
+} from './checklists/checklistManagement';
 import { transcribeVoice, transcribeVoiceFast } from './voice/stt';
 import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifier';
 import {
@@ -124,6 +129,8 @@ import {
   handleDeleteDealershipDirection,
   handleDeleteDealershipPhoneNumber,
   handleDeleteHolding,
+  handleRestoreDealership,
+  handleRestoreHolding,
   handleDeletePhoneNumberType,
   handleListDealerships,
   handleListCities,
@@ -491,6 +498,7 @@ type PlanCriterionEvaluation = {
   maxScore: number;
   score: number;
   evidence: string;
+  status: 'YES' | 'PARTIAL' | 'NO' | 'NA' | null;
 };
 
 function numberOrNull(value: unknown): number | null {
@@ -518,6 +526,9 @@ function extractPlanCriteriaEvaluation(evaluation: Record<string, unknown> | nul
       maxScore,
       score,
       evidence: String(item.evidence || item.comment || item.reason || '').trim(),
+      status: ['YES', 'PARTIAL', 'NO', 'NA'].includes(String(item.status || '').trim().toUpperCase())
+        ? String(item.status).trim().toUpperCase() as PlanCriterionEvaluation['status']
+        : null,
     };
   }).filter((item) => item.expectedAnswer || item.evidence || item.maxScore > 0);
 
@@ -562,7 +573,7 @@ async function evaluateScriptCriteria(criteriaInput: unknown, transcript: Traine
   try {
     const response = await openai.chat.completions.create({
       model: config.openaiChatModel,
-      temperature: 0.1,
+      ...compatibleChatTemperature(config.openaiChatModel, 0.1),
       messages: [
         { role: 'system', content: 'Ты строгий оценщик продаж. Отвечай только валидным JSON.' },
         { role: 'user', content: prompt },
@@ -599,6 +610,13 @@ function scoreFromEvaluation(evaluation: Record<string, unknown> | null | undefi
   const planCriteria = extractPlanCriteriaEvaluation(evaluation);
   const genericScore = numberOrNull(evaluation?.overall_score_0_100);
   return round1(unifiedScore ?? directScore ?? genericScore ?? planCriteria?.percent ?? 0);
+}
+
+function scoreFromTrainerEvaluation(evaluation: Record<string, unknown> | null | undefined, directScore: number | null | undefined): number {
+  const genericScore = numberOrNull(evaluation?.overall_score_0_100);
+  const planCriteria = extractPlanCriteriaEvaluation(evaluation);
+  const unifiedScore = scoreFromUnifiedReport(evaluation);
+  return round1(genericScore ?? directScore ?? planCriteria?.percent ?? unifiedScore ?? 0);
 }
 
 function jsonStringify(value: unknown): string {
@@ -946,6 +964,7 @@ function topScriptQuestionsFromSessions(
           || (label && expected.includes(label))
           || (label && label.includes(expected));
       });
+      if (matchingCriterion?.status === 'NA') continue;
       current.total += 1;
       const failed = matchingCriterion
         ? matchingCriterion.maxScore > 0 && matchingCriterion.score < matchingCriterion.maxScore * 0.6
@@ -1025,29 +1044,14 @@ function trainerCategoryInsightsFromSessions(sessions: Array<{
   for (const session of sessions) {
     const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
     const dimensions = extractDimensionsFromSession(session);
-    const reportCats = evaluation?.unified_call_report && typeof evaluation.unified_call_report === 'object'
-      ? (evaluation.unified_call_report as Record<string, unknown>).categories
-      : null;
-    const reportScores = new Map<AnalyticsCategory, number>();
-    if (Array.isArray(reportCats)) {
-      for (const raw of reportCats) {
-        if (!raw || typeof raw !== 'object') continue;
-        const name = String((raw as Record<string, unknown>).name || '') as AnalyticsCategory;
-        if (!ANALYTICS_CATEGORIES.includes(name)) continue;
-        const score = numberOrNull((raw as Record<string, unknown>).score);
-        if (score != null) reportScores.set(name, score);
-      }
-    }
+    const overallScore = scoreFromTrainerEvaluation(evaluation, session.score);
 
     for (const category of ANALYTICS_CATEGORIES) {
       const bucket = buckets.get(category)!;
-      let score = reportScores.get(category);
-      if (score == null) {
-        const dimEntries = Object.entries(dimensions).filter(([key]) => dimensionLabel(key) === category);
-        if (dimEntries.length) {
-          score = Math.round(dimEntries.reduce((sum, [, value]) => sum + value, 0) / dimEntries.length);
-        }
-      }
+      const dimEntries = Object.entries(dimensions).filter(([key]) => dimensionLabel(key) === category);
+      const score = dimEntries.length
+        ? Math.round(dimEntries.reduce((sum, [, value]) => sum + value, 0) / dimEntries.length)
+        : overallScore;
       if (score != null) {
         bucket.sum += score;
         bucket.count += 1;
@@ -1402,6 +1406,7 @@ function extractReportIssuesFromSession(
 
   if (planCriteria) {
     for (const item of planCriteria.items) {
+      if (item.status === 'NA') continue;
       const ratio = item.maxScore > 0 ? item.score / item.maxScore : 0;
       if (ratio < 0.8) {
         const label = item.expectedAnswer || 'Провал по критерию скрипта';
@@ -2136,7 +2141,10 @@ type TrainerRuntimeContext = {
   elevenLabsConversationId?: string | null;
 };
 
-const USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER = false;
+// The browser controls the end of a manager turn. We transcribe the complete
+// recording first and send text to the agent, so pauses inside speech cannot
+// make ElevenLabs answer too early.
+const USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER = true;
 
 function getTrainerRuntime(caseContext: Record<string, unknown>): TrainerRuntimeContext {
   const runtime = caseContext.runtime && typeof caseContext.runtime === 'object'
@@ -2272,8 +2280,8 @@ async function generateTrainerDialogTitle(transcript: TrainerTranscriptTurn[]): 
   try {
     const response = await openai.chat.completions.create({
       model: config.openaiChatModel,
-      temperature: 0.4,
-      max_tokens: 48,
+      ...compatibleChatTemperature(config.openaiChatModel, 0.4),
+      max_completion_tokens: 48,
       messages: [
         {
           role: 'system',
@@ -2346,6 +2354,45 @@ async function finalizeTrainerSessionEvaluation(params: {
   await finalizeTrainerSessionSideEffects(params.sessionId);
 }
 
+export async function regenerateTrainerSessionReport(sessionId: string) {
+  const id = sessionId.trim();
+  if (!id) throw new Error('TRAINER_SESSION_ID_REQUIRED');
+
+  const session = await prisma.trainerSession.findUnique({ where: { id } });
+  if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
+  if (!['completed', 'failed'].includes(session.status)) {
+    throw new Error(`TRAINER_SESSION_NOT_FINISHED:${session.status}`);
+  }
+
+  const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+  const transcript = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+  if (transcript.filter((turn) => turn.text?.trim()).length < 2) {
+    throw new Error('TRAINER_TRANSCRIPT_TOO_SHORT');
+  }
+
+  await finalizeTrainerSessionEvaluation({
+    sessionId: session.id,
+    caseContext,
+    runtime: getTrainerRuntime(caseContext),
+    transcript,
+    forcedFail: session.status === 'failed' || Boolean(session.failureReason),
+    failureReason: session.failureReason,
+    multiplier: session.multiplier,
+  });
+
+  return prisma.trainerSession.findUniqueOrThrow({
+    where: { id: session.id },
+    select: {
+      id: true,
+      status: true,
+      score: true,
+      baseScore: true,
+      finalPoints: true,
+      updatedAt: true,
+    },
+  });
+}
+
 async function buildTrainerAuditEvaluation(params: {
   caseContext: Record<string, unknown>;
   runtime: TrainerRuntimeContext;
@@ -2353,6 +2400,19 @@ async function buildTrainerAuditEvaluation(params: {
   forcedFail: boolean;
   failureReason: string | null;
 }) {
+  const scenario = params.caseContext.scenario && typeof params.caseContext.scenario === 'object'
+    ? params.caseContext.scenario as Record<string, unknown>
+    : {};
+  const scriptWithChecklist = scenario.id
+    ? await prisma.callScript.findUnique({ where: { id: String(scenario.id) }, include: { checklist: true } })
+    : null;
+  const evaluationChecklist = scriptWithChecklist?.checklist && !scriptWithChecklist.checklist.isArchived
+    ? {
+      id: scriptWithChecklist.checklist.id,
+      name: scriptWithChecklist.checklist.name,
+      items: safeJsonParseLocal<any[]>(scriptWithChecklist.checklist.itemsJson, []),
+    }
+    : null;
   const evaluated = await evaluateSessionV2({
     dialogHistory: params.transcript
       .filter((turn) => turn.text?.trim())
@@ -2362,13 +2422,13 @@ async function buildTrainerAuditEvaluation(params: {
     earlyFail: params.forcedFail,
     failureReason: params.failureReason ?? undefined,
     behaviorSignals: params.runtime.behaviorSignals,
+    scenarioContext: JSON.stringify(scenario),
+    evaluationChecklist,
   });
   const evaluation = evaluated.evaluation;
-  const scenario = params.caseContext.scenario && typeof params.caseContext.scenario === 'object'
-    ? params.caseContext.scenario as Record<string, unknown>
-    : {};
   const planCriteria = await evaluateScriptCriteria(scenario.successCriteria, params.transcript);
   const planCriteriaScore = extractPlanCriteriaEvaluation(planCriteria && typeof planCriteria === 'object' ? { plan_criteria: planCriteria } : null)?.percent ?? null;
+  const effectivenessScore = round1(numberOrNull(evaluation.overall_score_0_100) ?? planCriteriaScore ?? 0);
   let finalEvaluation: Record<string, unknown> = {
     ...evaluation,
     plan_criteria: planCriteria,
@@ -2378,7 +2438,7 @@ async function buildTrainerAuditEvaluation(params: {
       transcript: params.transcript
         .filter((turn) => turn.text?.trim())
         .map((turn) => ({ role: turn.role, text: turn.text })),
-      totalScore: planCriteriaScore ?? evaluation.overall_score_0_100,
+      totalScore: effectivenessScore,
       evaluation: finalEvaluation,
       scenarioName: String(scenario.name || 'Тренировка'),
     });
@@ -2409,7 +2469,7 @@ async function buildTrainerAuditEvaluation(params: {
       title: text,
       description: 'Отработать в следующей тренировке',
     })),
-    score: planCriteriaScore ?? evaluation.overall_score_0_100,
+    score: effectivenessScore,
     dimensions: evaluation.dimension_scores,
   };
 }
@@ -2547,7 +2607,7 @@ async function initializeTrainerDialog(params: {
     };
   };
 
-  if (USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
+  if (USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
     try {
       const firstMessage = buildTrainerInitialClientMessage(caseContext);
       const agentOut = await runElevenLabsAgentTurn({
@@ -2680,7 +2740,7 @@ async function runTrainerSessionTurn(params: {
       nextHistory = [...history, { role: 'client', content: clientMessage }];
       result = buildWebTrainingResult(state, nextHistory, behaviorSignals, true, lowQualityStreak >= 2 ? 'REPEATED_LOW_QUALITY' : 'REPEATED_LOW_EFFORT');
       endConversation = true;
-    } else if (USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
+    } else if (USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
       try {
         console.log(`[trainer] ElevenLabs agent turn start session=${session.id}`);
         const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
@@ -2828,123 +2888,6 @@ async function runTrainerSessionTurn(params: {
     audioBase64: clientAudioBase64,
     audioMimeType: clientAudioMimeType,
     managerTranscript: params.managerText,
-    result,
-    session: trainerSessionSummary(updated),
-    transcript,
-  };
-}
-
-async function runTrainerSessionAudioTurn(params: {
-  sessionId: string;
-  audioBase64: string;
-  durationSec: number | null;
-  ttsVoice: TtsVoice;
-}) {
-  const session = await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
-  if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
-  if (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') {
-    throw new Error('TRAINER_SESSION_CLOSED');
-  }
-  if (!isElevenLabsAgentEnabled()) {
-    throw new Error('ELEVENLABS_AGENT_NOT_CONFIGURED');
-  }
-
-  const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
-  const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
-  const runtime = getTrainerRuntime(caseContext);
-  const transcriptBefore = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
-  console.log(`[trainer] ElevenLabs agent audio turn start session=${session.id}`);
-  const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
-  const agentOut = await runElevenLabsAgentAudioTurn({
-    sessionId: session.id,
-    prompt: shouldSendPrompt ? trainerScenarioPrompt(caseContext, transcriptBefore, params.ttsVoice) : null,
-    audioBase64: params.audioBase64,
-    elevenLabsVoiceId,
-  });
-  console.log(`[trainer] ElevenLabs agent audio turn done session=${session.id} hasAudio=${Boolean(agentOut.audioBase64)} conversation=${agentOut.conversationId || 'n/a'}`);
-
-  const managerText = agentOut.userTranscript || 'Голосовое сообщение менеджера';
-  const clientMessage = agentOut.clientMessage || 'Понял вас. Расскажите, пожалуйста, подробнее.';
-  const clientAudio = await ensureTrainerClientAudio({
-    text: clientMessage,
-    ttsVoice: params.ttsVoice,
-    elevenLabsVoiceId,
-    audioBase64: agentOut.audioBase64,
-    audioMimeType: agentOut.audioMimeType,
-  });
-  const historyBefore = transcriptBefore.map((turn) => ({ role: turn.role, content: turn.text }));
-  const history = [
-    ...historyBefore,
-    { role: 'manager' as const, content: managerText },
-    { role: 'client' as const, content: clientMessage },
-  ];
-  const behavior = agentOut.userTranscript
-    ? classifyBehavior(managerText, {
-      lastClientQuestion: [...historyBefore].reverse().find((turn) => turn.role === 'client')?.content,
-      isClientWaitingAnswer: true,
-    })
-    : null;
-  const behaviorSignals = behavior ? [...runtime.behaviorSignals, behavior] : runtime.behaviorSignals;
-  const nowIso = new Date().toISOString();
-  const transcript: TrainerTranscriptTurn[] = sanitizeTranscriptTurns([
-    ...transcriptBefore,
-    {
-      role: 'manager',
-      text: managerText,
-      durationSec: params.durationSec,
-      createdAt: nowIso,
-      audioBase64: wavBase64FromPcm16Base64(params.audioBase64),
-      audioMimeType: 'audio/wav',
-    },
-    {
-      role: 'client',
-      text: clientMessage,
-      createdAt: nowIso,
-      audioBase64: clientAudio.audioBase64,
-      audioMimeType: clientAudio.audioMimeType,
-    },
-  ]);
-  const state = { ...runtime.state };
-  const maxClientTurns = (state.strictnessState?.max_client_turns as number) ?? 12;
-  const endConversation = agentOut.endedByAgent || shouldForceConversationEnd(clientMessage) || history.filter((turn) => turn.role === 'manager').length >= maxClientTurns;
-  const result = endConversation ? buildWebTrainingResult(state, history, behaviorSignals, false, null) : null;
-  const nextRuntime = {
-    ...runtime,
-    state: {
-      ...state,
-      client_turns: Math.max(Number(state.client_turns || 0), history.filter((turn) => turn.role === 'client').length),
-    },
-    behaviorSignals,
-    elevenLabsConversationId: agentOut.conversationId ?? runtime.elevenLabsConversationId ?? null,
-  };
-  const updateData: Parameters<typeof prisma.trainerSession.update>[0]['data'] = {
-    transcriptJson: jsonStringify(transcript),
-    caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
-    elevenLabsConversationId: nextRuntime.elevenLabsConversationId,
-    durationSec: transcript.reduce((sum, turn) => sum + (turn.durationSec ?? 0), 0),
-  };
-  if (endConversation && result) {
-    updateData.status = 'completed';
-    updateData.completedAt = new Date();
-  }
-
-  const updated = await prisma.trainerSession.update({
-    where: { id: session.id },
-    data: updateData,
-    include: { scenario: { select: { id: true, name: true } } },
-  });
-  if (endConversation && result) {
-    closeElevenLabsAgentConversation(updated.id);
-    scheduleTrainerSessionFinalization(updated.id);
-  }
-
-  return {
-    clientMessage,
-    endConversation,
-    reportReady: !endConversation,
-    audioBase64: clientAudio.audioBase64,
-    audioMimeType: clientAudio.audioMimeType,
-    managerTranscript: managerText,
     result,
     session: trainerSessionSummary(updated),
     transcript,
@@ -3713,6 +3656,12 @@ function trainerSessionSummary(session: {
     ? session.title.trim()
     : (contextTitle || null);
   const evaluation = typeof session.evaluationJson === 'string' ? session.evaluationJson.trim() : '';
+  const parsedEvaluation = evaluation
+    ? safeJsonParseLocal<Record<string, unknown> | null>(evaluation, null)
+    : null;
+  const score = parsedEvaluation
+    ? scoreFromTrainerEvaluation(parsedEvaluation, session.score)
+    : session.score;
   return {
     id: session.id,
     type: session.sessionType,
@@ -3724,7 +3673,7 @@ function trainerSessionSummary(session: {
     // the report. `title` is an AI-generated dialog summary and must not
     // replace the selected scenario in the UI.
     displayName: scenarioName,
-    score: session.score,
+    score,
     finalPoints: session.finalPoints,
     failureReason: session.failureReason,
     startedAt: session.startedAt.toISOString(),
@@ -3803,13 +3752,19 @@ app.get('/api/trainer/profile', async (req, res) => {
     ]);
 
     const categoryScores = trainerCategoryInsightsFromSessions(recentSessions);
-    const scoreTrend = [...recentSessions]
+    const scoredSessions = recentSessions.map((session) => ({
+      session,
+      score: scoreFromTrainerEvaluation(
+        safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null),
+        session.score,
+      ),
+    }));
+    const scoreTrend = [...scoredSessions]
       .reverse()
-      .filter((session) => session.score != null)
       .slice(-10)
-      .map((session) => ({
+      .map(({ session, score }) => ({
         date: localDateKey(session.completedAt ?? session.startedAt),
-        avgScore: Math.round(Number(session.score)),
+        avgScore: Math.round(score),
         count: 1,
       }));
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -3818,7 +3773,7 @@ app.get('/api/trainer/profile', async (req, res) => {
     )).length;
     const strongest = [...categoryScores].sort((a, b) => b.score - a.score)[0] ?? null;
     const weakest = [...categoryScores].sort((a, b) => a.score - b.score)[0] ?? null;
-    const scored = recentSessions.map((session) => session.score).filter((score): score is number => score != null);
+    const scored = scoredSessions.map((item) => item.score);
     const avgScore = scored.length ? round1(scored.reduce((sum, score) => sum + score, 0) / scored.length) : 0;
 
     res.json({
@@ -4143,22 +4098,8 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
 
     const isPcm = String(mimeType || '').toLowerCase().includes('audio/pcm');
 
-    if (USE_ELEVENLABS_AGENT_FOR_WEB_TRAINER && isPcm && isElevenLabsAgentEnabled()) {
-      try {
-        const out = await runTrainerSessionAudioTurn({
-          sessionId: session.id,
-          audioBase64,
-          durationSec,
-          ttsVoice,
-        });
-        console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
-        return res.json(out);
-      } catch (error) {
-        console.error('[trainer] ElevenLabs audio turn failed, falling back to STT+text:', error);
-      }
-    }
-
-    // STT path (also used as fallback when direct PCM/agent turn fails)
+    // Always finish STT before asking the text agent. The browser's stop-recording
+    // action is the only end-of-turn signal; silence inside the recording is ignored.
     let tmpPath = '';
     let sttAudioBase64 = audioBase64;
     let sttMimeType = mimeType || 'audio/webm';
@@ -4444,6 +4385,34 @@ app.get('/api/admin/call-settings/scripts', (req, res) => {
   });
 });
 
+app.get('/api/admin/evaluation-checklists', (req, res) => {
+  handleListEvaluationChecklists(req, res).catch((error) => {
+    console.error('List evaluation checklists error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить чек-листы.' });
+  });
+});
+
+app.post('/api/admin/evaluation-checklists', (req, res) => {
+  handleCreateEvaluationChecklist(req, res).catch((error) => {
+    console.error('Create evaluation checklist error:', error);
+    res.status(500).json({ error: 'Не удалось создать чек-лист.' });
+  });
+});
+
+app.patch('/api/admin/evaluation-checklists/:id', (req, res) => {
+  handleUpdateEvaluationChecklist(req, res).catch((error) => {
+    console.error('Update evaluation checklist error:', error);
+    res.status(500).json({ error: 'Не удалось обновить чек-лист.' });
+  });
+});
+
+app.delete('/api/admin/evaluation-checklists/:id', (req, res) => {
+  handleArchiveEvaluationChecklist(req, res).catch((error) => {
+    console.error('Archive evaluation checklist error:', error);
+    res.status(500).json({ error: 'Не удалось архивировать чек-лист.' });
+  });
+});
+
 app.get('/api/admin/demo-call/config', (req, res) => {
   handleGetDemoCallAdminConfiguration(req, res).catch((error) => {
     console.error('Get demo call configuration error:', error);
@@ -4668,6 +4637,13 @@ app.delete('/api/admin/holdings/:holdingId', (req, res) => {
   });
 });
 
+app.post('/api/admin/holdings/:holdingId/restore', (req, res) => {
+  handleRestoreHolding(req, res).catch((error) => {
+    console.error('Restore holding route error:', error);
+    res.status(500).json({ error: 'Не удалось восстановить компанию.' });
+  });
+});
+
 app.get('/api/admin/dealerships', (req, res) => {
   handleListDealerships(req, res).catch((error) => {
     console.error('List dealerships error:', error);
@@ -4700,6 +4676,13 @@ app.delete('/api/admin/dealerships/:dealershipId', (req, res) => {
   handleDeleteDealership(req, res).catch((error) => {
     console.error('Delete dealership route error:', error);
     res.status(500).json({ error: 'Не удалось удалить точку.' });
+  });
+});
+
+app.post('/api/admin/dealerships/:dealershipId/restore', (req, res) => {
+  handleRestoreDealership(req, res).catch((error) => {
+    console.error('Restore dealership route error:', error);
+    res.status(500).json({ error: 'Не удалось восстановить точку.' });
   });
 });
 
@@ -5765,10 +5748,9 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       return typeof score === 'number' ? score : null;
     };
     const trainerScore = (session: { score: number | null; evaluationJson: string | null }) => {
-      if (typeof session.score === 'number') return session.score;
       const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
-      if (!evaluation) return null;
-      return scoreFromEvaluation(evaluation, null);
+      if (!evaluation && typeof session.score !== 'number') return null;
+      return scoreFromTrainerEvaluation(evaluation, session.score);
     };
 
     const scoredValues = [
@@ -5838,7 +5820,11 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         .map((session) => ({ ...session, resolvedScore: scoreFromAnalyticsSession(session) }))
         .filter((session) => typeof session.resolvedScore === 'number');
       const durations = dealershipSessions
-        .map((session) => session.talkDurationSec ?? session.durationSec)
+        .map((session) => session.talkDurationSec ?? (
+          session.outcome === 'completed' || (session.outcome === 'disconnected' && session.answerTimeSec != null)
+            ? session.durationSec
+            : null
+        ))
         .filter((duration): duration is number => typeof duration === 'number' && duration > 0);
       const avgAnswerTimeSec = averagePositiveMetric(dealershipSessions, (session) => session.answerTimeSec);
       const currentStart = new Date();
@@ -5863,6 +5849,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         answerRate: answerRateFromSessions(dealershipSessions) ?? 0,
         totalAudits: dealershipSessions.length + dealershipTrainerSessions.length,
         avgDurationSec: durations.length ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length) : 0,
+        callsWithDuration: durations.length,
         avgAnswerTimeSec: avgAnswerTimeSec ?? 0,
         lastAudit: dealershipSessions[0]?.startedAt.toISOString() ?? null,
         trend: currentAvg != null && previousAvg != null ? Math.round(currentAvg - previousAvg) : 0,
@@ -5895,11 +5882,11 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       totalCalls: filteredSessions.length,
       timeSeries: typeTimeSeriesFromSessions(filteredSessions, days),
       hourlyAnswerRate,
-      answerTimeByCompany: dealershipRows
-        .filter((row) => row.avgAnswerTimeSec > 0)
-        .sort((a, b) => b.avgAnswerTimeSec - a.avgAnswerTimeSec)
+      callDurationByCompany: dealershipRows
+        .filter((row) => row.avgDurationSec > 0)
+        .sort((a, b) => b.avgDurationSec - a.avgDurationSec)
         .slice(0, 8)
-        .map((row) => ({ id: row.id, name: row.name, avgSec: row.avgAnswerTimeSec, totalCalls: row.totalAudits })),
+        .map((row) => ({ id: row.id, name: row.name, avgSec: row.avgDurationSec, totalCalls: row.callsWithDuration })),
       topDealerships: [...dealershipRows]
         .filter((row) => row.totalAudits > 0)
         .sort((a, b) => b.avgAiScore - a.avgAiScore)
@@ -7678,7 +7665,7 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
         })),
         ...trainerSessions.map((session) => {
           const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
-          const score = Math.round(scoreFromEvaluation(evaluation, session.score));
+          const score = Math.round(scoreFromTrainerEvaluation(evaluation, session.score));
           const dealershipId = session.branchId || session.employee?.dealershipId || null;
           return {
             id: `trainer-${session.id}`,
@@ -7974,7 +7961,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
         })),
         ...trainerSessions.map((session) => {
           const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
-          const score = Math.round(scoreFromEvaluation(evaluation, session.score));
+          const score = Math.round(scoreFromTrainerEvaluation(evaluation, session.score));
           return {
             id: `trainer-${session.id}`,
             date: (session.completedAt ?? session.startedAt).toISOString(),
@@ -8167,9 +8154,12 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
     }
     const communicationTotal = communicationStrong + communicationMedium + communicationWeak;
     const trainerCompleted = trainerSessions.filter((session) => session.status === 'completed' || session.status === 'failed');
-    const trainerScored = trainerCompleted.filter((session) => typeof session.score === 'number');
+    const trainerScored = trainerCompleted.map((session) => scoreFromTrainerEvaluation(
+      safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null),
+      session.score,
+    ));
     const trainerAvgScore = trainerScored.length
-      ? round1(trainerScored.reduce((sum, session) => sum + (session.score ?? 0), 0) / trainerScored.length)
+      ? round1(trainerScored.reduce((sum, score) => sum + score, 0) / trainerScored.length)
       : 0;
     const trainer30dStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const trainerIssueCounts = new Map<string, { weak: number; total: number }>();
@@ -8193,8 +8183,11 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
       id: 0,
       startedAt: session.startedAt,
       outcome: session.status,
-      totalScore: session.score,
-      evaluationJson: session.evaluationJson,
+      totalScore: scoreFromTrainerEvaluation(
+        safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null),
+        session.score,
+      ),
+      evaluationJson: null,
       dimensionsJson: session.dimensionsJson,
       checklistResultsJson: session.checklistResultsJson,
       dealershipId: session.branchId,
@@ -8273,7 +8266,7 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
         })),
         ...trainerSessions.map((session) => {
           const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
-          const score = Math.round(scoreFromEvaluation(evaluation, session.score));
+          const score = Math.round(scoreFromTrainerEvaluation(evaluation, session.score));
           return {
             id: `trainer-${session.id}`,
             date: (session.completedAt ?? session.startedAt).toISOString(),
@@ -8312,7 +8305,10 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
           date: session.startedAt.toISOString(),
           type: session.sessionType,
           scenarioName: session.scenario?.name ?? 'Сценарий',
-          score: session.score,
+          score: scoreFromTrainerEvaluation(
+            safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null),
+            session.score,
+          ),
           finalPoints: session.finalPoints,
           status: session.status,
         })),
@@ -8506,7 +8502,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
     const auditFromTrainer = (s: typeof trainerSessions[number]) => {
       const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(s.evaluationJson, null);
       const hasScore = s.score !== null || evaluation !== null;
-      const score = hasScore ? scoreFromEvaluation(evaluation, s.score) : null;
+      const score = hasScore ? scoreFromTrainerEvaluation(evaluation, s.score) : null;
       const branch = s.branch ?? s.employee?.dealership ?? null;
       const company = s.company ?? branch?.holding ?? s.employee?.dealership?.holding ?? null;
       const auditStatus = s.status === 'failed' || !!s.failureReason || (score !== null && score < 50)
@@ -8577,7 +8573,8 @@ async function buildTrainerAuditDetailItem(session: {
   scenario?: { id: string; name: string } | null;
 }) {
   let evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
-  const score = scoreFromEvaluation(evaluation, session.score);
+  const score = scoreFromTrainerEvaluation(evaluation, session.score);
+  const planCriteria = extractPlanCriteriaEvaluation(evaluation);
   const status = session.status === 'failed' || !!session.failureReason || score < 50
     ? 'failed' as const
     : 'completed' as const;
@@ -8644,6 +8641,7 @@ async function buildTrainerAuditDetailItem(session: {
       source: 'trainer',
       dimensionScores: dimensions,
       evaluation,
+      recommendations,
     },
     catalog,
   );
@@ -8678,6 +8676,7 @@ async function buildTrainerAuditDetailItem(session: {
     dealershipName: branch?.name ?? company?.name ?? 'Без точки',
     city: branch?.city ?? '—',
     totalScore: score,
+    scriptComplianceScore: planCriteria?.percent ?? null,
     verdict: status === 'failed' ? 'Нуждается в разборе' : 'Оценено',
     status,
     duration,
@@ -8772,7 +8771,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
 
     const rawChecklist = extractChecklistFromSession(session);
     const checklist = planCriteria
-      ? planCriteria.items.map((item, index) => {
+      ? planCriteria.items.filter((item) => item.status !== 'NA').map((item, index) => {
         const ratio = item.maxScore > 0 ? item.score / item.maxScore : 0;
         const result = ratio >= 0.8 ? 'pass' as const : ratio >= 0.4 ? 'warn' as const : 'fail' as const;
         return {
@@ -8812,6 +8811,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
     const issues = Array.isArray(evaluation?.issues) ? evaluation.issues as Array<Record<string, unknown>> : [];
     const recommendations = Array.isArray(evaluation?.recommendations) ? evaluation.recommendations as unknown[] : [];
     const failedPlanCriteria = planCriteria?.items
+      .filter((item) => item.status !== 'NA')
       .map((item, index) => {
         const maxScore = item.maxScore > 0 ? item.maxScore : 100;
         const lostPercent = Math.round(((maxScore - item.score) / maxScore) * 100);

@@ -741,7 +741,8 @@ function seededFallbackWaveform(barCount: number, seed: string): number[] {
 const waveformCache = new Map<string, number[]>();
 
 async function analyzeAudioWaveform(audioUrl: string, barCount: number): Promise<number[]> {
-  const cached = waveformCache.get(audioUrl);
+  const cacheKey = `${audioUrl}:${barCount}`;
+  const cached = waveformCache.get(cacheKey);
   if (cached) return cached;
 
   const response = await fetch(audioUrl);
@@ -768,7 +769,7 @@ async function analyzeAudioWaveform(audioUrl: string, barCount: number): Promise
 
     const max = Math.max(...bars, 0.001);
     const normalized = bars.map((value) => Math.max(0.16, Math.min(1, 0.16 + (value / max) * 0.84)));
-    waveformCache.set(audioUrl, normalized);
+    waveformCache.set(cacheKey, normalized);
     return normalized;
   } finally {
     await ctx.close().catch(() => {});
@@ -798,7 +799,7 @@ function useVoiceWaveform(audioUrl: string | null, barCount: number, seed: strin
     };
   }, [audioUrl, barCount, seed]);
 
-  return levels;
+  return levels.length === barCount ? levels : levels.slice(0, barCount);
 }
 
 function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
@@ -1336,6 +1337,10 @@ export function TrainPage(props: { embedded?: boolean }) {
   const location = useLocation();
   const route = parseAdminPath(location.pathname);
   const selectedSessionId = route.trainerSessionId ?? null;
+  const reportTrainingId = useMemo(
+    () => new URLSearchParams(location.search).get('trainingId')?.trim() ?? '',
+    [location.search],
+  );
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<TrainerProfile | null>(null);
@@ -1527,22 +1532,53 @@ export function TrainPage(props: { embedded?: boolean }) {
     setReportDrawerError(null);
     setReportDrawerDetail(null);
     setReportDrawerLoading(false);
+
+    const params = new URLSearchParams(location.search);
+    params.delete('trainingId');
+    const search = params.toString();
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : '' },
+      { replace: true },
+    );
   }
 
-  async function openReport(id: string) {
+  function openReport(id: string) {
+    const params = new URLSearchParams(location.search);
+    params.set('trainingId', id);
+    navigate({ pathname: location.pathname, search: `?${params.toString()}` });
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!reportTrainingId) {
+      setReportDrawerOpen(false);
+      setReportDrawerLoading(false);
+      setReportDrawerError(null);
+      setReportDrawerDetail(null);
+      return () => { cancelled = true; };
+    }
+
     setReportDrawerOpen(true);
     setReportDrawerLoading(true);
     setReportDrawerError(null);
     setReportDrawerDetail(null);
-    try {
-      const detail = await fetchTrainerAuditDetail(id);
-      setReportDrawerDetail(detail);
-    } catch (reportError) {
-      setReportDrawerError(reportError instanceof Error ? reportError.message : 'Не удалось открыть отчёт.');
-    } finally {
-      setReportDrawerLoading(false);
-    }
-  }
+
+    fetchTrainerAuditDetail(reportTrainingId)
+      .then((detail) => {
+        if (!cancelled) setReportDrawerDetail(detail);
+      })
+      .catch((reportError) => {
+        if (!cancelled) {
+          setReportDrawerError(reportError instanceof Error ? reportError.message : 'Не удалось открыть отчёт.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReportDrawerLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [reportTrainingId]);
 
   const rootClassName = [
     'train-app',
@@ -1571,7 +1607,7 @@ export function TrainPage(props: { embedded?: boolean }) {
               transcript={activeTranscript}
               clientTitle={clientProfileTitle(activeCaseContext)}
               embedded
-              onOpenReport={() => { void openReport(activeSession.id); }}
+              onOpenReport={() => openReport(activeSession.id)}
               onClose={async () => {
                 if (activeSession?.status === 'in_progress') {
                   try {
@@ -1590,7 +1626,7 @@ export function TrainPage(props: { embedded?: boolean }) {
               onSessionFinished={async (session) => {
                 if (session.status === 'failed') {
                   await load({ silent: true });
-                  void openReport(session.id);
+                  openReport(session.id);
                   return;
                 }
                 const previousStreak = profile?.currentStreak ?? 0;
@@ -1630,7 +1666,7 @@ export function TrainPage(props: { embedded?: boolean }) {
           canStartFree={Boolean(firstScenarioId)}
           onNewSession={() => setNewSessionOpen(true)}
           onOpenSession={(sessionId) => navigate(buildTrainerSessionPath(sessionId))}
-          onOpenReport={(sessionId) => { void openReport(sessionId); }}
+          onOpenReport={openReport}
         />
       )}
 

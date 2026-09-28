@@ -1,4 +1,4 @@
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { config } from '../config';
 import type { Car } from '../data/carLoader';
 import type { DialogState } from '../state/defaultState';
@@ -463,8 +463,8 @@ ${hasActiveScenario
         { role: 'user', content: userContent },
       ],
       response_format: { type: 'json_object' },
-      temperature: 0.4,
-      max_tokens: maxTokens,
+      ...compatibleChatTemperature(config.openaiChatModel, 0.4),
+      max_completion_tokens: maxTokens,
     });
     content = response.choices[0]?.message?.content ?? null;
   } catch (apiErr) {

@@ -1,9 +1,10 @@
-import { openai } from '../lib/openaiClient';
+import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { config } from '../config';
 import type { Car } from '../data/carLoader';
 import type { DialogState } from '../state/defaultState';
 import {
   type ChecklistItem,
+  type DimensionScores,
   type EvaluationIssue,
   type EvaluationResult,
   type ScoringOptions,
@@ -15,6 +16,7 @@ import {
   enforceManagerChecklistEvidence,
 } from '../logic/diagnosticScoring';
 import type { BehaviorSignal } from '../logic/behaviorClassifier';
+import type { EvaluationChecklistItemDefinition } from '../checklists/checklistManagement';
 
 // ── Types ──
 
@@ -26,6 +28,11 @@ export interface EvaluatorInput {
   failureReason?: string;
   behaviorSignals?: BehaviorSignal[];
   scenarioContext?: string;
+  evaluationChecklist?: {
+    id: string;
+    name: string;
+    items: EvaluationChecklistItemDefinition[];
+  } | null;
 }
 
 export interface EvaluatorOutput {
@@ -54,22 +61,86 @@ interface LLMClassification {
   recommendations: string[];
 }
 
-function hasCompleteChecklist(value: unknown): value is LLMClassification {
+function hasCompleteChecklist(value: unknown, expectedCodes: readonly string[] = CHECKLIST_CODE): value is LLMClassification {
   if (!value || typeof value !== 'object') return false;
   const checklist = (value as { checklist?: unknown }).checklist;
   if (!Array.isArray(checklist)) return false;
 
   const validCodes = new Set<string>();
+  const normalizedExpectedCodes = expectedCodes.map((code) => code.trim().toUpperCase());
   for (const rawItem of checklist) {
     if (!rawItem || typeof rawItem !== 'object') continue;
     const item = rawItem as Record<string, unknown>;
     const code = String(item.code ?? '').trim().toUpperCase();
     const status = String(item.status ?? '').trim().toUpperCase();
-    if (CHECKLIST_CODE.includes(code as (typeof CHECKLIST_CODE)[number]) && ['YES', 'PARTIAL', 'NO', 'NA'].includes(status)) {
+    if (normalizedExpectedCodes.includes(code) && ['YES', 'PARTIAL', 'NO', 'NA'].includes(status)) {
       validCodes.add(code);
     }
   }
-  return CHECKLIST_CODE.every((code) => validCodes.has(code));
+  return normalizedExpectedCodes.every((code) => validCodes.has(code));
+}
+
+function customEvaluatorPrompt(checklist: NonNullable<EvaluatorInput['evaluationChecklist']>): string {
+  const items = checklist.items.map((item) => [
+    `${item.id} (вес: ${item.points}) — ${item.title}`,
+    `Как оценивать: ${item.instruction}`,
+    `Категория: ${item.category}. NA: ${item.allowNa ? 'разрешён, если пункт объективно неприменим' : 'запрещён'}.`,
+  ].join('\n')).join('\n\n');
+  return `Ты — строгий профессиональный оценщик деловых разговоров с клиентами.
+Оценивай только действия сотрудника, перечисленные в переданном чек-листе. Не добавляй требования из автомобильных продаж или других отраслей.
+Для каждого пункта верни YES, PARTIAL, NO или NA. YES и PARTIAL должны подтверждаться точной цитатой сотрудника. NA допустим только там, где он явно разрешён.
+
+ЧЕК-ЛИСТ «${checklist.name}»:
+${items}
+
+Дай 3–5 конкретных рекомендаций на русском языке.
+Верни только JSON вида:
+{"checklist":[{"code":"ID пункта","status":"YES|PARTIAL|NO|NA","evidence":["цитата"],"comment":"комментарий"}],"extra_signals":{"profanity":false,"misinformation":false,"passive_style":false,"passive_severity":"mild","low_engagement":false,"redirect_to_website":false,"bad_tone":false},"recommendations":["рекомендация"]}`;
+}
+
+export function computeCustomChecklistResult(
+  definitions: EvaluationChecklistItemDefinition[],
+  classification: LLMClassification,
+  transcript: EvaluatorInput['dialogHistory'],
+): { checklist: ChecklistItem[]; score: number; dimensions: DimensionScores } {
+  const rawByCode = new Map(classification.checklist.map((item) => [String(item.code || '').trim().toLowerCase(), item]));
+  const built = definitions.map((definition) => {
+    const raw = rawByCode.get(definition.id.toLowerCase());
+    let status = raw?.status || 'NO';
+    if (status === 'NA' && !definition.allowNa) status = 'NO';
+    return {
+      code: definition.id as ChecklistItem['code'],
+      weight: definition.points,
+      status,
+      evidence: Array.isArray(raw?.evidence) ? raw!.evidence.map(String) : [],
+      comment: String(raw?.comment || definition.title),
+    } as ChecklistItem;
+  });
+  const checklist = enforceManagerChecklistEvidence(built, transcript);
+  const configuredTotal = definitions.reduce((sum, item) => sum + item.points, 0);
+  const active = checklist.filter((item) => item.status !== 'NA');
+  const activeTotal = active.reduce((sum, item) => sum + item.weight, 0);
+  const earned = active.reduce((sum, item) => sum + item.weight * (item.status === 'YES' ? 1 : item.status === 'PARTIAL' ? 0.5 : 0), 0);
+  const score = activeTotal > 0 ? Math.round((earned / activeTotal) * configuredTotal) : 0;
+  const categoryScore = (patterns: RegExp[]) => {
+    const matching = active.filter((item) => {
+      const definition = definitions.find((candidate) => candidate.id === item.code);
+      return patterns.some((pattern) => pattern.test(definition?.category || ''));
+    });
+    const maximum = matching.reduce((sum, item) => sum + item.weight, 0);
+    const value = matching.reduce((sum, item) => sum + item.weight * (item.status === 'YES' ? 1 : item.status === 'PARTIAL' ? 0.5 : 0), 0);
+    return maximum > 0 ? Math.round((value / maximum) * 100) : score;
+  };
+  return {
+    checklist,
+    score: Math.max(0, Math.min(100, score)),
+    dimensions: {
+      first_contact: categoryScore([/контакт/i]),
+      product_and_sales: categoryScore([/выявлен/i, /решен/i, /аргумент/i, /продукт/i]),
+      closing_commitment: categoryScore([/следующ/i, /закрыт/i]),
+      communication: categoryScore([/коммуникац/i, /общен/i]),
+    },
+  };
 }
 
 // ── System prompt for the Evaluator Agent ──
@@ -90,7 +161,7 @@ const EVALUATOR_SYSTEM_PROMPT = `Ты — СТРОГИЙ профессиона�
 Укажи цитаты-доказательства и краткий комментарий НА РУССКОМ.
 
 INTRODUCTION (вес: 8) — Представился ли менеджер по имени?
-SALON_NAME (вес: 6) — Назвал ли менеджер автосалон?
+SALON_NAME (вес: 6) — Назвал ли менеджер компанию?
 CAR_IDENTIFICATION (вес: 7) — Уточнил ли менеджер, какой именно автомобиль интересует?
 NEEDS_DISCOVERY (вес: 8) — Задавал ли менеджер вопросы о потребностях клиента?
 INITIATIVE (вес: 7) — Проявлял ли менеджер инициативу (предлагал варианты, вёл диалог)?
@@ -152,11 +223,13 @@ COMMUNICATION_TONE (вес: 5) — Был ли тон общения профе�
 // ── Main evaluator function ──
 
 export async function evaluateSessionV2(input: EvaluatorInput): Promise<EvaluatorOutput> {
+  const customChecklist = input.evaluationChecklist?.items?.length ? input.evaluationChecklist : null;
+  const expectedCodes = customChecklist ? customChecklist.items.map((item) => item.id) : CHECKLIST_CODE;
   const historyStr = input.dialogHistory
     .map((m) => (m.role === 'client' ? `Клиент: ${m.content}` : `Менеджер: ${m.content}`))
     .join('\n\n');
 
-  const carContext = [
+  const carContext = customChecklist ? 'Предмет разговора определяется сценарием ниже.' : [
     `Автомобиль: ${input.car.title}`,
     `Цена: ${input.car.price_rub} руб.`,
     `Год: ${input.car.year}, Пробег: ${input.car.mileage_km} км`,
@@ -209,24 +282,24 @@ ${behaviorEvidence}
       const response = await openai.chat.completions.create({
         model: config.openaiChatModel,
         messages: [
-          { role: 'system', content: EVALUATOR_SYSTEM_PROMPT },
+          { role: 'system', content: customChecklist ? customEvaluatorPrompt(customChecklist) : EVALUATOR_SYSTEM_PROMPT },
           {
             role: 'user',
             content: attempt === 1
               ? userPrompt
-              : `${userPrompt}\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ был неполным или невалидным. Обязательно верни все ${CHECKLIST_CODE.length} уникальных пунктов checklist.`,
+              : `${userPrompt}\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ был неполным или невалидным. Обязательно верни все ${expectedCodes.length} уникальных пунктов checklist.`,
           },
         ],
         response_format: { type: 'json_object' },
-        temperature: attempt === 1 ? 0.2 : 0.1,
-        max_tokens: 3500,
+        ...compatibleChatTemperature(config.openaiChatModel, attempt === 1 ? 0.2 : 0.1),
+        max_completion_tokens: 3500,
       });
 
       const text = response.choices[0]?.message?.content?.trim();
       if (!text) throw new Error('Empty evaluator response');
       const parsed = JSON.parse(text) as unknown;
-      if (!hasCompleteChecklist(parsed)) {
-        throw new Error(`Incomplete evaluator checklist: expected ${CHECKLIST_CODE.length} unique valid items`);
+      if (!hasCompleteChecklist(parsed, expectedCodes)) {
+        throw new Error(`Incomplete evaluator checklist: expected ${expectedCodes.length} unique valid items`);
       }
       classification = parsed;
     } catch (err) {
@@ -240,10 +313,11 @@ ${behaviorEvidence}
   }
 
   // Normalize + build typed checklist
-  const checklist = enforceManagerChecklistEvidence(
-    buildChecklistFromLLMClassification(
-      Array.isArray(classification.checklist) ? classification.checklist : [],
-    ),
+  const customResult = customChecklist
+    ? computeCustomChecklistResult(customChecklist.items, classification, input.dialogHistory)
+    : null;
+  const checklist = customResult?.checklist ?? enforceManagerChecklistEvidence(
+    buildChecklistFromLLMClassification(Array.isArray(classification.checklist) ? classification.checklist : []),
     input.dialogHistory,
   );
 
@@ -288,9 +362,9 @@ ${behaviorEvidence}
     passiveSeverity: extra.passive_severity === 'strong' ? 'strong' : 'mild',
   };
 
-  const { score, dimensions } = computeDeterministicScore(checklist, scoringOptions);
+  const { score, dimensions } = customResult ?? computeDeterministicScore(checklist, scoringOptions);
 
-  const issues = detectIssuesFromChecklist(checklist, {
+  const issues = customChecklist ? [] : detectIssuesFromChecklist(checklist, {
     profanity: extra.profanity,
     misinformation: extra.misinformation,
     passiveStyle: extra.passive_style,
@@ -310,6 +384,9 @@ ${behaviorEvidence}
     issues,
     recommendations,
   };
+  if (customChecklist) {
+    (evaluation as EvaluationResult & { checklist_definition: unknown }).checklist_definition = customChecklist;
+  }
 
   const formattedText = formatEvaluation(evaluation, input.earlyFail, input.failureReason);
 

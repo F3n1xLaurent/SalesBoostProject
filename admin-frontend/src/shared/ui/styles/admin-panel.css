@@ -3210,6 +3210,21 @@
   font-size: 14px;
 }
 
+.sa-call-report-script-score {
+  align-self: flex-start;
+  margin-top: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(22, 22, 19, 0.06);
+  color: var(--sa-text-secondary);
+  font-size: 13px;
+}
+
+.sa-call-report-script-score strong {
+  color: var(--sa-text);
+  font-variant-numeric: tabular-nums;
+}
+
 .sa-call-report-verdict {
   margin-bottom: 8px;
   color: var(--sa-text);

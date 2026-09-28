@@ -7,7 +7,7 @@ import {
   type DealershipStatus,
 } from '../../../shared/lib/admin-panel/mockData';
 import type { DealershipDirection, DealershipItem, DealershipType, HoldingItem } from '../../../shared/api/adminPanel';
-import { fetchAnalyticsDealerships, fetchDealershipDirections, fetchHoldings, type AnalyticsDealershipRow, type DealershipDirectionItem } from '../../../shared/api/adminPanel';
+import { fetchAnalyticsDealerships, fetchDealershipDirections, fetchDealerships, fetchHoldings, type AnalyticsDealershipRow, type DealershipDirectionItem } from '../../../shared/api/adminPanel';
 import { DealershipModal, formatWorkingHours } from '../../../shared/ui/dealership-modal/DealershipModal';
 import { ratingClass, answerRateClass, answerTimeClass, deltaDisplay, statusBadgeClass } from '../../../shared/lib/admin-panel/utils';
 import {
@@ -35,6 +35,7 @@ type CompaniesProps = {
   onOpenBatchInAudits?: (batchId: string) => void;
   onDealershipSaved?: (dealership: DealershipItem) => void;
   onDealershipDeleted?: (dealershipId: string) => void;
+  isSuperadmin?: boolean;
 };
 
 /* ────────────────────── Sort config ────────────────────── */
@@ -85,7 +86,7 @@ const PERIOD_FILTER_OPTIONS = [
   { value: 'all' as const, label: 'Все время' },
 ];
 
-type CompanyRow = DealershipRow & { dealer: string; workingHours: string; type: DealershipType; directions: DealershipDirection[]; isActive: boolean };
+type CompanyRow = DealershipRow & { dealer: string; workingHours: string; type: DealershipType; directions: DealershipDirection[]; isActive: boolean; isDeleted: boolean; holdingIsDeleted: boolean };
 
 function dealershipTypeLabel(type: DealershipType): string {
   return type === 'franchised' ? 'Франчайзинговый' : 'Собственный';
@@ -150,7 +151,11 @@ function DealershipComparisonModal({
 
 /* ────────────────────── Component ────────────────────── */
 
-export function Companies({ dealerships, loading = false, onSelectDealership, onOpenBatchInAudits, onDealershipSaved, onDealershipDeleted }: CompaniesProps) {
+export function Companies({ dealerships, loading = false, onSelectDealership, onOpenBatchInAudits, onDealershipSaved, onDealershipDeleted, isSuperadmin = false }: CompaniesProps) {
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [dealershipsIncludingDeleted, setDealershipsIncludingDeleted] = useState<DealershipItem[]>([]);
+  const [deletedLoading, setDeletedLoading] = useState(false);
+  const directoryDealerships = showDeleted ? dealershipsIncludingDeleted : dealerships;
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [holdingsError, setHoldingsError] = useState<string | null>(null);
@@ -163,8 +168,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     [holdings, selectedHoldingId],
   );
   const visibleDealerships = useMemo(
-    () => selectedHoldingId ? dealerships.filter((item) => item.holdingId === selectedHoldingId) : [],
-    [dealerships, selectedHoldingId],
+    () => selectedHoldingId ? directoryDealerships.filter((item) => item.holdingId === selectedHoldingId) : [],
+    [directoryDealerships, selectedHoldingId],
   );
   const rows = useMemo<CompanyRow[]>(
     () => {
@@ -180,6 +185,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           directions: item.directions || [],
           workingHours: formatWorkingHours(item),
           isActive: item.isActive,
+          isDeleted: item.isDeleted,
+          holdingIsDeleted: item.holdingIsDeleted,
           aiRating: analytics?.aiRating ?? 0,
           answerRate: analytics?.answerRate ?? null,
           avgAnswerTimeSec: analytics?.avgAnswerTimeSec ?? null,
@@ -261,7 +268,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     let cancelled = false;
     setHoldingsLoading(true);
     setHoldingsError(null);
-    fetchHoldings()
+    fetchHoldings({ includeDeleted: showDeleted })
       .then((items) => {
         if (!cancelled) setHoldings(items);
       })
@@ -277,7 +284,21 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [showDeleted]);
+
+  useEffect(() => {
+    if (!showDeleted || !isSuperadmin) {
+      setDealershipsIncludingDeleted([]);
+      setDeletedLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDeletedLoading(true);
+    fetchDealerships({ includeDeleted: true })
+      .then((items) => { if (!cancelled) setDealershipsIncludingDeleted(items); })
+      .finally(() => { if (!cancelled) setDeletedLoading(false); });
+    return () => { cancelled = true; };
+  }, [isSuperadmin, showDeleted]);
 
   const filtered = useMemo(() => {
     let list = rows;
@@ -328,7 +349,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
     setStatusFilter((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
   };
 
-  const activeFiltersCount = cityFilter.length + typeFilter.length + directionFilter.length + statusFilter.length;
+  const activeFiltersCount = cityFilter.length + typeFilter.length + directionFilter.length + statusFilter.length + (showDeleted ? 1 : 0);
 
   const SortIcon = ({ col }: { col: SortKey }) => {
     if (sortKey !== col) return <span className="sa-sort-icon sa-sort-icon-inactive">⇅</span>;
@@ -608,7 +629,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
           <button
             type="button"
             className="sa-btn-brutal-3d"
-            disabled={!selectedHoldingId}
+            disabled={!selectedHoldingId || Boolean(selectedHolding?.isDeleted)}
             onClick={() => setCreateDealershipOpen(true)}
           >
             <LetsIcon name="add-light" size={16} bold />
@@ -636,6 +657,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             setTypeFilter([]);
             setDirectionFilter([]);
             setStatusFilter([]);
+            setShowDeleted(false);
           }}
         >
           <FilterGroup label="Город">
@@ -670,6 +692,14 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
               </label>
             ))}
           </FilterGroup>
+          {isSuperadmin && (
+            <FilterGroup label="Удалённые записи">
+              <label className="sa-filter-check">
+                <input type="checkbox" checked={showDeleted} onChange={(event) => setShowDeleted(event.target.checked)} />
+                Показывать удалённые
+              </label>
+            </FilterGroup>
+          )}
         </FiltersPanel>
       )}
 
@@ -708,7 +738,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             </tr>
           </thead>
           <tbody>
-              {loading || holdingsLoading ? (
+              {loading || holdingsLoading || deletedLoading ? (
                 <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>Загрузка…</td></tr>
               ) : holdings.length === 0 ? (
                 <tr><td colSpan={11} className="sa-meta" style={{ padding: 32 }}>Перед тем, как создавать точки, пожалуйста, добавьте компанию.</td></tr>
@@ -717,21 +747,22 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
             ) : (
               filtered.map((r) => {
                 const delta = deltaDisplay(r.deltaRating);
-                const sourceDealership = dealerships.find((item) => item.id === r.id) ?? null;
+                const sourceDealership = directoryDealerships.find((item) => item.id === r.id) ?? null;
+                const unavailable = r.isDeleted || r.holdingIsDeleted;
                 return (
                   <tr
                     key={r.id}
-                    className="sa-row-clickable"
-                    onClick={() => onSelectDealership?.(r.id)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => e.key === 'Enter' && onSelectDealership?.(r.id)}
+                    className={unavailable ? undefined : 'sa-row-clickable'}
+                    onClick={() => { if (!unavailable) onSelectDealership?.(r.id); }}
+                    role={unavailable ? undefined : 'button'}
+                    tabIndex={unavailable ? undefined : 0}
+                    onKeyDown={(e) => { if (!unavailable && e.key === 'Enter') onSelectDealership?.(r.id); }}
                   >
                     <td onClick={(event) => event.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={selectedComparisonIds.includes(r.id)}
-                        disabled={!selectedComparisonIds.includes(r.id) && selectedComparisonIds.length >= 6}
+                        disabled={unavailable || (!selectedComparisonIds.includes(r.id) && selectedComparisonIds.length >= 6)}
                         onChange={() => toggleComparisonRow(r.id)}
                         aria-label={`Выбрать ${r.name}`}
                       />
@@ -752,8 +783,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                     <td className="sa-text-right">{r.auditsCount}</td>
                     <td>{r.workingHours}</td>
                     <td>
-                      <span className={`sa-status-badge ${r.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
-                        {r.isActive ? 'Активен' : 'Выключен'}
+                      <span className={`sa-status-badge ${unavailable ? 'sa-status-critical' : r.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                        {r.isDeleted ? 'Удалена' : r.holdingIsDeleted ? 'Компания удалена' : r.isActive ? 'Активен' : 'Выключен'}
                       </span>
                     </td>
                     <td className="sa-holdings-actions-cell">
@@ -780,7 +811,7 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
 
       {/* ─── Mobile stacked rows ─── */}
       <div className="sa-mobile-only">
-        {loading || holdingsLoading ? (
+        {loading || holdingsLoading || deletedLoading ? (
           <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Загрузка…</div>
         ) : holdings.length === 0 ? (
           <div className="sa-meta" style={{ padding: 32, textAlign: 'center' }}>Перед тем, как создавать точки, пожалуйста, добавьте компанию.</div>
@@ -789,21 +820,22 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
         ) : (
           filtered.map((r) => {
             const delta = deltaDisplay(r.deltaRating);
+            const unavailable = r.isDeleted || r.holdingIsDeleted;
             return (
               <div
                 key={r.id}
                 className="sa-mobile-row"
-                onClick={() => onSelectDealership?.(r.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => e.key === 'Enter' && onSelectDealership?.(r.id)}
+                onClick={() => { if (!unavailable) onSelectDealership?.(r.id); }}
+                role={unavailable ? undefined : 'button'}
+                tabIndex={unavailable ? undefined : 0}
+                onKeyDown={(e) => { if (!unavailable && e.key === 'Enter') onSelectDealership?.(r.id); }}
               >
                 <div onClick={(event) => event.stopPropagation()} style={{ marginBottom: 8 }}>
                   <label className="sa-filter-check" style={{ width: 'fit-content' }}>
                     <input
                       type="checkbox"
                       checked={selectedComparisonIds.includes(r.id)}
-                      disabled={!selectedComparisonIds.includes(r.id) && selectedComparisonIds.length >= 6}
+                      disabled={unavailable || (!selectedComparisonIds.includes(r.id) && selectedComparisonIds.length >= 6)}
                       onChange={() => toggleComparisonRow(r.id)}
                     />
                     Сравнить
@@ -814,8 +846,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                     <div className="sa-cell-name">{r.name}</div>
                     <div className="sa-cell-city">{r.city} · {dealershipTypeLabel(r.type)}</div>
                   </div>
-                  <span className={`sa-status-badge ${r.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
-                    {r.isActive ? 'Активен' : 'Выключен'}
+                  <span className={`sa-status-badge ${unavailable ? 'sa-status-critical' : r.isActive ? 'sa-status-norm' : 'sa-status-no-data'}`}>
+                    {r.isDeleted ? 'Удалена' : r.holdingIsDeleted ? 'Компания удалена' : r.isActive ? 'Активен' : 'Выключен'}
                   </span>
                 </div>
                 <div className="sa-mobile-chips">
@@ -836,8 +868,8 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
                   <button
                     type="button"
                     className="sa-btn-icon sa-btn-brutal-3d-icon"
-                    disabled={!dealerships.some((item) => item.id === r.id)}
-                    onClick={() => setEditDealership(dealerships.find((item) => item.id === r.id) ?? null)}
+                    disabled={!directoryDealerships.some((item) => item.id === r.id)}
+                    onClick={() => setEditDealership(directoryDealerships.find((item) => item.id === r.id) ?? null)}
                     aria-label="Редактировать точку"
                     title="Редактировать"
                   >
@@ -856,7 +888,10 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
         fixedHoldingId={selectedHoldingId}
         fixedHoldingName={selectedHolding?.name || null}
         onClose={() => setCreateDealershipOpen(false)}
-        onSaved={(saved) => onDealershipSaved?.(saved)}
+        onSaved={(saved) => {
+          setDealershipsIncludingDeleted((current) => [...current.filter((item) => item.id !== saved.id), saved]);
+          onDealershipSaved?.(saved);
+        }}
       />
       <DealershipModal
         mode="edit"
@@ -865,10 +900,13 @@ export function Companies({ dealerships, loading = false, onSelectDealership, on
         onClose={() => setEditDealership(null)}
         onSaved={(saved) => {
           setEditDealership(null);
+          setDealershipsIncludingDeleted((current) => current.map((item) => item.id === saved.id ? saved : item));
           onDealershipSaved?.(saved);
         }}
         onDeleted={(id) => {
           setEditDealership(null);
+          setSelectedComparisonIds((current) => current.filter((item) => item !== id));
+          setDealershipsIncludingDeleted((current) => current.map((item) => item.id === id ? { ...item, isDeleted: true } : item));
           onDealershipDeleted?.(id);
         }}
       />
