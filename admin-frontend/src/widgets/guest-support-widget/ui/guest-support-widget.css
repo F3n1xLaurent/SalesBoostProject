@@ -1,0 +1,10 @@
+.guest-support-widget-root { z-index: 310; }
+.guest-support-form { gap: 12px; }
+.guest-support-contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.guest-support-contact-hint { margin-top: -6px; color: #8a877f; font-size: 10px; line-height: 1.4; }
+.guest-support-honeypot { position: absolute !important; left: -10000px !important; width: 1px !important; height: 1px !important; overflow: hidden !important; }
+.guest-support-form .support-widget-form-message textarea { min-height: 110px; }
+@media (max-width: 440px) {
+  .guest-support-contact-grid { grid-template-columns: 1fr; }
+}
+

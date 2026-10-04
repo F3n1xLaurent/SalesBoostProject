@@ -4,6 +4,7 @@ import sidebarLogo from '../../../assets/logo.png';
 import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import { $auth, loginFx } from '../model/model';
+import { GuestSupportWidget } from '../../../widgets/guest-support-widget/ui/GuestSupportWidget';
 
 export function LoginPage() {
   const auth = useUnit($auth);
@@ -62,6 +63,7 @@ export function LoginPage() {
           </button>
         </form>
       </div>
+      <GuestSupportWidget />
     </div>
   );
 }

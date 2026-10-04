@@ -69,6 +69,18 @@ describe('trainer scenario selection', () => {
     expect(prompt).toContain('Запрещено скрывать своё имя');
   });
 
+  it('does not start the substantive scenario before a live employee answers', () => {
+    const prompt = buildCustomerScenarioPromptCore({
+      itemTitle: 'Skoda Octavia',
+    });
+
+    expect(prompt).toContain('после подтверждения живого сотрудника');
+    expect(prompt).toContain('только после осмысленной реплики живого сотрудника');
+    expect(prompt).toContain('Автоматическое приветствие, просьба подождать, музыка, шум и тишина');
+    expect(prompt).toContain('Не повторяй первый вопрос из-за отсутствия ответа');
+    expect(prompt).toContain('Если живой сотрудник явно сказал «повторите, пожалуйста»');
+  });
+
   it('does not accept an unrelated imported item when script tags are configured', () => {
     expect(importedItemMatchesTrainerTags(['Продажа', 'Авто'], ['Сервис'])).toBe(false);
     expect(importedItemMatchesTrainerTags(['Сервис', 'Диагностика'], ['Сервис'])).toBe(true);

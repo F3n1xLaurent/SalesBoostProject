@@ -257,9 +257,38 @@
 .internal-provider-list span { color: #777770; font-size: 11px; }
 .internal-provider-list b { font-size: 16px; white-space: nowrap; }
 .internal-economics .internal-feature-table .mono { max-width: 240px; overflow: hidden; font-family: 'IBM Plex Mono', monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.internal-support-analytics { min-width: 0; display: grid; gap: 18px; }
+.internal-support-toolbar { display: flex; align-items: end; justify-content: flex-end; gap: 10px; border: 1px solid #deded8; border-radius: 14px; padding: 14px 16px; background: #fff; }
+.internal-support-toolbar > div { min-width: 240px; display: grid; gap: 4px; margin-right: auto; }
+.internal-support-toolbar > div strong { font-size: 15px; }
+.internal-support-toolbar > div span { color: #7a7a73; font-size: 11px; }
+.internal-support-toolbar label { display: grid; gap: 5px; color: #74746d; font-size: 10px; font-weight: 700; }
+.internal-support-toolbar input { box-sizing: border-box; width: 165px; height: 39px; border: 1px solid #d6d6d0; border-radius: 9px; padding: 0 10px; background: #fafaf8; color: #171714; font: inherit; font-size: 12px; outline: none; }
+.internal-support-toolbar input:focus { border-color: #171714; box-shadow: 0 0 0 2px rgba(23,23,20,.08); }
+.internal-support-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.internal-support-chart { height: 200px; display: flex; align-items: stretch; gap: 6px; overflow-x: auto; padding-top: 10px; }
+.internal-support-chart > div { min-width: 28px; flex: 1; display: flex; flex-direction: column; justify-content: end; align-items: center; gap: 5px; }
+.internal-support-chart > div > span { min-height: 14px; color: #777770; font-size: 9px; }
+.internal-support-chart > div > div { width: 100%; height: 150px; display: flex; align-items: end; justify-content: center; gap: 3px; }
+.internal-support-chart i { width: min(12px, 42%); min-height: 0; border-radius: 4px 4px 1px 1px; }
+.internal-support-chart i.support-created, .internal-chart-legend .support-created::before { background: #171714; }
+.internal-support-chart i.support-resolved, .internal-chart-legend .support-resolved::before { background: #54a672; }
+.internal-support-chart small { margin-top: 6px; color: #898982; font-size: 9px; white-space: nowrap; transform: rotate(-35deg); }
+.internal-support-breakdown-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.internal-support-breakdown { display: grid; gap: 14px; }
+.internal-support-breakdown > div > div { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 6px; font-size: 12px; }
+.internal-support-breakdown > div > div strong { font-size: 13px; }
+.internal-support-breakdown i { display: block; overflow: hidden; height: 7px; border-radius: 999px; background: #ecece8; }
+.internal-support-breakdown b { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #171714, #65655f); }
+.internal-support-ticket-table { min-width: 1080px; }
+.internal-support-status { display: inline-flex; align-items: center; min-height: 25px; border-radius: 999px; padding: 3px 9px; background: #efefeb; color: #5f5f59; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.internal-support-status--new, .internal-support-status--reopened { background: #e8f0ff; color: #315f9d; }
+.internal-support-status--open { background: #fff1cc; color: #7d5c0c; }
+.internal-support-status--waiting, .internal-support-status--on_hold { background: #f0ecff; color: #64529a; }
+.internal-support-status--resolved, .internal-support-status--closed { background: #e5f6eb; color: #267044; }
 @media (max-width: 1350px) { .internal-analytics-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 1100px) { .internal-metric-grid, .internal-metric-grid--activity, .internal-balance-grid { grid-template-columns: repeat(2, 1fr); } .internal-analytics-two-columns { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .internal-metric-grid, .internal-metric-grid--activity, .internal-balance-grid, .internal-support-metrics { grid-template-columns: repeat(2, 1fr); } .internal-analytics-two-columns { grid-template-columns: 1fr; } }
 @media (max-width: 1100px) { .internal-company-economics__filters, .internal-company-economics__metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .internal-forecast-form { display: grid; } .internal-forecast-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } .internal-forecast-scenarios { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .internal-analytics-filters { grid-template-columns: 1fr; } .internal-card-heading-row, .internal-table-heading, .internal-section-title { display: grid; } .internal-chart-legend { justify-content: flex-start; } .internal-table-filters { display: grid; grid-template-columns: 1fr 1fr; } .internal-table-heading > label, .internal-table-filters label { min-width: 0; } .internal-table-pagination { justify-content: center; } .internal-company-economics { padding: 9px; border-radius: 16px; } .internal-company-economics__filters, .internal-company-economics__metrics, .internal-technical-expense-form { grid-template-columns: 1fr; } }
-@media (max-width: 620px) { .internal-metric-grid, .internal-balance-grid, .internal-forecast-fields, .internal-forecast-volume { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .internal-analytics-filters { grid-template-columns: 1fr; } .internal-card-heading-row, .internal-table-heading, .internal-section-title, .internal-support-toolbar { display: grid; } .internal-support-toolbar > div { min-width: 0; margin-right: 0; } .internal-support-toolbar input { width: 100%; } .internal-chart-legend { justify-content: flex-start; } .internal-table-filters { display: grid; grid-template-columns: 1fr 1fr; } .internal-table-heading > label, .internal-table-filters label { min-width: 0; } .internal-table-pagination { justify-content: center; } .internal-company-economics { padding: 9px; border-radius: 16px; } .internal-company-economics__filters, .internal-company-economics__metrics, .internal-technical-expense-form, .internal-support-breakdown-grid { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .internal-metric-grid, .internal-balance-grid, .internal-forecast-fields, .internal-forecast-volume, .internal-support-metrics { grid-template-columns: 1fr; } }

@@ -27,6 +27,7 @@ services:
       # Keep recoverable voice-processing files outside the container layer.
       TMPDIR: /app/tmp
       CALL_RECORDINGS_DIR: /app/storage/recordings
+      SUPPORT_ATTACHMENTS_DIR: /app/storage/support-attachments
       ALLOW_DEV_ADMIN: "false"
       SENTRY_RELEASE: ${IMAGE_TAG:-latest}
       # Build-only credential must never remain available to the application.
@@ -41,6 +42,7 @@ services:
       - salesboost_sqlite:/data
       - salesboost_audio_tmp:/app/tmp
       - salesboost_recordings:/app/storage/recordings
+      - salesboost_support_attachments:/app/storage/support-attachments
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=1770
@@ -67,6 +69,8 @@ volumes:
     name: salesboost_audio_tmp
   salesboost_recordings:
     name: salesboost_recordings
+  salesboost_support_attachments:
+    name: salesboost_support_attachments
 
 secrets:
   sentry_auth_token:

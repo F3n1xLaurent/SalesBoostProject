@@ -116,6 +116,34 @@ import {
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
 import {
+  handleCloseSupportTicket,
+  handleCreateSupportMessage,
+  handleCreateSupportTicket,
+  handleGetSupportMeta,
+  handleGetSupportTicket,
+  handleListSupportTickets,
+  handleMarkSupportTicketRead,
+  handleRateSupportTicket,
+  handleCreatePublicSupportMessage,
+  handleCreatePublicSupportTicket,
+  handleGetPublicSupportMeta,
+  handleGetPublicSupportTicket,
+  handleMarkPublicSupportTicketRead,
+  handleDownloadPublicSupportAttachment,
+  handleDownloadBitrixSupportAttachment,
+  handleDownloadSupportAttachment,
+  handleRatePublicSupportTicket,
+  handleUploadPublicSupportAttachment,
+  handleUploadSupportAttachment,
+} from './support/http';
+import { startSupportAutomationScheduler } from './support/automation';
+import { getSupportAnalytics } from './support/analytics';
+import {
+  handleBitrixSupportEvent,
+  handleBitrixSupportInstall,
+  startBitrixSupportScheduler,
+} from './support/bitrix24';
+import {
   handleAnalyzeImportSource,
   handleCancelImport,
   handleCreateImport,
@@ -3187,6 +3215,29 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, message: 'Sales Boost server is running' });
 });
 
+const bitrixSupportBody = express.urlencoded({ extended: true, limit: '256kb' });
+
+app.post('/api/integrations/bitrix24/support/install', bitrixSupportBody, (req, res) => {
+  handleBitrixSupportInstall(req, res).catch((error) => {
+    console.error('[support/bitrix24] install error:', error);
+    res.status(500).json({ error: 'Не удалось установить интеграцию поддержки.' });
+  });
+});
+
+app.post('/api/integrations/bitrix24/support/events', bitrixSupportBody, (req, res) => {
+  handleBitrixSupportEvent(req, res).catch((error) => {
+    console.error('[support/bitrix24] event error:', error);
+    res.status(500).json({ error: 'Не удалось обработать событие Битрикс24.' });
+  });
+});
+
+app.get('/api/integrations/bitrix24/support/attachments/:attachmentId', (req, res) => {
+  handleDownloadBitrixSupportAttachment(req, res).catch((error) => {
+    console.error('[support/bitrix24] attachment download error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Не удалось загрузить файл.' });
+  });
+});
+
 // Voice call dialog: Voximplant scenario sends ASR text here, we return LLM reply for TTS
 app.post('/voice/dialog', (req, res) => {
   console.log('[voice/dialog] POST received');
@@ -3430,6 +3481,66 @@ app.get('/api/auth/me', (req, res) => {
   });
 });
 
+app.get('/api/public/support/meta', (req, res) => {
+  handleGetPublicSupportMeta(req, res).catch((error) => {
+    console.error('Public support meta error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить параметры поддержки.' });
+  });
+});
+
+app.post('/api/public/support/tickets', (req, res) => {
+  handleCreatePublicSupportTicket(req, res).catch((error) => {
+    console.error('Public support ticket create error:', error);
+    res.status(500).json({ error: 'Не удалось создать обращение.' });
+  });
+});
+
+app.get('/api/public/support/tickets/:id', (req, res) => {
+  handleGetPublicSupportTicket(req, res).catch((error) => {
+    console.error('Public support ticket detail error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить обращение.' });
+  });
+});
+
+app.post('/api/public/support/tickets/:id/messages', (req, res) => {
+  handleCreatePublicSupportMessage(req, res).catch((error) => {
+    console.error('Public support message create error:', error);
+    res.status(500).json({ error: 'Не удалось отправить сообщение.' });
+  });
+});
+
+app.post('/api/public/support/tickets/:id/read', (req, res) => {
+  handleMarkPublicSupportTicketRead(req, res).catch((error) => {
+    console.error('Public support ticket read error:', error);
+    res.status(500).json({ error: 'Не удалось отметить сообщения прочитанными.' });
+  });
+});
+
+app.put('/api/public/support/tickets/:id/rating', (req, res) => {
+  handleRatePublicSupportTicket(req, res).catch((error) => {
+    console.error('Public support rating error:', error);
+    res.status(500).json({ error: 'Не удалось сохранить оценку.' });
+  });
+});
+
+app.post(
+  '/api/public/support/tickets/:id/messages/:messageId/attachments',
+  express.raw({ type: () => true, limit: '10mb' }),
+  (req, res) => {
+    handleUploadPublicSupportAttachment(req, res).catch((error) => {
+      console.error('Public support attachment upload error:', error);
+      res.status(500).json({ error: 'Не удалось загрузить файл.' });
+    });
+  },
+);
+
+app.get('/api/public/support/tickets/:id/attachments/:attachmentId', (req, res) => {
+  handleDownloadPublicSupportAttachment(req, res).catch((error) => {
+    console.error('Public support attachment download error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Не удалось загрузить файл.' });
+  });
+});
+
 // API endpoint to verify admin and get data
 app.get('/api/admin/verify', async (req, res) => {
   try {
@@ -3512,6 +3623,87 @@ app.use('/api/trainer', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
     console.error('Trainer API auth error:', error);
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+});
+
+app.use('/api/support', (req, res, next) => {
+  adminApiAuthMiddleware(req, res, next).catch((error) => {
+    console.error('Support API auth error:', error);
+    res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
+  });
+});
+
+app.get('/api/support/meta', (req, res) => {
+  handleGetSupportMeta(req, res).catch((error) => {
+    console.error('Support meta error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить параметры поддержки.' });
+  });
+});
+
+app.get('/api/support/tickets', (req, res) => {
+  handleListSupportTickets(req, res).catch((error) => {
+    console.error('Support ticket list error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить обращения.' });
+  });
+});
+
+app.post('/api/support/tickets', (req, res) => {
+  handleCreateSupportTicket(req, res).catch((error) => {
+    console.error('Support ticket create error:', error);
+    res.status(500).json({ error: 'Не удалось создать обращение.' });
+  });
+});
+
+app.get('/api/support/tickets/:id', (req, res) => {
+  handleGetSupportTicket(req, res).catch((error) => {
+    console.error('Support ticket detail error:', error);
+    res.status(500).json({ error: 'Не удалось загрузить обращение.' });
+  });
+});
+
+app.post('/api/support/tickets/:id/messages', (req, res) => {
+  handleCreateSupportMessage(req, res).catch((error) => {
+    console.error('Support message create error:', error);
+    res.status(500).json({ error: 'Не удалось отправить сообщение.' });
+  });
+});
+
+app.post(
+  '/api/support/tickets/:id/messages/:messageId/attachments',
+  express.raw({ type: () => true, limit: '10mb' }),
+  (req, res) => {
+    handleUploadSupportAttachment(req, res).catch((error) => {
+      console.error('Support attachment upload error:', error);
+      res.status(500).json({ error: 'Не удалось загрузить файл.' });
+    });
+  },
+);
+
+app.get('/api/support/attachments/:attachmentId', (req, res) => {
+  handleDownloadSupportAttachment(req, res).catch((error) => {
+    console.error('Support attachment download error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Не удалось загрузить файл.' });
+  });
+});
+
+app.post('/api/support/tickets/:id/read', (req, res) => {
+  handleMarkSupportTicketRead(req, res).catch((error) => {
+    console.error('Support ticket read error:', error);
+    res.status(500).json({ error: 'Не удалось отметить сообщения прочитанными.' });
+  });
+});
+
+app.post('/api/support/tickets/:id/close', (req, res) => {
+  handleCloseSupportTicket(req, res).catch((error) => {
+    console.error('Support ticket close error:', error);
+    res.status(500).json({ error: 'Не удалось закрыть обращение.' });
+  });
+});
+
+app.put('/api/support/tickets/:id/rating', (req, res) => {
+  handleRateSupportTicket(req, res).catch((error) => {
+    console.error('Support ticket rating error:', error);
+    res.status(500).json({ error: 'Не удалось сохранить оценку.' });
   });
 });
 
@@ -6371,6 +6563,31 @@ app.get('/api/admin/internal-analytics/activity', async (req, res) => {
   } catch (error) {
     console.error('internal-analytics/activity error:', error);
     return res.status(500).json({ error: 'Не удалось загрузить аналитику активности.' });
+  }
+});
+
+app.get('/api/admin/internal-analytics/support', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: config.supportTimezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const defaultFrom = `${today.slice(0, 7)}-01`;
+    const fromValue = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.dateFrom || '')) ? String(req.query.dateFrom) : defaultFrom;
+    const toValue = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.dateTo || '')) ? String(req.query.dateTo) : today;
+    const dateFrom = new Date(`${fromValue}T00:00:00+03:00`);
+    const dateTo = new Date(`${toValue}T23:59:59.999+03:00`);
+    if (!Number.isFinite(dateFrom.getTime()) || !Number.isFinite(dateTo.getTime()) || dateFrom > dateTo) {
+      return res.status(400).json({ error: 'Некорректный диапазон дат.' });
+    }
+    if (dateTo.getTime() - dateFrom.getTime() > 366 * 86_400_000) {
+      return res.status(400).json({ error: 'Диапазон не может превышать 366 дней.' });
+    }
+    return res.json(await getSupportAnalytics(dateFrom, dateTo));
+  } catch (error) {
+    console.error('internal-analytics/support error:', error);
+    return res.status(500).json({ error: 'Не удалось загрузить аналитику поддержки.' });
   }
 });
 
@@ -9299,6 +9516,8 @@ export function startServer(): Promise<void> {
       startProxyApiTariffScheduler();
       startProviderBalanceScheduler();
       startVoximplantTransactionScheduler();
+      startSupportAutomationScheduler();
+      startBitrixSupportScheduler();
       resumePendingRecordingFetches().catch((error) => {
         console.error('Voximplant recording recovery failed:', error instanceof Error ? error.message : error);
       });
