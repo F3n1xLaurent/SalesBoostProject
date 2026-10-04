@@ -118,6 +118,60 @@ type EconomicsAnalytics = {
   recent: Array<{ id: string; provider: string; category: string; stage: string | null; entityType: string | null; entityId: string | null; companyName: string | null; model: string | null; amountOriginal: number; currency: string; amountRub: number | null; exchangeRateToRub: number | null; exchangeRateDate: string | null; exchangeRateSource: string | null; status: string; occurredAt: string }>;
 };
 
+type SupportAnalytics = {
+  generatedAt: string;
+  dateFrom: string;
+  dateTo: string;
+  workSchedule: { timezone: string; fromHour: number; toHour: number };
+  summary: {
+    totalTickets: number;
+    uniqueRequesters: number;
+    activeAccounts: number;
+    contactRatePer100: number | null;
+    openTickets: number;
+    resolvedTickets: number;
+    avgFirstResponseMinutes: number | null;
+    avgResolutionMinutes: number | null;
+    firstResponseSlaCompliance: number | null;
+    resolutionSlaCompliance: number | null;
+    fsr24Rate: number | null;
+    csatRate: number | null;
+    ratedTickets: number;
+    reopenRate: number | null;
+    escalatedRate: number | null;
+    outsideHoursRate: number | null;
+  };
+  byStatus: Array<{ key: string; count: number }>;
+  byCategory: Array<{ key: string; count: number }>;
+  byPriority: Array<{ key: string; count: number }>;
+  byChannel: Array<{ key: string; count: number }>;
+  daily: Array<{ date: string; created: number; resolved: number; closed: number }>;
+  agents: Array<{
+    accountId: string;
+    name: string;
+    tickets: number;
+    resolved: number;
+    activeNow: number;
+    avgFirstResponseMinutes: number | null;
+    avgResolutionMinutes: number | null;
+  }>;
+  recent: Array<{
+    id: string;
+    number: string;
+    requester: string;
+    subject: string | null;
+    category: string;
+    subcategory: string | null;
+    priority: string;
+    status: string;
+    channel: string;
+    assignee: string | null;
+    firstResponseMinutes: number | null;
+    resolutionMinutes: number | null;
+    createdAt: string;
+  }>;
+};
+
 type CompanyForecast = {
   monthDays: number;
   monthlyCalls: number;
@@ -140,11 +194,11 @@ const outcomeLabels: Record<string, string> = {
   failed: 'Ошибка', error: 'Ошибка', processing: 'Обработка', cancelled: 'Отменён',
 };
 
-type InternalAnalyticsTab = 'demo' | 'activity' | 'economics';
+type InternalAnalyticsTab = 'demo' | 'activity' | 'economics' | 'support';
 
 function tabFromSearch(search: string): InternalAnalyticsTab {
   const value = new URLSearchParams(search).get('tab');
-  return value === 'activity' || value === 'economics' ? value : 'demo';
+  return value === 'activity' || value === 'economics' || value === 'support' ? value : 'demo';
 }
 
 function formatDuration(seconds: number | null): string {
@@ -185,6 +239,10 @@ export function InternalAnalyticsPage() {
   const [economicsLoading, setEconomicsLoading] = useState(false);
   const [economicsError, setEconomicsError] = useState<string | null>(null);
   const [economicsNotice, setEconomicsNotice] = useState<string | null>(null);
+  const [supportDates, setSupportDates] = useState(currentMonthRange);
+  const [supportData, setSupportData] = useState<SupportAnalytics | null>(null);
+  const [supportLoading, setSupportLoading] = useState(false);
+  const [supportError, setSupportError] = useState<string | null>(null);
   const [reportDrawerOpen, setReportDrawerOpen] = useState(false);
   const [reportDrawerLoading, setReportDrawerLoading] = useState(false);
   const [reportDrawerError, setReportDrawerError] = useState<string | null>(null);
@@ -271,6 +329,27 @@ export function InternalAnalyticsPage() {
   }, [tab, loadEconomics]);
 
   useEffect(() => {
+    if (tab !== 'support') return;
+    let cancelled = false;
+    setSupportLoading(true);
+    setSupportError(null);
+    const params = new URLSearchParams(supportDates);
+    apiFetch(`/api/admin/internal-analytics/support?${params}`)
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить аналитику поддержки.');
+        if (!cancelled) setSupportData(payload as SupportAnalytics);
+      })
+      .catch((reason) => {
+        if (!cancelled) setSupportError(reason instanceof Error ? reason.message : 'Ошибка загрузки.');
+      })
+      .finally(() => {
+        if (!cancelled) setSupportLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [supportDates, tab]);
+
+  useEffect(() => {
     let cancelled = false;
 
     if (!reportCallId) {
@@ -339,7 +418,18 @@ export function InternalAnalyticsPage() {
         <button type="button" role="tab" aria-selected={tab === 'demo'} className={`sa-dialog-tab ${tab === 'demo' ? 'sa-dialog-tab-active' : ''}`} onClick={() => selectTab('demo')}>Демо-стенд</button>
         <button type="button" role="tab" aria-selected={tab === 'activity'} className={`sa-dialog-tab ${tab === 'activity' ? 'sa-dialog-tab-active' : ''}`} onClick={() => selectTab('activity')}>Активность</button>
         <button type="button" role="tab" aria-selected={tab === 'economics'} className={`sa-dialog-tab ${tab === 'economics' ? 'sa-dialog-tab-active' : ''}`} onClick={() => selectTab('economics')}>Экономика</button>
+        <button type="button" role="tab" aria-selected={tab === 'support'} className={`sa-dialog-tab ${tab === 'support' ? 'sa-dialog-tab-active' : ''}`} onClick={() => selectTab('support')}>Поддержка</button>
       </div>
+
+      {tab === 'support' && (
+        <SupportAnalyticsView
+          data={supportData}
+          loading={supportLoading}
+          error={supportError}
+          dates={supportDates}
+          onDatesChange={setSupportDates}
+        />
+      )}
 
       {tab === 'economics' && (
         <EconomicsAnalyticsView
@@ -485,6 +575,135 @@ export function InternalAnalyticsPage() {
 
 function Metric({ label, value, suffix }: { label: string; value: string | number; suffix?: string }) {
   return <article className="internal-metric"><span>{label}</span><strong>{value}<small>{suffix}</small></strong></article>;
+}
+
+const supportStatusLabels: Record<string, string> = {
+  new: 'Новое', open: 'В работе', waiting: 'Ждём клиента', on_hold: 'На паузе',
+  reopened: 'Переоткрыто', resolved: 'Решено', closed: 'Закрыто',
+};
+
+const supportChannelLabels: Record<string, string> = {
+  product: 'Продукт', login: 'Экран входа', bitrix24: 'Битрикс24',
+};
+
+function formatSupportMinutes(value: number | null): string {
+  if (value == null) return '—';
+  if (value < 60) return `${Math.round(value)} мин`;
+  const hours = Math.floor(value / 60);
+  const minutes = Math.round(value % 60);
+  return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+}
+
+function SupportBreakdown({ title, items, labels }: {
+  title: string;
+  items: Array<{ key: string; count: number }>;
+  labels?: Record<string, string>;
+}) {
+  const maximum = Math.max(1, ...items.map((item) => item.count));
+  return (
+    <section className="internal-analytics-card">
+      <h2>{title}</h2>
+      <div className="internal-support-breakdown">
+        {items.map((item) => (
+          <div key={item.key}>
+            <div><span>{labels?.[item.key] || item.key}</span><strong>{item.count}</strong></div>
+            <i><b style={{ width: `${item.count / maximum * 100}%` }} /></i>
+          </div>
+        ))}
+        {!items.length && <p className="sa-meta">За период данных нет.</p>}
+      </div>
+    </section>
+  );
+}
+
+function SupportAnalyticsView({ data, loading, error, dates, onDatesChange }: {
+  data: SupportAnalytics | null;
+  loading: boolean;
+  error: string | null;
+  dates: { dateFrom: string; dateTo: string };
+  onDatesChange: React.Dispatch<React.SetStateAction<{ dateFrom: string; dateTo: string }>>;
+}) {
+  const maxDaily = Math.max(1, ...(data?.daily.flatMap((item) => [item.created, item.resolved]) ?? [1]));
+  return (
+    <div className={`internal-support-analytics ${loading ? 'internal-demo-analytics--loading' : ''}`}>
+      <div className="internal-support-toolbar">
+        <div>
+          <strong>Аналитика технической поддержки</strong>
+          <span>Скорость, SLA, качество и структура обращений</span>
+        </div>
+        <label><span>С даты</span><input type="date" value={dates.dateFrom} onChange={(event) => onDatesChange((current) => ({ ...current, dateFrom: event.target.value }))} /></label>
+        <label><span>По дату</span><input type="date" value={dates.dateTo} onChange={(event) => onDatesChange((current) => ({ ...current, dateTo: event.target.value }))} /></label>
+      </div>
+      {error && <div className="internal-analytics-placeholder internal-analytics-placeholder--error">{error}</div>}
+      {!data && loading && <div className="internal-analytics-placeholder">Загружаем аналитику поддержки…</div>}
+      {data && <>
+        <section className="internal-metric-grid internal-support-metrics">
+          <Metric label="Обращений" value={data.summary.totalTickets} />
+          <Metric label="Уникальных клиентов" value={data.summary.uniqueRequesters} />
+          <Metric label="Обращаемость" value={data.summary.contactRatePer100 == null ? '—' : data.summary.contactRatePer100} suffix={data.summary.contactRatePer100 == null ? undefined : 'на 100 пользователей'} />
+          <Metric label="Открыто из периода" value={data.summary.openTickets} />
+          <Metric label="Решено из периода" value={data.summary.resolvedTickets} />
+          <Metric label="Первый ответ" value={formatSupportMinutes(data.summary.avgFirstResponseMinutes)} />
+          <Metric label="Решение обращения" value={formatSupportMinutes(data.summary.avgResolutionMinutes)} />
+          <Metric label="SLA первого ответа" value={data.summary.firstResponseSlaCompliance == null ? '—' : `${data.summary.firstResponseSlaCompliance}%`} />
+          <Metric label="SLA решения" value={data.summary.resolutionSlaCompliance == null ? '—' : `${data.summary.resolutionSlaCompliance}%`} />
+          <Metric label="FSR · решено за 24 ч" value={data.summary.fsr24Rate == null ? '—' : `${data.summary.fsr24Rate}%`} />
+          <Metric label="CSAT" value={data.summary.csatRate == null ? '—' : `${data.summary.csatRate}%`} suffix={data.summary.ratedTickets ? `${data.summary.ratedTickets} оценок` : undefined} />
+          <Metric label="Переоткрытия" value={data.summary.reopenRate == null ? '—' : `${data.summary.reopenRate}%`} />
+          <Metric label="Эскалации" value={data.summary.escalatedRate == null ? '—' : `${data.summary.escalatedRate}%`} />
+          <Metric label="Вне рабочих часов" value={data.summary.outsideHoursRate == null ? '—' : `${data.summary.outsideHoursRate}%`} />
+        </section>
+
+        <section className="internal-analytics-card">
+          <div className="internal-card-heading-row">
+            <div><h2>Динамика обращений</h2><p>Создано и решено по дням</p></div>
+            <div className="internal-chart-legend"><span className="support-created">Создано</span><span className="support-resolved">Решено</span></div>
+          </div>
+          <div className="internal-support-chart">
+            {data.daily.map((item) => (
+              <div key={item.date} title={`${item.date}: создано ${item.created}, решено ${item.resolved}`}>
+                <span>{item.created || item.resolved ? `${item.created}/${item.resolved}` : ''}</span>
+                <div><i className="support-created" style={{ height: `${item.created / maxDaily * 100}%` }} /><i className="support-resolved" style={{ height: `${item.resolved / maxDaily * 100}%` }} /></div>
+                <small>{item.date.slice(5)}</small>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <div className="internal-support-breakdown-grid">
+          <SupportBreakdown title="Статусы" items={data.byStatus} labels={supportStatusLabels} />
+          <SupportBreakdown title="Категории" items={data.byCategory} />
+          <SupportBreakdown title="Приоритет" items={data.byPriority} />
+          <SupportBreakdown title="Каналы" items={data.byChannel} labels={supportChannelLabels} />
+        </div>
+
+        <section className="internal-analytics-card internal-economics-table-card">
+          <div className="internal-table-heading"><div><h2>Нагрузка операторов</h2><p>Появится после назначения ответственных вручную или через Битрикс24</p></div></div>
+          <div className="internal-calls-table-wrap"><table className="internal-calls-table internal-economics-table">
+            <thead><tr><th>Оператор</th><th>Обращений</th><th>Решено</th><th>Активно сейчас</th><th>Первый ответ</th><th>Решение</th></tr></thead>
+            <tbody>{data.agents.map((agent) => <tr key={agent.accountId}><td className="internal-table-primary">{agent.name}</td><td>{agent.tickets}</td><td>{agent.resolved}</td><td>{agent.activeNow}</td><td>{formatSupportMinutes(agent.avgFirstResponseMinutes)}</td><td>{formatSupportMinutes(agent.avgResolutionMinutes)}</td></tr>)}
+              {!data.agents.length && <tr><td colSpan={6} className="internal-table-empty">Ответственные пока не назначались.</td></tr>}
+            </tbody>
+          </table></div>
+        </section>
+
+        <section className="internal-analytics-card internal-economics-table-card">
+          <div className="internal-table-heading"><div><h2>Последние обращения</h2><p>До 50 обращений за выбранный период</p></div></div>
+          <div className="internal-calls-table-wrap"><table className="internal-calls-table internal-economics-table internal-support-ticket-table">
+            <thead><tr><th>Обращение</th><th>Клиент</th><th>Категория</th><th>Статус</th><th>Приоритет</th><th>Первый ответ</th><th>Решение</th><th>Создано</th></tr></thead>
+            <tbody>{data.recent.map((ticket) => <tr key={ticket.id}>
+              <td><span className="internal-table-primary">{ticket.number}</span><small className="internal-table-cell-note">{ticket.subject || 'Без темы'}</small></td>
+              <td>{ticket.requester}</td><td>{ticket.category}{ticket.subcategory ? <small className="internal-table-cell-note">{ticket.subcategory}</small> : null}</td>
+              <td><span className={`internal-support-status internal-support-status--${ticket.status}`}>{supportStatusLabels[ticket.status] || ticket.status}</span></td>
+              <td>{ticket.priority}</td><td>{formatSupportMinutes(ticket.firstResponseMinutes)}</td><td>{formatSupportMinutes(ticket.resolutionMinutes)}</td><td className="internal-table-date">{formatDate(ticket.createdAt)}</td>
+            </tr>)}{!data.recent.length && <tr><td colSpan={8} className="internal-table-empty">За выбранный период обращений нет.</td></tr>}</tbody>
+          </table></div>
+        </section>
+
+        <p className="internal-activity-footnote">Рабочее время: {data.workSchedule.fromHour}:00–{data.workSchedule.toHour}:00, будни, {data.workSchedule.timezone}. Ожидание клиента и пауза исключаются из SLA. FSR — решение за 24 рабочих часа без эскалации и переоткрытия.</p>
+      </>}
+    </div>
+  );
 }
 
 function ActivityAnalyticsView({ data, loading }: { data: ActivityAnalytics; loading: boolean }) {

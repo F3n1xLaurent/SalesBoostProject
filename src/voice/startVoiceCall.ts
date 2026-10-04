@@ -121,10 +121,6 @@ export async function startVoiceCall(
   if (scenario === 'realtime_pure') {
     scriptName = process.env.VOX_REALTIME_PURE_SCENARIO_NAME || 'voice_realtime_pure';
     ruleName = process.env.VOX_REALTIME_PURE_RULE_NAME || 'voice_realtime_pure_rule';
-    const openaiApiKey = process.env.OPENAI_API_KEY || '';
-    if (!openaiApiKey || openaiApiKey.length < 10) {
-      return { error: 'OPENAI_API_KEY must be set in env for Realtime Pure scenario.' };
-    }
     customData = {
       call_id: callId,
       to: toNormalized,
@@ -132,12 +128,10 @@ export async function startVoiceCall(
       caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
       elevenlabs_voice_id: options.elevenLabsVoiceId?.trim() || undefined,
       customer_voice_id: options.customerVoiceId?.trim() || undefined,
-      openai_api_key: openaiApiKey,
-      model: getRealtimeModel(),
-      realtime_reasoning_effort: getRealtimeReasoningEffort(),
       instructions: options.instructions,
     };
-    // No dialog_url: full script is in the scenario prompt.
+    // The current realtime_pure Voximplant scenario uses ElevenLabs Agent.
+    // Never pass provider API keys in customData: Voximplant writes it to call logs.
   } else if (scenario === 'realtime') {
     scriptName = process.env.VOX_REALTIME_SCENARIO_NAME || 'voice_realtime';
     ruleName = process.env.VOX_REALTIME_RULE_NAME || 'voice_realtime_rule';

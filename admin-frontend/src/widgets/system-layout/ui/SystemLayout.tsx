@@ -12,6 +12,7 @@ import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
 import type { PlatformSummary, PlatformVoice } from '../../../shared/model/adminPanel';
 import { CallBatchTray } from '../../call-batch-tray/ui/CallBatchTray';
+import { SupportWidget } from '../../support-widget/ui/SupportWidget';
 import {
   buildAuditPath,
   buildBatchPath,
@@ -407,7 +408,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   };
 
   return (
-    <div className={`super-admin-app theme-brutal${trainerSessionActive ? ' super-admin-app--trainer-focus' : ''}`}>
+    <div className={`super-admin-app theme-brutal${trainerSessionActive ? ' super-admin-app--trainer-focus' : ''}${hasActiveBatch ? ' super-admin-app--active-batch' : ''}`}>
       {!trainerSessionActive && !isMobileAdminNav && (
         <AdminSidebar {...sidebarProps} onTab={handleTabChange} />
       )}
@@ -678,6 +679,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
           />
         )}
       </main>
+      <SupportWidget />
     </div>
   );
 }

@@ -1272,6 +1272,20 @@ export async function handleUpdateUserPhoneNumber(req: Request, res: Response): 
         phone: phone ?? existing.phone,
         excludePhoneNumberId: phoneNumberId,
       });
+      const scheduleInvalidated = isActive === false
+        || (phone !== undefined && phone !== null && phone.replace(/\D/g, '') !== existing.phone.replace(/\D/g, ''))
+        || (typeId !== undefined && typeId !== existing.typeId);
+      if (scheduleInvalidated) {
+        await tx.callPlanCall.updateMany({
+          where: { phoneNumberId, status: 'scheduled' },
+          data: {
+            status: 'cancelled',
+            outcome: 'cancelled',
+            endedAt: new Date(),
+            failureReason: 'Номер сотрудника отключён или изменён после создания расписания.',
+          },
+        });
+      }
       return tx.phoneNumber.update({
         where: { id: phoneNumberId },
         data: {
@@ -1313,7 +1327,18 @@ export async function handleDeleteUserPhoneNumber(req: Request, res: Response): 
       return;
     }
     await assertAccountInScope(account, existing.accountId);
-    await prisma.phoneNumber.delete({ where: { id: phoneNumberId } });
+    await prisma.$transaction([
+      prisma.callPlanCall.updateMany({
+        where: { phoneNumberId, status: 'scheduled' },
+        data: {
+          status: 'cancelled',
+          outcome: 'cancelled',
+          endedAt: new Date(),
+          failureReason: 'Номер сотрудника удалён после создания расписания.',
+        },
+      }),
+      prisma.phoneNumber.delete({ where: { id: phoneNumberId } }),
+    ]);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete user phone number error:', error);

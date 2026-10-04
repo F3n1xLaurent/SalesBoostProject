@@ -69,7 +69,7 @@ COPY --chmod=755 scripts/docker-entrypoint.sh /usr/local/bin/salesboost-entrypoi
 
 # The application runs without root privileges. /data is the persistent SQLite
 # mount; /app/tmp is used for short-lived Telegram voice downloads.
-RUN mkdir -p /data /app/tmp /app/storage/recordings && chown -R node:node /app /data
+RUN mkdir -p /data /app/tmp /app/storage/recordings /app/storage/support-attachments && chown -R node:node /app /data
 
 ENV NODE_ENV=production
 EXPOSE 3000

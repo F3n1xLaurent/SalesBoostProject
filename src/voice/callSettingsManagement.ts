@@ -834,8 +834,18 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
   if (scope === 'employees' || scope === 'all') {
     const employeeTypeId = plan.employeePhoneNumberTypeId ?? plan.phoneNumberTypeId;
     const where: Prisma.ManagerProfileWhereInput = plan.targetType === 'employees'
-      ? { id: { in: targetIds }, dealership: { holdingId: plan.holdingId } }
-      : { dealershipId: { in: targetIds }, dealership: { holdingId: plan.holdingId } };
+      ? {
+        id: { in: targetIds },
+        status: 'active',
+        account: { is: { status: 'active' } },
+        dealership: { holdingId: plan.holdingId, isActive: true, isDeleted: false, holding: { isActive: true, isDeleted: false } },
+      }
+      : {
+        dealershipId: { in: targetIds },
+        status: 'active',
+        account: { is: { status: 'active' } },
+        dealership: { holdingId: plan.holdingId, isActive: true, isDeleted: false, holding: { isActive: true, isDeleted: false } },
+      };
     const employees = await prisma.managerProfile.findMany({
       where,
       include: { dealership: true, account: { include: { phoneNumbers: { where: { typeId: employeeTypeId, isActive: true }, include: { type: true } } } } },
@@ -862,7 +872,7 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
   }
   if (plan.targetType === 'dealerships' && (scope === 'dealerships' || scope === 'all')) {
     const dealerships = await prisma.dealership.findMany({
-      where: { id: { in: targetIds }, holdingId: plan.holdingId, isActive: true },
+      where: { id: { in: targetIds }, holdingId: plan.holdingId, isActive: true, isDeleted: false, holding: { isActive: true, isDeleted: false } },
       include: { phoneNumbers: { where: { typeId: plan.dealershipPhoneNumberTypeId ?? '', isActive: true }, include: { type: true } } },
       orderBy: { name: 'asc' },
     });
@@ -1439,6 +1449,25 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
   }
 
   try {
+    const eligibility = await validateScheduledPlanCall(call);
+    if (!eligibility.allowed) {
+      await prisma.callPlanCall.update({
+        where: { id: call.id },
+        data: {
+          status: 'cancelled',
+          outcome: 'cancelled',
+          endedAt: new Date(),
+          failureReason: eligibility.reason,
+        },
+      });
+      console.warn('[call-plan-scheduler] scheduled call cancelled before launch', {
+        callPlanCallId: call.id,
+        planId: call.planId,
+        phoneNumberId: call.phoneNumberId,
+        reason: eligibility.reason,
+      });
+      return;
+    }
     const [phoneNumberSource, targetDealership] = await Promise.all([
       resolvePhoneNumberSourceSnapshot(call.phone, call.phoneNumberTypeId),
       call.dealershipId
@@ -1531,12 +1560,45 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
   }
 }
 
+async function validateScheduledPlanCall(
+  call: Prisma.CallPlanCallGetPayload<{ include: { plan: true } }>,
+): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  const currentPlan = await prisma.callPlan.findUnique({ where: { id: call.planId } });
+  if (!currentPlan) return { allowed: false, reason: 'План прозвона удалён.' };
+  if (currentPlan.frequency !== 'daily' && currentPlan.frequency !== 'weekly') {
+    return { allowed: false, reason: 'Автоматический запуск плана отключён.' };
+  }
+  if (!call.phoneNumberId) return { allowed: false, reason: 'У задания отсутствует привязка к актуальному номеру.' };
+
+  const currentTargets = await buildCallPlanTargets(currentPlan);
+  const target = currentTargets.find((item) => (
+    item.phoneNumber.id === call.phoneNumberId
+    && item.targetKind === call.targetKind
+    && (item.targetKind !== 'employee' || item.employee?.id === call.employeeId)
+    && (item.targetKind !== 'dealership' || item.dealershipId === call.dealershipId)
+  ));
+  if (!target) {
+    return { allowed: false, reason: 'Номер удалён, отключён или больше не относится к аудитории плана.' };
+  }
+  const scheduledPhone = String(call.phone).replace(/\D/g, '');
+  const currentPhone = String(target.phoneNumber.phone).replace(/\D/g, '');
+  if (!scheduledPhone || scheduledPhone !== currentPhone) {
+    return { allowed: false, reason: 'Номер был изменён после создания расписания.' };
+  }
+  return { allowed: true };
+}
+
 async function runCallPlanScheduleChecker(): Promise<void> {
   if (callPlanScheduleCheckerRunning) return;
   callPlanScheduleCheckerRunning = true;
   try {
     const today = new Date();
-    const plans = await prisma.callPlan.findMany({ where: { frequency: { in: ['daily', 'weekly'] } } });
+    const plans = await prisma.callPlan.findMany({
+      where: {
+        frequency: { in: ['daily', 'weekly'] },
+        holding: { isActive: true, isDeleted: false },
+      },
+    });
     for (const plan of plans) {
       const created = await ensureCallPlanScheduleForDate(plan, today);
       if (created > 0) {

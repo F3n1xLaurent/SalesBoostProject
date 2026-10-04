@@ -1882,14 +1882,30 @@ export async function handleUpdateDealershipPhoneNumber(req: Request, res: Respo
       }
     }
 
-    const updated = await prisma.phoneNumber.update({
-      where: { id: phoneNumberId },
-      data: {
-        ...(typeId !== undefined && typeId !== null ? { typeId } : {}),
-        ...(phone !== undefined && phone !== null ? { phone } : {}),
-        ...(isActive !== undefined ? { isActive } : {}),
-      },
-      include: { type: true },
+    const updated = await prisma.$transaction(async (tx) => {
+      const scheduleInvalidated = isActive === false
+        || (phone !== undefined && phone !== null && phone.replace(/\D/g, '') !== existing.phone.replace(/\D/g, ''))
+        || (typeId !== undefined && typeId !== null && typeId !== existing.typeId);
+      if (scheduleInvalidated) {
+        await tx.callPlanCall.updateMany({
+          where: { phoneNumberId, status: 'scheduled' },
+          data: {
+            status: 'cancelled',
+            outcome: 'cancelled',
+            endedAt: new Date(),
+            failureReason: 'Номер точки отключён или изменён после создания расписания.',
+          },
+        });
+      }
+      return tx.phoneNumber.update({
+        where: { id: phoneNumberId },
+        data: {
+          ...(typeId !== undefined && typeId !== null ? { typeId } : {}),
+          ...(phone !== undefined && phone !== null ? { phone } : {}),
+          ...(isActive !== undefined ? { isActive } : {}),
+        },
+        include: { type: true },
+      });
     });
     res.json({ item: normalizePhoneNumberResponse(updated) });
   } catch (error) {
@@ -1925,7 +1941,18 @@ export async function handleDeleteDealershipPhoneNumber(req: Request, res: Respo
       return;
     }
 
-    await prisma.phoneNumber.delete({ where: { id: phoneNumberId } });
+    await prisma.$transaction([
+      prisma.callPlanCall.updateMany({
+        where: { phoneNumberId, status: 'scheduled' },
+        data: {
+          status: 'cancelled',
+          outcome: 'cancelled',
+          endedAt: new Date(),
+          failureReason: 'Номер точки удалён после создания расписания.',
+        },
+      }),
+      prisma.phoneNumber.delete({ where: { id: phoneNumberId } }),
+    ]);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete dealership phone number error:', error);
