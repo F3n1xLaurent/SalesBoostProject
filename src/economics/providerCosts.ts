@@ -1,5 +1,6 @@
 import { prisma } from '../db';
 import { config } from '../config';
+import { fetchElevenLabs } from '../voice/elevenLabsHttp';
 import { getCallHistory } from '../voice/voximplantRecordingService';
 import { resolveExchangeRate } from './exchangeRates';
 
@@ -195,11 +196,20 @@ export async function syncElevenLabsCost(sessionId: string): Promise<boolean> {
   if (!config.elevenLabsApiKey) return false;
   const session = await prisma.trainerSession.findUnique({ where: { id: sessionId }, include: { branch: { select: { holdingId: true } } } });
   if (!session?.elevenLabsConversationId) return false;
-  const response = await fetch(`https://api.elevenlabs.io/v1/convai/conversations/${encodeURIComponent(session.elevenLabsConversationId)}`, {
+  const response = await fetchElevenLabs(`https://api.elevenlabs.io/v1/convai/conversations/${encodeURIComponent(session.elevenLabsConversationId)}`, {
     headers: { 'xi-api-key': config.elevenLabsApiKey },
     signal: AbortSignal.timeout(15_000),
+    redirect: 'manual',
   });
-  if (!response.ok) throw new Error(`ElevenLabs conversation cost HTTP ${response.status}`);
+  if (!response.ok) {
+    const location = response.headers.get('location');
+    const body = (await response.text().catch(() => '')).slice(0, 300);
+    throw new Error(
+      `ElevenLabs conversation cost HTTP ${response.status}`
+      + `${location ? ` redirect=${location}` : ''}`
+      + `${body ? `: ${body}` : ''}`,
+    );
+  }
   const body = await response.json() as any;
   if (body.status === 'processing') return false;
   const amount = finite(body.metadata?.cost_fiat);

@@ -1,16 +1,12 @@
 import { Input } from 'telegraf';
-import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { config } from '../config';
 import { openai } from '../lib/openaiClient';
 import type { Context } from 'telegraf';
 import type { TtsVoice } from '../state/userPreferences';
+import { fetchElevenLabs, isElevenLabsProxyEnabled } from './elevenLabsHttp';
 
 const TTS_MAX_CHARS = 360;
 const ELEVENLABS_TTS_TIMEOUT_MS = 25_000;
-
-const elevenLabsProxyAgent = config.elevenLabsProxyUrl
-  ? new ProxyAgent(config.elevenLabsProxyUrl)
-  : null;
 
 /** OpenAI voices: male = onyx, female = nova */
 const OPENAI_VOICE_MAP: Record<TtsVoice, string> = {
@@ -61,9 +57,9 @@ async function generateSpeechElevenLabs(text: string, voiceId = config.elevenLab
   });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TTS_TIMEOUT_MS);
-  console.log(`[tts] ElevenLabs request chars=${ttsText.length} proxy=${Boolean(elevenLabsProxyAgent)}`);
+  console.log(`[tts] ElevenLabs request chars=${ttsText.length} proxy=${isElevenLabsProxyEnabled()}`);
   try {
-    const response = await undiciFetch(
+    const response = await fetchElevenLabs(
       `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(resolvedVoiceId)}?output_format=opus_48000_128`,
       {
         method: 'POST',
@@ -75,7 +71,6 @@ async function generateSpeechElevenLabs(text: string, voiceId = config.elevenLab
         body,
         signal: controller.signal,
         redirect: 'manual',
-        ...(elevenLabsProxyAgent ? { dispatcher: elevenLabsProxyAgent } : {}),
       },
     );
     const audio = Buffer.from(await response.arrayBuffer());

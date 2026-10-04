@@ -1,13 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import { File } from 'node:buffer';
-import { fetch as undiciFetch, FormData as UndiciFormData, ProxyAgent } from 'undici';
+import { FormData as UndiciFormData } from 'undici';
 import { openai } from '../lib/openaiClient';
 import { config } from '../config';
-
-const elevenLabsProxyAgent = config.elevenLabsProxyUrl
-  ? new ProxyAgent(config.elevenLabsProxyUrl)
-  : null;
+import { fetchElevenLabs } from './elevenLabsHttp';
 
 function contentTypeForFile(filepath: string): string {
   const ext = path.extname(filepath).toLowerCase();
@@ -21,17 +18,16 @@ function contentTypeForFile(filepath: string): string {
 
 async function fetchWithTimeout(
   input: string,
-  init: NonNullable<Parameters<typeof undiciFetch>[1]>,
+  init: NonNullable<Parameters<typeof fetchElevenLabs>[1]>,
   timeoutMs: number,
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await undiciFetch(input, {
+    return await fetchElevenLabs(input, {
       ...init,
       signal: controller.signal,
-      ...(elevenLabsProxyAgent ? { dispatcher: elevenLabsProxyAgent } : {}),
-    }) as unknown as Response;
+    });
   } finally {
     clearTimeout(timeout);
   }

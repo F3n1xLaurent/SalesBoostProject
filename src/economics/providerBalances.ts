@@ -1,6 +1,7 @@
 import { prisma } from '../db';
 import { config } from '../config';
 import { resolveExchangeRate } from './exchangeRates';
+import { fetchElevenLabs } from '../voice/elevenLabsHttp';
 
 const HOUR_MS = 60 * 60 * 1000;
 let schedulerStarted = false;
@@ -80,11 +81,20 @@ async function fetchProxyApiBalance(): Promise<BalanceInput | null> {
 
 async function fetchElevenLabsBalance(): Promise<BalanceInput | null> {
   if (!config.elevenLabsApiKey) return null;
-  const response = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+  const response = await fetchElevenLabs('https://api.elevenlabs.io/v1/user/subscription', {
     headers: { 'xi-api-key': config.elevenLabsApiKey, Accept: 'application/json' },
     signal: AbortSignal.timeout(15_000),
+    redirect: 'manual',
   });
-  if (!response.ok) throw new Error(`ElevenLabs subscription HTTP ${response.status}`);
+  if (!response.ok) {
+    const location = response.headers.get('location');
+    const body = (await response.text().catch(() => '')).slice(0, 300);
+    throw new Error(
+      `ElevenLabs subscription HTTP ${response.status}`
+      + `${location ? ` redirect=${location}` : ''}`
+      + `${body ? `: ${body}` : ''}`,
+    );
+  }
   return parseElevenLabsBalance(await response.json());
 }
 
