@@ -864,6 +864,116 @@ model VoiceCallSession {
   @@map("voice_call_sessions")
 }
 
+// Append-only provider expense ledger. Aggregates in internal analytics are derived from these rows.
+model CostEvent {
+  id                String   @id @default(cuid())
+  provider          String   // "proxyapi" | "elevenlabs" | "voximplant"
+  category          String   // "llm" | "stt" | "tts" | "agent" | "telephony" | "recording" | "other"
+  stage             String?
+  entityType        String?  // "voice_call" | "trainer_session" | other product unit
+  entityId          String?
+  companyId         String?
+  externalId        String?
+  model             String?
+  quantity          Float?
+  quantityUnit      String?
+  inputUnits        Int?
+  outputUnits       Int?
+  amountOriginal    Float
+  currency          String
+  amountRub         Float?
+  exchangeRateToRub Float?
+  exchangeRateDate  DateTime?
+  exchangeRateSource String?
+  tariffId           String?
+  tariffEffectiveAt  DateTime?
+  includedInTotals   Boolean  @default(true) // false for per-entity allocations already represented by account transactions
+  status            String   @default("estimated") // "estimated" | "confirmed"
+  rawJson           String?
+  occurredAt        DateTime @default(now())
+  syncedAt          DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([provider, externalId])
+  @@index([occurredAt])
+  @@index([provider, occurredAt])
+  @@index([entityType, entityId])
+  @@index([companyId, occurredAt])
+  @@map("cost_events")
+}
+
+// User-defined recurring infrastructure costs included in every calendar month.
+model MonthlyTechnicalExpense {
+  id        String   @id @default(cuid())
+  name      String
+  amountRub Float
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, createdAt])
+  @@map("monthly_technical_expenses")
+}
+
+model ProviderTariff {
+  id          String   @id @default(cuid())
+  provider    String
+  model       String
+  currency    String   @default("RUB")
+  ratesJson   String
+  rawHash     String
+  sourceUrl   String
+  effectiveAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([provider, model, rawHash])
+  @@index([provider, model, effectiveAt])
+  @@map("provider_tariffs")
+}
+
+model ProviderBalanceSnapshot {
+  id                 String   @id @default(cuid())
+  provider           String
+  balance            Float
+  used               Float?
+  limit              Float?
+  unit               String
+  currency           String?
+  balanceRub         Float?
+  exchangeRateToRub  Float?
+  exchangeRateDate   DateTime?
+  exchangeRateSource String?
+  resetAt            DateTime?
+  capturedHour       DateTime
+  capturedAt         DateTime @default(now())
+  rawJson             String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([provider, capturedHour])
+  @@index([provider, capturedAt])
+  @@map("provider_balance_snapshots")
+}
+
+model ExchangeRate {
+  id            String   @id @default(cuid())
+  baseCurrency  String
+  quoteCurrency String   @default("RUB")
+  rate          Float
+  rateDate      DateTime
+  source        String   @default("cbr")
+  fetchedAt     DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([baseCurrency, quoteCurrency, rateDate, source])
+  @@index([baseCurrency, quoteCurrency, rateDate])
+  @@map("exchange_rates")
+}
+
 model CallBatch {
   id              String   @id @default(cuid())
   mode            String   @default("manual") // "manual" | "single_dealership" | "all_dealerships"

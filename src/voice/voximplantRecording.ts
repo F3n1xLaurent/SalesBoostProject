@@ -6,6 +6,9 @@ export interface VoximplantRecord {
 export type VoxCallHistoryResponse = {
   result?: Array<{
     records?: Array<{ record_id?: number | string; record_url?: string }>;
+    calls?: Array<Record<string, unknown>>;
+    other_resource_usage?: unknown;
+    currency?: string;
   }>;
   error?: { msg?: string } | string;
 };

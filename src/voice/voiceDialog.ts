@@ -13,7 +13,6 @@ import type { Car } from '../data/carLoader';
 import {
   advanceTopic,
   recordEvasion,
-  checkCriticalEvasions,
   type TopicCode,
 } from '../logic/topicStateMachine';
 import { appendTranscript } from './callHistory';
@@ -186,14 +185,6 @@ export async function getVoiceDialogReply(callId: string, managerText?: string):
   } else {
     state.low_effort_streak = 0;
   }
-  if (state.low_effort_streak >= 3) {
-    const failReply =
-      'Я задаю конкретные вопросы и хотел бы получать развёрнутые ответы. Видимо, сейчас не лучшее время. До свидания.';
-    session.history.push({ role: 'client', content: failReply });
-    sessions.delete(callId);
-    return { reply_text: failReply, end_session: true };
-  }
-
   const historyForLlm = history.slice(-DIALOG_HISTORY_LIMIT);
   let out: Awaited<ReturnType<typeof getVirtualClientReply>>;
   try {
@@ -215,14 +206,6 @@ export async function getVoiceDialogReply(callId: string, managerText?: string):
 
   applyDiagnosticsToState(state, out);
   session.history.push({ role: 'client', content: out.client_message });
-
-  const evasionCheck = checkCriticalEvasions(state.topics);
-  if (evasionCheck.shouldFail) {
-    const evasionReply = `Я дважды спросил про важный вопрос и не получил ответа. Пожалуй, обращусь в другой салон.`;
-    session.history.push({ role: 'client', content: evasionReply });
-    sessions.delete(callId);
-    return { reply_text: evasionReply, end_session: true };
-  }
 
   if (out.end_conversation) sessions.delete(callId);
   return { reply_text: out.client_message, end_session: out.end_conversation };

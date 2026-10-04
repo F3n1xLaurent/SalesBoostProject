@@ -110,16 +110,12 @@ React to it as follows:
    - Example: "Простите, но мне не нравится такой тон." / "Это неуместно."
    - If behavior_severity is HIGH, respond once and set end_conversation=true.
 
-2. If manager_behavior is "low_effort" (e.g. "ок", "хз", one-word answer):
-   - NEVER say "спасибо" or "понятно" to a lazy answer.
-   - Be direct: "Можете ответить конкретнее?" / "Мне нужен развёрнутый ответ."
-   - If this is the 2nd low-effort in a row (low_effort_streak >= 2), be firmer:
-     "Я задаю конкретные вопросы. Мне нужны нормальные ответы."
-
-3. If manager_behavior is "evasion":
-   - Say directly that you noticed the question was dodged:
-     "Вы не ответили на мой вопрос." / "Я спрашивал о другом."
-   - Do NOT repeat the question more than once.
+2. If manager_behavior is "low_effort" or "evasion":
+   - Treat these flags as diagnostics for post-call analytics only. Do NOT grade or confront the manager in the live dialog.
+   - Accept any understandable short, partial, approximate, numeric or differently worded reply as an answer.
+   - Briefly acknowledge it in Russian (for example, "Понял", "Хорошо" or "Ладно") and move to the next topic.
+   - NEVER say "Вы не ответили", "Я спрашивал о другом" or demand a more detailed/correct answer.
+   - Do NOT repeat or rephrase the same question to obtain the expected answer.
 
 4. If manager_behavior is "dismissive" (prohibited phrases like "посмотрите на сайте"):
    - React with mild frustration: "Я звоню именно чтобы узнать от вас, а не с сайта."
@@ -197,7 +193,8 @@ const ACTIVE_SCENARIO_SYSTEM_OVERRIDE = `=== ACTIVE SCENARIO OVERRIDE (HIGHEST P
 The request contains a PHONE SCENARIO PROMPT. It defines the customer's actual role, topic, needs, questions and desired next step.
 Follow that scenario exactly. Treat every car-sales assumption in the generic prompt as legacy fallback guidance only.
 Do not mention buying a car, an advertisement, availability, credit, trade-in, a test drive or competitors unless the active scenario explicitly requires it.
-Remain a realistic customer speaking Russian, never switch to the employee/manager role, and keep the strict JSON output format.`;
+Remain a realistic customer speaking Russian, never switch to the employee/manager role, and keep the strict JSON output format.
+The live customer conducts the conversation but does not evaluate the employee. Expected answers and success criteria are reserved for post-call analytics: never force the employee to reproduce them, and never loop on a partially answered question.`;
 
 // ── Helpers ──
 
@@ -381,8 +378,8 @@ export async function getVirtualClientReply(input: VirtualClientInput): Promise<
   const profileDesc = profileToPromptDescription(profile);
   const hasActiveScenario = Boolean(input.scenarioPrompt?.trim());
   const systemPrompt = SYSTEM_PROMPT.replace('{PROFILE_DESCRIPTION}', profileDesc);
-  const fallbackMessage = hasActiveScenario
-    ? 'Подскажите, пожалуйста, можете подробнее ответить по моему вопросу?'
+  const fallbackMessage = input.manager_last_message.trim()
+    ? 'Понял, хорошо.'
     : FALLBACK_CLIENT_MESSAGE;
 
   // Build behavior alert for the CustomerAgent
@@ -448,7 +445,7 @@ INSTRUCTIONS:
 ${hasActiveScenario
     ? '- Ignore automotive topic and objection fields when they are not part of the active scenario.'
     : `- In phase money_and_objections, trigger objection type: ${objType}.`}
-- REACT TO BEHAVIOR ALERT: if toxic/low_effort/evasion, respond firmly per the rules.
+- REACT firmly only to toxic/bad-tone behavior. Treat low_effort/evasion as silent analytics signals and continue the dialog without retrying the question.
 - Report diagnostics accurately.
 - Return ONLY valid JSON.`;
 

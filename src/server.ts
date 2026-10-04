@@ -9,6 +9,20 @@ import { WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { config } from './config';
 import { compatibleChatTemperature, openai } from './lib/openaiClient';
+import { buildScriptCriteriaEvaluationPrompt } from './llm/scriptCriteriaPrompt';
+import { withCostContext } from './economics/costContext';
+import { getEconomicsAnalytics } from './economics/analytics';
+import { getCompanyEconomicsForecast } from './economics/companyForecast';
+import { startExchangeRateScheduler } from './economics/exchangeRates';
+import { refreshProxyApiTariffs, startProxyApiTariffScheduler } from './economics/proxyApiTariffs';
+import { refreshProviderBalances, startProviderBalanceScheduler } from './economics/providerBalances';
+import {
+  importProxyApiLogs,
+  scheduleElevenLabsCostSync,
+  scheduleVoximplantCostSync,
+  startVoximplantTransactionScheduler,
+  syncRecentProviderCosts,
+} from './economics/providerCosts';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { handleVoiceDialog } from './voice/voiceDialog';
@@ -171,7 +185,6 @@ import {
 } from './analytics/recommendations/api';
 import {
   advanceTopic,
-  checkCriticalEvasions,
   recordEvasion,
   type TopicCode,
 } from './logic/topicStateMachine';
@@ -558,24 +571,13 @@ async function evaluateScriptCriteria(criteriaInput: unknown, transcript: Traine
   const criteria = Array.isArray(criteriaInput) ? criteriaInput as Array<{ expectedAnswer?: string; score?: number }> : [];
   const meaningfulCriteria = criteria.filter((item) => String(item.expectedAnswer || '').trim());
   if (meaningfulCriteria.length === 0) return null;
-  const prompt = [
-    'Ты оцениваешь разговор сотрудника с виртуальным клиентом по условиям успеха скрипта.',
-    'Для каждого условия сравни ответ сотрудника с эталоном.',
-    'Правила: если ответил также или почти также — полный балл; если близко — половина; если не ответил — 0.',
-    'Критично: score по каждому пункту НЕ МОЖЕТ быть больше maxScore этого пункта. Если maxScore=80, максимум score=80.',
-    'totalScore должен быть суммой score, maxScore должен быть суммой maxScore, percent = totalScore / maxScore * 100.',
-    'Верни только JSON: {"items":[{"expectedAnswer":"...","maxScore":100,"score":0,"evidence":"цитата или причина"}],"totalScore":0,"maxScore":0,"percent":0}.',
-    '',
-    `Условия:\n${JSON.stringify(meaningfulCriteria, null, 2)}`,
-    '',
-    `Диалог:\n${transcript.map((turn) => `${turn.role === 'manager' ? 'Сотрудник' : 'Клиент'}: ${turn.text}`).join('\n')}`,
-  ].join('\n');
+  const prompt = buildScriptCriteriaEvaluationPrompt(meaningfulCriteria, transcript);
   try {
     const response = await openai.chat.completions.create({
       model: config.openaiChatModel,
       ...compatibleChatTemperature(config.openaiChatModel, 0.1),
       messages: [
-        { role: 'system', content: 'Ты строгий оценщик продаж. Отвечай только валидным JSON.' },
+        { role: 'system', content: 'Ты строгий оценщик деловых разговоров. Сравнивай ответы по смыслу, а не по буквальному совпадению. Отвечай только валидным JSON.' },
         { role: 'user', content: prompt },
       ],
     });
@@ -1829,22 +1831,6 @@ async function runWebTrainingTurn(params: {
   if (behavior.low_effort) state.low_effort_streak = (state.low_effort_streak ?? 0) + 1;
   else state.low_effort_streak = 0;
 
-  const lowQualityStreak = behaviorSignals.reduce((acc, s) => (s.low_quality ? acc + 1 : 0), 0);
-  if ((state.low_effort_streak ?? 0) >= 3 || lowQualityStreak >= 2) {
-    const failReply =
-      'Я задаю конкретные вопросы и хотел бы получать развёрнутые ответы. Видимо, сейчас не лучшее время. До свидания.';
-    const newHistory = [...history, { role: 'client' as const, content: failReply }];
-    const result = buildWebTrainingResult(
-      state,
-      newHistory,
-      behaviorSignals,
-      true,
-      lowQualityStreak >= 2 ? 'REPEATED_LOW_QUALITY' : 'REPEATED_LOW_EFFORT',
-    );
-    webTrainingSessions.delete(sessionId);
-    return { clientMessage: failReply, endConversation: true, audioBase64: null, result };
-  }
-
   const out = await getVirtualClientReply({
     car,
     dealership: buildDealershipFromCar(car),
@@ -1881,16 +1867,6 @@ async function runWebTrainingTurn(params: {
   };
 
   const newHistory = [...history, { role: 'client' as const, content: out.client_message }];
-  const evasionCheck = checkCriticalEvasions(topicMap);
-  if (evasionCheck.shouldFail) {
-    const evasionReply =
-      'Я дважды задал важный вопрос и не получил ответа. Пожалуй, обращусь в другой салон.';
-    const failHistory = [...history, { role: 'client' as const, content: evasionReply }];
-    const result = buildWebTrainingResult(nextState, failHistory, behaviorSignals, true, `CRITICAL_EVASION:${evasionCheck.failedTopic}`);
-    webTrainingSessions.delete(sessionId);
-    return { clientMessage: evasionReply, endConversation: true, audioBase64: null, result };
-  }
-
   const endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(out.client_message);
   const result = endConversation
     ? buildWebTrainingResult(nextState, newHistory, behaviorSignals, false, null)
@@ -2314,6 +2290,9 @@ async function finalizeTrainerSessionEvaluation(params: {
   failureReason: string | null;
   multiplier: number;
 }): Promise<void> {
+  return withCostContext({
+    entityType: 'trainer_session', entityId: params.sessionId, stage: 'evaluation',
+  }, async () => {
   const audit = await buildTrainerAuditEvaluation({
     caseContext: params.caseContext,
     runtime: params.runtime,
@@ -2352,6 +2331,7 @@ async function finalizeTrainerSessionEvaluation(params: {
     }
   }
   await finalizeTrainerSessionSideEffects(params.sessionId);
+  });
 }
 
 export async function regenerateTrainerSessionReport(sessionId: string) {
@@ -2665,7 +2645,10 @@ function ensureTrainerDialogInitialized(params: {
   const runningTask = trainerDialogInitializationTasks.get(params.sessionId);
   if (runningTask) return runningTask;
 
-  const task = initializeTrainerDialog(params);
+  const task = withCostContext(
+    { entityType: 'trainer_session', entityId: params.sessionId, stage: 'dialog_initialization' },
+    () => initializeTrainerDialog(params),
+  );
   trainerDialogInitializationTasks.set(params.sessionId, task);
   void task.then(
     () => {
@@ -2696,6 +2679,13 @@ async function runTrainerSessionTurn(params: {
   if (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') {
     throw new Error('TRAINER_SESSION_CLOSED');
   }
+
+  return withCostContext({
+    entityType: 'trainer_session',
+    entityId: session.id,
+    companyId: session.companyId,
+    stage: 'dialog_turn',
+  }, async () => {
 
   const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
   const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
@@ -2734,13 +2724,7 @@ async function runTrainerSessionTurn(params: {
   } else {
     if (behavior.low_effort) state.low_effort_streak = (state.low_effort_streak ?? 0) + 1;
     else state.low_effort_streak = 0;
-    const lowQualityStreak = behaviorSignals.reduce((acc, signal) => (signal.low_quality ? acc + 1 : 0), 0);
-    if ((state.low_effort_streak ?? 0) >= 3 || lowQualityStreak >= 2) {
-      clientMessage = 'Я задаю конкретные вопросы и хотел бы получать развёрнутые ответы. Видимо, сейчас не лучшее время. До свидания.';
-      nextHistory = [...history, { role: 'client', content: clientMessage }];
-      result = buildWebTrainingResult(state, nextHistory, behaviorSignals, true, lowQualityStreak >= 2 ? 'REPEATED_LOW_QUALITY' : 'REPEATED_LOW_EFFORT');
-      endConversation = true;
-    } else if (USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
+    if (USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
       try {
         console.log(`[trainer] ElevenLabs agent turn start session=${session.id}`);
         const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
@@ -2751,7 +2735,7 @@ async function runTrainerSessionTurn(params: {
           elevenLabsVoiceId,
         });
         console.log(`[trainer] ElevenLabs agent turn done session=${session.id} hasAudio=${Boolean(agentOut.audioBase64)} conversation=${agentOut.conversationId || 'n/a'}`);
-        clientMessage = agentOut.clientMessage || 'Понял вас. Расскажите, пожалуйста, подробнее.';
+        clientMessage = agentOut.clientMessage || 'Понял, хорошо.';
         clientAudioBase64 = agentOut.audioBase64;
         clientAudioMimeType = agentOut.audioMimeType;
         nextHistory = [...history, { role: 'client', content: clientMessage }];
@@ -2816,18 +2800,10 @@ async function runTrainerSessionTurn(params: {
         notes: out.update_state.notes,
         client_turns: out.update_state.client_turns,
       };
-      const evasionCheck = checkCriticalEvasions(topicMap);
-      if (evasionCheck.shouldFail) {
-        clientMessage = 'Я дважды задал важный вопрос и не получил ответа. Пожалуй, обращусь в другой салон.';
-        nextHistory = [...history, { role: 'client', content: clientMessage }];
-        result = buildWebTrainingResult(nextState, nextHistory, behaviorSignals, true, `CRITICAL_EVASION:${evasionCheck.failedTopic}`);
-        endConversation = true;
-      } else {
-        clientMessage = out.client_message;
-        nextHistory = [...history, { role: 'client', content: clientMessage }];
-        endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
-        result = endConversation ? buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null) : null;
-      }
+      clientMessage = out.client_message;
+      nextHistory = [...history, { role: 'client', content: clientMessage }];
+      endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
+      result = endConversation ? buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null) : null;
     }
   }
 
@@ -2892,6 +2868,7 @@ async function runTrainerSessionTurn(params: {
     session: trainerSessionSummary(updated),
     transcript,
   };
+  });
 }
 
 async function updateTrainerStreakOnCompletion(employeeId: string, sessionStartedAt: Date): Promise<void> {
@@ -2999,6 +2976,8 @@ async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<voi
       console.warn('[analytics] failed to record training completion:', error instanceof Error ? error.message : error);
     });
   }
+
+  if (session.elevenLabsConversationId) scheduleElevenLabsCostSync(session.id);
 }
 
 const trainerSessionFinalizationTasks = new Map<string, Promise<void>>();
@@ -4121,7 +4100,10 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     let managerText = '';
     try {
       console.log(`[trainer] STT start session=${session.id}`);
-      managerText = await withTimeout(transcribeVoiceFast(tmpPath), 30000, 'Trainer STT');
+      managerText = await withCostContext(
+        { entityType: 'trainer_session', entityId: session.id, stage: 'manager_stt' },
+        () => withTimeout(transcribeVoiceFast(tmpPath), 30000, 'Trainer STT'),
+      );
       console.log(`[trainer] STT done session=${session.id} chars=${managerText.length}`);
     } finally {
       fs.promises.unlink(tmpPath).catch(() => {});
@@ -6392,6 +6374,124 @@ app.get('/api/admin/internal-analytics/activity', async (req, res) => {
   }
 });
 
+app.get('/api/admin/internal-analytics/economics', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const defaultFrom = `${today.slice(0, 7)}-01`;
+    const fromValue = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.dateFrom || '')) ? String(req.query.dateFrom) : defaultFrom;
+    const toValue = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.dateTo || '')) ? String(req.query.dateTo) : today;
+    const dateFrom = new Date(`${fromValue}T00:00:00+03:00`);
+    const dateTo = new Date(`${toValue}T23:59:59.999+03:00`);
+    if (!Number.isFinite(dateFrom.getTime()) || !Number.isFinite(dateTo.getTime()) || dateFrom > dateTo) {
+      return res.status(400).json({ error: 'Некорректный диапазон дат.' });
+    }
+    if (dateTo.getTime() - dateFrom.getTime() > 366 * 86_400_000) {
+      return res.status(400).json({ error: 'Диапазон не может превышать 366 дней.' });
+    }
+    return res.json(await getEconomicsAnalytics(dateFrom, dateTo));
+  } catch (error) {
+    console.error('internal-analytics/economics error:', error);
+    return res.status(500).json({ error: 'Не удалось загрузить экономику.' });
+  }
+});
+
+app.post('/api/admin/internal-analytics/economics/sync', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    const [providers, tariffs] = await Promise.all([
+      syncRecentProviderCosts(90),
+      refreshProxyApiTariffs(),
+    ]);
+    return res.json({ ...providers, tariffs });
+  } catch (error) {
+    console.error('internal-analytics/economics/sync error:', error);
+    return res.status(500).json({ error: 'Не удалось синхронизировать расходы.' });
+  }
+});
+
+app.post('/api/admin/internal-analytics/economics/balances/refresh', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    return res.json(await refreshProviderBalances());
+  } catch (error) {
+    console.error('internal-analytics/economics/balances/refresh error:', error);
+    return res.status(500).json({ error: 'Не удалось обновить балансы.' });
+  }
+});
+
+app.post('/api/admin/internal-analytics/economics/technical-expenses', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    const name = String(req.body?.name || '').trim();
+    const amountRub = Number(req.body?.amountRub);
+    if (!name || name.length > 120) return res.status(400).json({ error: 'Укажите название до 120 символов.' });
+    if (!Number.isFinite(amountRub) || amountRub <= 0) return res.status(400).json({ error: 'Сумма должна быть больше нуля.' });
+    const expense = await prisma.monthlyTechnicalExpense.create({ data: { name, amountRub } });
+    return res.status(201).json(expense);
+  } catch (error) {
+    console.error('internal-analytics/economics/technical-expenses create error:', error);
+    return res.status(500).json({ error: 'Не удалось добавить расход.' });
+  }
+});
+
+app.delete('/api/admin/internal-analytics/economics/technical-expenses/:id', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    await prisma.monthlyTechnicalExpense.update({ where: { id: req.params.id }, data: { isActive: false } });
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('internal-analytics/economics/technical-expenses delete error:', error);
+    return res.status(500).json({ error: 'Не удалось удалить расход.' });
+  }
+});
+
+app.post('/api/admin/internal-analytics/economics/forecast', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    return res.json(await getCompanyEconomicsForecast(req.body || {}));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось рассчитать прогноз.';
+    const isValidationError = /должно быть от/.test(message);
+    console.error('internal-analytics/economics/forecast error:', error);
+    return res.status(isValidationError ? 400 : 500).json({ error: message });
+  }
+});
+
+app.post('/api/admin/internal-analytics/economics/proxyapi-import', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
+    const ndjson = typeof req.body?.ndjson === 'string' ? req.body.ndjson : '';
+    if (!ndjson.trim()) return res.status(400).json({ error: 'Передайте содержимое logs.ndjson.' });
+    if (Buffer.byteLength(ndjson, 'utf8') > 20 * 1024 * 1024) return res.status(413).json({ error: 'Файл больше 20 МБ.' });
+    return res.json(await importProxyApiLogs(ndjson));
+  } catch (error) {
+    console.error('internal-analytics/economics/proxyapi-import error:', error);
+    return res.status(500).json({ error: 'Не удалось импортировать логи ProxyAPI.' });
+  }
+});
+
 app.get('/api/admin/internal-analytics/demo', async (req, res) => {
   try {
     const isPlatformSuperadmin = req.authAccount?.memberships.some(
@@ -6726,7 +6826,9 @@ function armVoxFinalWatchdog(callId: string): void {
       details: { reason: 'final_webhook_timeout' },
       vox_session_id: meta.voxSessionId ?? undefined,
     };
-    finalizeVoiceCallSession(syntheticPayload).catch((err) => {
+    withCostContext({ entityType: 'voice_call', entityId: callId, stage: 'call_processing' }, () =>
+      finalizeVoiceCallSession(syntheticPayload)
+    ).catch((err) => {
       console.error('[webhooks/vox] synthetic finalizeVoiceCallSession error:', err instanceof Error ? err.message : err);
     });
     onVoxBatchWebhook(syntheticPayload).catch((err) => {
@@ -6873,7 +6975,10 @@ app.post('/webhooks/vox', async (req, res) => {
   }
 
   if (isFinalEvent) {
-    finalizeVoiceCallSession(normalizedPayload).catch((err) => {
+    if (callIdStr) scheduleVoximplantCostSync(callIdStr);
+    withCostContext({ entityType: 'voice_call', entityId: callIdStr, stage: 'call_processing' }, () =>
+      finalizeVoiceCallSession(normalizedPayload)
+    ).catch((err) => {
       console.error('[webhooks/vox] finalizeVoiceCallSession error:', {
         requestId,
         event,
@@ -9190,6 +9295,10 @@ export function startServer(): Promise<void> {
       startCallBatchOrchestrator();
       startCallPlanScheduler();
       startImportScheduler();
+      startExchangeRateScheduler();
+      startProxyApiTariffScheduler();
+      startProviderBalanceScheduler();
+      startVoximplantTransactionScheduler();
       resumePendingRecordingFetches().catch((error) => {
         console.error('Voximplant recording recovery failed:', error instanceof Error ? error.message : error);
       });
