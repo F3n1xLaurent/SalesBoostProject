@@ -69,6 +69,7 @@ export const env = {
   botToken,
   aiApiProvider,
   openaiApiKey,
+  proxyApiKey: raw.PROXYAPI_API_KEY?.trim() || (aiApiProvider === 'proxyapi' ? openaiApiKey : undefined),
   openaiBaseUrl,
   openaiChatModel: raw.OPENAI_CHAT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini' : 'gpt-4o-mini'),
   openaiImportModel: raw.OPENAI_IMPORT_MODEL?.trim() || raw.OPENAI_CHAT_MODEL?.trim() || (aiApiProvider === 'proxyapi' ? 'openai/gpt-4o-mini' : 'gpt-4o-mini'),

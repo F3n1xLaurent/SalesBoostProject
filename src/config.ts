@@ -6,6 +6,7 @@ export const config = {
   botToken: env.botToken,
   aiApiProvider: env.aiApiProvider,
   openaiApiKey: env.openaiApiKey,
+  proxyApiKey: env.proxyApiKey,
   openaiBaseUrl: env.openaiBaseUrl,
   openaiChatModel: env.openaiChatModel,
   openaiImportModel: env.openaiImportModel,

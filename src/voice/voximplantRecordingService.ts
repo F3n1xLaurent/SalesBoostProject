@@ -36,6 +36,7 @@ export async function getCallHistory(voxSessionId: string): Promise<VoxCallHisto
     call_session_history_id: voxSessionId,
     with_records: 'true',
     with_calls: 'true',
+    with_other_resources: 'true',
     count: '1',
     output: 'json',
   });

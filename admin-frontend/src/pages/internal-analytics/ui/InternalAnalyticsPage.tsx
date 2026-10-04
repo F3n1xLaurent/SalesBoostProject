@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { apiFetch } from '../../../entities/session';
 import { fetchAuditDetail, type AuditDetailItem } from '../../../shared/api/adminPanel';
 import { SlideOver } from '../../../shared/ui/slide-over';
+import { BrutalModal } from '../../../shared/ui/brutal-modal/BrutalModal';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import './internal-analytics.css';
 
@@ -87,10 +88,64 @@ type ActivityAnalytics = {
   daily: Array<{ date: string; activeUsers: number; trainingsCompleted: number; checksCompleted: number }>;
 };
 
+type EconomicsAnalytics = {
+  generatedAt: string;
+  dateFrom: string;
+  dateTo: string;
+  summary: { totalRub: number; confirmedRub: number; estimatedRub: number; events: number; units: number; avgPerUnitRub: number; withoutRubAmount: number };
+  providers: Array<{ provider: string; amountRub: number; events: number; confirmed: number; estimated: number; withoutRubAmount: number }>;
+  providerCategories: Array<{ provider: string; category: string; amountRub: number; events: number }>;
+  providerBalances: Array<{
+    provider: string; available: boolean; balance: number | null; balanceRub: number | null;
+    currency: string | null; unit: string | null; used: number | null; limit: number | null;
+    capturedAt: string | null; resetAt: string | null; averageDaily: number | null;
+    forecastDays: number | null; forecastUnits: number | null; basis: string;
+  }>;
+  technicalExpenses: Array<{ id: string; source: 'system' | 'custom'; provider: string | null; name: string; amountRub: number; previousMonthAmountRub: number; events: number | null }>;
+  technicalExpensesTotalRub: number;
+  technicalExpensesPreviousMonthTotalRub: number;
+  exchangeRates: Array<{ currency: string; rate: number; rateDate: string; source: string }>;
+  companies: Array<{ companyId: string | null; name: string; amountRub: number; events: number; units: number; avgPerUnitRub: number }>;
+  dealerships: Array<{ dealershipId: string; name: string; companyId: string | null; companyName: string; amountRub: number; events: number; units: number; avgPerUnitRub: number }>;
+  calls: Array<{
+    callId: string; occurredAt: string; durationSec: number | null;
+    companyId: string | null; companyName: string; dealershipId: string | null; dealershipName: string;
+    employeeId: string | null; employeeName: string;
+    analyticsRub: number; speechToTextRub: number; speechSynthesisRub: number;
+    telephonyRub: number; otherRub: number; totalRub: number;
+  }>;
+  daily: Array<{ date: string; amountRub: number }>;
+  recent: Array<{ id: string; provider: string; category: string; stage: string | null; entityType: string | null; entityId: string | null; companyName: string | null; model: string | null; amountOriginal: number; currency: string; amountRub: number | null; exchangeRateToRub: number | null; exchangeRateDate: string | null; exchangeRateSource: string | null; status: string; occurredAt: string }>;
+};
+
+type CompanyForecast = {
+  monthDays: number;
+  monthlyCalls: number;
+  monthlyMinutes: number;
+  scenarios: Array<{
+    key: 'best' | 'median' | 'worst';
+    rates: { telephonyPerMinute: number; aiPerCall: number };
+    components: { telephony: number; ai: number; phoneNumbers: number };
+    totalRub: number;
+    averagePerCallRub: number;
+  }>;
+  warnings: string[];
+  assumptions: string[];
+  samples: { telephonyCalls: number; aiCalls: number; fallbackTelephony: boolean };
+  methodology: { best: string; median: string; worst: string };
+};
+
 const outcomeLabels: Record<string, string> = {
   completed: 'Завершён', disconnected: 'Завершён', no_answer: 'Нет ответа', busy: 'Занято',
   failed: 'Ошибка', error: 'Ошибка', processing: 'Обработка', cancelled: 'Отменён',
 };
+
+type InternalAnalyticsTab = 'demo' | 'activity' | 'economics';
+
+function tabFromSearch(search: string): InternalAnalyticsTab {
+  const value = new URLSearchParams(search).get('tab');
+  return value === 'activity' || value === 'economics' ? value : 'demo';
+}
 
 function formatDuration(seconds: number | null): string {
   if (!seconds) return '—';
@@ -103,10 +158,19 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
+function currentMonthRange(): { dateFrom: string; dateTo: string } {
+  const dateTo = moscowDateKey(new Date());
+  return { dateFrom: `${dateTo.slice(0, 7)}-01`, dateTo };
+}
+
+function moscowDateKey(value: Date | string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+}
+
 export function InternalAnalyticsPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<'demo' | 'activity'>('demo');
+  const tab = useMemo(() => tabFromSearch(location.search), [location.search]);
   const [filters, setFilters] = useState({ q: '', minDuration: '', maxDuration: '', minScore: '', maxScore: '', dateFrom: '', dateTo: '' });
   const [appliedFilters, setAppliedFilters] = useState(filters);
   const [data, setData] = useState<DemoAnalytics | null>(null);
@@ -116,11 +180,29 @@ export function InternalAnalyticsPage() {
   const [activityData, setActivityData] = useState<ActivityAnalytics | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
+  const [economicsDates, setEconomicsDates] = useState(currentMonthRange);
+  const [economicsData, setEconomicsData] = useState<EconomicsAnalytics | null>(null);
+  const [economicsLoading, setEconomicsLoading] = useState(false);
+  const [economicsError, setEconomicsError] = useState<string | null>(null);
+  const [economicsNotice, setEconomicsNotice] = useState<string | null>(null);
   const [reportDrawerOpen, setReportDrawerOpen] = useState(false);
   const [reportDrawerLoading, setReportDrawerLoading] = useState(false);
   const [reportDrawerError, setReportDrawerError] = useState<string | null>(null);
   const [reportDrawerDetail, setReportDrawerDetail] = useState<AuditDetailItem | null>(null);
   const reportCallId = useMemo(() => new URLSearchParams(location.search).get('callId')?.trim() ?? '', [location.search]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.has('tab')) return;
+    params.set('tab', 'demo');
+    navigate({ pathname: location.pathname, search: `?${params.toString()}` }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+
+  function selectTab(nextTab: InternalAnalyticsTab) {
+    const params = new URLSearchParams(location.search);
+    params.set('tab', nextTab);
+    navigate({ pathname: location.pathname, search: `?${params.toString()}` });
+  }
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setAppliedFilters(filters), 350);
@@ -167,6 +249,26 @@ export function InternalAnalyticsPage() {
       });
     return () => { cancelled = true; };
   }, [activityPeriod, tab]);
+
+  const loadEconomics = React.useCallback(async () => {
+    setEconomicsLoading(true);
+    setEconomicsError(null);
+    try {
+      const params = new URLSearchParams(economicsDates);
+      const response = await apiFetch(`/api/admin/internal-analytics/economics?${params}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось загрузить экономику.');
+      setEconomicsData(payload as EconomicsAnalytics);
+    } catch (reason) {
+      setEconomicsError(reason instanceof Error ? reason.message : 'Ошибка загрузки.');
+    } finally {
+      setEconomicsLoading(false);
+    }
+  }, [economicsDates]);
+
+  useEffect(() => {
+    if (tab === 'economics') void loadEconomics();
+  }, [tab, loadEconomics]);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,9 +336,23 @@ export function InternalAnalyticsPage() {
       </header>
 
       <div className="sa-dialog-tabs" role="tablist" aria-label="Раздел внутренней аналитики">
-        <button type="button" role="tab" aria-selected={tab === 'demo'} className={`sa-dialog-tab ${tab === 'demo' ? 'sa-dialog-tab-active' : ''}`} onClick={() => setTab('demo')}>Демо-стенд</button>
-        <button type="button" role="tab" aria-selected={tab === 'activity'} className={`sa-dialog-tab ${tab === 'activity' ? 'sa-dialog-tab-active' : ''}`} onClick={() => setTab('activity')}>Активность</button>
+        <button type="button" role="tab" aria-selected={tab === 'demo'} className={`sa-dialog-tab ${tab === 'demo' ? 'sa-dialog-tab-active' : ''}`} onClick={() => selectTab('demo')}>Демо-стенд</button>
+        <button type="button" role="tab" aria-selected={tab === 'activity'} className={`sa-dialog-tab ${tab === 'activity' ? 'sa-dialog-tab-active' : ''}`} onClick={() => selectTab('activity')}>Активность</button>
+        <button type="button" role="tab" aria-selected={tab === 'economics'} className={`sa-dialog-tab ${tab === 'economics' ? 'sa-dialog-tab-active' : ''}`} onClick={() => selectTab('economics')}>Экономика</button>
       </div>
+
+      {tab === 'economics' && (
+        <EconomicsAnalyticsView
+          data={economicsData}
+          loading={economicsLoading}
+          error={economicsError}
+          notice={economicsNotice}
+          dates={economicsDates}
+          onDatesChange={setEconomicsDates}
+          onReload={loadEconomics}
+          onNotice={setEconomicsNotice}
+        />
+      )}
 
       {tab === 'activity' && (
         <>
@@ -484,6 +600,477 @@ function ActivityAnalyticsView({ data, loading }: { data: ActivityAnalytics; loa
         «Полный цикл» — менеджер завершил тренировку, затем прошёл оценённую проверку и получил рекомендации.
         North Star дополнительно требует повторную проверку с ростом балла. Звонки на общий номер точки без привязки к менеджеру в эти две метрики не входят.
       </div>
+    </div>
+  );
+}
+
+function rub(value: number): string {
+  return new Intl.NumberFormat('ru-RU', { style: 'currency', currency: 'RUB', maximumFractionDigits: 2 }).format(value);
+}
+
+function compactNumber(value: number): string {
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: value < 100 ? 2 : 0 }).format(value);
+}
+
+function balanceValue(item: EconomicsAnalytics['providerBalances'][number]): string {
+  if (item.balance == null) return 'Нет данных';
+  if (item.unit === 'credits') return `${compactNumber(item.balance)} кредитов`;
+  if (item.currency === 'RUB' || item.currency === 'RUR') return rub(item.balance);
+  return `${compactNumber(item.balance)} ${item.currency || ''}`.trim();
+}
+
+const ECONOMICS_PAGE_SIZE = 10;
+
+function pageCount(total: number): number {
+  return Math.max(1, Math.ceil(total / ECONOMICS_PAGE_SIZE));
+}
+
+function safePage(page: number, total: number): number {
+  return Math.min(Math.max(1, page), pageCount(total));
+}
+
+function pageSlice<T>(rows: T[], page: number): T[] {
+  const current = safePage(page, rows.length);
+  return rows.slice((current - 1) * ECONOMICS_PAGE_SIZE, current * ECONOMICS_PAGE_SIZE);
+}
+
+function pageItems(current: number, total: number): Array<number | 'ellipsis-start' | 'ellipsis-end'> {
+  if (total <= 9) return Array.from({ length: total }, (_, index) => index + 1);
+  const values: Array<number | 'ellipsis-start' | 'ellipsis-end'> = [1];
+  const from = Math.max(2, current - 2);
+  const to = Math.min(total - 1, current + 2);
+  if (from > 2) values.push('ellipsis-start');
+  for (let page = from; page <= to; page += 1) values.push(page);
+  if (to < total - 1) values.push('ellipsis-end');
+  values.push(total);
+  return values;
+}
+
+function EconomicsPagination({ page, totalItems, onChange }: { page: number; totalItems: number; onChange: (page: number) => void }) {
+  const pages = pageCount(totalItems);
+  const current = safePage(page, totalItems);
+  if (pages <= 1) return null;
+  return <nav className="internal-table-pagination" aria-label="Страницы таблицы">
+    <button type="button" disabled={current === 1} onClick={() => onChange(current - 1)} aria-label="Предыдущая страница">‹</button>
+    {pageItems(current, pages).map((item) => typeof item === 'number'
+      ? <button type="button" key={item} className={item === current ? 'is-active' : ''} aria-current={item === current ? 'page' : undefined} onClick={() => onChange(item)}>{item}</button>
+      : <span key={item}>…</span>)}
+    <button type="button" disabled={current === pages} onClick={() => onChange(current + 1)} aria-label="Следующая страница">›</button>
+  </nav>;
+}
+
+const providerLabels: Record<string, string> = { proxyapi: 'ProxyAPI', elevenlabs: 'ElevenLabs', voximplant: 'Voximplant' };
+const costCategoryLabels: Record<string, string> = {
+  usage: 'Звонки и ресурсы', phone_number: 'Абонплата за номера', phone_number_setup: 'Подключение номеров',
+  subscription: 'Подписки', subscription_setup: 'Подключение подписок', sip_registration: 'SIP-регистрация',
+  tax: 'Налоги', monthly_fee: 'Ежемесячная плата', account: 'Прочие расходы',
+  llm: 'Языковые модели', stt: 'Распознавание речи', tts: 'Синтез речи', agent: 'AI-агент', telephony: 'Телефония',
+};
+
+const forecastScenarioLabels = {
+  best: {
+    title: 'Наилучший',
+    caption: 'Экономичный сценарий',
+    help: 'Показывает себестоимость при ставках, близких к самым дешёвым звонкам из нашей истории. Подходит для оценки минимально ожидаемых расходов.',
+  },
+  median: {
+    title: 'Средний',
+    caption: 'Наиболее типичный сценарий',
+    help: 'Показывает наиболее типичную себестоимость: половина прошлых звонков стоила дешевле, а половина — дороже.',
+  },
+  worst: {
+    title: 'Наихудший',
+    caption: 'Максимальный расход',
+    help: 'Показывает себестоимость по самому дорогому наблюдаемому тарифу. Нужен, чтобы оценить запас бюджета на неблагоприятный сценарий.',
+  },
+} as const;
+
+function ForecastInfo({ text }: { text: string }) {
+  return <span className="internal-forecast-info" tabIndex={0} aria-label={text}>
+    i
+    <span role="tooltip">{text}</span>
+  </span>;
+}
+
+function CompanyForecastModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [locations, setLocations] = useState('1');
+  const [employees, setEmployees] = useState('10');
+  const [calls, setCalls] = useState('15');
+  const [duration, setDuration] = useState('3');
+  const [durationUnit, setDurationUnit] = useState<'minutes' | 'seconds'>('minutes');
+  const [result, setResult] = useState<CompanyForecast | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function calculate(event: React.FormEvent) {
+    event.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await apiFetch('/api/admin/internal-analytics/economics/forecast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          locations: Number(locations),
+          employeesPerLocation: Number(employees),
+          callsPerEmployeePerDay: Number(calls),
+          averageCallDurationSeconds: Number(duration) * (durationUnit === 'minutes' ? 60 : 1),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось рассчитать прогноз.');
+      setResult(payload as CompanyForecast);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Не удалось рассчитать прогноз.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return <BrutalModal
+    open={open}
+    onClose={onClose}
+    title="Прогностика"
+    subtitle="Прогноз месячной себестоимости подключения компании"
+    width="wide"
+    modalClassName="internal-forecast-modal"
+  >
+    <form className="internal-forecast-form" onSubmit={(event) => void calculate(event)}>
+      <div className="internal-forecast-fields">
+        <label><span>Количество точек</span><input type="text" inputMode="numeric" value={locations} onChange={(event) => setLocations(event.target.value)} /></label>
+        <label><span>Сотрудников в точке</span><input type="text" inputMode="numeric" value={employees} onChange={(event) => setEmployees(event.target.value)} /></label>
+        <label><span>Звонков в сутки на сотрудника</span><input type="text" inputMode="decimal" value={calls} onChange={(event) => setCalls(event.target.value.replace(',', '.'))} /></label>
+        <label className="internal-forecast-duration"><span>Средняя длительность звонка</span><div><input type="text" inputMode="decimal" value={duration} onChange={(event) => setDuration(event.target.value.replace(',', '.'))} /><select value={durationUnit} onChange={(event) => setDurationUnit(event.target.value as 'minutes' | 'seconds')}><option value="minutes">минут</option><option value="seconds">секунд</option></select></div></label>
+      </div>
+      <button className="internal-forecast-submit" type="submit" disabled={loading}>{loading ? 'Рассчитываем…' : 'Рассчитать'}</button>
+    </form>
+    {error && <div className="internal-forecast-error">{error}</div>}
+    {result && <div className="internal-forecast-result">
+      <div className="internal-forecast-volume">
+        <div><span>Звонков за 30 дней</span><strong>{compactNumber(result.monthlyCalls)}</strong></div>
+        <div><span>Разговорных минут</span><strong>{compactNumber(result.monthlyMinutes)}</strong></div>
+      </div>
+      {result.warnings.length > 0 && <div className="internal-forecast-warnings">{result.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}
+      <div className="internal-forecast-scenarios">
+        {result.scenarios.map((scenario) => <article key={scenario.key} className={`internal-forecast-scenario internal-forecast-scenario--${scenario.key}`}>
+          <header><div><div className="internal-forecast-title"><h3>{forecastScenarioLabels[scenario.key].title}</h3><ForecastInfo text={forecastScenarioLabels[scenario.key].help} /></div><span>{forecastScenarioLabels[scenario.key].caption}</span></div><strong>{rub(scenario.totalRub)}</strong></header>
+          <dl>
+            <div><dt>Телефония</dt><dd>{rub(scenario.components.telephony)}</dd></div>
+            <div><dt>AI-обработка</dt><dd>{rub(scenario.components.ai)}</dd></div>
+            <div><dt>Дополнительные номера</dt><dd>{rub(scenario.components.phoneNumbers)}</dd></div>
+            <div className="internal-forecast-per-call"><dt>В среднем на звонок</dt><dd>{rub(scenario.averagePerCallRub)}</dd></div>
+          </dl>
+          <small>Ставки: {rub(scenario.rates.telephonyPerMinute)}/мин · {rub(scenario.rates.aiPerCall)}/звонок</small>
+        </article>)}
+      </div>
+      <div className="internal-forecast-assumptions">{result.assumptions.map((assumption) => <p key={assumption}>{assumption}</p>)}</div>
+      <p className="internal-forecast-method">Сценарии построены по фактическим расходам: наилучший — 10-й перцентиль, средний — медиана, наихудший — максимальное наблюдаемое значение. Расчётный месяц — 30 дней.</p>
+    </div>}
+  </BrutalModal>;
+}
+
+function EconomicsAnalyticsView({
+  data, loading, error, notice, dates, onDatesChange, onReload, onNotice,
+}: {
+  data: EconomicsAnalytics | null;
+  loading: boolean;
+  error: string | null;
+  notice: string | null;
+  dates: { dateFrom: string; dateTo: string };
+  onDatesChange: (dates: { dateFrom: string; dateTo: string }) => void;
+  onReload: () => Promise<void>;
+  onNotice: (notice: string | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [refreshingBalances, setRefreshingBalances] = useState(false);
+  const [technicalExpenseName, setTechnicalExpenseName] = useState('');
+  const [technicalExpenseAmount, setTechnicalExpenseAmount] = useState('');
+  const [savingTechnicalExpense, setSavingTechnicalExpense] = useState(false);
+  const [forecastOpen, setForecastOpen] = useState(false);
+  const [companyFilter, setCompanyFilter] = useState('all');
+  const [dealershipFilter, setDealershipFilter] = useState('all');
+  const [employeeFilter, setEmployeeFilter] = useState('all');
+  const [companyPage, setCompanyPage] = useState(1);
+  const [dealershipPage, setDealershipPage] = useState(1);
+  const [callPage, setCallPage] = useState(1);
+  const [providerFilter, setProviderFilter] = useState('all');
+  const [recentPage, setRecentPage] = useState(1);
+  const companyOptions = useMemo(() => {
+    const values = new Map<string, string>();
+    for (const item of data?.calls || []) if (item.companyId) values.set(item.companyId, item.companyName);
+    return [...values].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [data?.calls]);
+  const dealershipOptions = useMemo(() => {
+    const values = new Map<string, string>();
+    for (const item of data?.calls || []) {
+      if (companyFilter !== 'all' && item.companyId === companyFilter && item.dealershipId) values.set(item.dealershipId, item.dealershipName);
+    }
+    return [...values].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [data?.calls, companyFilter]);
+  const employeeOptions = useMemo(() => {
+    const values = new Map<string, string>();
+    for (const item of data?.calls || []) {
+      if (companyFilter === 'all' || item.companyId !== companyFilter) continue;
+      if (dealershipFilter !== 'all' && item.dealershipId !== dealershipFilter) continue;
+      if (item.employeeId) values.set(item.employeeId, item.employeeName);
+    }
+    return [...values].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  }, [data?.calls, companyFilter, dealershipFilter]);
+  const filteredCalls = useMemo(() => (data?.calls || []).filter((item) => {
+    if (companyFilter !== 'all' && item.companyId !== companyFilter) return false;
+    if (dealershipFilter !== 'all' && item.dealershipId !== dealershipFilter) return false;
+    if (employeeFilter !== 'all' && item.employeeId !== employeeFilter) return false;
+    return true;
+  }), [data?.calls, companyFilter, dealershipFilter, employeeFilter]);
+  const filteredDaily = useMemo(() => {
+    const amounts = new Map((data?.daily || []).map((item) => [item.date, 0]));
+    for (const call of filteredCalls) {
+      const key = moscowDateKey(call.occurredAt);
+      amounts.set(key, (amounts.get(key) || 0) + call.totalRub);
+    }
+    return [...amounts].map(([date, amountRub]) => ({ date, amountRub })).sort((a, b) => a.date.localeCompare(b.date));
+  }, [data?.daily, filteredCalls]);
+  const maxDaily = Math.max(1, ...filteredDaily.map((item) => item.amountRub));
+  const filteredCallsTotal = filteredCalls.reduce((sum, item) => sum + item.totalRub, 0);
+  const callAverages = useMemo(() => {
+    const count = filteredCalls.length;
+    const withDuration = filteredCalls.filter((item) => item.durationSec != null && item.durationSec > 0);
+    const average = (key: 'telephonyRub' | 'analyticsRub' | 'speechToTextRub' | 'speechSynthesisRub') => count
+      ? filteredCalls.reduce((sum, item) => sum + item[key], 0) / count
+      : 0;
+    return {
+      durationSec: withDuration.length ? Math.round(withDuration.reduce((sum, item) => sum + (item.durationSec || 0), 0) / withDuration.length) : null,
+      telephonyRub: average('telephonyRub'),
+      analyticsRub: average('analyticsRub'),
+      speechToTextRub: average('speechToTextRub'),
+      speechSynthesisRub: average('speechSynthesisRub'),
+    };
+  }, [filteredCalls]);
+  const filteredCompanies = useMemo(() => {
+    const rows = new Map<string, { companyId: string | null; name: string; calls: number; amountRub: number }>();
+    for (const call of filteredCalls) {
+      const key = call.companyId || 'unassigned';
+      const row = rows.get(key) || { companyId: call.companyId, name: call.companyName, calls: 0, amountRub: 0 };
+      row.calls += 1;
+      row.amountRub += call.totalRub;
+      rows.set(key, row);
+    }
+    return [...rows.values()].map((row) => ({ ...row, avgPerCallRub: row.calls ? row.amountRub / row.calls : 0 })).sort((a, b) => b.amountRub - a.amountRub);
+  }, [filteredCalls]);
+  const filteredDealerships = useMemo(() => {
+    const rows = new Map<string, { dealershipId: string | null; name: string; companyName: string; calls: number; amountRub: number }>();
+    for (const call of filteredCalls) {
+      const key = call.dealershipId || 'unassigned';
+      const row = rows.get(key) || { dealershipId: call.dealershipId, name: call.dealershipName, companyName: call.companyName, calls: 0, amountRub: 0 };
+      row.calls += 1;
+      row.amountRub += call.totalRub;
+      rows.set(key, row);
+    }
+    return [...rows.values()].map((row) => ({ ...row, avgPerCallRub: row.calls ? row.amountRub / row.calls : 0 })).sort((a, b) => b.amountRub - a.amountRub);
+  }, [filteredCalls]);
+  const providerOptions = useMemo(() => [...new Set((data?.recent || []).map((item) => item.provider))], [data?.recent]);
+  const filteredRecent = useMemo(() => (data?.recent || []).filter((item) => providerFilter === 'all' || item.provider === providerFilter), [data?.recent, providerFilter]);
+
+  useEffect(() => {
+    setCompanyPage(1);
+    setDealershipPage(1);
+    setCallPage(1);
+    setRecentPage(1);
+  }, [dates.dateFrom, dates.dateTo]);
+
+  async function syncProviders() {
+    setSyncing(true);
+    onNotice(null);
+    try {
+      const response = await apiFetch('/api/admin/internal-analytics/economics/sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Синхронизация не выполнена.');
+      onNotice(`Синхронизировано: звонков Voximplant — ${payload.vox}, транзакций Voximplant — ${payload.voxTransactions ?? 0}, ElevenLabs — ${payload.elevenLabs}, тарифов ProxyAPI — ${payload.tariffs?.models ?? 0}. Ошибок: ${(payload.errors ?? 0) + (payload.tariffs?.errors ?? 0)}.`);
+      await onReload();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : 'Ошибка синхронизации.');
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function refreshBalances() {
+    setRefreshingBalances(true);
+    onNotice(null);
+    try {
+      const response = await apiFetch('/api/admin/internal-analytics/economics/balances/refresh', { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось обновить балансы.');
+      onNotice(`Балансы обновлены: ${payload.synced?.length ?? 0}. Пропущено: ${payload.skipped?.length ?? 0}. Ошибок: ${payload.errors?.length ?? 0}.`);
+      await onReload();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : 'Ошибка обновления балансов.');
+    } finally {
+      setRefreshingBalances(false);
+    }
+  }
+
+  async function addTechnicalExpense(event: React.FormEvent) {
+    event.preventDefault();
+    setSavingTechnicalExpense(true);
+    onNotice(null);
+    try {
+      const response = await apiFetch('/api/admin/internal-analytics/economics/technical-expenses', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: technicalExpenseName, amountRub: Number(technicalExpenseAmount.replace(',', '.')) }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось добавить расход.');
+      setTechnicalExpenseName('');
+      setTechnicalExpenseAmount('');
+      await onReload();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : 'Ошибка добавления расхода.');
+    } finally {
+      setSavingTechnicalExpense(false);
+    }
+  }
+
+  async function removeTechnicalExpense(id: string) {
+    onNotice(null);
+    try {
+      const response = await apiFetch(`/api/admin/internal-analytics/economics/technical-expenses/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Не удалось удалить расход.');
+      await onReload();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : 'Ошибка удаления расхода.');
+    }
+  }
+
+  async function importProxyLogs(file: File) {
+    onNotice(null);
+    try {
+      const ndjson = await file.text();
+      const response = await apiFetch('/api/admin/internal-analytics/economics/proxyapi-import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ndjson }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Импорт не выполнен.');
+      onNotice(`ProxyAPI: импортировано ${payload.imported}, пропущено ${payload.skipped}.`);
+      await onReload();
+    } catch (reason) {
+      onNotice(reason instanceof Error ? reason.message : 'Ошибка импорта.');
+    } finally {
+      if (inputRef.current) inputRef.current.value = '';
+    }
+  }
+
+  return (
+    <div className={`internal-economics ${loading ? 'internal-demo-analytics--loading' : ''}`}>
+      <div className="internal-economics-toolbar">
+        <button type="button" className="internal-economics-action internal-economics-action--primary" onClick={() => setForecastOpen(true)}>Прогностика</button>
+        <button type="button" className="internal-economics-action" onClick={() => inputRef.current?.click()}>Импорт ProxyAPI</button>
+        <button type="button" className="internal-economics-action" disabled={syncing} onClick={() => void syncProviders()}>{syncing ? 'Синхронизация…' : 'Синхронизировать'}</button>
+        <button type="button" className="internal-economics-action" disabled={refreshingBalances} onClick={() => void refreshBalances()}>{refreshingBalances ? 'Обновляем…' : 'Обновить баланс'}</button>
+        <input ref={inputRef} hidden type="file" accept=".ndjson,.jsonl,application/x-ndjson,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProxyLogs(file); }} />
+      </div>
+      {notice && <div className="internal-activity-note">{notice}</div>}
+      {error && <div className="internal-analytics-placeholder internal-analytics-placeholder--error">{error}</div>}
+      {!data && loading && <div className="internal-analytics-placeholder">Загружаем экономику…</div>}
+      {data && <>
+        <section className="internal-balance-grid" aria-label="Балансы сервисов">
+          {data.providerBalances.map((item) => {
+            const percentLeft = item.limit && item.balance != null ? Math.max(0, Math.min(100, item.balance / item.limit * 100)) : null;
+            const provider = data.providers.find((row) => row.provider === item.provider);
+            return <article className="internal-balance-card" key={item.provider}>
+              <div className="internal-balance-card__heading">
+                <span>{providerLabels[item.provider] || item.provider}</span>
+                <small>{item.capturedAt ? `Обновлено ${formatDate(item.capturedAt)}` : 'Ожидает синхронизации'}</small>
+              </div>
+              <strong>{balanceValue(item)}</strong>
+              {percentLeft != null && <div className="internal-balance-progress" title={`Осталось ${Math.round(percentLeft)}%`}><i style={{ width: `${percentLeft}%` }} /></div>}
+              {item.limit != null && item.used != null && <p>Использовано {compactNumber(item.used)} из {compactNumber(item.limit)}</p>}
+              {item.available && item.forecastDays != null
+                ? <div className="internal-balance-forecast"><b>Хватит примерно на {compactNumber(item.forecastDays)} дн.</b>{item.forecastUnits != null && <span>≈ {compactNumber(item.forecastUnits)} звонков/тренировок</span>}</div>
+                : <div className="internal-balance-forecast internal-balance-forecast--muted">Прогноз появится после накопления расходов</div>}
+              <div className="internal-balance-operations"><span>Операций в этом месяце</span><strong>{provider?.events ?? 0}</strong><small>{provider ? `${provider.confirmed} подтверждено · ${rub(provider.amountRub)}` : 'Списаний пока нет'}</small></div>
+              {item.resetAt && <small className="internal-balance-reset">Лимит обновится {new Date(item.resetAt).toLocaleDateString('ru-RU')}</small>}
+            </article>;
+          })}
+        </section>
+        <div className="internal-section-title"><div><h2>Ежемесячные технические расходы</h2><p>Автоматические списания сервисов и постоянные расходы, которые повторяются каждый месяц</p></div><strong>{rub(data.technicalExpensesTotalRub)}</strong></div>
+        <section className="internal-analytics-card internal-technical-expenses">
+          <div className="internal-card-heading-row"><div><h2>Технические ежемесячные расходы</h2><p>Системные расходы рассчитываются автоматически, свои сохраняются для следующих месяцев</p></div></div>
+          <form className="internal-technical-expense-form" onSubmit={(event) => void addTechnicalExpense(event)}>
+            <label><span>Название расхода</span><input required maxLength={120} placeholder="Например, аренда сервера" value={technicalExpenseName} onChange={(event) => setTechnicalExpenseName(event.target.value)} /></label>
+            <label><span>Сумма в месяц, ₽</span><input required inputMode="decimal" placeholder="0" value={technicalExpenseAmount} onChange={(event) => setTechnicalExpenseAmount(event.target.value.replace(',', '.'))} /></label>
+            <button type="submit" disabled={savingTechnicalExpense}>{savingTechnicalExpense ? 'Добавляем…' : 'Добавить расход'}</button>
+          </form>
+          <div className="internal-feature-table-wrap internal-technical-expense-table-wrap">
+            <table className="internal-feature-table internal-economics-table internal-technical-expense-table">
+              <thead><tr><th>Расход</th><th>Источник</th><th>Операций</th><th>В прошлом месяце</th><th>В этом месяце</th><th aria-label="Действия" /></tr></thead>
+              <tbody>
+                {data.technicalExpenses.map((item) => <tr key={item.id}>
+                  <td><strong className="internal-table-primary">{item.name}</strong></td>
+                  <td><span className={`internal-technical-expense-source internal-technical-expense-source--${item.source}`}>{item.source === 'custom' ? 'Свой расход' : providerLabels[item.provider || ''] || 'Сервис'}</span></td>
+                  <td className="internal-table-number">{item.events ?? '—'}</td>
+                  <td className="internal-table-number internal-table-previous">{rub(item.previousMonthAmountRub)}</td>
+                  <td className="internal-table-number internal-table-amount">{rub(item.amountRub)}</td>
+                  <td className="internal-technical-expense-action">{item.source === 'custom' && <button type="button" onClick={() => void removeTechnicalExpense(item.id)} aria-label={`Удалить ${item.name}`} title="Удалить расход">×</button>}</td>
+                </tr>)}
+                {data.technicalExpenses.length === 0 && <tr><td colSpan={6} className="internal-table-empty">В текущем месяце технических расходов пока нет.</td></tr>}
+              </tbody>
+              {data.technicalExpenses.length > 0 && <tfoot><tr><td colSpan={3}>Итого</td><td className="internal-table-number internal-table-previous">{rub(data.technicalExpensesPreviousMonthTotalRub)}</td><td className="internal-table-number internal-table-amount">{rub(data.technicalExpensesTotalRub)}</td><td /></tr></tfoot>}
+            </table>
+          </div>
+        </section>
+        <section className="internal-company-economics">
+          <div className="internal-company-economics__header">
+            <div><h2>Экономика по компаниям</h2><p>Прямые затраты по звонкам за выбранный период</p></div>
+            <div className="internal-company-economics__filters">
+              <label><span>Дата от</span><input required type="date" value={dates.dateFrom} max={dates.dateTo} onChange={(event) => { if (event.target.value) onDatesChange({ dateFrom: event.target.value, dateTo: dates.dateTo }); }} /></label>
+              <label><span>Дата до</span><input required type="date" value={dates.dateTo} min={dates.dateFrom} onChange={(event) => { if (event.target.value) onDatesChange({ dateFrom: dates.dateFrom, dateTo: event.target.value }); }} /></label>
+              <label><span>Компания</span><select value={companyFilter} onChange={(event) => { setCompanyFilter(event.target.value); setDealershipFilter('all'); setEmployeeFilter('all'); setCompanyPage(1); setDealershipPage(1); setCallPage(1); }}><option value="all">Все компании</option>{companyOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <label><span>Точка</span><select value={dealershipFilter} disabled={companyFilter === 'all'} onChange={(event) => { setDealershipFilter(event.target.value); setEmployeeFilter('all'); setCompanyPage(1); setDealershipPage(1); setCallPage(1); }}><option value="all">Все точки</option>{dealershipOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+              <label><span>Сотрудник</span><select value={employeeFilter} disabled={companyFilter === 'all'} onChange={(event) => { setEmployeeFilter(event.target.value); setCompanyPage(1); setDealershipPage(1); setCallPage(1); }}><option value="all">Все сотрудники</option>{employeeOptions.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            </div>
+          </div>
+          <section className="internal-metric-grid internal-company-economics__metrics">
+            <Metric label="Средняя длительность звонка" value={formatDuration(callAverages.durationSec)} />
+            <Metric label="Средняя стоимость звонка" value={rub(callAverages.telephonyRub)} suffix="телефония" />
+            <Metric label="Средняя стоимость AI-аналитики" value={rub(callAverages.analyticsRub)} />
+            <Metric label="Средняя стоимость распознавания" value={rub(callAverages.speechToTextRub)} />
+            <Metric label="Средняя стоимость синтеза речи" value={rub(callAverages.speechSynthesisRub)} />
+          </section>
+          <section className="internal-analytics-card internal-company-cost-chart">
+            <div className="internal-card-heading-row"><div><h2>Расходы по дням</h2><p>{dates.dateFrom} — {dates.dateTo}</p></div><strong>{rub(filteredCallsTotal)}</strong></div>
+            <div className="internal-cost-chart">{filteredDaily.map((item) => <div key={item.date} title={`${item.date}: ${rub(item.amountRub)}`}><span>{item.amountRub ? Math.round(item.amountRub) : ''}</span><i style={{ height: `${Math.max(item.amountRub ? 4 : 0, item.amountRub / maxDaily * 100)}%` }} /><small>{item.date.slice(5)}</small></div>)}</div>
+          </section>
+          <section className="internal-analytics-card internal-economics-table-card">
+            <div className="internal-table-heading"><div><h2>По компаниям</h2><p>{filteredCompanies.length} компаний в выборке</p></div></div>
+            <div className="internal-feature-table-wrap"><table className="internal-feature-table internal-economics-table"><thead><tr><th>Компания</th><th>Звонков</th><th>Средняя стоимость звонка</th><th>Всего</th></tr></thead><tbody>{pageSlice(filteredCompanies, companyPage).map((item) => <tr key={item.companyId || 'none'}><td><strong className="internal-table-primary">{item.name}</strong></td><td className="internal-table-number">{item.calls}</td><td className="internal-table-number">{rub(item.avgPerCallRub)}</td><td className="internal-table-number internal-table-amount">{rub(item.amountRub)}</td></tr>)}{filteredCompanies.length === 0 && <tr><td colSpan={4} className="internal-table-empty">Нет звонков по выбранным фильтрам</td></tr>}</tbody></table></div>
+            <EconomicsPagination page={companyPage} totalItems={filteredCompanies.length} onChange={setCompanyPage} />
+          </section>
+          <section className="internal-analytics-card internal-economics-table-card">
+            <div className="internal-table-heading"><div><h2>По точкам</h2><p>{filteredDealerships.length} точек в выборке</p></div></div>
+            <div className="internal-feature-table-wrap"><table className="internal-feature-table internal-economics-table"><thead><tr><th>Точка</th><th>Компания</th><th>Звонков</th><th>Средняя стоимость звонка</th><th>Всего</th></tr></thead><tbody>{pageSlice(filteredDealerships, dealershipPage).map((item) => <tr key={item.dealershipId || 'none'}><td><strong className="internal-table-primary">{item.name}</strong></td><td><span className="internal-table-secondary">{item.companyName}</span></td><td className="internal-table-number">{item.calls}</td><td className="internal-table-number">{rub(item.avgPerCallRub)}</td><td className="internal-table-number internal-table-amount">{rub(item.amountRub)}</td></tr>)}{filteredDealerships.length === 0 && <tr><td colSpan={5} className="internal-table-empty">Нет звонков по выбранным фильтрам</td></tr>}</tbody></table></div>
+            <EconomicsPagination page={dealershipPage} totalItems={filteredDealerships.length} onChange={setDealershipPage} />
+          </section>
+          <section className="internal-analytics-card internal-economics-table-card">
+            <div className="internal-table-heading"><div><h2>По звонкам</h2><p>{filteredCalls.length} звонков в выборке</p></div></div>
+            <div className="internal-feature-table-wrap"><table className="internal-feature-table internal-economics-table internal-economics-table--calls"><thead><tr><th>Звонок</th><th>Точка / сотрудник</th><th>Длительность</th><th>AI-аналитика</th><th>Распознавание</th><th>Синтез речи</th><th>Телефония</th><th>Прочее</th><th>Итого</th></tr></thead><tbody>{pageSlice(filteredCalls, callPage).map((item) => <tr key={item.callId}><td><a className="internal-call-cost-link" href={`/audits?callId=${encodeURIComponent(item.callId)}`}>{item.callId}</a><small className="internal-table-cell-note">{formatDate(item.occurredAt)}</small></td><td><strong className="internal-table-primary">{item.dealershipName}</strong><small className="internal-table-cell-note">{item.employeeName} · {item.companyName}</small></td><td className="internal-table-number">{formatDuration(item.durationSec)}</td><td className="internal-table-number">{rub(item.analyticsRub)}</td><td className="internal-table-number">{rub(item.speechToTextRub)}</td><td className="internal-table-number">{rub(item.speechSynthesisRub)}</td><td className="internal-table-number">{rub(item.telephonyRub)}</td><td className="internal-table-number">{rub(item.otherRub)}</td><td className="internal-table-number internal-table-amount">{rub(item.totalRub)}</td></tr>)}{filteredCalls.length === 0 && <tr><td colSpan={9} className="internal-table-empty">Нет звонков по выбранным фильтрам</td></tr>}</tbody></table></div>
+            <EconomicsPagination page={callPage} totalItems={filteredCalls.length} onChange={setCallPage} />
+          </section>
+        </section>
+        <section className="internal-analytics-card internal-economics-table-card">
+          <div className="internal-table-heading">
+            <div><h2>Последние списания</h2><p>{filteredRecent.length} операций в выборке</p></div>
+            <label><span>Провайдер</span><select value={providerFilter} onChange={(event) => { setProviderFilter(event.target.value); setRecentPage(1); }}><option value="all">Все провайдеры</option>{providerOptions.map((provider) => <option key={provider} value={provider}>{providerLabels[provider] || provider}</option>)}</select></label>
+          </div>
+          <div className="internal-feature-table-wrap"><table className="internal-feature-table internal-economics-table internal-economics-table--charges"><thead><tr><th>Дата</th><th>Провайдер</th><th>Этап</th><th>Объект</th><th>Компания</th><th>Статус</th><th>Сумма</th></tr></thead><tbody>{pageSlice(filteredRecent, recentPage).map((item) => <tr key={item.id}><td className="internal-table-date">{formatDate(item.occurredAt)}</td><td><span className={`internal-provider-pill internal-provider-pill--${item.provider}`}>{providerLabels[item.provider] || item.provider}</span></td><td>{item.stage === 'account_transaction' ? costCategoryLabels[item.category] || item.category : item.stage || costCategoryLabels[item.category] || item.category}</td><td className="mono">{item.entityId || '—'}</td><td><span className="internal-table-secondary">{item.companyName || '—'}</span></td><td><span className={`internal-status-pill internal-status-pill--${item.status}`}>{item.status === 'confirmed' ? 'Подтверждено' : 'Расчётно'}</span></td><td className="internal-table-number internal-table-amount" title={item.exchangeRateToRub ? `Курс ${item.exchangeRateToRub} на ${item.exchangeRateDate ? new Date(item.exchangeRateDate).toLocaleDateString('ru-RU') : 'дату операции'}` : undefined}>{item.amountRub == null ? `${item.amountOriginal} ${item.currency}` : rub(item.amountRub)}</td></tr>)}{filteredRecent.length === 0 && <tr><td colSpan={7} className="internal-table-empty">Нет списаний выбранного провайдера</td></tr>}</tbody></table></div>
+          <EconomicsPagination page={recentPage} totalItems={filteredRecent.length} onChange={setRecentPage} />
+        </section>
+      </>}
+      <CompanyForecastModal open={forecastOpen} onClose={() => setForecastOpen(false)} />
     </div>
   );
 }

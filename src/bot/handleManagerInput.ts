@@ -18,7 +18,6 @@ import { checkManagerFacts } from '../logic/factCheck';
 import {
   advanceTopic,
   recordEvasion,
-  checkCriticalEvasions,
   type TopicCode,
 } from '../logic/topicStateMachine';
 import type { ClientProfile } from '../logic/clientProfile';
@@ -173,16 +172,6 @@ export async function handleManagerInput(ctx: Context, input: NormalizedInput): 
     return;
   }
 
-  // Level 2: LOW_EFFORT escalation (2 in a row → warning turn, 3 → FAIL)
-  if (lowEffort >= 3) {
-    const failReply = 'Я задаю конкретные вопросы и хотел бы получать развёрнутые ответы. Видимо, сейчас не лучшее время. До свидания.';
-    await prisma.dialogMessage.create({
-      data: { sessionId: session.id, role: 'client', content: failReply, source: 'text' },
-    });
-    await failSession(ctx, session.id, state, 'REPEATED_LOW_EFFORT', strictness, car, user, failReply);
-    return;
-  }
-
   // ── Fact check ──
   const factResult = checkManagerFacts(input.text, car);
   if (factResult.hasConflict) {
@@ -294,27 +283,6 @@ export async function handleManagerInput(ctx: Context, input: NormalizedInput): 
       }
     }
     state.topics = topicMap;
-
-    // Critical evasion check
-    const evasionCheck = checkCriticalEvasions(topicMap);
-    if (evasionCheck.shouldFail) {
-      state.client_turns = out.update_state.client_turns;
-      await saveState(session.id, state);
-      await prisma.dialogMessage.create({
-        data: { sessionId: session.id, role: 'client', content: out.client_message, source: 'text' },
-      });
-      try { await ctx.telegram.deleteMessage(ctx.chat!.id, statusMsg.message_id); } catch {}
-      const evasionReply = `Я дважды спросил про ${evasionCheck.failedTopic === 'needs' ? 'мои потребности' : evasionCheck.failedTopic === 'intro' ? 'ваше имя' : evasionCheck.failedTopic === 'car_identification' ? 'какой именно автомобиль' : 'важный вопрос'} и не получил ответа. Пожалуй, обращусь в другой салон.`;
-      await prisma.dialogMessage.create({
-        data: { sessionId: session.id, role: 'client', content: evasionReply, source: 'text' },
-      });
-      await failSession(
-        ctx, session.id, state,
-        `CRITICAL_EVASION:${evasionCheck.failedTopic}`,
-        strictness, car, user, evasionReply
-      );
-      return;
-    }
 
     // Update phase checks
     if (diag.phase_checks_update && typeof diag.phase_checks_update === 'object') {

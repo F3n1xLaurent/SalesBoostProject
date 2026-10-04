@@ -31,6 +31,11 @@ model Account {
   phoneNumbers   PhoneNumber[]
   createdPermissionTemplates PermissionTemplate[] @relation("PermissionTemplateCreatedBy")
   permissionTemplateAssignments AccountPermissionTemplateAssignment[]
+  requestedSupportTickets SupportTicket[] @relation("SupportTicketRequester")
+  assignedSupportTickets SupportTicket[] @relation("SupportTicketAssignee")
+  supportMessages SupportMessage[] @relation("SupportMessageAuthor")
+  supportStatusChanges SupportTicketStatusHistory[] @relation("SupportStatusChangedBy")
+  supportRatings SupportTicketRating[] @relation("SupportRatingAuthor")
 
   @@map("accounts")
 }
@@ -87,6 +92,7 @@ model Holding {
   callPlans CallPlan[]
   trainerSessions TrainerSession[]
   trainerDailyPlans TrainerDailyPlan[]
+  supportTickets SupportTicket[]
 
   @@map("holdings")
 }
@@ -116,6 +122,7 @@ model Dealership {
   voiceCallSessions VoiceCallSession[]
   trainerSessions TrainerSession[]
   trainerDailyPlans TrainerDailyPlan[]
+  supportTickets SupportTicket[]
 
   @@index([holdingId])
   @@map("dealerships")
@@ -864,6 +871,116 @@ model VoiceCallSession {
   @@map("voice_call_sessions")
 }
 
+// Append-only provider expense ledger. Aggregates in internal analytics are derived from these rows.
+model CostEvent {
+  id                String   @id @default(cuid())
+  provider          String   // "proxyapi" | "elevenlabs" | "voximplant"
+  category          String   // "llm" | "stt" | "tts" | "agent" | "telephony" | "recording" | "other"
+  stage             String?
+  entityType        String?  // "voice_call" | "trainer_session" | other product unit
+  entityId          String?
+  companyId         String?
+  externalId        String?
+  model             String?
+  quantity          Float?
+  quantityUnit      String?
+  inputUnits        Int?
+  outputUnits       Int?
+  amountOriginal    Float
+  currency          String
+  amountRub         Float?
+  exchangeRateToRub Float?
+  exchangeRateDate  DateTime?
+  exchangeRateSource String?
+  tariffId           String?
+  tariffEffectiveAt  DateTime?
+  includedInTotals   Boolean  @default(true) // false for per-entity allocations already represented by account transactions
+  status            String   @default("estimated") // "estimated" | "confirmed"
+  rawJson           String?
+  occurredAt        DateTime @default(now())
+  syncedAt          DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([provider, externalId])
+  @@index([occurredAt])
+  @@index([provider, occurredAt])
+  @@index([entityType, entityId])
+  @@index([companyId, occurredAt])
+  @@map("cost_events")
+}
+
+// User-defined recurring infrastructure costs included in every calendar month.
+model MonthlyTechnicalExpense {
+  id        String   @id @default(cuid())
+  name      String
+  amountRub Float
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, createdAt])
+  @@map("monthly_technical_expenses")
+}
+
+model ProviderTariff {
+  id          String   @id @default(cuid())
+  provider    String
+  model       String
+  currency    String   @default("RUB")
+  ratesJson   String
+  rawHash     String
+  sourceUrl   String
+  effectiveAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([provider, model, rawHash])
+  @@index([provider, model, effectiveAt])
+  @@map("provider_tariffs")
+}
+
+model ProviderBalanceSnapshot {
+  id                 String   @id @default(cuid())
+  provider           String
+  balance            Float
+  used               Float?
+  limit              Float?
+  unit               String
+  currency           String?
+  balanceRub         Float?
+  exchangeRateToRub  Float?
+  exchangeRateDate   DateTime?
+  exchangeRateSource String?
+  resetAt            DateTime?
+  capturedHour       DateTime
+  capturedAt         DateTime @default(now())
+  rawJson             String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([provider, capturedHour])
+  @@index([provider, capturedAt])
+  @@map("provider_balance_snapshots")
+}
+
+model ExchangeRate {
+  id            String   @id @default(cuid())
+  baseCurrency  String
+  quoteCurrency String   @default("RUB")
+  rate          Float
+  rateDate      DateTime
+  source        String   @default("cbr")
+  fetchedAt     DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([baseCurrency, quoteCurrency, rateDate, source])
+  @@index([baseCurrency, quoteCurrency, rateDate])
+  @@map("exchange_rates")
+}
+
 model CallBatch {
   id              String   @id @default(cuid())
   mode            String   @default("manual") // "manual" | "single_dealership" | "all_dealerships"
@@ -934,4 +1051,193 @@ model CallBatchAttempt {
 
   @@index([jobId, attempt])
   @@map("call_batch_attempts")
+}
+
+/// Product-owned support ticket. Bitrix24 is an optional synchronization target,
+/// so a ticket remains fully usable when no external integration is configured.
+model SupportTicket {
+  id                       String   @id @default(cuid())
+  number                   String   @unique
+  requesterAccountId       String?
+  assigneeAccountId        String?
+  holdingId                String?
+  dealershipId             String?
+  requesterName            String?
+  requesterEmail           String?
+  requesterPhone           String?
+  requesterVerified        Boolean  @default(false)
+  publicAccessTokenHash    String?  @unique
+  channel                  String   @default("product") // "product" | "login" | "bitrix24"
+  category                 String
+  subcategory              String?
+  priority                 String   @default("P3") // "P1" | "P2" | "P3" | "P4"
+  status                   String   @default("new") // see support domain state machine
+  subject                  String?
+  escalationLevel          String?
+  escalationReason         String?
+  isEscalated              Boolean  @default(false)
+  firstMessageAt           DateTime @default(now())
+  firstResponseAt          DateTime?
+  waitingSince             DateTime?
+  waitingReminderSentAt    DateTime?
+  holdSince                DateTime?
+  resolvedAt               DateTime?
+  closedAt                 DateTime?
+  lastMessageAt            DateTime @default(now())
+  customerLastReadAt       DateTime?
+  supportLastReadAt        DateTime?
+  reopenCount              Int      @default(0)
+  slaFirstResponseMinutes  Int?
+  slaResolutionMinutes     Int?
+  slaFirstResponseBreachedAt DateTime?
+  slaResolutionBreachedAt  DateTime?
+  bitrixDealId             String?  @unique
+  bitrixContactId          String?
+  bitrixChatId             String?
+  bitrixSessionId          String?
+  syncStatus               String   @default("pending") // "pending" | "synced" | "failed" | "disabled"
+  lastSyncedAt             DateTime?
+  syncError                String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  requester    Account?  @relation("SupportTicketRequester", fields: [requesterAccountId], references: [id], onDelete: SetNull)
+  assignee     Account?  @relation("SupportTicketAssignee", fields: [assigneeAccountId], references: [id], onDelete: SetNull)
+  holding      Holding?  @relation(fields: [holdingId], references: [id], onDelete: SetNull)
+  dealership   Dealership? @relation(fields: [dealershipId], references: [id], onDelete: SetNull)
+  messages     SupportMessage[]
+  statusHistory SupportTicketStatusHistory[]
+  rating       SupportTicketRating?
+  outboxEvents SupportIntegrationOutbox[]
+
+  @@index([requesterAccountId, updatedAt])
+  @@index([assigneeAccountId, status, updatedAt])
+  @@index([holdingId, status, updatedAt])
+  @@index([dealershipId, status, updatedAt])
+  @@index([status, priority, updatedAt])
+  @@index([bitrixChatId])
+  @@index([bitrixContactId])
+  @@index([bitrixSessionId])
+  @@map("support_tickets")
+}
+
+model SupportMessage {
+  id                String   @id @default(cuid())
+  ticketId          String
+  authorAccountId   String?
+  authorType        String   // "customer" | "support" | "system"
+  source            String   @default("product") // "product" | "bitrix24" | "system"
+  visibility        String   @default("public") // "public" | "internal"
+  body              String
+  bitrixMessageId   String?  @unique
+  deliveryStatus    String   @default("pending") // "pending" | "sent" | "failed" | "received"
+  deliveryError     String?
+  sentAt            DateTime @default(now())
+  editedAt          DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author      Account? @relation("SupportMessageAuthor", fields: [authorAccountId], references: [id], onDelete: SetNull)
+  attachments SupportMessageAttachment[]
+
+  @@index([ticketId, sentAt])
+  @@index([authorAccountId, sentAt])
+  @@index([deliveryStatus, createdAt])
+  @@map("support_messages")
+}
+
+model SupportMessageAttachment {
+  id           String   @id @default(cuid())
+  messageId    String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  storageKey   String
+  createdAt    DateTime @default(now())
+
+  message SupportMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("support_message_attachments")
+}
+
+model SupportTicketStatusHistory {
+  id                 String   @id @default(cuid())
+  ticketId           String
+  changedByAccountId String?
+  fromStatus         String?
+  toStatus           String
+  source             String   @default("product") // "product" | "bitrix24" | "automation"
+  reason             String?
+  createdAt          DateTime @default(now())
+
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  changedBy Account? @relation("SupportStatusChangedBy", fields: [changedByAccountId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([toStatus, createdAt])
+  @@map("support_ticket_status_history")
+}
+
+model SupportTicketRating {
+  id              String   @id @default(cuid())
+  ticketId        String   @unique
+  authorAccountId String?
+  isSatisfied     Boolean
+  comment         String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author Account? @relation("SupportRatingAuthor", fields: [authorAccountId], references: [id], onDelete: SetNull)
+
+  @@index([authorAccountId, createdAt])
+  @@map("support_ticket_ratings")
+}
+
+/// Transactional outbox for a future Bitrix24 adapter. Product writes are committed
+/// first; synchronization can then retry without losing or duplicating events.
+model SupportIntegrationOutbox {
+  id             String   @id @default(cuid())
+  ticketId       String
+  eventType      String
+  payloadJson    String
+  deduplicationKey String? @unique
+  status         String   @default("pending") // "pending" | "processing" | "sent" | "failed"
+  attempts       Int      @default(0)
+  nextAttemptAt  DateTime @default(now())
+  processedAt    DateTime?
+  lastError      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([ticketId, createdAt])
+  @@map("support_integration_outbox")
+}
+
+/// OAuth installation of the private Bitrix24 support application. Tokens are
+/// encrypted by the application before they reach this table.
+model SupportBitrixInstallation {
+  memberId                 String   @id
+  domain                   String
+  clientEndpoint           String
+  serverEndpoint           String
+  accessTokenEncrypted     String
+  refreshTokenEncrypted    String
+  accessTokenExpiresAt     DateTime
+  applicationTokenHash     String
+  scope                    String
+  status                   String   @default("active") // "active" | "error" | "disabled"
+  lastError                String?
+  installedAt              DateTime @default(now())
+  lastRefreshedAt          DateTime?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@index([status, updatedAt])
+  @@map("support_bitrix_installations")
 }
