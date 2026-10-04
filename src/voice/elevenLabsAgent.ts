@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { config } from '../config';
+import { fetchElevenLabs } from './elevenLabsHttp';
 
 type AgentTurnResult = {
   clientMessage: string;
@@ -61,9 +62,10 @@ async function getConversationUrl(): Promise<string> {
   const timeout = setTimeout(() => controller.abort(), 8000);
   let response: Response;
   try {
-    response = await fetch(`https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?${params.toString()}`, {
+    response = await fetchElevenLabs(`https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?${params.toString()}`, {
       headers: { 'xi-api-key': config.elevenLabsApiKey },
       signal: controller.signal,
+      redirect: 'manual',
     });
   } finally {
     clearTimeout(timeout);
