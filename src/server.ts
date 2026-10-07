@@ -112,6 +112,7 @@ import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifie
 import {
   buildTrainerInitialClientMessage,
   importedItemMatchesTrainerTags,
+  isNonProgressingTrainerReply,
 } from './trainer/trainerScenario';
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
@@ -2053,6 +2054,7 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
   const importedDescription = String(importedItem.description || '').trim();
   const scenarioCore = buildCustomerScenarioPromptCore({
     mode: 'generic',
+    runtime: 'trainer',
     age: ageLabel,
     temperament: String(clientProfile.temperament || ''),
     patience: String(clientProfile.patience || ''),
@@ -2063,9 +2065,10 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     itemDescription: [
       importedTitle ? `Связанные данные из выборки: ${importedTitle}.` : '',
       importedDescription,
-      String(company.branchName || company.name || ''),
     ].filter(Boolean).join(' '),
     voiceName,
+    companyName: String(company.name || company.branchName || ''),
+    companyDescription: String(company.description || company.branchDescription || ''),
     questions: scenarioQuestions,
     objections: scenarioObjections,
     criteria: scenarioCriteria,
@@ -2076,6 +2079,15 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     : 'Диалог только начинается.';
   const companyName = String(company.name || company.branchName || 'Компания').trim();
   const companyDescription = String(company.description || company.branchDescription || '').trim() || 'Описание не указано.';
+
+  const optimizedPrompt = [
+    scenarioCore,
+    '# Контекст текущей тренировки',
+    'Тренировка уже является разговором с живым сотрудником: правила IVR, дозвона и ожидания здесь не применяются.',
+    'Предыдущие реплики используй только как память разговора; не повторяй уже закрытые вопросы.',
+    previous,
+  ].join('\n\n');
+  if (optimizedPrompt.trim()) return optimizedPrompt;
 
   return [
     '=== ВЫБРАННЫЙ СЦЕНАРИЙ (НАИВЫСШИЙ ПРИОРИТЕТ) ===',
@@ -2143,6 +2155,7 @@ type TrainerRuntimeContext = {
   car: ReturnType<typeof loadCar>;
   behaviorSignals: BehaviorSignal[];
   elevenLabsConversationId?: string | null;
+  elevenLabsTextAgentDisabled?: boolean;
 };
 
 // The browser controls the end of a manager turn. We transcribe the complete
@@ -2167,6 +2180,31 @@ function getTrainerRuntime(caseContext: Record<string, unknown>): TrainerRuntime
     car: runtime.car && typeof runtime.car === 'object' ? runtime.car as ReturnType<typeof loadCar> : loadCar(),
     behaviorSignals: Array.isArray(runtime.behaviorSignals) ? runtime.behaviorSignals as BehaviorSignal[] : [],
     elevenLabsConversationId: typeof runtime.elevenLabsConversationId === 'string' ? runtime.elevenLabsConversationId : null,
+    elevenLabsTextAgentDisabled: runtime.elevenLabsTextAgentDisabled === true,
+  };
+}
+
+function advanceTrainerStateFromVirtualReply(state: any, out: Awaited<ReturnType<typeof getVirtualClientReply>>) {
+  state.phase = out.diagnostics.current_phase;
+  let topicMap = { ...state.topics };
+  for (const code of out.diagnostics.topics_addressed as TopicCode[]) {
+    if (!topicMap[code]) continue;
+    const currentStatus = topicMap[code].status;
+    const next = currentStatus === 'none' ? 'asked' : currentStatus === 'asked' ? 'answered' : currentStatus;
+    const advance = advanceTopic(topicMap, code, next as any);
+    if (advance.valid) topicMap = advance.map;
+  }
+  for (const code of out.diagnostics.topics_evaded as TopicCode[]) {
+    if (!topicMap[code]) continue;
+    topicMap = recordEvasion(topicMap, code);
+  }
+  state.topics = topicMap;
+  return {
+    ...state,
+    stage: out.update_state.stage,
+    checklist: { ...state.checklist, ...out.update_state.checklist },
+    notes: out.update_state.notes,
+    client_turns: out.update_state.client_turns,
   };
 }
 
@@ -2739,6 +2777,7 @@ async function runTrainerSessionTurn(params: {
   let endConversation = false;
   let result: WebTrainingResult | null = null;
   let nextElevenLabsConversationId = runtime.elevenLabsConversationId ?? null;
+  let elevenLabsTextAgentDisabled = runtime.elevenLabsTextAgentDisabled === true;
 
   if (behavior.toxic || hardRude || behavior.disengaging) {
     clientMessage = behavior.disengaging
@@ -2752,7 +2791,7 @@ async function runTrainerSessionTurn(params: {
   } else {
     if (behavior.low_effort) state.low_effort_streak = (state.low_effort_streak ?? 0) + 1;
     else state.low_effort_streak = 0;
-    if (USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
+    if (USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled() && !elevenLabsTextAgentDisabled) {
       try {
         console.log(`[trainer] ElevenLabs agent turn start session=${session.id}`);
         const shouldSendPrompt = !hasElevenLabsAgentConversation(session.id);
@@ -2763,7 +2802,12 @@ async function runTrainerSessionTurn(params: {
           elevenLabsVoiceId,
         });
         console.log(`[trainer] ElevenLabs agent turn done session=${session.id} hasAudio=${Boolean(agentOut.audioBase64)} conversation=${agentOut.conversationId || 'n/a'}`);
-        clientMessage = agentOut.clientMessage || 'Понял, хорошо.';
+        if (isNonProgressingTrainerReply(agentOut.clientMessage)) {
+          elevenLabsTextAgentDisabled = true;
+          closeElevenLabsAgentConversation(session.id);
+          throw new Error(`ElevenLabs returned a non-progressing reply: ${agentOut.clientMessage || '(empty)'}`);
+        }
+        clientMessage = agentOut.clientMessage.trim();
         clientAudioBase64 = agentOut.audioBase64;
         clientAudioMimeType = agentOut.audioMimeType;
         nextHistory = [...history, { role: 'client', content: clientMessage }];
@@ -2776,6 +2820,9 @@ async function runTrainerSessionTurn(params: {
         nextElevenLabsConversationId = agentOut.conversationId ?? nextElevenLabsConversationId;
       } catch (error) {
         console.error('[trainer] ElevenLabs agent turn error:', error);
+        elevenLabsTextAgentDisabled = true;
+        closeElevenLabsAgentConversation(session.id);
+        nextElevenLabsConversationId = null;
         const out = await getVirtualClientReply({
           car: runtime.car,
           dealership: buildDealershipFromCar(runtime.car),
@@ -2788,10 +2835,11 @@ async function runTrainerSessionTurn(params: {
           scenarioPrompt: phoneScenarioPrompt,
           maxResponseTokens: 220,
         });
+        nextState = advanceTrainerStateFromVirtualReply(state, out);
         clientMessage = out.client_message;
         nextHistory = [...history, { role: 'client', content: clientMessage }];
         endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
-        result = endConversation ? buildWebTrainingResult(state, nextHistory, behaviorSignals, false, null) : null;
+        result = endConversation ? buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null) : null;
       }
     } else {
       const out = await getVirtualClientReply({
@@ -2807,27 +2855,7 @@ async function runTrainerSessionTurn(params: {
         maxResponseTokens: 220,
       });
 
-      state.phase = out.diagnostics.current_phase;
-      let topicMap = { ...state.topics };
-      for (const code of out.diagnostics.topics_addressed as TopicCode[]) {
-        if (!topicMap[code]) continue;
-        const currentStatus = topicMap[code].status;
-        const next = currentStatus === 'none' ? 'asked' : currentStatus === 'asked' ? 'answered' : currentStatus;
-        const advance = advanceTopic(topicMap, code, next as any);
-        if (advance.valid) topicMap = advance.map;
-      }
-      for (const code of out.diagnostics.topics_evaded as TopicCode[]) {
-        if (!topicMap[code]) continue;
-        topicMap = recordEvasion(topicMap, code);
-      }
-      state.topics = topicMap;
-      nextState = {
-        ...state,
-        stage: out.update_state.stage,
-        checklist: { ...state.checklist, ...out.update_state.checklist },
-        notes: out.update_state.notes,
-        client_turns: out.update_state.client_turns,
-      };
+      nextState = advanceTrainerStateFromVirtualReply(state, out);
       clientMessage = out.client_message;
       nextHistory = [...history, { role: 'client', content: clientMessage }];
       endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
@@ -2863,7 +2891,13 @@ async function runTrainerSessionTurn(params: {
       audioMimeType: clientAudioMimeType,
     },
   ]);
-  const nextRuntime = { ...runtime, state: nextState, behaviorSignals, elevenLabsConversationId: nextElevenLabsConversationId };
+  const nextRuntime = {
+    ...runtime,
+    state: nextState,
+    behaviorSignals,
+    elevenLabsConversationId: nextElevenLabsConversationId,
+    elevenLabsTextAgentDisabled,
+  };
   const updateData: Parameters<typeof prisma.trainerSession.update>[0]['data'] = {
     transcriptJson: jsonStringify(transcript),
     caseContextJson: jsonStringify(withTrainerRuntime(caseContext, nextRuntime)),
@@ -7337,6 +7371,41 @@ app.get('/api/admin/call-recordings/:callId', async (req, res) => {
   } catch (error) {
     console.error('call-recordings/:callId error:', error instanceof Error ? error.message : error);
     return res.status(500).json({ error: 'Не удалось получить запись звонка.' });
+  }
+});
+
+app.get('/api/admin/call-recordings/:callId/download', async (req, res) => {
+  try {
+    const isPlatformSuperadmin = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    );
+    if (!isPlatformSuperadmin) {
+      return res.status(403).json({ error: 'Скачивание записей доступно только суперадминистратору.' });
+    }
+
+    const callId = String(req.params.callId || '').trim();
+    if (!callId) return res.status(400).json({ error: 'Missing callId.' });
+    const session = await prisma.voiceCallSession.findUnique({
+      where: { callId },
+      select: { recordingStatus: true },
+    });
+    if (!session || session.recordingStatus !== 'ready') {
+      return res.status(404).json({ error: 'Запись звонка не найдена.' });
+    }
+    const filePath = getCallRecordingFilePath(callId);
+    if (!fs.existsSync(filePath)) {
+      console.error(`Voximplant recording file missing call_id=${callId}`);
+      return res.status(404).json({ error: 'Файл записи звонка недоступен.' });
+    }
+
+    const safeCallId = callId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 128) || 'recording';
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Disposition', `attachment; filename="call-${safeCallId}.mp3"`);
+    return res.sendFile(filePath);
+  } catch (error) {
+    console.error('call-recordings/:callId/download error:', error instanceof Error ? error.message : error);
+    return res.status(500).json({ error: 'Не удалось скачать запись звонка.' });
   }
 });
 

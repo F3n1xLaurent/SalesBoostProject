@@ -3008,17 +3008,60 @@
 
 .sa-call-report-recording-copy {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sa-call-report-recording-copy-text {
+  display: flex;
   align-items: baseline;
   gap: 10px;
 }
 
-.sa-call-report-recording-copy strong {
+.sa-call-report-recording-copy-text strong {
   font-size: 15px;
 }
 
-.sa-call-report-recording-copy span {
+.sa-call-report-recording-copy-text span {
   color: var(--sa-text-secondary);
   font-size: 12px;
+}
+
+.sa-call-report-recording-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 7px 12px;
+  color: var(--sa-text, #161613);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  background: #FFFFFF;
+  border: 1px solid rgba(22, 22, 19, 0.16);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.sa-call-report-recording-download:hover:not(:disabled) {
+  background: rgba(22, 22, 19, 0.04);
+}
+
+.sa-call-report-recording-download:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sa-call-report-recording-download svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .sa-call-report-recording-player {
@@ -3872,6 +3915,11 @@
     padding: 14px;
   }
   .sa-call-report-recording-copy {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .sa-call-report-recording-copy-text {
     align-items: flex-start;
     flex-direction: column;
     gap: 3px;

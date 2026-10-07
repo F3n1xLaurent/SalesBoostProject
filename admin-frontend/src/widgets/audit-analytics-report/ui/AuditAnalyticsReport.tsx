@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useUnit } from 'effector-react';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 import { trackProductEvent } from '../../../shared/analytics/productAnalytics';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
-import { apiFetch } from '../../../entities/session';
+import { $auth, apiFetch } from '../../../entities/session';
 
 type UnifiedReport = NonNullable<AuditDetailItem['unifiedReport']>;
 type DialogLine = UnifiedReport['dialog'][number] & { betterExample?: string | null };
@@ -182,7 +183,13 @@ async function analyzeCallWaveform(blob: Blob): Promise<number[]> {
   }
 }
 
-function CallRecordingPlayer({ recordingUrl }: { recordingUrl: string }) {
+function CallRecordingPlayer({
+  recordingUrl,
+  canDownload,
+}: {
+  recordingUrl: string;
+  canDownload: boolean;
+}) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [waveform, setWaveform] = useState<number[]>(EMPTY_CALL_WAVEFORM);
@@ -191,6 +198,8 @@ function CallRecordingPlayer({ recordingUrl }: { recordingUrl: string }) {
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -230,6 +239,9 @@ function CallRecordingPlayer({ recordingUrl }: { recordingUrl: string }) {
   }, [recordingUrl]);
 
   const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
+  const downloadUrl = canDownload && recordingUrl.startsWith('/api/admin/call-recordings/')
+    ? `${recordingUrl}/download`
+    : null;
 
   function togglePlayback() {
     const audio = audioRef.current;
@@ -261,11 +273,52 @@ function CallRecordingPlayer({ recordingUrl }: { recordingUrl: string }) {
     setCurrentTime(audio.currentTime);
   }
 
+  async function downloadRecording() {
+    if (!downloadUrl || downloading) return;
+    setDownloading(true);
+    setDownloadError(false);
+    try {
+      const response = await apiFetch(downloadUrl);
+      if (!response.ok) throw new Error('Recording download failed');
+      const blob = await response.blob();
+      if (blob.size === 0) throw new Error('Recording is empty');
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const encodedCallId = recordingUrl.slice('/api/admin/call-recordings/'.length);
+      const callId = decodeURIComponent(encodedCallId).replace(/[^A-Za-z0-9_-]/g, '_') || 'recording';
+      anchor.href = objectUrl;
+      anchor.download = `call-${callId}.mp3`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch {
+      setDownloadError(true);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return (
     <section className="sa-call-report-recording">
       <div className="sa-call-report-recording-copy">
-        <strong>Запись звонка</strong>
-        <span>{loading ? 'Загружаем аудио…' : error ? 'Не удалось загрузить запись' : 'Можно прослушать разговор целиком'}</span>
+        <div className="sa-call-report-recording-copy-text">
+          <strong>Запись звонка</strong>
+          <span>{loading ? 'Загружаем аудио…' : error ? 'Не удалось загрузить запись' : downloadError ? 'Не удалось скачать запись' : 'Можно прослушать разговор целиком'}</span>
+        </div>
+        {downloadUrl ? (
+          <button
+            type="button"
+            className="sa-call-report-recording-download"
+            disabled={downloading}
+            onClick={downloadRecording}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path d="M12 3v12m0 0 5-5m-5 5-5-5M5 20h14" />
+            </svg>
+            {downloading ? 'Скачиваем…' : 'Скачать'}
+          </button>
+        ) : null}
       </div>
       <div className="sa-call-report-recording-player">
         <audio
@@ -332,6 +385,9 @@ export function AuditAnalyticsReport({
   detail: AuditDetailItem;
   onOpenEmployee?: (id: string) => void;
 }) {
+  const auth = useUnit($auth);
+  const canDownloadRecording = auth.status === 'authenticated'
+    && auth.user.memberships.some((membership) => membership.role === 'platform_superadmin');
   const report = detail.unifiedReport;
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [findingsOpen, setFindingsOpen] = useState(false);
@@ -430,7 +486,7 @@ export function AuditAnalyticsReport({
           </section>
 
           {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
-            <CallRecordingPlayer recordingUrl={detail.recordingUrl} />
+            <CallRecordingPlayer recordingUrl={detail.recordingUrl} canDownload={canDownloadRecording} />
           )}
 
           <section className="sa-call-report-block">
@@ -640,7 +696,7 @@ export function AuditAnalyticsReport({
       ) : (
         <>
           {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
-            <CallRecordingPlayer recordingUrl={detail.recordingUrl} />
+            <CallRecordingPlayer recordingUrl={detail.recordingUrl} canDownload={canDownloadRecording} />
           )}
           <section className="sa-call-report-section">
             <h2 className="sa-section-title">Отчёт</h2>
