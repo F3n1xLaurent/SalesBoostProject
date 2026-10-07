@@ -35,18 +35,18 @@ describe('buildRealtimeCallPrompt', () => {
     });
 
     for (const prompt of [planPrompt, demoPrompt]) {
-      expect(prompt).toContain('# Guardrails');
-      expect(prompt).toContain('Ты всегда ПОКУПАТЕЛЬ/КЛИЕНТ');
+      expect(prompt).toContain('# Роль и цель');
+      expect(prompt).toContain('Всегда оставайся клиентом');
       expect(prompt).toContain('Клиент выбирает автомобиль для семьи.');
       expect(prompt).toContain('Есть ли гарантия?');
       expect(prompt).toContain('Тестовая компания');
-      expect(prompt.match(/# Guardrails/g)).toHaveLength(1);
+      expect(prompt).not.toContain('Гарантия один год');
+      expect(prompt.match(/# Приоритетные правила/g)).toHaveLength(1);
+      expect(prompt).toContain('# Подключение, IVR и ожидание');
     }
-    expect(demoPrompt).toContain('=== ДЕМО-ПЕРСОНА ===');
-    expect(demoPrompt).toContain('Имя клиента: Анна');
+    expect(demoPrompt).toContain('Твоё имя — Анна');
     expect(demoPrompt).toContain('сразу и прямо ответь: «Меня зовут Анна»');
     expect(demoPrompt).toContain('+79990000000');
-    expect(planPrompt).not.toContain('=== ДЕМО-ПЕРСОНА ===');
     expect(planPrompt).toContain('обязательно выбери себе одно обычное человеческое русское имя');
     expect(planPrompt).toContain('сразу и прямо ответь: «Меня зовут [выбранное имя]»');
   });
@@ -59,8 +59,8 @@ describe('buildRealtimeCallPrompt', () => {
       holding: { name: 'Тестовая компания', description: null },
     });
 
-    expect(prompt).toContain('Никогда не произноси итоги или протокол разговора');
-    expect(prompt).toContain('После финальной реплики и прощания не создавай ни одного дополнительного текстового или голосового ответа.');
+    expect(prompt).toContain('Никогда не произноси служебные итоги');
+    expect(prompt).toContain('После завершения больше ничего не говори.');
   });
 
   it('не превращает живой звонок в проверку ответа по эталону', () => {
@@ -71,9 +71,9 @@ describe('buildRealtimeCallPrompt', () => {
       holding: { name: 'Тестовая компания', description: null },
     });
 
-    expect(prompt).toContain('«40 тысяч» является понятным ответом на вопрос о пробеге');
-    expect(prompt).toContain('Полноту и корректность проверит отдельная аналитика после звонка');
-    expect(prompt).toContain('не повторяй один вопрос в разных формулировках ради получения эталонного ответа');
+    expect(prompt).toContain('«40 тысяч» является нормальным ответом на вопрос о пробеге');
+    expect(prompt).toContain('Качество работы сотрудника оценивает отдельная аналитика');
+    expect(prompt).toContain('Не добивайся эталонной формулировки');
     expect(prompt).not.toContain('После двух попыток вернуть разговор к вопросу');
   });
 });

@@ -58,3 +58,19 @@ export function importedItemMatchesTrainerTags(itemTags: string[], requiredTags:
   const available = new Set(itemTags.map(cleanText).filter(Boolean));
   return requiredTags.map(cleanText).filter(Boolean).every((tag) => available.has(tag));
 }
+
+/**
+ * A bare acknowledgement does not advance a trainer dialog. It is valid as
+ * the beginning of a response, but only when followed by a new topic,
+ * question, objection or a natural closing phrase.
+ */
+export function isNonProgressingTrainerReply(value: unknown): boolean {
+  const normalized = cleanText(value)
+    .toLocaleLowerCase('ru-RU')
+    .replace(/ё/g, 'е')
+    .replace(/[^а-я\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  return /^(?:(?:да|ну)\s+)?(?:понял|поняла|понятно|хорошо|ладно|ясно|ага|угу)(?:\s+(?:понял|поняла|понятно|хорошо|ладно|ясно|ага|угу))*$/.test(normalized);
+}

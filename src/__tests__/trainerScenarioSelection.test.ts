@@ -3,6 +3,7 @@ import { buildCustomerScenarioPromptCore } from '../voice/customerScenarioPrompt
 import {
   buildTrainerInitialClientMessage,
   importedItemMatchesTrainerTags,
+  isNonProgressingTrainerReply,
 } from '../trainer/trainerScenario';
 
 describe('trainer scenario selection', () => {
@@ -55,8 +56,9 @@ describe('trainer scenario selection', () => {
     });
 
     expect(prompt).toContain('«40 тысяч» является нормальным ответом на вопрос о пробеге');
-    expect(prompt).toContain('Оценка выполняется только после разговора отдельной аналитикой');
-    expect(prompt).toContain('повторять вопрос ради получения эталонного ответа');
+    expect(prompt).toContain('отдельная аналитика после разговора');
+    expect(prompt).toContain('Не добивайся эталонной формулировки');
+    expect(prompt).not.toContain('Пробег автомобиля составляет 40 000 километров');
     expect(prompt).not.toContain('Если ответил также или почти также');
   });
 
@@ -64,7 +66,7 @@ describe('trainer scenario selection', () => {
     const prompt = buildCustomerScenarioPromptCore({ mode: 'generic' });
 
     expect(prompt).toContain('обязательно выбери себе одно обычное человеческое русское имя');
-    expect(prompt).toContain('Запомни его и не меняй до конца разговора');
+    expect(prompt).toContain('запомни его и не меняй');
     expect(prompt).toContain('сразу и прямо ответь: «Меня зовут [выбранное имя]»');
     expect(prompt).toContain('Запрещено скрывать своё имя');
   });
@@ -74,11 +76,37 @@ describe('trainer scenario selection', () => {
       itemTitle: 'Skoda Octavia',
     });
 
-    expect(prompt).toContain('после подтверждения живого сотрудника');
-    expect(prompt).toContain('только после осмысленной реплики живого сотрудника');
-    expect(prompt).toContain('Автоматическое приветствие, просьба подождать, музыка, шум и тишина');
-    expect(prompt).toContain('Не повторяй первый вопрос из-за отсутствия ответа');
-    expect(prompt).toContain('Если живой сотрудник явно сказал «повторите, пожалуйста»');
+    expect(prompt).toContain('ТОЛЬКО после осмысленной реплики живого сотрудника');
+    expect(prompt).toContain('Автоматическое приветствие, сообщения «ожидайте», музыка');
+    expect(prompt).toContain('Первый вопрос сценария из-за тишины не повторяй');
+    expect(prompt).toContain('если сотрудник явно попросил повторить');
+  });
+
+  it('omits telephone transport rules in trainer runtime', () => {
+    const prompt = buildCustomerScenarioPromptCore({
+      mode: 'generic',
+      runtime: 'trainer',
+      includeFirstMessage: false,
+    });
+
+    expect(prompt).not.toContain('# Подключение, IVR и ожидание');
+    expect(prompt).not.toContain('send_dtmf');
+    expect(prompt).toContain('кратко и естественно заверши диалог');
+  });
+
+  it('forbids acknowledgement-only replies from stalling the trainer dialog', () => {
+    const prompt = buildCustomerScenarioPromptCore({
+      mode: 'generic',
+      runtime: 'trainer',
+      includeFirstMessage: false,
+    });
+
+    expect(prompt).toContain('никогда не должна быть всей репликой');
+    expect(prompt).toContain('Запрещено отвечать только «Понял»');
+    expect(isNonProgressingTrainerReply('Понял, хорошо.')).toBe(true);
+    expect(isNonProgressingTrainerReply('Ладно.')).toBe(true);
+    expect(isNonProgressingTrainerReply('Хорошо. А какая гарантия предусмотрена?')).toBe(false);
+    expect(isNonProgressingTrainerReply('Тогда я подумаю, спасибо.')).toBe(false);
   });
 
   it('does not accept an unrelated imported item when script tags are configured', () => {

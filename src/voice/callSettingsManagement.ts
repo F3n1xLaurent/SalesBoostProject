@@ -960,6 +960,7 @@ export function buildRealtimeCallPrompt(input: {
   const questions = safeJsonParse<Array<{ text?: string; required?: boolean }>>(input.script.questionsJson, []);
   const criteria = safeJsonParse<Array<{ sourceType?: string; sourceId?: string; expectedAnswer?: string; score?: number }>>(input.script.successCriteriaJson, []);
   const scenarioCore = buildCustomerScenarioPromptCore({
+    runtime: 'call',
     clientName: input.clientName,
     age,
     temperament,
@@ -970,11 +971,20 @@ export function buildRealtimeCallPrompt(input: {
     itemTitle,
     itemDescription,
     voiceName: input.customerVoiceName,
+    companyName: input.holding.name,
+    companyDescription: input.holding.description,
+    destinationPhone: input.destinationPhone,
+    target: input.target,
     questions,
     objections,
     criteria,
   });
   const targetLocationSection = buildCallTargetLocationSection(input.target);
+
+  // V2 is the canonical compact prompt. Keep the legacy assembly below only as
+  // a defensive fallback in case the shared builder is ever allowed to return
+  // an empty value.
+  if (scenarioCore.trim()) return scenarioCore;
 
   return withRealtimeCallGuardrails([
     targetLocationSection,
