@@ -3101,7 +3101,7 @@ export function CallSettingsPage() {
                               className="sa-btn-danger sa-btn-icon"
                               aria-label={`Удалить запись звонка ${call.employeeName || call.phone}`}
                               title="Удалить из истории"
-                              disabled={['scheduled', 'running', 'dialing', 'in_progress'].includes(call.status)}
+                              disabled={call.status === 'scheduled'}
                               onKeyDown={(event) => event.stopPropagation()}
                               onClick={(event) => {
                                 event.stopPropagation();
