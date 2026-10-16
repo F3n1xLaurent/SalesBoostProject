@@ -94,6 +94,8 @@ export async function generateCallAnalyticsBundle(input: {
     '- dialog не должен повторять текст реплик: верни только элементы с mark/comment в том же количестве и порядке, что исходный диалог.',
     '- Для реплики клиента mark=null и comment=null.',
     '- Для реплики менеджера mark: positive | normal | negative, comment короткий, до 90 символов.',
+    '- Для mark=normal или mark=negative comment обязателен и конкретно объясняет пометку. Без объяснения ставь mark=null.',
+    '- betterExample добавляй только для mark=negative и только если он явно устраняет указанную проблему. Используй лишь факты, известные к моменту этой реплики; не используй сведения клиента из более поздних реплик. Если безопасного улучшения нет или это простое перефразирование, верни null.',
     '- keyFindings: 2-5 пунктов.',
     '- strengths/weaknesses/recommendations: по 2-4 коротких пункта.',
     '',

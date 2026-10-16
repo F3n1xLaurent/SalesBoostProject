@@ -77,6 +77,7 @@ function enrichDialogExamples(
   return dialog.map((line) => {
     const existing = (line as DialogLine).betterExample?.trim() || null;
     if (line.role !== 'manager') return { ...line, betterExample: null };
+    if (line.mark !== 'negative') return { ...line, betterExample: null };
     if (existing) return { ...line, betterExample: existing };
 
     const text = line.text.trim().toLowerCase();
@@ -478,7 +479,15 @@ export function AuditAnalyticsReport({
               <p>{report.summary}</p>
               {detail.type === 'trainer' && detail.scriptComplianceScore != null ? (
                 <div className="sa-call-report-script-score">
-                  Знание сценария: <strong>{Math.round(detail.scriptComplianceScore)}%</strong>
+                  <div className="sa-call-report-script-score-title">
+                    Выполнение условий сценария: <strong>{Math.round(detail.scriptComplianceScore)}%</strong>
+                    <span
+                      className="sa-call-report-script-score-info"
+                      title="Доля условий сценария, смысл которых менеджер передал в разговоре. Общая оценка качества рассчитывается отдельно по чек-листу."
+                      aria-label="Как рассчитывается выполнение условий сценария"
+                    >i</span>
+                  </div>
+                  <small>Доля выполненных условий сценария. Общая оценка рассчитывается отдельно.</small>
                 </div>
               ) : null}
               {detail.failReason && <div className="sa-audit-fail-reason">{detail.failReason}</div>}

@@ -165,6 +165,78 @@ function arrayOfText(value: unknown, limit: number): string[] {
   return result;
 }
 
+function mergeUniqueText(items: string[], limit: number): string[] {
+  const result: string[] = [];
+  for (const item of items) {
+    const text = meaningfulText(item);
+    const key = text.toLocaleLowerCase('ru-RU').replace(/[«»"'.,:;!?—–-]/g, '').replace(/\s+/g, ' ').trim();
+    if (text && key && !result.some((existing) => existing.toLocaleLowerCase('ru-RU').replace(/[«»"'.,:;!?—–-]/g, '').replace(/\s+/g, ' ').trim() === key)) {
+      result.push(text);
+    }
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+const GENERIC_EXAMPLE_WORDS = new Set([
+  'автомобил', 'машин', 'модел', 'клиент', 'менеджер', 'сотрудник', 'компан',
+  'предложен', 'услов', 'стоимост', 'цен', 'рубл', 'может', 'нужн', 'котор',
+  'этот', 'ваш', 'наш', 'сказа', 'ответ', 'вопрос', 'хорош', 'понятн',
+]);
+
+function wordStem(value: string): string {
+  const normalized = value.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/[^а-яa-z0-9]/g, '');
+  if (normalized.length < 5) return normalized;
+  return normalized.replace(/(?:иями|ями|ами|ого|ему|ому|ыми|ими|иях|ах|ях|ов|ев|ом|ем|ам|ям|ой|ей|ую|юю|ая|яя|ое|ее|ые|ие|ый|ий|ым|им|а|я|ы|и|у|ю|е|о)$/u, '');
+}
+
+function contentStems(value: string): Set<string> {
+  return new Set(value.split(/\s+/u)
+    .map(wordStem)
+    .filter((word) => word.length >= 4 && !GENERIC_EXAMPLE_WORDS.has(word)));
+}
+
+function findTranscriptQuoteIndex(quote: string, transcript: TranscriptTurn[]): number {
+  const target = quote.toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ').trim();
+  if (!target) return -1;
+  return transcript.findIndex((turn) => {
+    const text = asText(turn.text).toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
+    return turn.role === 'manager' && (text === target || text.includes(target) || target.includes(text));
+  });
+}
+
+/**
+ * A coaching example may use only information already available when the
+ * manager spoke. If it borrows a distinctive fact from a later client turn,
+ * hiding it is safer than teaching the manager to rely on future context.
+ */
+function sanitizeBetterExample(
+  value: unknown,
+  quote: string,
+  transcript: TranscriptTurn[],
+  knownQuoteIndex?: number,
+): string {
+  const example = normalizeCompanyWording(meaningfulText(value));
+  if (!example) return '';
+  const quoteIndex = knownQuoteIndex == null
+    ? findTranscriptQuoteIndex(quote, transcript)
+    : knownQuoteIndex;
+  if (quoteIndex < 0) return '';
+
+  const quoteStems = contentStems(quote);
+  const exampleStems = contentStems(example);
+  const addedMeaning = [...exampleStems].some((word) => !quoteStems.has(word));
+  if (!addedMeaning) return '';
+
+  const knownBefore = contentStems(transcript.slice(0, quoteIndex + 1).map((turn) => turn.text).join(' '));
+  const futureClient = contentStems(transcript.slice(quoteIndex + 1)
+    .filter((turn) => turn.role === 'client')
+    .map((turn) => turn.text)
+    .join(' '));
+  const leaksFutureFact = [...exampleStems].some((word) => futureClient.has(word) && !knownBefore.has(word));
+  return leaksFutureFact ? '' : example;
+}
+
 function normalizeCategory(value: unknown, fallback: UnifiedReportCategory): UnifiedReportCategory {
   const text = asText(value);
   return UNIFIED_REPORT_CATEGORIES.includes(text as UnifiedReportCategory)
@@ -246,7 +318,7 @@ export function normalizeUnifiedCallReport(
   const scoreMismatch = Number.isFinite(sourceScoreValue) && clampScore(sourceScoreValue) !== totalScore;
   const categoriesSource = Array.isArray(source.categories) ? source.categories : [];
   const fromDimensions = categoryScoresFromDimensions(fallback.dimensionScores);
-  const categories = UNIFIED_REPORT_CATEGORIES.map((name) => {
+  let categories = UNIFIED_REPORT_CATEGORIES.map((name) => {
     const raw = categoriesSource.find((item) => item && typeof item === 'object' && asText((item as Record<string, unknown>).name) === name) as Record<string, unknown> | undefined;
     const score = fromDimensions[name] ?? totalScore;
     return {
@@ -265,17 +337,44 @@ export function normalizeUnifiedCallReport(
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       const problem = resolveFindingProblem(catalog, raw, fallback.transcript);
       if (!problem) return null;
+      const quote = resolveFindingQuote(problem, raw.quote, fallback.transcript);
       return {
         problemTitle: problem.title,
         importance: normalizeImportance(raw.importance),
         category: problem.category,
-        quote: resolveFindingQuote(problem, raw.quote, fallback.transcript),
+        quote,
         comment: normalizeCompanyWording(meaningfulText(raw.comment)),
-        betterExample: normalizeCompanyWording(meaningfulText(raw.betterExample)),
+        betterExample: sanitizeBetterExample(raw.betterExample, quote, fallback.transcript),
       };
     })
     .filter((item): item is UnifiedCallReport['keyFindings'][number] => Boolean(item))
     .slice(0, 8);
+
+  const importanceScoreCap: Record<UnifiedFindingImportance, number> = {
+    Критично: 49,
+    Важно: 75,
+    Средне: 90,
+  };
+  categories = categories.map((category) => {
+    const categoryFindings = findings.filter((finding) => finding.category === category.name);
+    const findingCap = categoryFindings.reduce(
+      (cap, finding) => Math.min(cap, importanceScoreCap[finding.importance]),
+      100,
+    );
+    const commentWithoutPositiveNegation = category.comment
+      .replace(/нет замечаний|замечаний не выявлено|недостатков не выявлено/giu, '');
+    const commentContainsConcern = /(?:(?:^|\s)не\s|недостат|частич|слаб|следует|нужно|стоит|необходимо|можно\s+лучше)/iu.test(commentWithoutPositiveNegation);
+    const commentCap = commentContainsConcern ? 95 : 100;
+    const adjustedScore = Math.min(category.score, findingCap, commentCap);
+    const primaryFinding = categoryFindings[0];
+    return {
+      ...category,
+      score: adjustedScore,
+      comment: adjustedScore < category.score && primaryFinding
+        ? primaryFinding.comment || primaryFinding.problemTitle
+        : category.comment,
+    };
+  });
 
   const dialogSource = Array.isArray(source.dialog) ? source.dialog : [];
   let dialogSourceCursor = 0;
@@ -313,7 +412,7 @@ export function normalizeUnifiedCallReport(
     }
     const rawMark = role === 'manager' ? normalizeMark(raw.mark) : null;
     const betterExample = role === 'manager' && rawMark === 'negative'
-      ? meaningfulText(raw.betterExample) || null
+      ? sanitizeBetterExample(raw.betterExample, turn.text, fallback.transcript, index) || null
       : null;
     const comment = role === 'manager' ? meaningfulText(raw.comment) || null : null;
     return {
@@ -324,7 +423,7 @@ export function normalizeUnifiedCallReport(
       betterExample,
     };
   }).map((line) => {
-    if (line.role !== 'manager' || line.betterExample || line.mark !== 'negative') return line;
+    if (line.role !== 'manager' || line.mark === 'positive' || line.mark == null) return line;
     const matched = findings.find((finding) => {
       const quote = finding.quote.trim().toLowerCase();
       const text = line.text.trim().toLowerCase();
@@ -332,8 +431,10 @@ export function normalizeUnifiedCallReport(
       return text.includes(quote) || quote.includes(text) || text.includes(quote.slice(0, Math.min(40, quote.length)));
     });
     const nextComment = line.comment || matched?.comment || null;
-    const nextExample = line.betterExample || matched?.betterExample || null;
-    const nextMark = line.mark ?? (nextExample || nextComment ? 'normal' : null);
+    const nextExample = line.mark === 'negative'
+      ? line.betterExample || matched?.betterExample || null
+      : null;
+    const nextMark = nextComment ? line.mark : null;
     return {
       ...line,
       mark: nextMark,
@@ -376,6 +477,13 @@ export function normalizeUnifiedCallReport(
     fallback.transcript,
   );
   const weaknessSummary = evaluatedHighlights.weaknesses.slice(0, 2).join('; ');
+  const baseWeaknesses = evaluatedHighlights.hasClassification
+    ? evaluatedHighlights.weaknesses
+    : aiWeaknesses;
+  const findingWeaknesses = findings.map((finding) => finding.comment
+    ? `${finding.problemTitle}: ${finding.comment}`
+    : finding.problemTitle);
+  const weaknesses = mergeUniqueText([...findingWeaknesses, ...baseWeaknesses], 8);
   const correctedSummary = totalScore < 50
     ? `Разговор требует существенной доработки.${weaknessSummary ? ` Основные зоны роста: ${weaknessSummary}.` : ''}`
     : totalScore < 76
@@ -392,7 +500,7 @@ export function normalizeUnifiedCallReport(
     verdict: unifiedVerdict(totalScore),
     categories,
     strengths: evaluatedHighlights.hasClassification ? evaluatedHighlights.strengths : aiStrengths,
-    weaknesses: evaluatedHighlights.hasClassification ? evaluatedHighlights.weaknesses : aiWeaknesses,
+    weaknesses,
     keyFindings: findings,
     dialog,
     recommendations,
@@ -442,7 +550,8 @@ export async function generateUnifiedCallReport(input: {
     '- dialog должен содержать ВСЕ реплики исходного диалога в том же порядке.',
     '- Для каждой реплики менеджера mark: positive | normal | negative. Для клиента mark=null, comment=null, betterExample=null.',
     '- Для реплики менеджера с mark=negative можно добавить betterExample только если он явно лучше исходного ответа. Для positive/normal betterExample=null.',
-    '- betterExample должен отвечать на тот же вопрос, сохранять все корректные факты исходной реплики и не добавлять новые цены, сроки, характеристики или обещания. Если безопасного улучшения нет, верни null.',
+    '- Для mark=normal или mark=negative comment обязателен и должен конкретно объяснять пометку. Если объяснения нет, ставь mark=null.',
+    '- betterExample должен отвечать на тот же вопрос, сохранять все корректные факты исходной реплики и не добавлять новые цены, сроки, характеристики или обещания. Используй только сведения, известные ДО анализируемой реплики включительно. Запрещено опираться на потребности и факты, которые клиент сообщил позднее. Если пример не устраняет замечание, лишь перефразирует исходную реплику или требует будущего контекста, верни null.',
     '- Не помечай развёрнутый ответ как слабый только потому, что эталон или критерий сформулирован короче. Если обязательный смысл передан верно, учитывай ответ как выполненный; дополнительные уместные детали не являются ошибкой.',
     '- При проверке условия учитывай смысл нескольких последовательных реплик менеджера вместе, если ответ был разбит на части.',
     '- recommendations должны быть конкретными следующими шагами для менеджера/руководителя филиала.',

@@ -57,6 +57,47 @@ function postEvent(eventUrl, payload, done) {
   );
 }
 
+function getCompletionClassifierUrl(eventUrl) {
+  var normalized = String(eventUrl || "").replace(/\/+$/, "");
+  return normalized ? normalized + "/classify-completion" : "";
+}
+
+function postCompletionClassification(url, payload, done) {
+  if (!url) {
+    if (done) done(null);
+    return;
+  }
+
+  Net.httpRequest(
+    url,
+    function (result) {
+      var code = result && (result.code != null ? result.code : result.status);
+      var raw = result && result.text ? String(result.text) : "";
+      var parsed = null;
+
+      if (code === 200 && raw) {
+        try {
+          parsed = JSON.parse(raw);
+        } catch (err) {
+          Logger.write("elevenlabs_test: completion classifier parse error=" + err);
+        }
+      } else {
+        Logger.write(
+          "elevenlabs_test: completion classifier HTTP " + code
+        );
+      }
+
+      if (done) done(parsed);
+    },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      postData: JSON.stringify(payload),
+      timeout: 10,
+    }
+  );
+}
+
 VoxEngine.addEventListener(AppEvents.Started, function (e) {
   var data = parseCustomData();
 
@@ -69,6 +110,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   var to = normalizePhone(data.to);
   var callerId = normalizePhone(data.caller_id);
   var eventUrl = getString(data.event_url, "");
+  var completionClassifierUrl = getCompletionClassifierUrl(eventUrl);
 
   var elevenlabsApiKey = ELEVENLABS_API_KEY;
   var elevenlabsAgentId = ELEVENLABS_AGENT_ID;
@@ -101,10 +143,14 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   var pendingDtmf = null;
   var dtmfGuardMs = 1800;
   var pendingEndCall = null;
+  var pendingNaturalEnd = null;
   var agentMediaActive = false;
   var agentMediaGeneration = 0;
   var endCallMediaStartGraceMs = 300;
   var endCallFallbackMs = 30000;
+  var naturalEndMediaStartGraceMs = 800;
+  var naturalEndFallbackMs = 30000;
+  var conversationRevision = 0;
   var connectionState = "awaiting_answer";
   var agentOutputConnected = false;
   var lastInputKind = "none";
@@ -171,6 +217,24 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
     );
   }
 
+  function isClearlyTerminalFarewell(text) {
+    var normalized = normalizeInputTranscript(text);
+    if (!normalized || normalized.indexOf("?") !== -1) return false;
+
+    return /(?:^|[.!;,—–-]\s*)(?:спасибо(?:\s+за\s+(?:разговор|информацию|помощь))?[,!.\s]*)?(?:до\s+свидания|всего\s+(?:доброго|хорошего)|хорошего\s+(?:дня|вечера)|пока)(?:[.!…\s]*)$/i.test(
+      normalized
+    );
+  }
+
+  function shouldClassifyCompletion(text) {
+    var normalized = normalizeInputTranscript(text);
+    return (
+      normalized.length >= 3 &&
+      normalized.indexOf("?") === -1 &&
+      !isClearlyTerminalFarewell(normalized)
+    );
+  }
+
   function muteAgentOutput(reason) {
     if (agentOutputConnected && client) {
       try {
@@ -211,6 +275,16 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   function handleUserTranscript(text) {
     var normalized = normalizeInputTranscript(text);
     if (!normalized) return;
+
+    conversationRevision += 1;
+    /*
+     * Speech detected while the final agent phrase is still playing may be
+     * echo or a short overlap. Do not let it cut off/cancel an already
+     * confirmed farewell; the media-ended event remains authoritative.
+     */
+    if (!agentMediaActive) {
+      cancelPendingNaturalEnd("new_manager_transcript");
+    }
 
     pushTranscript("manager", text);
 
@@ -400,6 +474,120 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
       reason: pending.reason,
       end_call_trigger: trigger,
     });
+  }
+
+  function cancelPendingNaturalEnd(reason) {
+    if (!pendingNaturalEnd) return;
+
+    if (pendingNaturalEnd.startGraceTimer) {
+      clearTimeout(pendingNaturalEnd.startGraceTimer);
+    }
+    if (pendingNaturalEnd.fallbackTimer) {
+      clearTimeout(pendingNaturalEnd.fallbackTimer);
+    }
+
+    pendingNaturalEnd = null;
+    Logger.write(
+      "elevenlabs_test: pending natural end cancelled, reason=" + reason
+    );
+  }
+
+  function completePendingNaturalEnd(trigger) {
+    if (!pendingNaturalEnd || ended) return;
+
+    var pending = pendingNaturalEnd;
+    pendingNaturalEnd = null;
+
+    if (pending.startGraceTimer) clearTimeout(pending.startGraceTimer);
+    if (pending.fallbackTimer) clearTimeout(pending.fallbackTimer);
+
+    Logger.write(
+      "elevenlabs_test: completing natural end after " +
+        trigger +
+        ", detected_by=" +
+        pending.detectedBy
+    );
+
+    finish({
+      reason: "agent_farewell_detected",
+      detected_by: pending.detectedBy,
+      confidence: pending.confidence,
+      classifier_reason: pending.reason,
+      end_call_trigger: trigger,
+    });
+  }
+
+  function scheduleNaturalEnd(decision) {
+    if (ended || pendingEndCall) return;
+
+    cancelPendingNaturalEnd("new_completion_decision");
+    pendingNaturalEnd = {
+      detectedBy: decision.detectedBy,
+      confidence: decision.confidence,
+      reason: decision.reason,
+      startGraceTimer: null,
+      fallbackTimer: null,
+      waitingForMediaGeneration: agentMediaActive
+        ? agentMediaGeneration
+        : null,
+    };
+
+    pendingNaturalEnd.fallbackTimer = setTimeout(function () {
+      completePendingNaturalEnd("media_end_timeout");
+    }, naturalEndFallbackMs);
+
+    if (agentMediaActive) {
+      Logger.write(
+        "elevenlabs_test: natural end pending until active agent media ends"
+      );
+      return;
+    }
+
+    pendingNaturalEnd.startGraceTimer = setTimeout(function () {
+      if (!pendingNaturalEnd) return;
+      if (agentMediaActive) return;
+      completePendingNaturalEnd("no_active_agent_media");
+    }, naturalEndMediaStartGraceMs);
+  }
+
+  function inspectAgentCompletion(agentText, responseRevision) {
+    if (!agentOutputConnected || connectionState !== "live_conversation") return;
+
+    if (isClearlyTerminalFarewell(agentText)) {
+      scheduleNaturalEnd({
+        detectedBy: "local_farewell",
+        confidence: 1,
+        reason: "explicit_farewell",
+      });
+      return;
+    }
+
+    if (!completionClassifierUrl || !shouldClassifyCompletion(agentText)) return;
+
+    postCompletionClassification(
+      completionClassifierUrl,
+      {
+        call_id: callId,
+        turn_id: String(responseRevision),
+        agent_text: agentText,
+        transcript: transcript.slice(-8),
+      },
+      function (decision) {
+        if (ended || conversationRevision !== responseRevision) {
+          Logger.write(
+            "elevenlabs_test: stale completion classifier result ignored"
+          );
+          return;
+        }
+        if (!decision || decision.should_end_call !== true) return;
+
+        scheduleNaturalEnd({
+          detectedBy: "ai_classifier",
+          confidence: Number(decision.confidence || 0),
+          reason: String(decision.reason || ""),
+        });
+      }
+    );
   }
 
   function getPayload(ev) {
@@ -624,8 +812,13 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
             return;
           }
 
+          conversationRevision += 1;
+          cancelPendingNaturalEnd("new_agent_response");
+          var responseRevision = conversationRevision;
+
           if (agentOutputConnected) {
             pushTranscript("client", agentText);
+            inspectAgentCompletion(agentText, responseRevision);
           } else {
             Logger.write("elevenlabs_test: suppressed agent response before live person confirmation");
             try {
@@ -649,6 +842,10 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
                 pendingEndCall.waitingForMediaGeneration =
                   agentMediaGeneration;
               }
+              if (pendingNaturalEnd) {
+                pendingNaturalEnd.waitingForMediaGeneration =
+                  agentMediaGeneration;
+              }
 
               Logger.write("elevenlabs_test: agent media started");
             }
@@ -667,6 +864,15 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
                   endedMediaGeneration
               ) {
                 completePendingEndCall("agent_media_ended");
+                return;
+              }
+
+              if (
+                pendingNaturalEnd &&
+                pendingNaturalEnd.waitingForMediaGeneration ===
+                  endedMediaGeneration
+              ) {
+                completePendingNaturalEnd("agent_media_ended");
               }
             }
           );
@@ -914,6 +1120,8 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
       Logger.write("elevenlabs_test: duplicate end_call ignored");
       return;
     }
+
+    cancelPendingNaturalEnd("end_call_tool");
 
     pendingEndCall = {
       toolCallId: toolCallId,
