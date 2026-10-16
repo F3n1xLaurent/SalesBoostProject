@@ -34,8 +34,9 @@ function sentence(value: string): string {
 
 /**
  * Builds a deterministic opening anchored to the selected scenario without
- * exposing its internal UI name to the employee. Imported data is only used
- * when the scenario has no concrete opening question.
+ * exposing its internal UI name to the employee. When a concrete imported
+ * item is selected, name it before asking the first scenario question so the
+ * employee always understands which car/product the client is calling about.
  */
 export function buildTrainerInitialClientMessage(caseContext: TrainerScenarioContext): string {
   const importedTitle = cleanText(caseContext.importedItem?.title);
@@ -48,7 +49,8 @@ export function buildTrainerInitialClientMessage(caseContext: TrainerScenarioCon
     const openingQuestion = /^(?:подскажите|скажите|уточните|можно\s+ли|могу\s+ли)(?=\s|[,.!?;:—–-]|$)/i.test(firstQuestion)
       ? sentence(firstQuestion)
       : `Подскажите, пожалуйста: ${sentence(firstQuestion)}`;
-    return `Здравствуйте. ${openingQuestion}`;
+    const subject = importedTitle ? ` Я звоню по поводу «${importedTitle}».` : '';
+    return `Здравствуйте.${subject} ${openingQuestion}`;
   }
 
   if (importedTitle) {

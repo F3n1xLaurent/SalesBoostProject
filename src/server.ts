@@ -31,6 +31,7 @@ import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voic
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
+import { classifyCallCompletion, type CompletionTranscriptTurn } from './voice/callCompletionClassifier';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
 import {
@@ -7128,6 +7129,85 @@ app.get('/webhooks/vox', (_req, res) => {
     ok: true,
     message: 'Voximplant webhook endpoint is alive. Expected method: POST.',
   });
+});
+
+app.post('/webhooks/vox/classify-completion', async (req, res) => {
+  const payload = req.body && typeof req.body === 'object'
+    ? req.body as Record<string, unknown>
+    : {};
+  const callId = String(payload.call_id ?? '').trim();
+  const agentText = String(payload.agent_text ?? '').trim().slice(0, 1200);
+  const turnId = String(payload.turn_id ?? '').trim().slice(0, 100);
+
+  if (!callId || !agentText || !turnId) {
+    res.status(400).json({
+      should_end_call: false,
+      confidence: 0,
+      reason: 'missing_required_fields',
+      turn_id: turnId,
+    });
+    return;
+  }
+
+  const session = await prisma.voiceCallSession.findUnique({
+    where: { callId },
+    select: { endedAt: true },
+  });
+  if (!session) {
+    res.status(404).json({
+      should_end_call: false,
+      confidence: 0,
+      reason: 'call_not_found',
+      turn_id: turnId,
+    });
+    return;
+  }
+  if (session.endedAt) {
+    res.status(409).json({
+      should_end_call: false,
+      confidence: 0,
+      reason: 'call_already_ended',
+      turn_id: turnId,
+    });
+    return;
+  }
+
+  const recentTranscript = (Array.isArray(payload.transcript) ? payload.transcript : [])
+    .slice(-8)
+    .flatMap((raw): CompletionTranscriptTurn[] => {
+      if (!raw || typeof raw !== 'object') return [];
+      const turn = raw as Record<string, unknown>;
+      const role = String(turn.role ?? '').trim();
+      const text = String(turn.text ?? '').trim().slice(0, 800);
+      if (!text || (role !== 'manager' && role !== 'client')) return [];
+      return [{ role, text }];
+    });
+
+  try {
+    const decision = await withCostContext(
+      { entityType: 'voice_call', entityId: callId, stage: 'call_completion_classifier' },
+      () => classifyCallCompletion({ agentText, recentTranscript }),
+    );
+    res.status(200).json({
+      should_end_call: decision.shouldEndCall,
+      confidence: decision.confidence,
+      reason: decision.reason,
+      turn_id: turnId,
+    });
+  } catch (error) {
+    console.warn('[webhooks/vox/classify-completion] classifier failed', {
+      callId,
+      turnId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // A classifier failure must never cut off an active call.
+    res.status(200).json({
+      should_end_call: false,
+      confidence: 0,
+      reason: 'classifier_unavailable',
+      turn_id: turnId,
+    });
+  }
 });
 
 // Voximplant webhook: call events (disconnected, failed, no_answer, busy)

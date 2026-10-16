@@ -1055,12 +1055,15 @@ function EconomicsAnalyticsView({
   const callAverages = useMemo(() => {
     const count = filteredCalls.length;
     const withDuration = filteredCalls.filter((item) => item.durationSec != null && item.durationSec > 0);
+    const totalDurationSec = withDuration.reduce((sum, item) => sum + (item.durationSec || 0), 0);
+    const totalCostForTimedCallsRub = withDuration.reduce((sum, item) => sum + item.totalRub, 0);
     const average = (key: 'telephonyRub' | 'analyticsRub' | 'speechToTextRub' | 'speechSynthesisRub') => count
       ? filteredCalls.reduce((sum, item) => sum + item[key], 0) / count
       : 0;
     return {
-      durationSec: withDuration.length ? Math.round(withDuration.reduce((sum, item) => sum + (item.durationSec || 0), 0) / withDuration.length) : null,
+      durationSec: withDuration.length ? Math.round(totalDurationSec / withDuration.length) : null,
       telephonyRub: average('telephonyRub'),
+      totalPerMinuteRub: totalDurationSec > 0 ? totalCostForTimedCallsRub / (totalDurationSec / 60) : 0,
       analyticsRub: average('analyticsRub'),
       speechToTextRub: average('speechToTextRub'),
       speechSynthesisRub: average('speechSynthesisRub'),
@@ -1255,7 +1258,8 @@ function EconomicsAnalyticsView({
           </div>
           <section className="internal-metric-grid internal-company-economics__metrics">
             <Metric label="Средняя длительность звонка" value={formatDuration(callAverages.durationSec)} />
-            <Metric label="Средняя стоимость звонка" value={rub(callAverages.telephonyRub)} suffix="телефония" />
+            <Metric label="Средняя цена звонка (телефония)" value={rub(callAverages.telephonyRub)} />
+            <Metric label="Средняя стоимость минуты звонка" value={rub(callAverages.totalPerMinuteRub)} />
             <Metric label="Средняя стоимость AI-аналитики" value={rub(callAverages.analyticsRub)} />
             <Metric label="Средняя стоимость распознавания" value={rub(callAverages.speechToTextRub)} />
             <Metric label="Средняя стоимость синтеза речи" value={rub(callAverages.speechSynthesisRub)} />

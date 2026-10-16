@@ -8,7 +8,7 @@ import {
 import { buildProgressingVirtualClientFallback } from '../llm/virtualClient';
 
 describe('trainer scenario selection', () => {
-  it('opens with a scenario question without voicing the internal scenario name', () => {
+  it('names the selected item before the scenario question without voicing the internal scenario name', () => {
     const message = buildTrainerInitialClientMessage({
       scenario: {
         id: 'service-script',
@@ -21,9 +21,22 @@ describe('trainer scenario selection', () => {
 
     expect(message).toContain('Можно записаться на диагностику?');
     expect(message).not.toContain('Звонок в сервисную службу');
-    expect(message).not.toContain('Audi A5 Sportback');
+    expect(message).toContain('Я звоню по поводу «Audi A5 Sportback»');
     expect(message).not.toContain('есть в наличии');
     expect(message).not.toContain('предложение актуально');
+  });
+
+  it('identifies the imported car before asking the first script question', () => {
+    const message = buildTrainerInitialClientMessage({
+      scenario: {
+        questions: [{ text: 'Актуальный ли пробег в объявлении?', required: true }],
+      },
+      importedItem: { title: 'Kia Carnival, IV Рестайлинг 2025' },
+    });
+
+    expect(message).toBe(
+      'Здравствуйте. Я звоню по поводу «Kia Carnival, IV Рестайлинг 2025». Подскажите, пожалуйста: Актуальный ли пробег в объявлении?',
+    );
   });
 
   it('does not repeat a greeting already stored in the first scenario question', () => {

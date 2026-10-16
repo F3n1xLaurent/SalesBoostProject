@@ -224,6 +224,123 @@ describe('unified call report normalization', () => {
     expect(report?.dialog[0]?.betterExample).toBeNull();
   });
 
+  it('adds confirmed findings to weaknesses and lowers a contradictory perfect category', () => {
+    const quote = 'Автомобиль комфортный и просторный.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 100,
+        categories: [{ name: 'Продукт', score: 100, comment: 'Не связал преимущества с потребностью клиента.' }],
+        weaknesses: [],
+        keyFindings: [{
+          problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+          importance: 'Важно',
+          category: 'Продукт',
+          quote,
+          comment: 'Менеджер перечислил свойства без связи с задачами клиента.',
+          betterExample: 'Для ваших ежедневных поездок просторный салон будет удобнее.',
+        }],
+      },
+      {
+        totalScore: 90,
+        transcript: [{ role: 'manager', text: quote }],
+        dimensionScores: { product_and_sales: 100 },
+        evaluation: { checklist: [{ code: 'INTRODUCTION', status: 'YES', comment: 'Выполнено.' }] },
+      },
+    );
+
+    expect(report?.weaknesses.join(' ')).toContain('Презентация не структурирована');
+    expect(report?.categories.find((item) => item.name === 'Продукт')?.score).toBeLessThan(100);
+    expect(report?.categories.find((item) => item.name === 'Продукт')?.comment)
+      .toBe('Менеджер перечислил свойства без связи с задачами клиента.');
+  });
+
+  it('removes an unexplained Можно лучше mark', () => {
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 80,
+        categories: [],
+        keyFindings: [],
+        dialog: [{ role: 'manager', text: 'Да, конечно.', mark: 'normal', comment: '' }],
+      },
+      { totalScore: 80, transcript: [{ role: 'manager', text: 'Да, конечно.' }] },
+    );
+
+    expect(report?.dialog[0]).toMatchObject({ mark: null, comment: null, betterExample: null });
+  });
+
+  it('does not teach the manager to use a client fact revealed later', () => {
+    const quote = 'У автомобиля просторный салон и мягкая подвеска.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 70,
+        categories: [],
+        keyFindings: [{
+          problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+          importance: 'Важно',
+          category: 'Продукт',
+          quote,
+          comment: 'Преимущества не связаны с потребностью клиента.',
+          betterExample: 'Для ваших поездок за город мягкая подвеска будет особенно удобна.',
+        }],
+        dialog: [{
+          role: 'manager',
+          text: quote,
+          mark: 'negative',
+          comment: 'Презентация не связана с потребностью клиента.',
+          betterExample: 'Для ваших поездок за город мягкая подвеска будет особенно удобна.',
+        }],
+      },
+      {
+        totalScore: 70,
+        transcript: [
+          { role: 'manager', text: quote },
+          { role: 'client', text: 'Я живу за городом и часто езжу по трассе.' },
+        ],
+      },
+    );
+
+    expect(report?.keyFindings[0]?.betterExample).toBe('');
+    expect(report?.dialog[0]?.betterExample).toBeNull();
+  });
+
+  it('hides Как лучше when it merely rearranges the original words', () => {
+    const quote = 'Автомобиль комфортный и просторный.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 75,
+        categories: [],
+        keyFindings: [{
+          problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+          importance: 'Средне',
+          category: 'Продукт',
+          quote,
+          comment: 'Не раскрыта польза характеристик для клиента.',
+          betterExample: 'Это просторный и комфортный автомобиль.',
+        }],
+      },
+      { totalScore: 75, transcript: [{ role: 'manager', text: quote }] },
+    );
+
+    expect(report?.keyFindings[0]?.betterExample).toBe('');
+  });
+
+  it('does not keep a perfect category score when its comment contains a concern', () => {
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 100,
+        categories: [
+          { name: 'Продукт', score: 100, comment: 'Следует лучше связывать характеристики с потребностями.' },
+          { name: 'Контакт', score: 100, comment: 'Недостатков не выявлено.' },
+        ],
+        keyFindings: [],
+      },
+      { totalScore: 100, transcript: [] },
+    );
+
+    expect(report?.categories.find((item) => item.name === 'Продукт')?.score).toBe(95);
+    expect(report?.categories.find((item) => item.name === 'Контакт')?.score).toBe(100);
+  });
+
   it('keeps IVR lines visible without shifting live-dialog analytics onto them', () => {
     const report = normalizeUnifiedCallReport(
       {

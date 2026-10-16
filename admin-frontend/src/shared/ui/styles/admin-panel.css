@@ -3263,6 +3263,35 @@
   font-size: 13px;
 }
 
+.sa-call-report-script-score-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sa-call-report-script-score-info {
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  opacity: 0.72;
+}
+
+.sa-call-report-script-score small {
+  display: block;
+  margin-top: 4px;
+  max-width: 520px;
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.72;
+}
+
 .sa-call-report-script-score strong {
   color: var(--sa-text);
   font-variant-numeric: tabular-nums;

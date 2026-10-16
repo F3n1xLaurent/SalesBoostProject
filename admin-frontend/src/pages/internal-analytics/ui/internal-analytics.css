@@ -244,7 +244,7 @@
 .internal-company-cost-chart { margin: 0; }
 .internal-company-cost-chart .internal-card-heading-row { align-items: center; }
 .internal-company-cost-chart .internal-card-heading-row > strong { font-size: 22px; letter-spacing: -.03em; }
-.internal-company-economics__metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.internal-company-economics__metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .internal-cost-chart { height: 190px; display: flex; align-items: stretch; gap: 5px; overflow-x: auto; padding-top: 12px; }
 .internal-cost-chart > div { min-width: 22px; flex: 1; display: flex; flex-direction: column; justify-content: end; align-items: center; gap: 4px; }
 .internal-cost-chart span { color: #74746d; font-size: 9px; }
