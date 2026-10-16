@@ -83,6 +83,7 @@ import {
   handleCreateCallScript,
   handleDeleteCallCustomerProfile,
   handleDeleteCallCustomerVoice,
+  handleDeleteCallPlanCall,
   handleDeleteCallPlan,
   handleDeleteCallScript,
   handleGetCallPlanOptions,
@@ -4730,6 +4731,13 @@ app.get('/api/admin/call-settings/plans/:id/calls', (req, res) => {
   handleListCallPlanCalls(req, res).catch((error) => {
     console.error('List call plan calls error:', error);
     res.status(500).json({ error: 'Не удалось загрузить историю прозвона.' });
+  });
+});
+
+app.delete('/api/admin/call-settings/plans/:id/calls/:callId', (req, res) => {
+  handleDeleteCallPlanCall(req, res).catch((error) => {
+    console.error('Delete call plan history item error:', error);
+    res.status(500).json({ error: 'Не удалось удалить запись истории прозвона.' });
   });
 });
 

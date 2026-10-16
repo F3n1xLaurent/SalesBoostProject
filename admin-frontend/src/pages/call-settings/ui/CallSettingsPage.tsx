@@ -9,6 +9,7 @@ import {
   deleteCallCustomerProfile,
   deleteCallCustomerVoice,
   deleteCallPlan,
+  deleteCallPlanCall,
   deleteCallScript,
   fetchAuditDetail,
   fetchCallPlanOptions,
@@ -2333,6 +2334,8 @@ export function CallSettingsPage() {
   const [analyticsDrawerError, setAnalyticsDrawerError] = useState<string | null>(null);
   const [analyticsDrawerDetail, setAnalyticsDrawerDetail] = useState<AuditDetailItem | null>(null);
   const [planDeleteConfirm, setPlanDeleteConfirm] = useState(false);
+  const [historyCallDeleteTarget, setHistoryCallDeleteTarget] = useState<CallPlanCallItem | null>(null);
+  const [historyCallDeleting, setHistoryCallDeleting] = useState(false);
   const { showToast } = useToast();
   const isSuperAdmin = auth.status === 'authenticated' && auth.user.allowedRoles.includes('super');
 
@@ -2648,6 +2651,26 @@ export function CallSettingsPage() {
     } catch (deleteError) {
       const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить план прозвона.';
       showToast({ type: 'error', title: 'Не удалось удалить план', description: message });
+    }
+  }
+
+  async function removePlanHistoryCall(call: CallPlanCallItem) {
+    if (!selectedPlan || historyCallDeleting) return;
+    setHistoryCallDeleting(true);
+    try {
+      await deleteCallPlanCall(selectedPlan.id, call.id);
+      setPlanCalls((current) => current.filter((item) => item.id !== call.id));
+      setHistoryCallDeleteTarget(null);
+      showToast({
+        type: 'success',
+        title: 'Запись удалена из истории',
+        description: `${call.employeeName || 'Сотрудник'} · ${call.phone}`,
+      });
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : 'Не удалось удалить запись истории прозвона.';
+      showToast({ type: 'error', title: 'Не удалось удалить запись', description: message });
+    } finally {
+      setHistoryCallDeleting(false);
     }
   }
 
@@ -3021,6 +3044,7 @@ export function CallSettingsPage() {
                     <th style={{ width: 130 }}>Время дозвона</th>
                     <th style={{ width: 140 }}>Время разговора</th>
                     <th style={{ width: 190 }}>Дата</th>
+                    {isSuperAdmin && <th style={{ width: 64 }} aria-label="Действия" />}
                   </tr>
                 </thead>
                 <tbody>
@@ -3070,6 +3094,24 @@ export function CallSettingsPage() {
                         <td>{formatPlanCallDuration(call.answerTimeSec)}</td>
                         <td>{formatPlanCallDuration(call.talkDurationSec)}</td>
                         <td>{new Date(call.startedAt).toLocaleString('ru-RU')}</td>
+                        {isSuperAdmin && (
+                          <td>
+                            <button
+                              type="button"
+                              className="sa-btn-danger sa-btn-icon"
+                              aria-label={`Удалить запись звонка ${call.employeeName || call.phone}`}
+                              title="Удалить из истории"
+                              disabled={['scheduled', 'running', 'dialing', 'in_progress'].includes(call.status)}
+                              onKeyDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setHistoryCallDeleteTarget(call);
+                              }}
+                            >
+                              <TrashIcon />
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -3103,6 +3145,18 @@ export function CallSettingsPage() {
           onConfirm={() => {
             setPlanDeleteConfirm(false);
             void removePlan(selectedPlan);
+          }}
+        />
+        <DeleteConfirmModal
+          open={historyCallDeleteTarget != null}
+          title={historyCallDeleteTarget
+            ? `Удалить запись звонка ${historyCallDeleteTarget.employeeName || historyCallDeleteTarget.phone} из истории?`
+            : 'Удалить запись звонка из истории?'}
+          saving={historyCallDeleting}
+          nested={false}
+          onCancel={() => setHistoryCallDeleteTarget(null)}
+          onConfirm={() => {
+            if (historyCallDeleteTarget) void removePlanHistoryCall(historyCallDeleteTarget);
           }}
         />
         <CallPlanScheduleModal
