@@ -1971,8 +1971,8 @@ export async function handleDeleteCallPlanCall(req: Request, res: Response): Pro
       voiceSession?.outcome ?? null,
       item.failureReason ?? voiceSession?.failureReason ?? null,
     );
-    if (['scheduled', 'running', 'dialing', 'in_progress'].includes(effectiveStatus)) {
-      res.status(409).json({ error: 'Нельзя удалить запланированный или выполняющийся звонок.' });
+    if (effectiveStatus === 'scheduled') {
+      res.status(409).json({ error: 'Нельзя удалить ещё не запущенный запланированный звонок.' });
       return;
     }
 
