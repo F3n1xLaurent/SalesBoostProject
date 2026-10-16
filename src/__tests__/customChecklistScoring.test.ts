@@ -60,4 +60,37 @@ describe('custom checklist scoring', () => {
     expect(result.checklist[0]?.status).toBe('NO');
     expect(result.score).toBe(0);
   });
+
+  it('credits a semantic request for the client name despite a wrong LLM classification', () => {
+    const result = computeCustomChecklistResult(
+      [{
+        id: 'client-name',
+        title: 'Уточнить имя клиента',
+        instruction: 'Менеджер спросил, как можно обращаться к клиенту.',
+        category: 'Контакт',
+        points: 100,
+        allowNa: false,
+      }],
+      {
+        checklist: [{ code: 'client-name', status: 'NO', evidence: [], comment: 'Имя не уточнено.' }],
+        extra_signals: {
+          profanity: false,
+          misinformation: false,
+          passive_style: false,
+          passive_severity: 'mild',
+          low_engagement: false,
+          redirect_to_website: false,
+          bad_tone: false,
+        },
+        recommendations: [],
+      },
+      [{ role: 'manager', content: 'Подскажите, пожалуйста, как я могу к вам обращаться?' }],
+    );
+
+    expect(result.checklist[0]).toMatchObject({
+      status: 'YES',
+      evidence: ['Подскажите, пожалуйста, как я могу к вам обращаться?'],
+    });
+    expect(result.score).toBe(100);
+  });
 });

@@ -236,6 +236,26 @@ function normalizeEvidenceText(value: unknown): string {
     .trim();
 }
 
+function evidenceTokens(value: string): string[] {
+  return value.split(' ').filter((token) => token.length > 1);
+}
+
+function hasStrongTokenOverlap(left: string, right: string): boolean {
+  const leftTokens = evidenceTokens(left);
+  const rightTokens = evidenceTokens(right);
+  if (leftTokens.length < 3 || rightTokens.length < 3) return false;
+
+  const leftSet = new Set(leftTokens);
+  const rightSet = new Set(rightTokens);
+  let common = 0;
+  for (const token of leftSet) {
+    if (rightSet.has(token)) common += 1;
+  }
+  const evidenceCoverage = common / leftSet.size;
+  const turnCoverage = common / rightSet.size;
+  return evidenceCoverage >= 0.75 && (turnCoverage >= 0.45 || common >= 5);
+}
+
 function evidenceQuote(value: unknown): { speaker: 'manager' | 'client' | null; text: string } {
   const raw = String(value ?? '').trim();
   const match = raw.match(/^\s*(менеджер|сотрудник|продавец|консультант|клиент|покупатель)\s*:\s*/i);
@@ -249,7 +269,12 @@ function evidenceQuote(value: unknown): { speaker: 'manager' | 'client' | null; 
 function isManagerEvidence(value: unknown, managerTurns: string[]): boolean {
   const evidence = evidenceQuote(value);
   if (evidence.speaker === 'client' || evidence.text.length < 2) return false;
-  return managerTurns.some((turn) => turn === evidence.text || turn.includes(evidence.text) || evidence.text.includes(turn));
+  return managerTurns.some((turn) => (
+    turn === evidence.text
+    || turn.includes(evidence.text)
+    || evidence.text.includes(turn)
+    || hasStrongTokenOverlap(evidence.text, turn)
+  ));
 }
 
 /**
@@ -264,10 +289,14 @@ export function enforceManagerChecklistEvidence(
     .filter((turn) => turn.role === 'manager' || turn.role === 'assistant')
     .map((turn) => normalizeEvidenceText(turn.content ?? turn.text))
     .filter(Boolean);
+  const managerTurnWindows = managerTurns.flatMap((turn, index) => {
+    const next = managerTurns[index + 1];
+    return next ? [turn, `${turn} ${next}`] : [turn];
+  });
 
   return checklist.map((item) => {
     if (item.status !== 'YES' && item.status !== 'PARTIAL') return item;
-    if (item.evidence.some((evidence) => isManagerEvidence(evidence, managerTurns))) return item;
+    if (item.evidence.some((evidence) => isManagerEvidence(evidence, managerTurnWindows))) return item;
 
     return {
       ...item,

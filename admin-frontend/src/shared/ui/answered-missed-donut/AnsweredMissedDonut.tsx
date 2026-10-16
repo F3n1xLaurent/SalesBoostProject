@@ -21,13 +21,22 @@ export function AnsweredMissedDonut({ rate, totalCalls, embedded = false }: Prop
           onMouseLeave={() => setHover(null)}
         >
           <svg viewBox="0 0 120 120" className="sa-donut-svg">
-            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--tb-status-red-bg)" strokeWidth="14" />
             <circle
               cx="60"
               cy="60"
               r="52"
               fill="none"
-              stroke={hover === 'missed' ? 'var(--tb-status-red)' : 'var(--tb-status-green)'}
+              stroke="var(--tb-status-red, #E05252)"
+              strokeWidth="14"
+            />
+            <circle
+              cx="60"
+              cy="60"
+              r="52"
+              fill="none"
+              stroke={hover === 'missed'
+                ? 'var(--tb-status-red, #E05252)'
+                : 'var(--tb-status-green, #2D9B5E)'}
               strokeWidth="14"
               strokeDasharray={`${(rate / 100) * 326.73} 326.73`}
               strokeLinecap="round"

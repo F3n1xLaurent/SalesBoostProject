@@ -142,6 +142,8 @@ export async function generateReplyImprovements(input: {
 Требования:
 - Все тексты строго на русском.
 - Не придумывай факты. Улучшай ответ в рамках вопроса клиента.
+- Сохраняй все корректные факты и полезные детали из ответа менеджера. Не добавляй новые цены, сроки, характеристики или обещания.
+- Не выбирай как неоптимальную реплику, которая уже корректно и полно отвечает на вопрос. Если объективного улучшения нет, не включай пару в результат.
 - betterExample: 1–3 предложения, конкретно и по делу.
 - feedback: 1 предложение, что именно не так/что упущено.
 - isOptimal=true ставь только если ответ реально хороший (в этом случае betterExample=null и feedback=\"\").
@@ -185,13 +187,22 @@ ${pairsStr}
   const items = Array.isArray(parsed.replyImprovements) ? parsed.replyImprovements : [];
   // Normalize minimal shape.
   return items
-    .map((x) => ({
+    .map((x) => {
+      const isOptimal = !!(x as any).isOptimal;
+      const managerAnswer = String((x as any).managerAnswer ?? '');
+      const rawBetterExample = (x as any).betterExample == null ? null : String((x as any).betterExample).trim();
+      const normalize = (value: string) => value.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/gi, ' ').trim();
+      const betterExample = isOptimal || !rawBetterExample || normalize(rawBetterExample) === normalize(managerAnswer)
+        ? null
+        : rawBetterExample;
+      return {
       order: Number((x as any).order) || 0,
       customerMessage: String((x as any).customerMessage ?? ''),
-      managerAnswer: String((x as any).managerAnswer ?? ''),
-      isOptimal: !!(x as any).isOptimal,
+      managerAnswer,
+      isOptimal,
       feedback: String((x as any).feedback ?? ''),
-      betterExample: (x as any).betterExample == null ? null : String((x as any).betterExample),
-    }))
+      betterExample,
+    };
+    })
     .filter((x) => x.order > 0 && x.customerMessage.trim() && x.managerAnswer.trim());
 }

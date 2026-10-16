@@ -241,6 +241,24 @@ describe('diagnosticScoring', () => {
 
       expect(validated.find((item) => item.code === 'CAR_IDENTIFICATION')?.status).toBe('YES');
     });
+
+    it('keeps a positive status when the model slightly reformulates a long manager quote', () => {
+      const checklist = buildChecklistFromLLMClassification([
+        {
+          code: 'PRODUCT_PRESENTATION',
+          status: 'YES',
+          evidence: ['Менеджер: Эта модель быстро окупается в ежедневных поездках и даёт простор полноценного D-класса'],
+          comment: 'Менеджер объяснил ценность автомобиля.',
+        },
+      ]);
+
+      const validated = enforceManagerChecklistEvidence(checklist, [{
+        role: 'manager',
+        content: 'На первый взгляд цена выше, но эта модель быстро окупается в ежедневных поездках, а ещё вы получаете простор полноценного D-класса.',
+      }]);
+
+      expect(validated.find((item) => item.code === 'PRODUCT_PRESENTATION')?.status).toBe('YES');
+    });
   });
 
   describe('detectIssuesFromChecklist', () => {

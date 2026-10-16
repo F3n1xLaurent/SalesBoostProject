@@ -224,6 +224,7 @@ import {
   type ProductRole,
 } from './analytics/productAnalytics';
 import { splitDashboardEmployeeRatings } from './analytics/dashboardEmployeeRatings';
+import { splitDashboardDealershipRatings } from './analytics/dashboardDealershipRatings';
 import { sanitizeTranscriptTurns } from './voice/transcriptSanitizer';
 import * as Sentry from '@sentry/node';
 import { createLandingLeadHandler } from './integrations/landingLeadRoute';
@@ -2180,7 +2181,10 @@ function getTrainerRuntime(caseContext: Record<string, unknown>): TrainerRuntime
     car: runtime.car && typeof runtime.car === 'object' ? runtime.car as ReturnType<typeof loadCar> : loadCar(),
     behaviorSignals: Array.isArray(runtime.behaviorSignals) ? runtime.behaviorSignals as BehaviorSignal[] : [],
     elevenLabsConversationId: typeof runtime.elevenLabsConversationId === 'string' ? runtime.elevenLabsConversationId : null,
-    elevenLabsTextAgentDisabled: runtime.elevenLabsTextAgentDisabled === true,
+    // Older versions persisted this flag after a single transient timeout,
+    // permanently forcing the session onto the fallback model. Do not carry
+    // that sticky state into subsequent turns.
+    elevenLabsTextAgentDisabled: false,
   };
 }
 
@@ -2833,7 +2837,7 @@ async function runTrainerSessionTurn(params: {
           max_client_turns: maxClientTurns,
           behaviorSignal: behavior,
           scenarioPrompt: phoneScenarioPrompt,
-          maxResponseTokens: 220,
+          maxResponseTokens: 700,
         });
         nextState = advanceTrainerStateFromVirtualReply(state, out);
         clientMessage = out.client_message;
@@ -2852,7 +2856,7 @@ async function runTrainerSessionTurn(params: {
         max_client_turns: maxClientTurns,
         behaviorSignal: behavior,
         scenarioPrompt: phoneScenarioPrompt,
-        maxResponseTokens: 220,
+        maxResponseTokens: 700,
       });
 
       nextState = advanceTrainerStateFromVirtualReply(state, out);
@@ -2896,7 +2900,9 @@ async function runTrainerSessionTurn(params: {
     state: nextState,
     behaviorSignals,
     elevenLabsConversationId: nextElevenLabsConversationId,
-    elevenLabsTextAgentDisabled,
+    // A failed/non-progressing turn falls back once, but the next manager
+    // turn gets a fresh ElevenLabs conversation instead of staying disabled.
+    elevenLabsTextAgentDisabled: false,
   };
   const updateData: Parameters<typeof prisma.trainerSession.update>[0]['data'] = {
     transcriptJson: jsonStringify(transcript),
@@ -6070,7 +6076,8 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
     });
 
     const noAnswers = filteredSessions.filter((session) => session.outcome === 'no_answer').length;
-    const lowDealerships = dealershipRows.filter((row) => row.totalAudits > 0 && row.avgAiScore < 50);
+    const lowPerformingDealerships = dealershipRows.filter((row) => row.totalAudits > 0 && row.avgAiScore < 50);
+    const dealershipRatings = splitDashboardDealershipRatings(dealershipRows);
 
     res.json({
       aiSummary: await generateAnalyticsAISummary({
@@ -6080,7 +6087,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         noAnswers,
         topIssue: topWeakness?.weakness ?? null,
         topIssuePercent: topWeakness?.percent ?? null,
-        lowDealerships: lowDealerships.length,
+        lowDealerships: lowPerformingDealerships.length,
       }),
       avgScore,
       totalAudits: filteredAttempts.length + filteredTrainingSessions.length + filteredTrainerSessions.length + filteredSessions.length,
@@ -6095,18 +6102,12 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
         .sort((a, b) => b.avgDurationSec - a.avgDurationSec)
         .slice(0, 8)
         .map((row) => ({ id: row.id, name: row.name, avgSec: row.avgDurationSec, totalCalls: row.callsWithDuration })),
-      topDealerships: [...dealershipRows]
-        .filter((row) => row.totalAudits > 0)
-        .sort((a, b) => b.avgAiScore - a.avgAiScore)
-        .slice(0, 5),
-      lowDealerships: [...dealershipRows]
-        .filter((row) => row.totalAudits > 0)
-        .sort((a, b) => a.avgAiScore - b.avgAiScore)
-        .slice(0, 5),
+      topDealerships: dealershipRatings.topDealerships,
+      lowDealerships: dealershipRatings.lowDealerships,
       topEmployees,
       lowEmployees,
       topWeakness: topWeakness ? { weakness: topWeakness.weakness, count: topWeakness.count } : null,
-      riskLabel: lowDealerships[0]?.name ?? topWeakness?.weakness ?? null,
+      riskLabel: dealershipRatings.lowDealerships[0]?.name ?? topWeakness?.weakness ?? null,
     });
   } catch (error) {
     console.error('dashboard/overview error:', error);

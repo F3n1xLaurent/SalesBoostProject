@@ -100,6 +100,11 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   var transcript = [];
   var pendingDtmf = null;
   var dtmfGuardMs = 1800;
+  var pendingEndCall = null;
+  var agentMediaActive = false;
+  var agentMediaGeneration = 0;
+  var endCallMediaStartGraceMs = 300;
+  var endCallFallbackMs = 30000;
   var connectionState = "awaiting_answer";
   var agentOutputConnected = false;
   var lastInputKind = "none";
@@ -152,6 +157,17 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
       text
     ) || /(?:меня зовут|[а-я]+,?\s+(?:менеджер|администратор|оператор)|менеджер|отдел продаж|отдел сервиса|сервисный центр|автосалон|автоцентр|салон|компания).*(?:слушает|на связи|говорит|чем могу помочь|чем помочь)?/i.test(
       text
+    );
+  }
+
+  function isInternalCompletionStatus(text) {
+    var normalized = normalizeInputTranscript(text)
+      .replace(/[.!?,:;]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    return /^(?:(?:этот|наш)\s+)?(?:разговор|диалог|звонок|вызов)\s+(?:успешно\s+)?(?:завершен|закончен|окончен)(?:\s+успешно)?$/.test(
+      normalized
     );
   }
 
@@ -332,6 +348,58 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
     setTimeout(function () {
       VoxEngine.terminate();
     }, 1500);
+  }
+
+  function completePendingEndCall(trigger) {
+    if (!pendingEndCall || ended) return;
+
+    var pending = pendingEndCall;
+    pendingEndCall = null;
+
+    if (pending.startGraceTimer) {
+      clearTimeout(pending.startGraceTimer);
+    }
+
+    if (pending.fallbackTimer) {
+      clearTimeout(pending.fallbackTimer);
+    }
+
+    Logger.write(
+      "elevenlabs_test: completing end_call after " +
+        trigger +
+        ", reason=" +
+        pending.reason
+    );
+
+    /*
+     * Acknowledge the tool only when we are ready to close the socket. This
+     * prevents ElevenLabs from creating one more spoken turn from the result.
+     */
+    try {
+      client.clientToolResult({
+        tool_call_id: pending.toolCallId,
+        tool_name: "end_call",
+        result: {
+          ok: true,
+          terminal: true,
+          do_not_respond: true,
+        },
+      });
+    } catch (err) {}
+
+    if (pending.reason === "voicemail") {
+      finishWithEvent("no_answer", {
+        reason: "voicemail",
+        detected_by: "elevenlabs_agent",
+        end_call_trigger: trigger,
+      });
+      return;
+    }
+
+    finish({
+      reason: pending.reason,
+      end_call_trigger: trigger,
+    });
   }
 
   function getPayload(ev) {
@@ -537,8 +605,27 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
 
         client.addEventListener(ElevenLabs.AgentsEvents.AgentResponse, function (ev) {
           Logger.write("EL AgentResponse RAW: " + JSON.stringify(ev));
+          var agentText = extractTextDeep(ev);
+
+          /*
+           * ElevenLabs may occasionally turn an internal completion status
+           * into a spoken final response. It must never reach the callee.
+           * Drop queued audio and finish the call instead of forwarding it.
+           */
+          if (isInternalCompletionStatus(agentText)) {
+            Logger.write(
+              "elevenlabs_test: suppressed internal completion status=" +
+                agentText
+            );
+            muteAgentOutput("internal_completion_status");
+            finish({
+              reason: "internal_completion_status_suppressed",
+            });
+            return;
+          }
+
           if (agentOutputConnected) {
-            pushTranscript("client", extractTextDeep(ev));
+            pushTranscript("client", agentText);
           } else {
             Logger.write("elevenlabs_test: suppressed agent response before live person confirmation");
             try {
@@ -546,6 +633,48 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
             } catch (err) {}
           }
         });
+
+        if (
+          ElevenLabs.Events &&
+          ElevenLabs.Events.WebSocketMediaStarted &&
+          ElevenLabs.Events.WebSocketMediaEnded
+        ) {
+          client.addEventListener(
+            ElevenLabs.Events.WebSocketMediaStarted,
+            function () {
+              agentMediaActive = true;
+              agentMediaGeneration += 1;
+
+              if (pendingEndCall) {
+                pendingEndCall.waitingForMediaGeneration =
+                  agentMediaGeneration;
+              }
+
+              Logger.write("elevenlabs_test: agent media started");
+            }
+          );
+
+          client.addEventListener(
+            ElevenLabs.Events.WebSocketMediaEnded,
+            function () {
+              var endedMediaGeneration = agentMediaGeneration;
+              agentMediaActive = false;
+              Logger.write("elevenlabs_test: agent media ended");
+
+              if (
+                pendingEndCall &&
+                pendingEndCall.waitingForMediaGeneration ===
+                  endedMediaGeneration
+              ) {
+                completePendingEndCall("agent_media_ended");
+              }
+            }
+          );
+        } else {
+          Logger.write(
+            "elevenlabs_test: WebSocketMedia events unavailable; end_call will use fallback"
+          );
+        }
 
         client.addEventListener(ElevenLabs.AgentsEvents.Interruption, function () {
           Logger.write("elevenlabs_test: interruption");
@@ -775,30 +904,50 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
       args.reason ||
       "agent_end_call";
 
-    try {
-      client.clientToolResult({
-        tool_call_id: toolCallId,
-        tool_name: toolName,
-        result: {
-          ok: true,
-        },
-      });
-    } catch (err) {}
+    /*
+     * Keep the tool pending until Voximplant confirms that the ElevenLabs
+     * audio stream has ended. The small grace window only covers the race in
+     * which end_call arrives immediately before WebSocketMediaStarted. The
+     * long timer is an emergency fallback, not the normal hangup delay.
+     */
+    if (pendingEndCall) {
+      Logger.write("elevenlabs_test: duplicate end_call ignored");
+      return;
+    }
 
-    setTimeout(function () {
-      if (reason === "voicemail") {
-        finishWithEvent("no_answer", {
-          reason: "voicemail",
-          detected_by: "elevenlabs_agent",
-        });
+    pendingEndCall = {
+      toolCallId: toolCallId,
+      reason: reason,
+      startGraceTimer: null,
+      fallbackTimer: null,
+      waitingForMediaGeneration: agentMediaActive
+        ? agentMediaGeneration
+        : null,
+    };
 
+    pendingEndCall.fallbackTimer = setTimeout(function () {
+      completePendingEndCall("media_end_timeout");
+    }, endCallFallbackMs);
+
+    if (agentMediaActive) {
+      Logger.write(
+        "elevenlabs_test: end_call pending until active agent media ends"
+      );
+      return;
+    }
+
+    pendingEndCall.startGraceTimer = setTimeout(function () {
+      if (!pendingEndCall) return;
+
+      if (agentMediaActive) {
+        Logger.write(
+          "elevenlabs_test: farewell media started during end_call grace window"
+        );
         return;
       }
 
-      finish({
-        reason: reason,
-      });
-    }, 10000);
+      completePendingEndCall("no_active_agent_media");
+    }, endCallMediaStartGraceMs);
 
     return;
   }

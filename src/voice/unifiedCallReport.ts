@@ -4,6 +4,7 @@ import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { buildEvaluationHighlights } from '../logic/evaluationHighlights';
+import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
   getCallReportProblemCatalog,
@@ -176,13 +177,8 @@ function normalizeImportance(value: unknown): UnifiedFindingImportance {
   return text === 'Критично' || text === 'Важно' || text === 'Средне' ? text : 'Важно';
 }
 
-function isClientNameRequest(value: unknown): boolean {
-  const text = asText(value).toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/\s+/g, ' ');
-  return /(как (?:я )?могу к вам обращаться|как к вам обращаться|как вас зовут|назовите,? пожалуйста,? ваше имя|подскажите[^?.!]*(?:ваше имя|как[^?.!]*обращаться))/u.test(text);
-}
-
 function managerRequestedClientName(transcript: TranscriptTurn[]): boolean {
-  return transcript.some((turn) => turn.role === 'manager' && isClientNameRequest(turn.text));
+  return Boolean(findManagerClientNameRequest(transcript));
 }
 
 function resolveFindingQuote(
@@ -315,9 +311,11 @@ export function normalizeUnifiedCallReport(
         betterExample: null,
       };
     }
-    const betterExample = role === 'manager' ? meaningfulText(raw.betterExample) || null : null;
-    const comment = role === 'manager' ? meaningfulText(raw.comment) || null : null;
     const rawMark = role === 'manager' ? normalizeMark(raw.mark) : null;
+    const betterExample = role === 'manager' && rawMark === 'negative'
+      ? meaningfulText(raw.betterExample) || null
+      : null;
+    const comment = role === 'manager' ? meaningfulText(raw.comment) || null : null;
     return {
       role,
       text: turn.text,
@@ -326,7 +324,7 @@ export function normalizeUnifiedCallReport(
       betterExample,
     };
   }).map((line) => {
-    if (line.role !== 'manager' || line.betterExample) return line;
+    if (line.role !== 'manager' || line.betterExample || line.mark !== 'negative') return line;
     const matched = findings.find((finding) => {
       const quote = finding.quote.trim().toLowerCase();
       const text = line.text.trim().toLowerCase();
@@ -443,7 +441,8 @@ export async function generateUnifiedCallReport(input: {
     '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
     '- dialog должен содержать ВСЕ реплики исходного диалога в том же порядке.',
     '- Для каждой реплики менеджера mark: positive | normal | negative. Для клиента mark=null, comment=null, betterExample=null.',
-    '- Для реплик менеджера с mark=normal или negative добавь comment и, если уместно, betterExample — короткий пример, как стоило сказать.',
+    '- Для реплики менеджера с mark=negative можно добавить betterExample только если он явно лучше исходного ответа. Для positive/normal betterExample=null.',
+    '- betterExample должен отвечать на тот же вопрос, сохранять все корректные факты исходной реплики и не добавлять новые цены, сроки, характеристики или обещания. Если безопасного улучшения нет, верни null.',
     '- Не помечай развёрнутый ответ как слабый только потому, что эталон или критерий сформулирован короче. Если обязательный смысл передан верно, учитывай ответ как выполненный; дополнительные уместные детали не являются ошибкой.',
     '- При проверке условия учитывай смысл нескольких последовательных реплик менеджера вместе, если ответ был разбит на части.',
     '- recommendations должны быть конкретными следующими шагами для менеджера/руководителя филиала.',

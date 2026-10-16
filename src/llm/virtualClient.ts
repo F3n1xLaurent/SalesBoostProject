@@ -229,6 +229,23 @@ const HISTORY_LIMIT = 8;
 const MAX_RESPONSE_TOKENS = 500;
 const FALLBACK_CLIENT_MESSAGE = 'Здравствуйте! Я увидел объявление о вашем автомобиле. Он ещё доступен для покупки?';
 
+/**
+ * Emergency text used only when the model returned no content. A bare
+ * acknowledgement made the trainer repeat "Понял, хорошо" forever,
+ * because it neither moved the conversation nor changed its state.
+ */
+export function buildProgressingVirtualClientFallback(input: Pick<VirtualClientInput, 'manager_last_message' | 'state'>): string {
+  if (!input.manager_last_message.trim()) return FALLBACK_CLIENT_MESSAGE;
+  const turn = Math.max(0, Number(input.state.client_turns || 0));
+  const messages = [
+    'Понятно. Расскажите, пожалуйста, подробнее о вашем предложении.',
+    'Хорошо. А какие варианты вы можете предложить?',
+    'Понятно. А что по условиям и итоговой стоимости?',
+    'Хорошо. Какой следующий шаг вы предлагаете?',
+  ];
+  return messages[turn % messages.length];
+}
+
 function topicSummary(state: DialogState): string {
   const lines: string[] = [];
   for (const [code, ts] of Object.entries(state.topics)) {
@@ -378,9 +395,7 @@ export async function getVirtualClientReply(input: VirtualClientInput): Promise<
   const profileDesc = profileToPromptDescription(profile);
   const hasActiveScenario = Boolean(input.scenarioPrompt?.trim());
   const systemPrompt = SYSTEM_PROMPT.replace('{PROFILE_DESCRIPTION}', profileDesc);
-  const fallbackMessage = input.manager_last_message.trim()
-    ? 'Понял, хорошо.'
-    : FALLBACK_CLIENT_MESSAGE;
+  const fallbackMessage = buildProgressingVirtualClientFallback(input);
 
   // Build behavior alert for the CustomerAgent
   const beh = input.behaviorSignal;
@@ -463,7 +478,16 @@ ${hasActiveScenario
       ...compatibleChatTemperature(config.openaiChatModel, 0.4),
       max_completion_tokens: maxTokens,
     });
-    content = response.choices[0]?.message?.content ?? null;
+    const choice = response.choices[0];
+    content = choice?.message?.content ?? null;
+    if (!content?.trim()) {
+      console.warn('[virtualClient] model returned no content', {
+        model: config.openaiChatModel,
+        finishReason: choice?.finish_reason ?? null,
+        refusal: choice?.message?.refusal ?? null,
+        usage: response.usage ?? null,
+      });
+    }
   } catch (apiErr) {
     const err = apiErr as { status?: number; code?: string; message?: string };
     const status = err?.status;

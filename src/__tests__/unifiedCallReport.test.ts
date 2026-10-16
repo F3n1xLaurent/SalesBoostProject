@@ -202,6 +202,28 @@ describe('unified call report normalization', () => {
     expect(report?.keyFindings[0]?.quote).toBe(opening);
   });
 
+  it('does not attach a better example to a normal manager reply', () => {
+    const managerReply = 'Алексей, я вас понимаю. Эта модель даёт больше комфорта в ежедневных поездках.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 80,
+        categories: [],
+        keyFindings: [],
+        dialog: [{
+          role: 'manager',
+          text: managerReply,
+          mark: 'normal',
+          comment: 'Корректная аргументация.',
+          betterExample: 'Можно сказать иначе.',
+        }],
+        recommendations: [],
+      },
+      { totalScore: 80, transcript: [{ role: 'manager', text: managerReply }] },
+    );
+
+    expect(report?.dialog[0]?.betterExample).toBeNull();
+  });
+
   it('keeps IVR lines visible without shifting live-dialog analytics onto them', () => {
     const report = normalizeUnifiedCallReport(
       {

@@ -7,6 +7,11 @@ import { fetchElevenLabs, isElevenLabsProxyEnabled } from './elevenLabsHttp';
 
 const TTS_MAX_CHARS = 360;
 const ELEVENLABS_TTS_TIMEOUT_MS = 25_000;
+const ELEVENLABS_TTS_MODEL = 'eleven_v4_turbo';
+const ELEVENLABS_TTS_VOICE_SETTINGS = {
+  stability: 0.75,
+  similarity_boost: 0.75,
+};
 
 /** OpenAI voices: male = onyx, female = nova */
 const OPENAI_VOICE_MAP: Record<TtsVoice, string> = {
@@ -53,11 +58,13 @@ async function generateSpeechElevenLabs(text: string, voiceId = config.elevenLab
   const ttsText = buildTtsText(text);
   const body = JSON.stringify({
     text: ttsText,
-    model_id: 'eleven_multilingual_v2',
+    model_id: ELEVENLABS_TTS_MODEL,
+    language_code: 'ru',
+    voice_settings: ELEVENLABS_TTS_VOICE_SETTINGS,
   });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TTS_TIMEOUT_MS);
-  console.log(`[tts] ElevenLabs request chars=${ttsText.length} proxy=${isElevenLabsProxyEnabled()}`);
+  console.log(`[tts] ElevenLabs request chars=${ttsText.length} model=${ELEVENLABS_TTS_MODEL} proxy=${isElevenLabsProxyEnabled()}`);
   try {
     const response = await fetchElevenLabs(
       `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(resolvedVoiceId)}?output_format=opus_48000_128`,

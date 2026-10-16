@@ -1,3 +1,5 @@
+import { stripLeadingClientGreetings } from '../voice/customerScenarioPrompt';
+
 type TrainerScenarioQuestion = {
   text?: string;
   question?: string;
@@ -39,11 +41,14 @@ export function buildTrainerInitialClientMessage(caseContext: TrainerScenarioCon
   const importedTitle = cleanText(caseContext.importedItem?.title);
   const questions = Array.isArray(caseContext.scenario?.questions) ? caseContext.scenario.questions : [];
   const firstQuestion = questions
-    .map((question) => cleanText(question.text || question.question))
+    .map((question) => stripLeadingClientGreetings(question.text || question.question))
     .find(Boolean) || '';
 
   if (firstQuestion) {
-    return `Здравствуйте. Подскажите, пожалуйста: ${sentence(firstQuestion)}`;
+    const openingQuestion = /^(?:подскажите|скажите|уточните|можно\s+ли|могу\s+ли)(?=\s|[,.!?;:—–-]|$)/i.test(firstQuestion)
+      ? sentence(firstQuestion)
+      : `Подскажите, пожалуйста: ${sentence(firstQuestion)}`;
+    return `Здравствуйте. ${openingQuestion}`;
   }
 
   if (importedTitle) {
