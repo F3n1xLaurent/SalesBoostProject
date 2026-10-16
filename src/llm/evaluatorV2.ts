@@ -17,6 +17,7 @@ import {
 } from '../logic/diagnosticScoring';
 import type { BehaviorSignal } from '../logic/behaviorClassifier';
 import type { EvaluationChecklistItemDefinition } from '../checklists/checklistManagement';
+import { findManagerClientNameRequest, isClientNameCriterion } from '../logic/conversationFacts';
 
 // ── Types ──
 
@@ -118,7 +119,20 @@ export function computeCustomChecklistResult(
       comment: String(raw?.comment || definition.title),
     } as ChecklistItem;
   });
-  const checklist = enforceManagerChecklistEvidence(built, transcript);
+  let checklist = enforceManagerChecklistEvidence(built, transcript);
+  const clientNameRequest = findManagerClientNameRequest(transcript);
+  if (clientNameRequest) {
+    checklist = checklist.map((item) => {
+      const definition = definitions.find((candidate) => candidate.id === item.code);
+      if (!definition || !isClientNameCriterion(definition)) return item;
+      return {
+        ...item,
+        status: 'YES' as const,
+        evidence: [clientNameRequest],
+        comment: 'Менеджер уточнил, как обращаться к клиенту.',
+      };
+    });
+  }
   const configuredTotal = definitions.reduce((sum, item) => sum + item.points, 0);
   const active = checklist.filter((item) => item.status !== 'NA');
   const activeTotal = active.reduce((sum, item) => sum + item.weight, 0);
@@ -248,6 +262,7 @@ export async function evaluateSessionV2(input: EvaluatorInput): Promise<Evaluato
   let behaviorEvidence = '';
   if (input.behaviorSignals && input.behaviorSignals.length > 0) {
     const toxicCount = input.behaviorSignals.filter((s) => s.toxic).length;
+    const profanityCount = input.behaviorSignals.filter((s) => s.profanity === true).length;
     const lowEffortCount = input.behaviorSignals.filter((s) => s.low_effort).length;
     const evasionCount = input.behaviorSignals.filter((s) => s.evasion).length;
     const allProhibited = input.behaviorSignals.flatMap((s) => s.prohibited_phrase_hits);
@@ -256,12 +271,13 @@ export async function evaluateSessionV2(input: EvaluatorInput): Promise<Evaluato
 
     const lines: string[] = ['\n=== ПОВЕДЕНЧЕСКИЕ СИГНАЛЫ (от системы, использовать как факты) ==='];
     lines.push(`Всего сообщений менеджера: ${input.behaviorSignals.length}`);
-    if (toxicCount > 0) lines.push(`Токсичных сообщений: ${toxicCount} (ФАКТ — учесть при оценке COMMUNICATION_TONE)`);
+    if (toxicCount > 0) lines.push(`Сообщений с явно враждебной или ненормативной лексикой: ${toxicCount}`);
+    if (profanityCount > 0) lines.push(`Сообщений с ненормативной лексикой: ${profanityCount}`);
     if (lowEffortCount > 0) lines.push(`Некачественных/пустых ответов: ${lowEffortCount} из ${input.behaviorSignals.length}`);
     if (evasionCount > 0) lines.push(`Уходов от вопроса: ${evasionCount}`);
     if (uniqueProhibited.length > 0) lines.push(`Запрещённые фразы: ${uniqueProhibited.join(', ')}`);
     if (highSeverityCount > 0) lines.push(`Сообщений с высокой серьёзностью (HIGH): ${highSeverityCount}`);
-    lines.push('Эти данные — объективные факты из кода. Используй их как дополнительные доказательства.');
+    lines.push('Это технические сигналы, а не готовая оценка. Сверь их с точной репликой и контекстом диалога.');
     behaviorEvidence = lines.join('\n');
   }
 
@@ -312,8 +328,10 @@ ${behaviorEvidence}
   }
 
   if (!classification) {
-    console.error('[evaluatorV2] all LLM attempts failed, using fallback classification');
-    classification = buildFallbackClassification(input);
+    // Publishing a synthetic all-NO checklist is worse than a temporarily
+    // unavailable report: it creates false weaknesses and an invalid score.
+    // The caller records the processing error and the evaluation can be retried.
+    throw new Error('EVALUATOR_UNAVAILABLE: model did not return a complete checklist');
   }
 
   // Normalize + build typed checklist
@@ -335,7 +353,8 @@ ${behaviorEvidence}
     bad_tone: false,
   };
 
-  // Override from code-side detection (behavior classifier is truth)
+  // Only deterministic profanity detection is authoritative. Hostility and
+  // tone still require context and must not be silently converted to swearing.
   if (input.state.communication?.profanity_detected) {
     extra.profanity = true;
   }
@@ -343,7 +362,7 @@ ${behaviorEvidence}
     extra.misinformation = true;
   }
   if (input.behaviorSignals && input.behaviorSignals.length > 0) {
-    if (input.behaviorSignals.some((s) => s.toxic)) extra.profanity = true;
+    if (input.behaviorSignals.some((s) => s.profanity === true)) extra.profanity = true;
     const prohibHits = input.behaviorSignals.flatMap((s) => s.prohibited_phrase_hits);
     if (prohibHits.some((h) => h.includes('сайт') || h.includes('объявлени'))) {
       extra.redirect_to_website = true;
@@ -395,35 +414,6 @@ ${behaviorEvidence}
   const formattedText = formatEvaluation(evaluation, input.earlyFail, input.failureReason);
 
   return { evaluation, formattedText };
-}
-
-// ── Fallback when LLM fails ──
-
-function buildFallbackClassification(input: EvaluatorInput): LLMClassification {
-  const checklist = CHECKLIST_CODE.map((code) => ({
-    code,
-    status: 'NO' as const,
-    evidence: [] as string[],
-    comment: 'Оценка не получена от модели.',
-  }));
-
-  return {
-    checklist,
-    extra_signals: {
-      profanity: input.state.communication?.profanity_detected ?? false,
-      misinformation: input.state.fact_context?.misinformation_detected ?? false,
-      passive_style: false,
-      passive_severity: 'mild',
-      low_engagement: false,
-      redirect_to_website: false,
-      bad_tone: false,
-    },
-    recommendations: [
-      'Представиться и назвать салон в начале разговора.',
-      'Задать уточняющие вопросы о потребностях клиента.',
-      'Предложить конкретный следующий шаг и зафиксировать дату.',
-    ],
-  };
 }
 
 // ── Human-readable format for Telegram ──

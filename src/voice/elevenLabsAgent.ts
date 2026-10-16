@@ -14,8 +14,12 @@ type AgentTurnResult = {
 type AgentConversation = {
   ws: WebSocket;
   ready: Promise<void>;
+  textOnly: boolean;
   conversationId: string | null;
   outputAudioFormat: string | null;
+  lastEventAt: number | null;
+  recentEventTypes: string[];
+  lastServerError: string | null;
   waiters: Array<{
     resolve: (value: AgentTurnResult) => void;
     reject: (error: Error) => void;
@@ -29,6 +33,7 @@ type AgentConversation = {
 };
 
 const conversations = new Map<string, AgentConversation>();
+const TEXT_AGENT_RESPONSE_TIMEOUT_MS = 30_000;
 
 export function isElevenLabsAgentEnabled(): boolean {
   return Boolean(config.elevenLabsApiKey && config.elevenLabsAgentId);
@@ -171,22 +176,56 @@ function isConversationFinalEvent(type: string): boolean {
   ].includes(type);
 }
 
+function rememberEvent(conversation: AgentConversation, type: string): void {
+  conversation.lastEventAt = Date.now();
+  conversation.recentEventTypes.push(type || 'unknown');
+  if (conversation.recentEventTypes.length > 20) conversation.recentEventTypes.shift();
+}
+
+function serverErrorMessage(event: any): string | null {
+  if (!['error', 'internal_error', 'conversation_error', 'agent_response_error', 'llm_error'].includes(String(event?.type || ''))) {
+    return null;
+  }
+  const details = event.error_event ?? event.error ?? event.message ?? event;
+  try {
+    return JSON.stringify(details).slice(0, 800);
+  } catch {
+    return String(details).slice(0, 800);
+  }
+}
+
+function timeoutDiagnostics(conversation: AgentConversation): string {
+  const lastEventAgoMs = conversation.lastEventAt ? Date.now() - conversation.lastEventAt : null;
+  return JSON.stringify({
+    conversationId: conversation.conversationId,
+    socketState: conversation.ws.readyState,
+    lastEventAgoMs,
+    recentEventTypes: conversation.recentEventTypes,
+    lastServerError: conversation.lastServerError,
+  });
+}
+
 async function getOrCreateConversation(
   sessionId: string,
   prompt: string | null | undefined,
   firstMessage: string | null,
-  elevenLabsVoiceId?: string | null
+  elevenLabsVoiceId?: string | null,
+  textOnly = false,
 ): Promise<AgentConversation> {
   const existing = conversations.get(sessionId);
-  if (existing && existing.ws.readyState === WebSocket.OPEN) return existing;
+  if (existing && existing.ws.readyState === WebSocket.OPEN && existing.textOnly === textOnly) return existing;
   if (existing) closeElevenLabsAgentConversation(sessionId);
   if (!prompt?.trim()) throw new Error('ElevenLabs prompt is required to start a new conversation');
 
   const ws = new WebSocket(await getConversationUrl());
   const conversation: AgentConversation = {
     ws,
+    textOnly,
     conversationId: null,
     outputAudioFormat: null,
+    lastEventAt: null,
+    recentEventTypes: [],
+    lastServerError: null,
     waiters: [],
     ready: Promise.resolve(),
   };
@@ -205,6 +244,10 @@ async function getOrCreateConversation(
           tts: elevenLabsVoiceId?.trim()
             ? { voice_id: elevenLabsVoiceId.trim() }
             : undefined,
+          // Programmatic user_message events are used by the web trainer.
+          // ElevenLabs requires chat mode for this flow; speech is generated
+          // afterwards by our regular TTS pipeline.
+          conversation: textOnly ? { text_only: true } : undefined,
         },
       }));
       resolve();
@@ -222,6 +265,19 @@ async function getOrCreateConversation(
     } catch {
       return;
     }
+    rememberEvent(conversation, String(event.type || 'unknown'));
+    const reportedError = serverErrorMessage(event);
+    if (reportedError) {
+      conversation.lastServerError = reportedError;
+      console.error(`[trainer/elevenlabs] server event ${event.type}: ${reportedError}`);
+      const failedWaiter = conversation.waiters.shift();
+      if (failedWaiter) {
+        clearTimeout(failedWaiter.timeout);
+        if (failedWaiter.idleTimeout) clearTimeout(failedWaiter.idleTimeout);
+        failedWaiter.reject(new Error(`ElevenLabs server error: ${reportedError}`));
+      }
+      return;
+    }
     if (event.type === 'conversation_initiation_metadata') {
       const metadata = event.conversation_initiation_metadata_event || {};
       conversation.conversationId = metadata.conversation_id || conversation.conversationId;
@@ -236,6 +292,12 @@ async function getOrCreateConversation(
     if (!waiter) return;
     if (event.type === 'agent_response') {
       waiter.text = String(event.agent_response_event?.agent_response || waiter.text || '');
+      scheduleIdleCompletion(conversation);
+      return;
+    }
+    if (event.type === 'agent_response_correction') {
+      const correction = event.agent_response_correction_event?.corrected_agent_response;
+      if (typeof correction === 'string' && correction.trim()) waiter.text = correction;
       scheduleIdleCompletion(conversation);
       return;
     }
@@ -312,7 +374,8 @@ export async function runElevenLabsAgentTurn(params: {
     params.sessionId,
     params.prompt,
     params.firstMessage ?? null,
-    params.elevenLabsVoiceId
+    params.elevenLabsVoiceId,
+    true,
   );
   await conversation.ready;
   if (conversation.ws.readyState !== WebSocket.OPEN) {
@@ -327,8 +390,8 @@ export async function runElevenLabsAgentTurn(params: {
         if (waiter.idleTimeout) clearTimeout(waiter.idleTimeout);
         conversation.waiters.splice(index, 1);
       }
-      reject(new Error('ElevenLabs agent response timeout'));
-    }, 18000);
+      reject(new Error(`ElevenLabs agent response timeout: ${timeoutDiagnostics(conversation)}`));
+    }, TEXT_AGENT_RESPONSE_TIMEOUT_MS);
     conversation.waiters.push({ resolve, reject, timeout, idleTimeout: null, audioChunks: [], text: '', userTranscript: '', endedByAgent: false });
   });
 
@@ -361,7 +424,8 @@ export async function runElevenLabsAgentAudioTurn(params: {
     params.sessionId,
     params.prompt,
     params.firstMessage ?? null,
-    params.elevenLabsVoiceId
+    params.elevenLabsVoiceId,
+    false,
   );
   await conversation.ready;
   if (conversation.ws.readyState !== WebSocket.OPEN) {

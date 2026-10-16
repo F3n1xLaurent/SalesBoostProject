@@ -5,6 +5,7 @@ import {
   importedItemMatchesTrainerTags,
   isNonProgressingTrainerReply,
 } from '../trainer/trainerScenario';
+import { buildProgressingVirtualClientFallback } from '../llm/virtualClient';
 
 describe('trainer scenario selection', () => {
   it('opens with a scenario question without voicing the internal scenario name', () => {
@@ -23,6 +24,27 @@ describe('trainer scenario selection', () => {
     expect(message).not.toContain('Audi A5 Sportback');
     expect(message).not.toContain('есть в наличии');
     expect(message).not.toContain('предложение актуально');
+  });
+
+  it('does not repeat a greeting already stored in the first scenario question', () => {
+    const message = buildTrainerInitialClientMessage({
+      scenario: {
+        questions: [{ text: 'Здравствуйте! Здравствуйте! Черная Toyota Corolla 2008 года еще в продаже?' }],
+      },
+    });
+
+    expect(message).toBe('Здравствуйте. Подскажите, пожалуйста: Черная Toyota Corolla 2008 года еще в продаже?');
+    expect(message.match(/здравствуйте/gi)).toHaveLength(1);
+  });
+
+  it('does not duplicate an existing polite question lead-in', () => {
+    const message = buildTrainerInitialClientMessage({
+      scenario: {
+        questions: [{ text: 'Здравствуйте! Подскажите, пожалуйста, автомобиль еще в продаже?' }],
+      },
+    });
+
+    expect(message).toBe('Здравствуйте. Подскажите, пожалуйста, автомобиль еще в продаже?');
   });
 
   it('uses a concrete imported item when the scenario has no opening question', () => {
@@ -80,6 +102,16 @@ describe('trainer scenario selection', () => {
     expect(prompt).toContain('Автоматическое приветствие, сообщения «ожидайте», музыка');
     expect(prompt).toContain('Первый вопрос сценария из-за тишины не повторяй');
     expect(prompt).toContain('если сотрудник явно попросил повторить');
+    expect(prompt).toContain('ровно ОДНО приветствие');
+  });
+
+  it('removes greetings embedded in scenario questions before giving them to the call agent', () => {
+    const prompt = buildCustomerScenarioPromptCore({
+      questions: [{ text: 'Здравствуйте! Автомобиль еще в продаже?', required: true }],
+    });
+
+    expect(prompt).toContain('1. Автомобиль еще в продаже? [обязательная тема]');
+    expect(prompt).not.toContain('1. Здравствуйте! Автомобиль еще в продаже?');
   });
 
   it('omits telephone transport rules in trainer runtime', () => {
@@ -107,6 +139,17 @@ describe('trainer scenario selection', () => {
     expect(isNonProgressingTrainerReply('Ладно.')).toBe(true);
     expect(isNonProgressingTrainerReply('Хорошо. А какая гарантия предусмотрена?')).toBe(false);
     expect(isNonProgressingTrainerReply('Тогда я подумаю, спасибо.')).toBe(false);
+  });
+
+  it('uses a progressing emergency reply instead of a bare acknowledgement', () => {
+    const state = { client_turns: 2 } as any;
+    const reply = buildProgressingVirtualClientFallback({
+      manager_last_message: 'Да, машина есть в наличии.',
+      state,
+    });
+
+    expect(reply).not.toBe('Понял, хорошо.');
+    expect(isNonProgressingTrainerReply(reply)).toBe(false);
   });
 
   it('does not accept an unrelated imported item when script tags are configured', () => {

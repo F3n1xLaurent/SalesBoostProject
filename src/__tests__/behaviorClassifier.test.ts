@@ -28,6 +28,16 @@ describe('BehaviorClassifier', () => {
       expect(r.toxic).toBe(false);
       expect(r.severity).toBe('LOW');
     });
+
+    it('does not mistake a detailed value argument for rude tone or disengagement', () => {
+      const r = classifyBehavior(
+        'Алексей, я вас прекрасно понимаю. На первый взгляд цена может казаться выше, но эта модель стоит каждого рубля. В ежедневных поездках она быстро себя окупит.',
+        normalCtx,
+      );
+      expect(r.toxic).toBe(false);
+      expect(r.disengaging).toBe(false);
+      expect(r.severity).toBe('LOW');
+    });
   });
 
   describe('low_effort detection', () => {
@@ -117,6 +127,18 @@ describe('BehaviorClassifier', () => {
     it('LOW for simple short answer without waiting context', () => {
       const r = classifyBehavior('да', firstMsgCtx);
       expect(r.severity).toBe('LOW');
+    });
+  });
+
+  describe('disengagement', () => {
+    it('does not treat a normal goodbye after a completed conversation as refusal', () => {
+      const r = classifyBehavior('Спасибо, всего доброго!', normalCtx);
+      expect(r.disengaging).toBe(false);
+    });
+
+    it('detects an explicit refusal to continue the conversation', () => {
+      const r = classifyBehavior('Не хочу больше с вами разговаривать, давайте закончим.', normalCtx);
+      expect(r.disengaging).toBe(true);
     });
   });
 

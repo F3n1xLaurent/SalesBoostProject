@@ -6,6 +6,7 @@
 export type BehaviorSeverity = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export interface BehaviorSignal {
+  profanity: boolean;
   toxic: boolean;
   low_effort: boolean;
   disengaging: boolean;
@@ -96,25 +97,13 @@ const DISENGAGING_PATTERNS = [
   'не хочу разговаривать',
   'не хочу говорить',
   'не хочу общаться',
-  'мне не интересно',
-  'мне это не интересно',
-  'мне не нужно',
-  'не надо',
   'отстаньте',
-  'давайте закончим',
   'закончим разговор',
-  'всего доброго',
-  'до свидания',
-  'пока',
-  'не хочу больше',
   "don't call",
   'do not call',
   'stop calling',
   "i don't want to talk",
-  'not interested',
   'leave me alone',
-  'goodbye',
-  'bye',
 ];
 
 // ── Helpers ──
@@ -129,6 +118,11 @@ function containsAny(text: string, patterns: string[]): string[] {
     if (text.includes(p)) hits.push(p);
   }
   return hits;
+}
+
+function containsProfanity(text: string): string[] {
+  const tokens = text.split(/[^a-zа-я0-9ё]+/i).filter(Boolean);
+  return PROFANITY_STEMS.filter((stem) => tokens.some((token) => token.startsWith(stem)));
 }
 
 function isLikelyDisengaging(text: string): boolean {
@@ -156,7 +150,9 @@ export function classifyBehavior(
   const reasons: string[] = [];
 
   // ── Toxic detection ──
-  const profanityHits = containsAny(norm, PROFANITY_STEMS);
+  // Match profanity stems only at the beginning of a token. A raw substring
+  // search incorrectly classified normal words such as "рубля" as profanity.
+  const profanityHits = containsProfanity(norm);
   const hostileHits = containsAny(norm, HOSTILE_PATTERNS);
   const dismissiveHits = containsAny(norm, DISMISSIVE_PATTERNS);
   const disengaging = isLikelyDisengaging(norm);
@@ -210,6 +206,7 @@ export function classifyBehavior(
   }
 
   return {
+    profanity: profanityHits.length > 0,
     toxic,
     low_effort: isLowEffort,
     disengaging,
