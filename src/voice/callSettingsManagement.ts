@@ -1947,6 +1947,45 @@ export async function handleListCallPlanCalls(req: Request, res: Response): Prom
   }
 }
 
+export async function handleDeleteCallPlanCall(req: Request, res: Response): Promise<void> {
+  try {
+    assertPlatformSuperadmin(req);
+    const planId = String(req.params.id || '').trim();
+    const recordId = String(req.params.callId || '').trim();
+    if (!planId || !recordId) throw new Error('Некорректный идентификатор записи звонка.');
+
+    const item = await prisma.callPlanCall.findFirst({
+      where: { id: recordId, planId },
+      select: { id: true, callId: true, status: true, failureReason: true },
+    });
+    if (!item) {
+      res.status(404).json({ error: 'Запись истории прозвона не найдена.' });
+      return;
+    }
+    const voiceSession = await prisma.voiceCallSession.findUnique({
+      where: { callId: item.callId },
+      select: { outcome: true, failureReason: true },
+    });
+    const effectiveStatus = resolveCallPlanStatus(
+      item.status,
+      voiceSession?.outcome ?? null,
+      item.failureReason ?? voiceSession?.failureReason ?? null,
+    );
+    if (['scheduled', 'running', 'dialing', 'in_progress'].includes(effectiveStatus)) {
+      res.status(409).json({ error: 'Нельзя удалить запланированный или выполняющийся звонок.' });
+      return;
+    }
+
+    // Remove only the plan-history snapshot. The call, recording, analytics
+    // and provider costs remain available in their source tables.
+    await prisma.callPlanCall.delete({ where: { id: item.id } });
+    res.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Не удалось удалить запись истории прозвона.';
+    res.status(message.includes('доступ') ? 403 : 400).json({ error: message });
+  }
+}
+
 export async function handleGetCallPlanSchedule(req: Request, res: Response): Promise<void> {
   try {
     const id = String(req.params.id || '').trim();

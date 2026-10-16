@@ -1992,6 +1992,14 @@ export async function fetchCallPlanCalls(id: string): Promise<CallPlanCallItem[]
   return Array.isArray(data.items) ? data.items as CallPlanCallItem[] : [];
 }
 
+export async function deleteCallPlanCall(planId: string, recordId: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${encodeURIComponent(planId)}/calls/${encodeURIComponent(recordId)}`, {
+    method: 'DELETE',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось удалить запись истории прозвона.');
+}
+
 export async function fetchCallPlanSchedule(id: string, date: string): Promise<{ date: string; items: CallPlanCallItem[] }> {
   const query = new URLSearchParams({ date });
   const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/schedule?${query.toString()}`);
