@@ -153,7 +153,7 @@ export async function generateCallAnalyticsBundle(input: {
     callSummary: null,
     replyImprovements: null,
     unifiedCallReport: unifiedCallReport
-      ? await ensureFindingBetterExamples(unifiedCallReport, input.transcript)
+      ? await ensureFindingBetterExamples(unifiedCallReport, input.transcript, input.scenarioContext)
       : null,
   };
 }

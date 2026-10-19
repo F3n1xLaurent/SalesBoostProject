@@ -93,4 +93,35 @@ describe('evaluation highlights', () => {
       'Уточнение интересующего автомобиля: В стенограмме нет подтверждающей реплики менеджера.',
     ]);
   });
+
+  it('describes a proven manager action instead of quoting a script criterion', () => {
+    const result = buildEvaluationHighlights({
+      plan_criteria: { items: [{ expectedAnswer: 'Какая комплектация?', maxScore: 10, score: 10, status: 'YES' }] },
+      checklist: [{
+        code: 'CAR_IDENTIFICATION', status: 'YES',
+        evidence: ['Менеджер: Подскажите, какой автомобиль вас интересует?'],
+        comment: 'Менеджер уточнил интересующий автомобиль.',
+      }],
+    }, 8, [
+      { role: 'manager', text: 'Подскажите, какой автомобиль вас интересует?' },
+      { role: 'client', text: 'Мерседес GLE.' },
+    ]);
+
+    expect(result.strengths).toEqual(['Менеджер уточнил интересующий автомобиль.']);
+    expect(result.strengths.join(' ')).not.toContain('Какая комплектация');
+  });
+
+  it('keeps a confirmed company-defined checklist item with its custom ID', () => {
+    const result = buildEvaluationHighlights({
+      checklist: [{
+        code: 'custom-greeting', status: 'YES',
+        evidence: ['Менеджер: Добрый день, меня зовут Анна.'],
+        comment: 'Менеджер представился по имени.',
+      }],
+    }, 8, [
+      { role: 'manager', text: 'Добрый день, меня зовут Анна.' },
+      { role: 'client', text: 'Здравствуйте.' },
+    ]);
+    expect(result.strengths).toEqual(['Менеджер представился по имени.']);
+  });
 });

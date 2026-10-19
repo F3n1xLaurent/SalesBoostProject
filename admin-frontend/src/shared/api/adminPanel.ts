@@ -603,6 +603,7 @@ export interface HoldingItem {
     address: string | null;
     workingHoursFrom: string | null;
     workingHoursTo: string | null;
+    timezoneOffsetMinutes: number;
     isActive: boolean;
     isDeleted: boolean;
     holdingId: string | null;
@@ -620,6 +621,7 @@ export interface DealershipItem {
   address: string | null;
   workingHoursFrom: string | null;
   workingHoursTo: string | null;
+  timezoneOffsetMinutes: number;
   isActive: boolean;
   isDeleted: boolean;
   createdAt: string;
@@ -1566,6 +1568,7 @@ export async function createDealership(payload: {
   address?: string | null;
   workingHoursFrom: string;
   workingHoursTo: string;
+  timezoneOffsetMinutes?: number;
   holdingId?: string | null;
   isActive?: boolean;
 }): Promise<DealershipItem> {
@@ -1591,6 +1594,7 @@ export async function updateDealership(
     address?: string | null;
     workingHoursFrom?: string;
     workingHoursTo?: string;
+    timezoneOffsetMinutes?: number;
     holdingId?: string | null;
     isActive?: boolean;
   },

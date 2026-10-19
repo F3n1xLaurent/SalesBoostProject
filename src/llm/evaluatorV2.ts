@@ -29,6 +29,7 @@ export interface EvaluatorInput {
   failureReason?: string;
   behaviorSignals?: BehaviorSignal[];
   scenarioContext?: string;
+  transcriptionAlternatives?: Array<{ turnIndex: number; original: string; reviewed: string }>;
   evaluationChecklist?: {
     id: string;
     name: string;
@@ -284,6 +285,9 @@ export async function evaluateSessionV2(input: EvaluatorInput): Promise<Evaluato
   const scenarioContext = input.scenarioContext?.trim()
     ? `\n\n=== СЦЕНАРИЙ И УСЛОВИЯ ПРОВЕРКИ ===\n${input.scenarioContext.slice(0, 16000)}`
     : '';
+  const transcriptionContext = input.transcriptionAlternatives?.length
+    ? `\n\n=== РАЗНОЧТЕНИЯ РАСПОЗНАВАНИЯ РЕЧИ ===\n${JSON.stringify(input.transcriptionAlternatives.slice(0, 12)).slice(0, 6000)}\nОсновной диалог содержит повторное распознавание записи. Исходный вариант дан только для проверки спорных слов. Если варианты расходятся, не считай неразборчивое слово доказательством ошибки менеджера; выбирай осмысленное чтение по контексту. Не приписывай менеджеру действий, которых нет ни в одном варианте.`
+    : '';
   const userPrompt = `=== АВТОМОБИЛЬ ===
 ${carContext}
 ${scenarioContext}
@@ -291,6 +295,7 @@ ${scenarioContext}
 === ДИАЛОГ ===${failContext}
 ${historyStr}
 ${behaviorEvidence}
+${transcriptionContext}
 
 === ЗАДАНИЕ ===
 Оцени каждый пункт чеклиста. Верни JSON.`;
