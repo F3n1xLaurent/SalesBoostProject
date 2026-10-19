@@ -3,6 +3,7 @@ import { prisma } from '../db';
 import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
+import { isUnreliableManagerUtterance } from './transcriptReliability';
 import { buildEvaluationHighlights } from '../logic/evaluationHighlights';
 import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
 import {
@@ -196,13 +197,58 @@ function contentStems(value: string): Set<string> {
     .filter((word) => word.length >= 4 && !GENERIC_EXAMPLE_WORDS.has(word)));
 }
 
-function findTranscriptQuoteIndex(quote: string, transcript: TranscriptTurn[]): number {
+function matchingManagerTurnIndexes(quote: string, transcript: TranscriptTurn[]): number[] {
   const target = quote.toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ').trim();
-  if (!target) return -1;
-  return transcript.findIndex((turn) => {
+  if (!target) return [];
+  return transcript.flatMap((turn, index) => {
     const text = asText(turn.text).toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
-    return turn.role === 'manager' && (text === target || text.includes(target) || target.includes(text));
+    return turn.role === 'manager' && (text === target || text.includes(target) || target.includes(text))
+      ? [index] : [];
   });
+}
+
+function findTranscriptQuoteIndex(quote: string, transcript: TranscriptTurn[]): number {
+  return matchingManagerTurnIndexes(quote, transcript)[0] ?? -1;
+}
+
+function findingTextKey(value: string): string {
+  return value.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е')
+    .replace(/[^а-яa-z0-9]+/giu, ' ').trim();
+}
+
+function similarAdvice(left: string, right: string): boolean {
+  const a = contentStems(left);
+  const b = contentStems(right);
+  if (a.size < 2 || b.size < 2) return false;
+  const shared = [...a].filter((word) => b.has(word)).length;
+  return shared / Math.min(a.size, b.size) >= 0.7;
+}
+
+function deduplicateFindings(
+  items: UnifiedCallReport['keyFindings'],
+  transcript: TranscriptTurn[],
+): UnifiedCallReport['keyFindings'] {
+  const result: UnifiedCallReport['keyFindings'] = [];
+  const importance = { Критично: 3, Важно: 2, Средне: 1 };
+  for (const item of items) {
+    const quoteIndex = findTranscriptQuoteIndex(item.quote, transcript);
+    const key = findingTextKey(item.quote);
+    const existingIndex = result.findIndex((existing) => (
+      quoteIndex >= 0
+        ? findTranscriptQuoteIndex(existing.quote, transcript) === quoteIndex
+        : findingTextKey(existing.quote) === key)
+      && (existing.category === item.category
+        || similarAdvice(existing.betterExample, item.betterExample)
+        || similarAdvice(existing.comment, item.comment)));
+    if (existingIndex < 0) {
+      result.push(item);
+    } else if (importance[item.importance] > importance[result[existingIndex].importance]
+      || (importance[item.importance] === importance[result[existingIndex].importance]
+        && !result[existingIndex].betterExample && item.betterExample)) {
+      result[existingIndex] = item;
+    }
+  }
+  return result;
 }
 
 /**
@@ -215,6 +261,7 @@ function sanitizeBetterExample(
   quote: string,
   transcript: TranscriptTurn[],
   knownQuoteIndex?: number,
+  knownFactsText = '',
 ): string {
   const example = normalizeCompanyWording(meaningfulText(value));
   if (!example) return '';
@@ -223,12 +270,20 @@ function sanitizeBetterExample(
     : knownQuoteIndex;
   if (quoteIndex < 0) return '';
 
+  const precedingClient = [...transcript.slice(0, quoteIndex)].reverse().find((turn) => turn.role === 'client');
+  const asksForSpecifics = precedingClient
+    && /(?:что\s+(?:входит|включает)|из\s+чего\s+состоит|что\s+провер|какие\s+(?:работы|этапы|операции)|перечислите|расскажите.*(?:провер|состав))/iu.test(precedingClient.text);
+  // A direct request for a list of works needs a direct answer. A preceding
+  // generic sentence must not make a counter-question look like an answer.
+  if (asksForSpecifics && (example.includes('?')
+    || /^(?:давайте|нужно|необходимо)\s+(?:сначала\s+)?уточн/iu.test(example))) return '';
+
   const quoteStems = contentStems(quote);
   const exampleStems = contentStems(example);
   const addedMeaning = [...exampleStems].some((word) => !quoteStems.has(word));
   if (!addedMeaning) return '';
 
-  const knownBefore = contentStems(transcript.slice(0, quoteIndex + 1).map((turn) => turn.text).join(' '));
+  const knownBefore = contentStems(`${knownFactsText} ${transcript.slice(0, quoteIndex + 1).map((turn) => turn.text).join(' ')}`);
   const futureClient = contentStems(transcript.slice(quoteIndex + 1)
     .filter((turn) => turn.role === 'client')
     .map((turn) => turn.text)
@@ -364,12 +419,15 @@ export function normalizeUnifiedCallReport(
     };
   });
 
-  const findings = (Array.isArray(source.keyFindings) ? source.keyFindings : [])
+  const findings = deduplicateFindings((Array.isArray(source.keyFindings) ? source.keyFindings : [])
     .map((item) => {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       const problem = resolveFindingProblem(catalog, raw, fallback.transcript);
       if (!problem) return null;
       const quote = resolveFindingQuote(problem, raw.quote, fallback.transcript);
+      const quoteIndex = findTranscriptQuoteIndex(quote, fallback.transcript);
+      if (fallback.transcript.length > 0
+        && (quoteIndex < 0 || isUnreliableManagerUtterance(fallback.transcript[quoteIndex].text))) return null;
       return {
         problemTitle: problem.title,
         importance: normalizeImportance(raw.importance),
@@ -380,7 +438,7 @@ export function normalizeUnifiedCallReport(
       };
     })
     .filter((item): item is UnifiedCallReport['keyFindings'][number] => Boolean(item))
-    .slice(0, 8);
+    .slice(0, 8), fallback.transcript);
 
   const importanceScoreCap: Record<UnifiedFindingImportance, number> = {
     Критично: 49,
@@ -433,6 +491,9 @@ export function normalizeUnifiedCallReport(
       }
     }
     const role = turn.role;
+    if (role === 'manager' && isUnreliableManagerUtterance(turn.text)) {
+      return { role, text: turn.text, mark: null, comment: null, betterExample: null };
+    }
     if (role === 'manager' && isClientNameRequest(turn.text)) {
       return {
         role,
@@ -454,18 +515,30 @@ export function normalizeUnifiedCallReport(
       comment,
       betterExample,
     };
-  }).map((line) => {
-    if (line.role !== 'manager' || line.mark === 'positive' || line.mark == null) return line;
+  }).map((line, index) => {
+    if (line.role !== 'manager' || isUnreliableManagerUtterance(line.text)) return line;
     const matched = findings.find((finding) => {
-      const quote = finding.quote.trim().toLowerCase();
-      const text = line.text.trim().toLowerCase();
-      if (!quote || !text) return false;
-      return text.includes(quote) || quote.includes(text) || text.includes(quote.slice(0, Math.min(40, quote.length)));
+      const matches = matchingManagerTurnIndexes(finding.quote, fallback.transcript);
+      if (matches.length === 0) return false;
+      if (matches.length === 1) return matches[0] === index;
+      const negativeMatches = dialogSource.length === fallback.transcript.length
+        ? matches.filter((candidateIndex) => {
+          const sourceLine = dialogSource[candidateIndex];
+          return sourceLine && typeof sourceLine === 'object'
+            && normalizeMark((sourceLine as Record<string, unknown>).mark) === 'negative';
+        })
+        : [];
+      return index === (negativeMatches.length === 1 ? negativeMatches[0] : matches[0]);
     });
-    const nextComment = line.comment || matched?.comment || null;
-    const nextExample = line.mark === 'negative'
-      ? line.betterExample || matched?.betterExample || null
-      : null;
+    if (matched) return {
+      ...line,
+      mark: 'negative' as const,
+      comment: matched.comment || matched.problemTitle,
+      betterExample: matched.betterExample || null,
+    };
+    if (line.mark === 'positive' || line.mark == null) return line;
+    const nextComment = line.comment || null;
+    const nextExample = line.mark === 'negative' ? line.betterExample : null;
     const nextMark = nextComment ? line.mark : null;
     return {
       ...line,
@@ -508,6 +581,10 @@ export function normalizeUnifiedCallReport(
     8,
     fallback.transcript,
   );
+  const demonstratedStrengths = dialog
+    .filter((line) => line.role === 'manager' && line.mark === 'positive'
+      && /^(?:менеджер|сотрудник|консультант|продавец)\s+/iu.test(line.comment ?? ''))
+    .map((line) => line.comment as string);
   const weaknessSummary = evaluatedHighlights.weaknesses.slice(0, 2).join('; ');
   const baseWeaknesses = evaluatedHighlights.hasClassification
     ? evaluatedHighlights.weaknesses
@@ -531,7 +608,9 @@ export function normalizeUnifiedCallReport(
     totalScore,
     verdict: unifiedVerdict(totalScore),
     categories,
-    strengths: evaluatedHighlights.hasClassification ? evaluatedHighlights.strengths : aiStrengths,
+    strengths: fallback.transcript.length > 0
+      ? mergeUniqueText([...evaluatedHighlights.strengths, ...demonstratedStrengths], 8)
+      : evaluatedHighlights.hasClassification ? evaluatedHighlights.strengths : aiStrengths,
     weaknesses,
     keyFindings: findings,
     dialog,
@@ -548,6 +627,7 @@ export function normalizeUnifiedCallReport(
 export async function ensureFindingBetterExamples(
   report: UnifiedCallReport,
   transcript: TranscriptTurn[],
+  scenarioContext = '',
 ): Promise<UnifiedCallReport> {
   const allMissing = report.keyFindings
     .map((finding, index) => ({ finding, index, quoteIndex: findTranscriptQuoteIndex(finding.quote, transcript) }))
@@ -565,6 +645,7 @@ export async function ensureFindingBetterExamples(
       .slice(0, quoteIndex + 1)
       .map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`)
       .join('\n'),
+    scenarioFacts: scenarioContext.slice(0, 10000),
   }));
 
   let repaired = report.keyFindings.map((finding) => ({ ...finding }));
@@ -584,8 +665,9 @@ export async function ensureFindingBetterExamples(
               'Для каждой находки создай один конкретный вариант «Как лучше».',
               'Это должна быть готовая реплика менеджера, которая действительно устраняет указанное замечание.',
               'Не пересказывай исходную реплику и не объясняй оценку.',
-              'Используй только сведения из knownDialog. Нельзя использовать факты, которые клиент сообщил позднее.',
-              'Не придумывай цены, сроки, характеристики, наличие или обещания. При нехватке данных используй нейтральный уточняющий вопрос.',
+              'Используй только сведения из knownDialog и scenarioFacts: факты сценария были известны менеджеру до звонка. Нельзя использовать факты, которые клиент сообщил позднее.',
+              'Если клиент спросил, что входит в проверку, работы или услугу, перечисли подтверждённые пункты из scenarioFacts. Не заменяй ответ встречным вопросом. Если перечень неизвестен, честно предложи уточнить его и вернуться с прямым ответом.',
+              'Не придумывай цены, сроки, характеристики, наличие или обещания. Уточняющий вопрос допустим только если он помогает ответить на вопрос клиента, а не подменяет прямой ответ.',
               attempt > 1 ? 'Это повторная попытка: предыдущие варианты не прошли проверку. Сделай их содержательно лучше исходной реплики.' : '',
               '',
               JSON.stringify({ items: pending }, null, 2),
@@ -610,6 +692,7 @@ export async function ensureFindingBetterExamples(
           item.quote,
           transcript,
           item.quoteIndex,
+          scenarioContext,
         );
         if (betterExample) {
           repaired[item.index] = { ...repaired[item.index], betterExample };
@@ -628,7 +711,15 @@ export async function ensureFindingBetterExamples(
     if (!repaired[index]?.betterExample.trim()) {
       repaired[index] = {
         ...repaired[index],
-        betterExample: safeFallbackBetterExample(finding),
+        betterExample: (() => {
+          const quoteIndex = findTranscriptQuoteIndex(finding.quote, transcript);
+          const precedingClient = quoteIndex >= 0
+            ? [...transcript.slice(0, quoteIndex)].reverse().find((turn) => turn.role === 'client')
+            : undefined;
+          return precedingClient && /(?:что\s+(?:входит|включает)|из\s+чего\s+состоит|что\s+провер|какие\s+(?:работы|этапы|операции))/iu.test(precedingClient.text)
+            ? 'Я уточню полный перечень работ по этой проверке и перечислю его вам, чтобы не пропустить важное.'
+            : safeFallbackBetterExample(finding);
+        })(),
       };
     }
   }

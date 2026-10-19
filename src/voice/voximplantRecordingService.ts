@@ -14,7 +14,7 @@ export { findRecording } from './voximplantRecording';
 const VOX_API_BASE = 'https://api.voximplant.com/platform_api';
 const RECORDING_RETRY_DELAYS_MS = [2_000, 5_000, 10_000, 20_000] as const;
 const MAX_RECORDING_BYTES = 512 * 1024 * 1024;
-const activeRecordingTasks = new Set<string>();
+const activeRecordingTasks = new Map<string, Promise<void>>();
 const activeRecordingSessions = new Set<string>();
 
 export type RecordingStatus = 'pending' | 'processing' | 'ready' | 'failed';
@@ -171,12 +171,13 @@ async function fetchAndSaveRecording(callId: string, voxSessionId: string): Prom
   console.error(`Voximplant recording failed call_id=${callId} error=${message}`);
 }
 
-export function scheduleRecordingFetch(callId: string, voxSessionId: string): void {
-  if (activeRecordingTasks.has(callId) || activeRecordingSessions.has(voxSessionId)) return;
-  activeRecordingTasks.add(callId);
+export function scheduleRecordingFetch(callId: string, voxSessionId: string): Promise<void> | null {
+  const existing = activeRecordingTasks.get(callId);
+  if (existing) return existing;
+  if (activeRecordingSessions.has(voxSessionId)) return null;
   activeRecordingSessions.add(voxSessionId);
   console.info(`Voximplant recording scheduled call_id=${callId}`);
-  void fetchAndSaveRecording(callId, voxSessionId)
+  const task = fetchAndSaveRecording(callId, voxSessionId)
     .catch(async (error) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Voximplant recording failed call_id=${callId} error=${message}`);
@@ -189,6 +190,8 @@ export function scheduleRecordingFetch(callId: string, voxSessionId: string): vo
       activeRecordingTasks.delete(callId);
       activeRecordingSessions.delete(voxSessionId);
     });
+  activeRecordingTasks.set(callId, task);
+  return task;
 }
 
 export async function resumePendingRecordingFetches(): Promise<void> {

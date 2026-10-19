@@ -15,6 +15,7 @@ type PhoneNumberOwnership = 'dealership' | 'user';
 
 const DEFAULT_WORKING_HOURS_FROM = '09:00';
 const DEFAULT_WORKING_HOURS_TO = '21:00';
+const DEFAULT_DEALERSHIP_TIMEZONE_OFFSET_MINUTES = 180;
 const CITY_SEARCH_DEFAULT_LIMIT = 100;
 const CITY_SEARCH_MAX_LIMIT = 100;
 const HOLDING_ALREADY_EXISTS_ERROR = 'Данная компания уже существует в системе';
@@ -154,6 +155,7 @@ function normalizeHoldingResponse(
       address: dealership.address,
       workingHoursFrom: dealership.workingHoursFrom,
       workingHoursTo: dealership.workingHoursTo,
+      timezoneOffsetMinutes: dealership.timezoneOffsetMinutes,
       isActive: dealership.isActive,
       isDeleted: dealership.isDeleted,
       holdingId: dealership.holdingId,
@@ -182,6 +184,7 @@ function normalizeDealershipResponse(
     address: dealership.address,
     workingHoursFrom: dealership.workingHoursFrom,
     workingHoursTo: dealership.workingHoursTo,
+    timezoneOffsetMinutes: dealership.timezoneOffsetMinutes,
     isActive: dealership.isActive,
     isDeleted: dealership.isDeleted,
     createdAt: dealership.createdAt,
@@ -236,6 +239,14 @@ function parseTime(value: unknown): string | null {
   const [hours, minutes] = parsed.split(':').map((part) => Number(part));
   if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
   return parsed;
+}
+
+function parseTimezoneOffsetMinutes(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= -12 * 60 && parsed <= 14 * 60
+    && parsed % 60 === 0 ? parsed : null;
 }
 
 function isValidTimeRange(from: string | null | undefined, to: string | null | undefined): boolean {
@@ -1280,6 +1291,9 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   const address = parseString(body.address);
   const workingHoursFrom = parseTime(body.workingHoursFrom) ?? DEFAULT_WORKING_HOURS_FROM;
   const workingHoursTo = parseTime(body.workingHoursTo) ?? DEFAULT_WORKING_HOURS_TO;
+  const timezoneOffsetMinutes = body.timezoneOffsetMinutes === undefined
+    ? DEFAULT_DEALERSHIP_TIMEZONE_OFFSET_MINUTES
+    : parseTimezoneOffsetMinutes(body.timezoneOffsetMinutes);
   const holdingId = parseString(body.holdingId);
   const isActive = parseBoolean(body.isActive, true);
 
@@ -1306,6 +1320,10 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
   }
   if (!isValidTimeRange(workingHoursFrom, workingHoursTo)) {
     res.status(400).json({ error: 'Время окончания работы не может быть меньше времени начала.' });
+    return;
+  }
+  if (timezoneOffsetMinutes === null) {
+    res.status(400).json({ error: 'Укажите корректный часовой пояс от UTC−12 до UTC+14.' });
     return;
   }
 
@@ -1350,6 +1368,7 @@ export async function handleCreateDealership(req: Request, res: Response): Promi
         address,
         workingHoursFrom,
         workingHoursTo,
+        timezoneOffsetMinutes,
         holdingId,
         isActive,
       },
@@ -1400,6 +1419,8 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
   const address = body.address != null ? parseString(body.address) : undefined;
   const workingHoursFrom = body.workingHoursFrom != null ? parseTime(body.workingHoursFrom) : undefined;
   const workingHoursTo = body.workingHoursTo != null ? parseTime(body.workingHoursTo) : undefined;
+  const timezoneOffsetMinutes = body.timezoneOffsetMinutes !== undefined
+    ? parseTimezoneOffsetMinutes(body.timezoneOffsetMinutes) : undefined;
   const holdingId = body.holdingId != null ? parseString(body.holdingId) : undefined;
   const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
 
@@ -1416,6 +1437,10 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
   }
   if ((body.workingHoursFrom != null && !workingHoursFrom) || (body.workingHoursTo != null && !workingHoursTo)) {
     res.status(400).json({ error: 'Укажите время работы точки в формате 00:00.' });
+    return;
+  }
+  if (timezoneOffsetMinutes === null) {
+    res.status(400).json({ error: 'Укажите корректный часовой пояс от UTC−12 до UTC+14.' });
     return;
   }
 
@@ -1464,6 +1489,7 @@ export async function handleUpdateDealership(req: Request, res: Response): Promi
     if (address !== undefined) dealershipData.address = address;
     if (workingHoursFrom !== undefined && workingHoursFrom !== null) dealershipData.workingHoursFrom = workingHoursFrom;
     if (workingHoursTo !== undefined && workingHoursTo !== null) dealershipData.workingHoursTo = workingHoursTo;
+    if (timezoneOffsetMinutes !== undefined) dealershipData.timezoneOffsetMinutes = timezoneOffsetMinutes;
     if (holdingId !== undefined) {
       dealershipData.holding = holdingId
         ? { connect: { id: holdingId } }

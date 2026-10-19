@@ -4,6 +4,7 @@ import { openai } from '../lib/openaiClient';
 import type { Context } from 'telegraf';
 import type { TtsVoice } from '../state/userPreferences';
 import { fetchElevenLabs, isElevenLabsProxyEnabled } from './elevenLabsHttp';
+import { normalizeRussianSpeechNumbers } from './speechFacts';
 
 const TTS_MAX_CHARS = 360;
 const ELEVENLABS_TTS_TIMEOUT_MS = 25_000;
@@ -40,6 +41,7 @@ export function estimateTtsCostPerSession(): string {
 }
 
 function buildTtsText(fullText: string): string {
+  fullText = normalizeRussianSpeechNumbers(fullText);
   if (fullText.length <= TTS_MAX_CHARS) return fullText;
   const slice = fullText.slice(0, TTS_MAX_CHARS);
   const lastPunct = Math.max(slice.lastIndexOf('.'), slice.lastIndexOf('!'), slice.lastIndexOf('?'));

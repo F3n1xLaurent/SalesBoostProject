@@ -104,6 +104,17 @@ describe('trainer scenario selection', () => {
     expect(prompt).toContain('запомни его и не меняй');
     expect(prompt).toContain('сразу и прямо ответь: «Меня зовут [выбранное имя]»');
     expect(prompt).toContain('Запрещено скрывать своё имя');
+    expect(prompt).toContain('На «Как вас представить?»');
+    expect(prompt).toContain('Не спрашивай в ответ «А вы меня как можете называть?»');
+  });
+
+  it('keeps the AI in the customer role and waiting for the employee to finish', () => {
+    for (const runtime of ['call', 'trainer'] as const) {
+      const prompt = buildCustomerScenarioPromptCore({ runtime });
+      expect(prompt).toContain('Не начинай следующую реплику, пока сотрудник не закончил говорить');
+      expect(prompt).toContain('не задавай продавцу вопрос «Когда вам удобно приехать?»');
+      expect(prompt).toContain('Если вопрос из сценария обращён к клиенту, отвечай на него');
+    }
   });
 
   it('does not start the substantive scenario before a live employee answers', () => {

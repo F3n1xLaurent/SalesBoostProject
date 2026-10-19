@@ -3,7 +3,7 @@ import type { TranscriptTurn } from './callHistory';
 export interface AnalysisTranscriptResult {
   transcript: TranscriptTurn[];
   removedPrefixTurns: number;
-  reason: 'automatic_anchor' | 'ivr_flag_with_handoff' | 'second_greeting' | null;
+  reason: 'automatic_anchor' | 'operator_handoff' | 'awaiting_handoff' | 'ivr_flag_with_handoff' | 'second_greeting' | null;
 }
 
 const AUTOMATIC_SPEECH_PATTERNS = [
@@ -13,6 +13,7 @@ const AUTOMATIC_SPEECH_PATTERNS = [
   /разговор(?:ы)? (?:записыва|может быть записан)/i,
   /для (?:улучшения|контроля) качества/i,
   /дождитесь (?:ответа|соединения)/i,
+  /подождите (?:связи|соединения|ответа) с оператором/i,
   /оставайтесь на линии/i,
   /все операторы/i,
   /ваш звонок .*важен/i,
@@ -27,6 +28,8 @@ const AUTOMATIC_SPEECH_PATTERNS = [
 const GREETING_PATTERN = /(?:^|[.!?]\s*)(?:алло|здравствуйте|добрый\s+(?:день|вечер|утро)|приветствую)(?=\s|[!,.:;?]|$)/i;
 const SELF_INTRODUCTION_PATTERN = /(?:меня зовут|это\s+(?:администратор|менеджер|консультант)|отдел продаж|слушаю вас)/i;
 const CLIENT_WAITING_PATTERN = /(?:буду ждать|я на линии|дождусь|жду|соедините|ответит оператор|голосов(?:ое|ого) (?:сообщение|приветствие|меню))/i;
+const OPERATOR_HANDOFF_PATTERN = /(?:соедин(?:ю|им|яем|ите|ить)|переключ(?:у|им|аем|ить)|перевед(?:у|ем|ём|ите|ти)|передам|позову|приглашу|ожидайте\s+(?:ответа|соединения)).{0,90}(?:менеджер|специалист|отдел|сотрудник|оператор)|(?:менеджер|специалист|отдел|сотрудник|оператор).{0,90}(?:соедин(?:ю|им|яем|ить)|переключ(?:у|им|аем|ить)|перевед(?:у|ем|ём|ти)|передам|позову)/i;
+const CALL_CENTER_INTRO_PATTERN = /(?:колл[ -]?центр|контактн(?:ый|ого)\s+центр|единая\s+(?:справочная|линия)|диспетчерская)/i;
 
 function normalizedText(text: string): string {
   return text.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
@@ -74,7 +77,7 @@ function hasPreconnectionEvidence(turns: readonly TranscriptTurn[], boundaryInde
 function resultFromBoundary(
   turns: readonly TranscriptTurn[],
   boundaryIndex: number,
-  reason: Exclude<AnalysisTranscriptResult['reason'], null>,
+  reason: 'automatic_anchor' | 'operator_handoff' | 'ivr_flag_with_handoff' | 'second_greeting',
 ): AnalysisTranscriptResult | null {
   if (boundaryIndex <= 0) return null;
   const transcript = turns.slice(boundaryIndex).filter((turn) => !isNoise(turn.text));
@@ -96,12 +99,43 @@ export function prepareTranscriptForAnalysis(
     ? firstManagerIndex
     : undefined;
 
+  // A live switchboard operator is still a human, but must not be graded as
+  // the employee who receives the transferred call. Prefer this later boundary
+  // over the first non-IVR voice.
+  const earlyManagerIndexes = managerIndexes.slice(0, 4);
+  const callCenterIndex = earlyManagerIndexes.find((index) => CALL_CENTER_INTRO_PATTERN.test(turns[index].text));
+  const handoffIndex = [...earlyManagerIndexes].reverse().find((index) => OPERATOR_HANDOFF_PATTERN.test(turns[index].text));
+  if (handoffIndex != null) {
+    const nextHumanIndex = managerIndexes.find((index) => index > handoffIndex && isLikelyHumanStart(turns[index].text)
+      && !isAutomaticSpeech(turns[index].text));
+    if (nextHumanIndex != null) {
+      const result = resultFromBoundary(turns, nextHumanIndex, 'operator_handoff');
+      if (result) return result;
+    }
+    // Only discard an unfinished transfer when we know the preceding speaker
+    // was IVR / the call centre. A real manager may legitimately offer to
+    // transfer to a colleague near the end of an otherwise scorable call.
+    if (automaticIndex != null || callCenterIndex != null) {
+      return { transcript: [], removedPrefixTurns: turns.length, reason: 'awaiting_handoff' };
+    }
+  }
+
+  if (callCenterIndex != null) {
+    const nextHumanIndex = managerIndexes.find((index) => index > callCenterIndex && isLikelyHumanStart(turns[index].text)
+      && !isAutomaticSpeech(turns[index].text));
+    if (nextHumanIndex != null) {
+      const result = resultFromBoundary(turns, nextHumanIndex, 'operator_handoff');
+      if (result) return result;
+    }
+  }
+
   if (automaticIndex != null) {
     const boundaryIndex = managerIndexes.find((index) => index > automaticIndex && !isAutomaticSpeech(turns[index].text));
     if (boundaryIndex != null) {
       const result = resultFromBoundary(turns, boundaryIndex, 'automatic_anchor');
       if (result) return result;
     }
+    return { transcript: [], removedPrefixTurns: turns.length, reason: 'awaiting_handoff' };
   }
 
   const greetingIndexes = managerIndexes.filter((index) => isGreeting(turns[index].text));

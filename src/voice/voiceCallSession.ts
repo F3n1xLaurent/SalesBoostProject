@@ -13,7 +13,8 @@ import { evaluateSessionV2 } from '../llm/evaluatorV2';
 import { getTranscriptFromVoxLog } from './voxLogTranscript';
 import { generateCallAnalyticsBundle } from './callAnalyticsBundle';
 import { resolvePhoneNumberSourceSnapshot } from './phoneNumberStats';
-import { scheduleRecordingFetch } from './voximplantRecordingService';
+import { getCallRecordingFilePath, scheduleRecordingFetch } from './voximplantRecordingService';
+import { CALL_RETRANSCRIPTION_MODEL, retranscribeCallRecording } from './callRetranscription';
 import { extractIvrPath, parseStoredIvrPath } from './ivrWebhook';
 import {
   isUnavailableCallOutcome,
@@ -23,6 +24,7 @@ import {
 } from './voxCallOutcome';
 import { sanitizeTranscriptTurns } from './transcriptSanitizer';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
+import { filterUnreliableManagerTurns } from './transcriptReliability';
 import { attributeCallToIntroducedManager } from './callManagerAttribution';
 import * as Sentry from '@sentry/node';
 import { recordProductEvent, type ProductEventProperty } from '../analytics/productAnalytics';
@@ -391,6 +393,8 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       caseContextJson: true,
       voxSessionId: true,
       recordingStatus: true,
+      transcriptJson: true,
+      originalTranscriptJson: true,
       ivrDetected: true,
       ivrPathJson: true,
     },
@@ -500,7 +504,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
         answerTimeSec: answerTimeSec ?? undefined,
         durationSec,
         talkDurationSec: talkDurationSec ?? undefined,
-        transcriptJson: JSON.stringify(initialTranscript),
+        transcriptJson: existingSession?.originalTranscriptJson ? undefined : JSON.stringify(initialTranscript),
         evaluationJson: unavailable ? null : undefined,
         totalScore: unavailable ? null : undefined,
         failureReason: unavailable ? null : undefined,
@@ -514,11 +518,12 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   } catch (err) {
     console.error('[voice/session] initial upsert error:', err instanceof Error ? err.message : err);
   }
+  let recordingTask: Promise<void> | null = null;
   if (recordingStarted) {
     if (existingSession?.recordingStatus === 'ready') {
       // Duplicate final webhook: keep the already downloaded recording untouched.
     } else if (resolvedVoxSessionId != null) {
-      scheduleRecordingFetch(callId, String(resolvedVoxSessionId));
+      recordingTask = scheduleRecordingFetch(callId, String(resolvedVoxSessionId));
     } else {
       await prisma.voiceCallSession.update({ where: { callId }, data: { recordingStatus: 'failed' } }).catch(() => undefined);
       console.error(`Voximplant recording failed call_id=${callId} error=vox_session_id is missing`);
@@ -550,8 +555,13 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
 
   // 2) If transcript is missing/incomplete but we have vox_session_id (realtime_pure),
   // retry the Voximplant log because it can take a few seconds to finalize.
-  let transcript: TranscriptTurn[] = initialTranscript;
-  let transcriptSource: 'webhook' | 'memory' | 'vox_log' | 'none' =
+  let transcript: TranscriptTurn[] = existingSession?.originalTranscriptJson
+    ? safeJsonParse<TranscriptTurn[]>(existingSession.transcriptJson, initialTranscript)
+    : initialTranscript;
+  let originalTranscriptForReview: TranscriptTurn[] | null = existingSession?.originalTranscriptJson
+    ? safeJsonParse<TranscriptTurn[]>(existingSession.originalTranscriptJson, [])
+    : null;
+  let transcriptSource: 'webhook' | 'memory' | 'vox_log' | 'recording' | 'none' =
     payloadTranscript.length > 0 ? 'webhook' : (record?.transcript?.length ? 'memory' : 'none');
 
   if (transcript.length < 2 && resolvedVoxSessionId != null) {
@@ -592,6 +602,46 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
     }
   }
 
+  // The Vox webhook arrives before the stereo recording has finished uploading.
+  // Wait in this background finalizer, never in the HTTP response, before scoring.
+  if (!existingSession?.originalTranscriptJson && transcript.length >= 2) {
+    if (recordingTask) await recordingTask;
+    const recording = await prisma.voiceCallSession.findUnique({
+      where: { callId }, select: { recordingStatus: true },
+    });
+    if (recording?.recordingStatus === 'ready') {
+      try {
+        const reviewed = await retranscribeCallRecording(getCallRecordingFilePath(callId), transcript);
+        if (reviewed) {
+          originalTranscriptForReview = transcript;
+          await prisma.voiceCallSession.update({
+            where: { callId },
+            data: {
+              originalTranscriptJson: JSON.stringify(transcript),
+              transcriptJson: JSON.stringify(reviewed),
+              retranscriptionJson: JSON.stringify({ status: 'applied', model: CALL_RETRANSCRIPTION_MODEL }),
+            },
+          });
+          transcript = reviewed;
+          transcriptSource = 'recording';
+        } else {
+          await prisma.voiceCallSession.update({
+            where: { callId },
+            data: { retranscriptionJson: JSON.stringify({ status: 'unaligned', model: CALL_RETRANSCRIPTION_MODEL }) },
+          });
+        }
+      } catch (error) {
+        console.warn('[voice/session] recording retranscription failed; original ASR retained', {
+          callId, error: error instanceof Error ? error.message : String(error),
+        });
+        await prisma.voiceCallSession.update({
+          where: { callId },
+          data: { retranscriptionJson: JSON.stringify({ status: 'failed', model: CALL_RETRANSCRIPTION_MODEL }) },
+        }).catch(() => undefined);
+      }
+    }
+  }
+
   console.log('[voice/session] transcript', { callId, source: transcriptSource, turns: transcript.length });
 
   if (transcript.length < 2) {
@@ -626,7 +676,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   // 3) Run evaluation (can take time) and update session when ready
   try {
     const analysisTranscriptResult = prepareTranscriptForAnalysis(transcript, { ivrDetected });
-    const analysisTranscript = analysisTranscriptResult.transcript;
+    const analysisTranscript = filterUnreliableManagerTurns(analysisTranscriptResult.transcript);
     console.info('[voice/session] analysis transcript prepared', {
       callId,
       sourceTurns: transcript.length,
@@ -634,6 +684,16 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       removedPrefixTurns: analysisTranscriptResult.removedPrefixTurns,
       boundaryReason: analysisTranscriptResult.reason,
     });
+    if (analysisTranscript.length < 2) {
+      const reason = 'Оценка не выполнена: разговор с менеджером после IVR или перевода не подтверждён.';
+      await prisma.voiceCallSession.update({
+        where: { callId }, data: { evaluationJson: null, totalScore: null, failureReason: reason },
+      });
+      await syncCallPlanCallFromSession(callId, {
+        outcome, endedAt, transcript, evaluation: null, totalScore: null, failureReason: reason,
+      });
+      return;
+    }
     await attributeCallToIntroducedManager(callId, analysisTranscript).catch((error) => {
       console.warn('[voice/session] manager attribution failed:', error instanceof Error ? error.message : error);
     });
@@ -656,9 +716,18 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
     const evaluationScenarioContext = existingSession?.source === 'demo'
       ? (safeJsonParse<{ prompt?: string }>(existingSession.caseContextJson, {}).prompt || undefined)
       : evaluationScript
-        ? JSON.stringify({ name: evaluationScript.name, context: evaluationScript.context })
+        ? JSON.stringify({
+          name: evaluationScript.name,
+          context: evaluationScript.context,
+          questions: safeJsonParse(evaluationScript.questionsJson, []),
+          successCriteria: safeJsonParse(evaluationScript.successCriteriaJson, []),
+          dataCondition: safeJsonParse(evaluationScript.dataConditionJson, {}),
+        })
         : undefined;
     const evaluationStartedAt = performance.now();
+    const originalAnalysisTranscript = originalTranscriptForReview
+      ? filterUnreliableManagerTurns(prepareTranscriptForAnalysis(originalTranscriptForReview, { ivrDetected }).transcript)
+      : null;
     console.log('[voice/session] evaluation start', { callId, turns: analysisTranscript.length });
     const { evaluation } = await evaluateSessionV2({
       dialogHistory,
@@ -667,6 +736,14 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       earlyFail: false,
       behaviorSignals: [],
       scenarioContext: evaluationScenarioContext,
+      transcriptionAlternatives: originalAnalysisTranscript?.length === analysisTranscript.length
+        ? analysisTranscript.flatMap((turn, index) => {
+          const original = originalAnalysisTranscript?.[index];
+          return turn.role === 'manager' && original?.role === 'manager' && original.text !== turn.text
+            ? [{ turnIndex: index + 1, original: original.text, reviewed: turn.text }]
+            : [];
+        })
+        : undefined,
       evaluationChecklist,
     });
     console.log('[voice/session] evaluation base done', { callId, ms: elapsedMs(evaluationStartedAt) });

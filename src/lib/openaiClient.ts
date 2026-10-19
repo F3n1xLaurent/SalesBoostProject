@@ -12,7 +12,7 @@ function createOpenAIClient(): OpenAI {
   if (config.httpsProxy && config.aiApiProvider !== 'proxyapi') {
     const proxyAgent = new ProxyAgent(config.httpsProxy);
     const customFetch = (input: any, init?: any) =>
-      undiciFetch(input as any, { ...init, dispatcher: proxyAgent } as any);
+      undiciFetch(input as any, { ...init, duplex: 'half', dispatcher: proxyAgent } as any);
     return new OpenAI({ ...baseOptions, fetch: customFetch as any });
   }
 
@@ -36,7 +36,7 @@ function createOpenAIClient(): OpenAI {
         const formModel = body.get('model');
         requestModel = typeof formModel === 'string' ? formModel : null;
       }
-      const response = await undiciFetch(input as any, { ...init, headers } as any) as unknown as Response;
+      const response = await undiciFetch(input as any, { ...init, headers, duplex: 'half' } as any) as unknown as Response;
       await recordProxyApiResponse({ url, requestModel, requestUsage, response }).catch((error) => {
         console.warn('[economics] failed to save ProxyAPI usage:', error instanceof Error ? error.message : error);
       });

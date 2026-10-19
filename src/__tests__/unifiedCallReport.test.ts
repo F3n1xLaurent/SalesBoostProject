@@ -259,6 +259,80 @@ describe('unified call report normalization', () => {
       .toBe('Менеджер перечислил свойства без связи с задачами клиента.');
   });
 
+  it('deduplicates two findings on one manager reply and aligns its mark with the finding', () => {
+    const quote = 'Автомобиль прошёл проверку, всё хорошо.';
+    const report = normalizeUnifiedCallReport({
+      totalScore: 65,
+      keyFindings: [
+        {
+          problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+          importance: 'Важно', category: 'Продукт', quote,
+          comment: 'Менеджер не объяснил, что проверяли.',
+          betterExample: 'Проверка включает диагностику двигателя и ходовой части.',
+        },
+        {
+          problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа',
+          importance: 'Средне', category: 'Продукт', quote: 'всё хорошо.',
+          comment: 'Не перечислил выполненные работы.',
+          betterExample: 'Проверка включает диагностику двигателя и ходовой части.',
+        },
+      ],
+      dialog: [
+        { role: 'client', text: 'Что входит в проверку?', mark: null },
+        { role: 'manager', text: quote, mark: 'positive', comment: 'Хорошая презентация.' },
+      ],
+    }, { totalScore: 65, transcript: [
+      { role: 'client', text: 'Что входит в проверку?' },
+      { role: 'manager', text: quote },
+    ] });
+
+    expect(report?.keyFindings).toHaveLength(1);
+    expect(report?.dialog[1]).toMatchObject({
+      mark: 'negative', comment: 'Менеджер не объяснил, что проверяли.',
+    });
+  });
+
+  it('does not create a negative finding or mark from visibly broken ASR', () => {
+    const quote = 'для вас ха-- актуально';
+    const report = normalizeUnifiedCallReport({
+      totalScore: 70,
+      keyFindings: [{
+        problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа',
+        importance: 'Важно', category: 'Продукт', quote,
+        comment: 'Менеджер ушёл от ответа.', betterExample: 'Я уточню информацию.',
+      }],
+      dialog: [{ role: 'manager', text: quote, mark: 'negative', comment: 'Плохой ответ.' }],
+    }, { totalScore: 70, transcript: [{ role: 'manager', text: quote }] });
+
+    expect(report?.keyFindings).toEqual([]);
+    expect(report?.dialog[0]).toMatchObject({ mark: null, comment: null, betterExample: null });
+  });
+
+  it('does not mark every repeated identical manager phrase as a negative finding', () => {
+    const quote = 'Автомобиль прошёл проверку.';
+    const transcript = [
+      { role: 'manager' as const, text: quote },
+      { role: 'client' as const, text: 'Что именно проверяли?' },
+      { role: 'manager' as const, text: quote },
+    ];
+    const report = normalizeUnifiedCallReport({
+      totalScore: 70,
+      keyFindings: [{
+        problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа',
+        importance: 'Важно', category: 'Продукт', quote,
+        comment: 'Не ответил на вопрос о составе проверки.',
+        betterExample: 'Я уточню состав проверки и перечислю выполненные работы.',
+      }],
+      dialog: [
+        { role: 'manager', text: quote, mark: 'positive', comment: 'Менеджер подтвердил проверку.' },
+        { role: 'client', text: 'Что именно проверяли?' },
+        { role: 'manager', text: quote, mark: 'negative', comment: 'Не ответил на вопрос.' },
+      ],
+    }, { totalScore: 70, transcript });
+
+    expect(report?.dialog.map((line) => line.mark)).toEqual(['positive', null, 'negative']);
+  });
+
   it('removes an unexplained Можно лучше mark', () => {
     const report = normalizeUnifiedCallReport(
       {
@@ -403,6 +477,79 @@ describe('unified call report normalization', () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(repaired.keyFindings[0]?.betterExample)
       .toBe('Подскажите, пожалуйста, что для вас особенно важно при выборе?');
+  });
+
+  it('does not replace a direct question about inspection works with a counter-question', async () => {
+    const transcript = [
+      { role: 'client' as const, text: 'Что входит в проверку автомобиля?' },
+      { role: 'manager' as const, text: 'Машина прошла проверку.' },
+    ];
+    const report = normalizeUnifiedCallReport({
+      totalScore: 65,
+      keyFindings: [{
+        problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+        importance: 'Важно',
+        category: 'Продукт',
+        quote: transcript[1].text,
+        comment: 'Не рассказал, что входит в проверку.',
+        betterExample: 'Что для вас важнее всего?',
+      }],
+    }, { totalScore: 65, transcript });
+    expect(report?.keyFindings[0]?.betterExample).toBe('');
+
+    const create = vi.spyOn(openai.chat.completions, 'create').mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ items: [{
+        index: 0, betterExample: 'Проверка включает диагностику двигателя и ходовой части.',
+      }] }) } }],
+    } as any);
+    const repaired = await ensureFindingBetterExamples(report!, transcript,
+      'Проверка: диагностика двигателя и ходовой части.');
+    expect(repaired.keyFindings[0]?.betterExample)
+      .toBe('Проверка включает диагностику двигателя и ходовой части.');
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([expect.objectContaining({
+        content: expect.stringContaining('диагностика двигателя и ходовой части'),
+      })]),
+    }));
+  });
+
+  it('rejects a multi-sentence deflection instead of an answer about inspection works', async () => {
+    const transcript = [
+      { role: 'client' as const, text: 'Что входит в проверку автомобиля?' },
+      { role: 'manager' as const, text: 'Машина прошла проверку.' },
+    ];
+    const finding = {
+      problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+      importance: 'Важно',
+      category: 'Продукт',
+      quote: transcript[1].text,
+      comment: 'Не рассказал, что входит в проверку.',
+    };
+    const report = normalizeUnifiedCallReport({
+      totalScore: 65,
+      keyFindings: [{
+        ...finding,
+        betterExample: 'Давайте уточним ваши задачи. Что для вас важнее всего?',
+      }],
+    }, { totalScore: 65, transcript });
+    expect(report?.keyFindings[0]?.betterExample).toBe('');
+
+    vi.spyOn(openai.chat.completions, 'create').mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ items: [{
+        index: 0,
+        betterExample: 'Проверка включает диагностику двигателя и ходовой части.',
+      }] }) } }],
+    } as any);
+    const repaired = await ensureFindingBetterExamples(report!, transcript,
+      'Проверка: диагностика двигателя и ходовой части.');
+    expect(repaired.keyFindings[0]?.betterExample)
+      .toBe('Проверка включает диагностику двигателя и ходовой части.');
+
+    const statementOnly = normalizeUnifiedCallReport({
+      totalScore: 65,
+      keyFindings: [{ ...finding, betterExample: 'Давайте уточним ваши задачи.' }],
+    }, { totalScore: 65, transcript });
+    expect(statementOnly?.keyFindings[0]?.betterExample).toBe('');
   });
 
   it('does not keep a perfect category score when its comment contains a concern', () => {

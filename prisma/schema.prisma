@@ -110,6 +110,7 @@ model Dealership {
   address     String?
   workingHoursFrom String   @default("09:00")
   workingHoursTo   String   @default("21:00")
+  timezoneOffsetMinutes Int @default(180)
   isActive    Boolean  @default(true)
   isDeleted   Boolean  @default(false)
   createdAt   DateTime @default(now())
@@ -847,6 +848,8 @@ model VoiceCallSession {
   durationSec      Int?      // talk time in seconds (null if no answer)
   talkDurationSec  Int?      // explicit talk time in seconds for analytics
   transcriptJson   String?   // JSON: [{ role: "manager"|"client", text: string }]
+  originalTranscriptJson String? // original realtime ASR, when a recording was retranscribed
+  retranscriptionJson String? // JSON: second-pass model and result status
   evaluationJson   String?   // same shape as TrainingSession.evaluationJson (V2)
   dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson
   checklistResultsJson String? // JSON: checklist results extracted from evaluationJson

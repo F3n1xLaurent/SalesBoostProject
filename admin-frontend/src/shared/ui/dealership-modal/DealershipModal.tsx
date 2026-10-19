@@ -117,6 +117,7 @@ type DealershipFormState = {
   address: string;
   workingHoursFrom: string;
   workingHoursTo: string;
+  timezoneOffsetMinutes: number;
   holdingId: string;
   isActive: boolean;
 };
@@ -141,6 +142,7 @@ const EMPTY_FORM: DealershipFormState = {
   address: '',
   workingHoursFrom: '09:00',
   workingHoursTo: '21:00',
+  timezoneOffsetMinutes: 180,
   holdingId: '',
   isActive: true,
 };
@@ -158,6 +160,7 @@ function fillForm(dealership?: DealershipItem | null): DealershipFormState {
     address: dealership.address || '',
     workingHoursFrom: (dealership.workingHoursFrom || '09:00').slice(0, 5),
     workingHoursTo: (dealership.workingHoursTo || '21:00').slice(0, 5),
+    timezoneOffsetMinutes: dealership.timezoneOffsetMinutes ?? 180,
     holdingId: dealership.holdingId || '',
     isActive: dealership.isActive,
   };
@@ -173,6 +176,7 @@ function normalizePayload(form: DealershipFormState) {
     address: form.address.trim() || null,
     workingHoursFrom: form.workingHoursFrom,
     workingHoursTo: form.workingHoursTo,
+    timezoneOffsetMinutes: form.timezoneOffsetMinutes,
     holdingId: form.holdingId || null,
     isActive: form.isActive,
   };
@@ -185,6 +189,10 @@ export function formatWorkingHours(dealership?: Pick<DealershipItem, 'workingHou
 }
 
 const CITY_PAGE_SIZE = 100;
+const TIMEZONE_OPTIONS = Array.from({ length: 27 }, (_, index) => {
+  const hours = index - 12;
+  return { value: hours * 60, label: `UTC${hours >= 0 ? '+' : ''}${hours}` };
+});
 
 function CitySelect(props: {
   value: string;
@@ -719,6 +727,23 @@ export function DealershipModal({ mode, open, dealership, fixedHoldingId, fixedH
               />
             </label>
           </div>
+
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span>Часовой пояс точки</span>
+            <select
+              className="sa-select"
+              value={form.timezoneOffsetMinutes}
+              onChange={(event) => setForm((current) => ({
+                ...current,
+                timezoneOffsetMinutes: Number(event.target.value),
+              }))}
+            >
+              {TIMEZONE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <span className="sa-meta">Местное время работы точки. По умолчанию UTC+3.</span>
+          </label>
 
           {mode === 'edit' && (
             <button

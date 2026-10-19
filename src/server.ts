@@ -31,6 +31,7 @@ import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voic
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
+import { filterUnreliableManagerTurns } from './voice/transcriptReliability';
 import { classifyCallCompletion, type CompletionTranscriptTurn } from './voice/callCompletionClassifier';
 import { classifyLiveSpeaker, type LiveSpeakerTranscriptTurn } from './voice/callLiveSpeakerClassifier';
 import { rankProbableManagers } from './voice/callManagerAttribution';
@@ -2459,6 +2460,15 @@ async function buildTrainerAuditEvaluation(params: {
   forcedFail: boolean;
   failureReason: string | null;
 }) {
+  const filteredTranscript = filterUnreliableManagerTurns(params.transcript);
+  // Keep the full stored transcript, but do not grade obvious ASR fragments.
+  // If no reliable manager speech remains, preserve the existing fallback
+  // until the session can be handled as an explicit transcription failure.
+  const analysisTranscript = filteredTranscript.some((turn) => turn.role === 'manager')
+    && filteredTranscript.some((turn) => turn.role === 'client')
+    ? filteredTranscript
+    : params.transcript;
+  const transcriptionWasFiltered = analysisTranscript.length !== params.transcript.length;
   const scenario = params.caseContext.scenario && typeof params.caseContext.scenario === 'object'
     ? params.caseContext.scenario as Record<string, unknown>
     : {};
@@ -2473,19 +2483,21 @@ async function buildTrainerAuditEvaluation(params: {
     }
     : null;
   const evaluated = await evaluateSessionV2({
-    dialogHistory: params.transcript
+    dialogHistory: analysisTranscript
       .filter((turn) => turn.text?.trim())
       .map((turn) => ({ role: turn.role, content: turn.text })),
     car: params.runtime.car,
     state: params.runtime.state,
     earlyFail: params.forcedFail,
     failureReason: params.failureReason ?? undefined,
-    behaviorSignals: params.runtime.behaviorSignals,
+    // Signals were computed per original ASR turn. Their indexes are no longer
+    // trustworthy after dropping a fragment, so rely on the clean transcript.
+    behaviorSignals: transcriptionWasFiltered ? [] : params.runtime.behaviorSignals,
     scenarioContext: JSON.stringify(scenario),
     evaluationChecklist,
   });
   const evaluation = evaluated.evaluation;
-  const planCriteria = await evaluateScriptCriteria(scenario.successCriteria, params.transcript);
+  const planCriteria = await evaluateScriptCriteria(scenario.successCriteria, analysisTranscript);
   const planCriteriaScore = extractPlanCriteriaEvaluation(planCriteria && typeof planCriteria === 'object' ? { plan_criteria: planCriteria } : null)?.percent ?? null;
   const effectivenessScore = round1(numberOrNull(evaluation.overall_score_0_100) ?? planCriteriaScore ?? 0);
   let finalEvaluation: Record<string, unknown> = {
@@ -2494,7 +2506,7 @@ async function buildTrainerAuditEvaluation(params: {
   };
   try {
     const unifiedTrainerReport = await generateUnifiedTrainerReport({
-      transcript: params.transcript
+      transcript: analysisTranscript
         .filter((turn) => turn.text?.trim())
         .map((turn) => ({ role: turn.role, text: turn.text })),
       totalScore: effectivenessScore,
