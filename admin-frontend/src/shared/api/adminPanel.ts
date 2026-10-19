@@ -164,6 +164,20 @@ export interface AuditDetailItem {
   scenarioName: string | null;
   assignedBy: string | null;
   failReason: string | null;
+  attribution?: {
+    type: 'manager' | 'dealership' | null;
+    source: string | null;
+    reasonCode: string | null;
+    reason: string;
+    introducedName: string | null;
+    evidence: string | null;
+    confidence: number | null;
+    probableMatches: Array<{
+      managerId: string;
+      name: string;
+      confidence: number;
+    }>;
+  } | null;
   recordingStatus?: 'pending' | 'processing' | 'ready' | 'failed' | null;
   recordingUrl?: string | null;
   unifiedReport: {
@@ -1609,11 +1623,13 @@ export async function restoreDealership(dealershipId: string): Promise<void> {
 
 export async function fetchPhoneNumberTypes(filters?: {
   holdingId?: string | null;
+  dealershipId?: string | null;
   ownership?: PhoneNumberOwnership;
   active?: boolean;
 }): Promise<PhoneNumberTypeItem[]> {
   const params = new URLSearchParams();
   if (filters?.holdingId) params.set('holdingId', filters.holdingId);
+  if (filters?.dealershipId) params.set('dealershipId', filters.dealershipId);
   if (filters?.ownership) params.set('ownership', filters.ownership);
   if (filters?.active) params.set('active', 'true');
   const suffix = params.toString() ? `?${params.toString()}` : '';

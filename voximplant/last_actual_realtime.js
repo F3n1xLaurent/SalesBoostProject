@@ -62,6 +62,11 @@ function getCompletionClassifierUrl(eventUrl) {
   return normalized ? normalized + "/classify-completion" : "";
 }
 
+function getLiveSpeakerClassifierUrl(eventUrl) {
+  var normalized = String(eventUrl || "").replace(/\/+$/, "");
+  return normalized ? normalized + "/classify-live-speaker" : "";
+}
+
 function postCompletionClassification(url, payload, done) {
   if (!url) {
     if (done) done(null);
@@ -98,6 +103,40 @@ function postCompletionClassification(url, payload, done) {
   );
 }
 
+function postLiveSpeakerClassification(url, payload, done) {
+  if (!url) {
+    if (done) done(null);
+    return;
+  }
+
+  Net.httpRequest(
+    url,
+    function (result) {
+      var code = result && (result.code != null ? result.code : result.status);
+      var raw = result && result.text ? String(result.text) : "";
+      var parsed = null;
+
+      if (code === 200 && raw) {
+        try {
+          parsed = JSON.parse(raw);
+        } catch (err) {
+          Logger.write("elevenlabs_test: live speaker classifier parse error=" + err);
+        }
+      } else {
+        Logger.write("elevenlabs_test: live speaker classifier HTTP " + code);
+      }
+
+      if (done) done(parsed);
+    },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      postData: JSON.stringify(payload),
+      timeout: 5,
+    }
+  );
+}
+
 VoxEngine.addEventListener(AppEvents.Started, function (e) {
   var data = parseCustomData();
 
@@ -111,6 +150,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   var callerId = normalizePhone(data.caller_id);
   var eventUrl = getString(data.event_url, "");
   var completionClassifierUrl = getCompletionClassifierUrl(eventUrl);
+  var liveSpeakerClassifierUrl = getLiveSpeakerClassifierUrl(eventUrl);
 
   var elevenlabsApiKey = ELEVENLABS_API_KEY;
   var elevenlabsAgentId = ELEVENLABS_AGENT_ID;
@@ -155,6 +195,8 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   var agentOutputConnected = false;
   var lastInputKind = "none";
   var lastExplicitDtmfInstructionAt = 0;
+  var liveDetectionRevision = 0;
+  var pendingLiveClassification = null;
 
   // IVR tag for this call.
   // Becomes true once ElevenLabs makes the first valid send_dtmf tool call.
@@ -255,13 +297,15 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
     Logger.write("elevenlabs_test: agent output muted, reason=" + reason);
   }
 
-  function enableAgentOutput() {
+  function enableAgentOutput(preserveBufferedMedia) {
     if (agentOutputConnected || !client) return;
 
-    try {
-      // Drop any response generated for IVR/music before opening the line.
-      client.clearMediaBuffer();
-    } catch (clearErr) {}
+    if (!preserveBufferedMedia) {
+      try {
+        // Drop any response generated for IVR/music before opening the line.
+        client.clearMediaBuffer();
+      } catch (clearErr) {}
+    }
 
     try {
       client.sendMediaTo(call);
@@ -272,11 +316,116 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
     }
   }
 
+  function classifyPotentialLiveSpeaker(text, detectionRevision) {
+    if (!liveSpeakerClassifierUrl) {
+      connectionState = "waiting_operator";
+      muteAgentOutput("live_speaker_classifier_unavailable");
+      return;
+    }
+
+    /*
+     * Clear everything generated for an earlier ambiguous/automated turn.
+     * From this point, media produced while the request is in flight belongs
+     * to the current candidate and may be released if the server confirms a
+     * live person.
+     */
+    muteAgentOutput("classifying_live_speaker");
+    connectionState = "classifying_speaker";
+    pendingLiveClassification = {
+      revision: detectionRevision,
+      text: text,
+      startedAt: Date.now(),
+      bufferedResponses: [],
+    };
+
+    Logger.write(
+      "elevenlabs_test: live speaker classification started, revision=" +
+        detectionRevision +
+        ", text=" +
+        normalizeInputTranscript(text).slice(0, 160)
+    );
+
+    postLiveSpeakerClassification(
+      liveSpeakerClassifierUrl,
+      {
+        call_id: callId,
+        turn_id: String(detectionRevision),
+        candidate_text: text,
+        transcript: transcript.slice(-6),
+      },
+      function (decision) {
+        if (
+          ended ||
+          connectionState === "live_conversation" ||
+          !pendingLiveClassification ||
+          pendingLiveClassification.revision !== detectionRevision ||
+          liveDetectionRevision !== detectionRevision
+        ) {
+          Logger.write(
+            "elevenlabs_test: stale live speaker classifier result ignored, revision=" +
+              detectionRevision
+          );
+          return;
+        }
+
+        var completedClassification = pendingLiveClassification;
+        var elapsedMs = Date.now() - completedClassification.startedAt;
+        pendingLiveClassification = null;
+        var speakerType = String(
+          decision && decision.speaker_type ? decision.speaker_type : "uncertain"
+        );
+        var confidence = Number(
+          decision && decision.confidence != null ? decision.confidence : 0
+        );
+
+        Logger.write(
+          "elevenlabs_test: live speaker classification completed, revision=" +
+            detectionRevision +
+            ", type=" +
+            speakerType +
+            ", confidence=" +
+            confidence +
+            ", ms=" +
+            elapsedMs
+        );
+
+        if (speakerType === "live_human" && confidence >= 0.85) {
+          lastInputKind = "live_human_ai";
+          connectionState = "live_conversation";
+          // Preserve audio generated from the confirmed human phrase while
+          // the server request was in flight.
+          enableAgentOutput(true);
+          for (
+            var bufferedIndex = 0;
+            bufferedIndex < completedClassification.bufferedResponses.length;
+            bufferedIndex += 1
+          ) {
+            var bufferedResponse =
+              completedClassification.bufferedResponses[bufferedIndex];
+            pushTranscript("client", bufferedResponse.text);
+            inspectAgentCompletion(
+              bufferedResponse.text,
+              bufferedResponse.responseRevision
+            );
+          }
+          return;
+        }
+
+        lastInputKind = speakerType;
+        connectionState = "waiting_operator";
+        muteAgentOutput("live_speaker_not_confirmed_" + speakerType);
+      }
+    );
+  }
+
   function handleUserTranscript(text) {
     var normalized = normalizeInputTranscript(text);
     if (!normalized) return;
 
     conversationRevision += 1;
+    liveDetectionRevision += 1;
+    var detectionRevision = liveDetectionRevision;
+    pendingLiveClassification = null;
     /*
      * Speech detected while the final agent phrase is still playing may be
      * echo or a short overlap. Do not let it cut off/cancel an already
@@ -316,17 +465,15 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
       !isClearlyLiveHuman(normalized)
     ) {
       lastInputKind = "unconfirmed_speech";
-      muteAgentOutput("unconfirmed_human_speech");
-      Logger.write(
-        "elevenlabs_test: ignored unconfirmed transcript=" +
-          normalized.slice(0, 160)
-      );
+      classifyPotentialLiveSpeaker(text, detectionRevision);
       return;
     }
 
     lastInputKind = "live_human";
     connectionState = "live_conversation";
-    enableAgentOutput();
+    // UserTranscript arrives before AgentResponse. Keeping the current buffer
+    // prevents clipping a response that starts immediately after detection.
+    enableAgentOutput(true);
   }
 
   function markIvrDetected() {
@@ -800,7 +947,11 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
            * into a spoken final response. It must never reach the callee.
            * Drop queued audio and finish the call instead of forwarding it.
            */
-          if (isInternalCompletionStatus(agentText)) {
+          if (
+            isInternalCompletionStatus(agentText) &&
+            agentOutputConnected &&
+            connectionState === "live_conversation"
+          ) {
             Logger.write(
               "elevenlabs_test: suppressed internal completion status=" +
                 agentText
@@ -819,6 +970,22 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
           if (agentOutputConnected) {
             pushTranscript("client", agentText);
             inspectAgentCompletion(agentText, responseRevision);
+          } else if (
+            connectionState === "classifying_speaker" &&
+            pendingLiveClassification
+          ) {
+            /*
+             * Keep this response buffered until the server decides whether
+             * the triggering input belongs to a live person. A negative or
+             * stale decision clears it via muteAgentOutput().
+             */
+            Logger.write(
+              "elevenlabs_test: agent response buffered pending live speaker classification"
+            );
+            pendingLiveClassification.bufferedResponses.push({
+              text: agentText,
+              responseRevision: responseRevision,
+            });
           } else {
             Logger.write("elevenlabs_test: suppressed agent response before live person confirmation");
             try {

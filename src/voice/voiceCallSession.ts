@@ -23,6 +23,7 @@ import {
 } from './voxCallOutcome';
 import { sanitizeTranscriptTurns } from './transcriptSanitizer';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
+import { attributeCallToIntroducedManager } from './callManagerAttribution';
 import * as Sentry from '@sentry/node';
 import { recordProductEvent, type ProductEventProperty } from '../analytics/productAnalytics';
 
@@ -346,7 +347,9 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       planId: existing.planId,
       managerId: existing.employeeId,
       dealershipId: existing.dealershipId,
-      attributionType: existing.targetKind === 'dealership' ? 'dealership' : 'manager',
+      attributionType: existing.employeeId
+        ? 'manager'
+        : existing.targetKind === 'dealership' ? 'dealership' : 'manager',
       ...phoneNumberSource,
       dimensionsJson: analyticsFields.dimensionsJson,
       checklistResultsJson: analyticsFields.checklistResultsJson,
@@ -630,6 +633,9 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       analysisTurns: analysisTranscript.length,
       removedPrefixTurns: analysisTranscriptResult.removedPrefixTurns,
       boundaryReason: analysisTranscriptResult.reason,
+    });
+    await attributeCallToIntroducedManager(callId, analysisTranscript).catch((error) => {
+      console.warn('[voice/session] manager attribution failed:', error instanceof Error ? error.message : error);
     });
     const car = loadCar();
     const state = getDefaultState('normal');

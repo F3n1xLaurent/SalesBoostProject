@@ -829,6 +829,11 @@ model VoiceCallSession {
   dealershipId     String?
   managerId        String?
   attributionType  String?   // "manager" | "dealership"
+  attributionSource         String? // "dial_target" | "post_call_self_introduction"
+  attributionReason         String? // machine-readable attribution outcome
+  attributionConfidence     Float?
+  attributionIntroducedName String?
+  attributionEvidence       String?
   planId           String?
   phoneNumberId          String?   // source phone number snapshot
   phoneNumberTypeId      String?   // source type snapshot

@@ -320,14 +320,6 @@ async function processTick(): Promise<void> {
   if (tickInFlight) return;
   tickInFlight = true;
   try {
-    await prisma.callBatchJob.updateMany({
-      where: {
-        status: 'retry_wait',
-        nextRunAt: { lte: now() },
-      },
-      data: { status: 'queued' },
-    });
-
     await maybeCreateAutoDailyBatch();
 
     await reapStuckInProgressJobs();
@@ -342,10 +334,12 @@ async function processTick(): Promise<void> {
       // Try to dispatch several jobs per tick for this batch.
       // The internal cadence check ensures we do not exceed startIntervalMs.
       for (let i = 0; i < 10; i += 1) {
+        // dispatchOneJob already treats a due retry_wait job as dispatchable
+        // and atomically moves it to dialing. Avoid a database-wide UPDATE on
+        // every one-second tick when there is usually nothing to change.
         const dispatched = await dispatchOneJob(b.id, scenario);
         if (!dispatched) break;
       }
-      await recomputeBatchCounters(b.id);
     }
   } catch (err) {
     console.error('[call-batch] tick error:', err instanceof Error ? err.message : err);
