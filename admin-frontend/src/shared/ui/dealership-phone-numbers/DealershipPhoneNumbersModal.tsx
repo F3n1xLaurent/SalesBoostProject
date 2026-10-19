@@ -289,7 +289,7 @@ export function DealershipPhoneNumbersModal({ dealershipId, open, onClose }: {
     try {
       const [numbers, loadedTypes] = await Promise.all([
         fetchDealershipPhoneNumbers(dealershipId),
-        fetchPhoneNumberTypes({ ownership: 'dealership', active: true }),
+        fetchPhoneNumberTypes({ dealershipId, ownership: 'dealership', active: true }),
       ]);
       setItems(numbers);
       setTypes(loadedTypes);

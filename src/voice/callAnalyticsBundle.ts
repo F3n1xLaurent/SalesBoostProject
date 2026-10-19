@@ -9,6 +9,7 @@ import {
 } from './problemCatalog';
 import {
   normalizeUnifiedCallReport,
+  ensureFindingBetterExamples,
   UNIFIED_REPORT_CATEGORIES,
   unifiedVerdict,
   type UnifiedCallReport,
@@ -91,6 +92,7 @@ export async function generateCallAnalyticsBundle(input: {
     '- Заголовок, comment, quote и betterExample одной keyFinding должны описывать одну и ту же проблему. Не объединяй имя клиента и уточнение его запроса в одной находке.',
     '- Не добавляй проблему «Не уточнил / не подтвердил имя клиента», если менеджер спросил «Как вас зовут?» или «Как я могу к вам обращаться?».',
     '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
+    '- Для каждой keyFinding обязательно сформируй betterExample: готовую реплику менеджера, которая устраняет именно это замечание. Если конкретных данных недостаточно, используй нейтральный уточняющий вопрос без выдуманных фактов.',
     '- dialog не должен повторять текст реплик: верни только элементы с mark/comment в том же количестве и порядке, что исходный диалог.',
     '- Для реплики клиента mark=null и comment=null.',
     '- Для реплики менеджера mark: positive | normal | negative, comment короткий, до 90 символов.',
@@ -142,13 +144,16 @@ export async function generateCallAnalyticsBundle(input: {
   const content = response.choices[0]?.message?.content?.trim();
   if (!content) throw new Error('Empty call analytics bundle response');
   const parsed = JSON.parse(content) as Record<string, unknown>;
+  const unifiedCallReport = normalizeUnifiedCallReport(
+    parsed,
+    { totalScore, transcript: input.transcript, source: 'call', evaluation: input.evaluation },
+    catalog,
+  );
   return {
     callSummary: null,
     replyImprovements: null,
-    unifiedCallReport: normalizeUnifiedCallReport(
-      parsed,
-      { totalScore, transcript: input.transcript, source: 'call', evaluation: input.evaluation },
-      catalog,
-    ),
+    unifiedCallReport: unifiedCallReport
+      ? await ensureFindingBetterExamples(unifiedCallReport, input.transcript)
+      : null,
   };
 }

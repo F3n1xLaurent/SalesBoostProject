@@ -38,7 +38,7 @@ npm install
 BOT_TOKEN=your_bot_token_here
 OPENAI_API_KEY=your_openai_api_key_here
 ADMIN_TELEGRAM_IDS=123456789,@username1,987654321
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="file:./dev.db?connection_limit=1"
 PORT=3000
 MINI_APP_URL=http://localhost:3000
 ```

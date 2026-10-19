@@ -237,6 +237,38 @@ function sanitizeBetterExample(
   return leaksFutureFact ? '' : example;
 }
 
+function safeFallbackBetterExample(finding: UnifiedCallReport['keyFindings'][number]): string {
+  const code = problemByTitle(DEFAULT_CALL_REPORT_PROBLEMS, finding.problemTitle)?.code;
+  const byCode: Record<string, string> = {
+    NO_INTRO_COMPANY: 'Здравствуйте! Меня зовут [имя], компания [название компании]. Чем могу вам помочь?',
+    NO_CLIENT_NAME: 'Подскажите, пожалуйста, как я могу к вам обращаться?',
+    WEAK_DIALOG_OPENING: 'Здравствуйте! Подскажите, пожалуйста, по какому вопросу вы обращаетесь?',
+    NO_NEEDS_DISCOVERY: 'Подскажите, пожалуйста, что для вас особенно важно при выборе?',
+    NO_REQUEST_CLARIFICATION: 'Уточните, пожалуйста, какой именно вариант вас интересует и что вы хотели бы узнать?',
+    NO_KEY_PARAMS: 'Подскажите, пожалуйста, какие параметры для вас важны и в какие сроки вы планируете принять решение?',
+    PRODUCT_MISINFORMATION: 'Чтобы не вводить вас в заблуждение, я уточню информацию и вернусь к вам с точным ответом.',
+    WEAK_BENEFIT_PRESENTATION: 'Подскажите, что для вас важнее всего, чтобы я мог рассказать именно о подходящих вам преимуществах?',
+    NO_DIRECT_ANSWER: 'Сейчас у меня нет подтверждённых данных. Я уточню информацию и вернусь к вам с точным ответом.',
+    WEAK_OBJECTION_HANDLING: 'Понимаю ваше сомнение. Подскажите, пожалуйста, что именно вас останавливает?',
+    NO_NEXT_STEP: 'Предлагаю согласовать следующий шаг. Когда вам будет удобно продолжить разговор?',
+    NO_CONCRETE_NEXT_STEP: 'Давайте сразу согласуем конкретные дату и время следующего контакта. Когда вам удобно?',
+    PASSIVE_STYLE: 'Давайте я уточню ваши задачи и предложу подходящий следующий шаг.',
+    BAD_TONE: 'Понимаю вас. Давайте спокойно уточним детали и найдём подходящее решение.',
+    MONOLOGUE: 'Я обозначил основное. Подскажите, пожалуйста, что из этого для вас наиболее важно?',
+    INTERRUPTS_CLIENT: 'Извините, что перебил. Пожалуйста, продолжайте — я вас внимательно слушаю.',
+    CRITICAL_VIOLATION: 'Я уточню достоверную информацию и предложу корректный вариант решения без неподтверждённых обещаний.',
+  };
+  if (code && byCode[code]) return byCode[code];
+  const byCategory: Record<UnifiedReportCategory, string> = {
+    Контакт: 'Здравствуйте! Подскажите, пожалуйста, как я могу к вам обращаться и чем помочь?',
+    Диагностика: 'Подскажите, пожалуйста, что для вас особенно важно и какой результат вы хотите получить?',
+    Продукт: 'Уточните, пожалуйста, что для вас важно, чтобы я дал точный и полезный ответ.',
+    Закрытие: 'Давайте согласуем конкретный следующий шаг, дату и удобное для вас время.',
+    Коммуникация: 'Понимаю вас. Давайте спокойно уточним детали и продолжим разговор.',
+  };
+  return byCategory[finding.category];
+}
+
 function normalizeCategory(value: unknown, fallback: UnifiedReportCategory): UnifiedReportCategory {
   const text = asText(value);
   return UNIFIED_REPORT_CATEGORIES.includes(text as UnifiedReportCategory)
@@ -507,6 +539,105 @@ export function normalizeUnifiedCallReport(
   };
 }
 
+/**
+ * The main report generation intentionally drops coaching examples that use
+ * future context or merely paraphrase the manager. A missing example should
+ * not silently remove the "Как лучше" block, though, so make one focused
+ * repair pass using only the context that was available at that moment.
+ */
+export async function ensureFindingBetterExamples(
+  report: UnifiedCallReport,
+  transcript: TranscriptTurn[],
+): Promise<UnifiedCallReport> {
+  const allMissing = report.keyFindings
+    .map((finding, index) => ({ finding, index, quoteIndex: findTranscriptQuoteIndex(finding.quote, transcript) }))
+    .filter(({ finding }) => !finding.betterExample.trim());
+  if (allMissing.length === 0) return report;
+  const missing = allMissing.filter(({ quoteIndex }) => quoteIndex >= 0);
+
+  const items = missing.map(({ finding, index, quoteIndex }) => ({
+    index,
+    quoteIndex,
+    problemTitle: finding.problemTitle,
+    comment: finding.comment,
+    quote: finding.quote,
+    knownDialog: transcript
+      .slice(0, quoteIndex + 1)
+      .map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`)
+      .join('\n'),
+  }));
+
+  let repaired = report.keyFindings.map((finding) => ({ ...finding }));
+  let pending = items;
+  for (let attempt = 1; attempt <= 2 && pending.length > 0; attempt += 1) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: config.openaiChatModel,
+        messages: [
+          {
+            role: 'system',
+            content: 'Ты редактор учебных примеров для менеджеров. Отвечай только валидным JSON.',
+          },
+          {
+            role: 'user',
+            content: [
+              'Для каждой находки создай один конкретный вариант «Как лучше».',
+              'Это должна быть готовая реплика менеджера, которая действительно устраняет указанное замечание.',
+              'Не пересказывай исходную реплику и не объясняй оценку.',
+              'Используй только сведения из knownDialog. Нельзя использовать факты, которые клиент сообщил позднее.',
+              'Не придумывай цены, сроки, характеристики, наличие или обещания. При нехватке данных используй нейтральный уточняющий вопрос.',
+              attempt > 1 ? 'Это повторная попытка: предыдущие варианты не прошли проверку. Сделай их содержательно лучше исходной реплики.' : '',
+              '',
+              JSON.stringify({ items: pending }, null, 2),
+              '',
+              'Верни JSON: {"items":[{"index":0,"betterExample":"готовая реплика менеджера"}]}',
+            ].filter(Boolean).join('\n'),
+          },
+        ],
+        response_format: { type: 'json_object' },
+        ...compatibleChatTemperature(config.openaiChatModel, attempt === 1 ? 0.2 : 0.1),
+        max_completion_tokens: 1200,
+      });
+      const content = response.choices[0]?.message?.content?.trim();
+      if (!content) throw new Error('Empty better-example repair response');
+      const parsed = JSON.parse(content) as { items?: Array<{ index?: unknown; betterExample?: unknown }> };
+      const candidates = Array.isArray(parsed.items) ? parsed.items : [];
+      const stillMissing: typeof pending = [];
+      for (const item of pending) {
+        const candidate = candidates.find((value) => Number(value.index) === item.index);
+        const betterExample = sanitizeBetterExample(
+          candidate?.betterExample,
+          item.quote,
+          transcript,
+          item.quoteIndex,
+        );
+        if (betterExample) {
+          repaired[item.index] = { ...repaired[item.index], betterExample };
+        } else {
+          stillMissing.push(item);
+        }
+      }
+      pending = stillMissing;
+    } catch (error) {
+      console.warn('[unified-report] better examples repair failed:', error instanceof Error ? error.message : error);
+      break;
+    }
+  }
+
+  for (const { finding, index } of allMissing) {
+    if (!repaired[index]?.betterExample.trim()) {
+      repaired[index] = {
+        ...repaired[index],
+        betterExample: safeFallbackBetterExample(finding),
+      };
+    }
+  }
+
+  return repaired.some((finding, index) => finding.betterExample !== report.keyFindings[index]?.betterExample)
+    ? { ...report, keyFindings: repaired }
+    : report;
+}
+
 export async function generateUnifiedCallReport(input: {
   transcript: TranscriptTurn[];
   outcome: string | null;
@@ -545,6 +676,7 @@ export async function generateUnifiedCallReport(input: {
     '- Заголовок, comment, quote и betterExample одной keyFinding должны описывать одну и ту же проблему. Не объединяй имя клиента и уточнение его запроса в одной находке.',
     '- Не добавляй проблему «Не уточнил / не подтвердил имя клиента», если менеджер спросил «Как вас зовут?» или «Как я могу к вам обращаться?».',
     '- keyFindings.quote должна быть реальной цитатой из диалога. Если точной цитаты нет, возьми самый близкий фрагмент из стенограммы.',
+    '- Для каждой keyFinding обязательно сформируй betterExample: готовую реплику менеджера, которая устраняет именно это замечание. Если конкретных данных недостаточно, используй нейтральный уточняющий вопрос без выдуманных фактов.',
     '- Для проблем приветствия, представления или названия компании keyFindings.quote должна быть первой живой репликой менеджера, а не случайной репликой из середины разговора.',
     '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
     '- dialog должен содержать ВСЕ реплики исходного диалога в том же порядке.',
@@ -623,7 +755,7 @@ export async function generateUnifiedCallReport(input: {
     catalog,
   );
   if (!normalized) throw new Error('Invalid unified report JSON');
-  return normalized;
+  return ensureFindingBetterExamples(normalized, input.transcript);
 }
 
 export async function generateUnifiedTrainerReport(input: {

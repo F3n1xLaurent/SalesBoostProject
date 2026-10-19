@@ -32,6 +32,8 @@ import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
 import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
 import { classifyCallCompletion, type CompletionTranscriptTurn } from './voice/callCompletionClassifier';
+import { classifyLiveSpeaker, type LiveSpeakerTranscriptTurn } from './voice/callLiveSpeakerClassifier';
+import { rankProbableManagers } from './voice/callManagerAttribution';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
 import {
@@ -45,7 +47,12 @@ import {
 import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
 import { getCallRecordingFilePath, resumePendingRecordingFetches } from './voice/voximplantRecordingService';
-import { generateUnifiedCallReport, generateUnifiedTrainerReport, normalizeUnifiedCallReport } from './voice/unifiedCallReport';
+import {
+  ensureFindingBetterExamples,
+  generateUnifiedCallReport,
+  generateUnifiedTrainerReport,
+  normalizeUnifiedCallReport,
+} from './voice/unifiedCallReport';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
   getCallReportProblemCatalog,
@@ -7139,6 +7146,85 @@ app.get('/webhooks/vox', (_req, res) => {
   });
 });
 
+app.post('/webhooks/vox/classify-live-speaker', async (req, res) => {
+  const payload = req.body && typeof req.body === 'object'
+    ? req.body as Record<string, unknown>
+    : {};
+  const callId = String(payload.call_id ?? '').trim();
+  const candidateText = String(payload.candidate_text ?? '').trim().slice(0, 1200);
+  const turnId = String(payload.turn_id ?? '').trim().slice(0, 100);
+
+  if (!callId || !candidateText || !turnId) {
+    res.status(400).json({
+      speaker_type: 'uncertain',
+      confidence: 0,
+      reason: 'missing_required_fields',
+      turn_id: turnId,
+    });
+    return;
+  }
+
+  const session = await prisma.voiceCallSession.findUnique({
+    where: { callId },
+    select: { endedAt: true },
+  });
+  if (!session) {
+    res.status(404).json({
+      speaker_type: 'uncertain',
+      confidence: 0,
+      reason: 'call_not_found',
+      turn_id: turnId,
+    });
+    return;
+  }
+  if (session.endedAt) {
+    res.status(409).json({
+      speaker_type: 'uncertain',
+      confidence: 0,
+      reason: 'call_already_ended',
+      turn_id: turnId,
+    });
+    return;
+  }
+
+  const recentTranscript = (Array.isArray(payload.transcript) ? payload.transcript : [])
+    .slice(-6)
+    .flatMap((raw): LiveSpeakerTranscriptTurn[] => {
+      if (!raw || typeof raw !== 'object') return [];
+      const turn = raw as Record<string, unknown>;
+      const role = String(turn.role ?? '').trim();
+      const text = String(turn.text ?? '').trim().slice(0, 800);
+      if (!text || (role !== 'manager' && role !== 'client')) return [];
+      return [{ role, text }];
+    });
+
+  try {
+    const decision = await withCostContext(
+      { entityType: 'voice_call', entityId: callId, stage: 'call_live_speaker_classifier' },
+      () => classifyLiveSpeaker({ candidateText, recentTranscript }),
+    );
+    res.status(200).json({
+      speaker_type: decision.speakerType,
+      confidence: decision.confidence,
+      reason: decision.reason,
+      turn_id: turnId,
+    });
+  } catch (error) {
+    console.warn('[webhooks/vox/classify-live-speaker] classifier failed', {
+      callId,
+      turnId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // A classifier failure must never make the agent speak into IVR/music.
+    res.status(200).json({
+      speaker_type: 'uncertain',
+      confidence: 0,
+      reason: 'classifier_unavailable',
+      turn_id: turnId,
+    });
+  }
+});
+
 app.post('/webhooks/vox/classify-completion', async (req, res) => {
   const payload = req.body && typeof req.body === 'object'
     ? req.body as Record<string, unknown>
@@ -9125,6 +9211,20 @@ async function buildTrainerAuditDetailItem(session: {
     },
     catalog,
   );
+  if (unifiedReport) {
+    const repairedReport = await ensureFindingBetterExamples(unifiedReport, reportTranscript);
+    if (repairedReport !== unifiedReport) {
+      unifiedReport = repairedReport;
+      evaluation = {
+        ...(evaluation ?? {}),
+        unified_call_report: unifiedReport,
+      };
+      await prisma.trainerSession.update({
+        where: { id: session.id },
+        data: { evaluationJson: JSON.stringify(evaluation) },
+      });
+    }
+  }
   if (!unifiedReport && reportTranscript.length >= 2) {
     try {
       unifiedReport = await generateUnifiedTrainerReport({
@@ -9222,6 +9322,38 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       },
     });
     if (!session) return res.status(404).json({ error: 'Audit not found' });
+
+    const canViewAttribution = req.authAccount?.memberships.some(
+      (membership) => membership.role === 'platform_superadmin',
+    ) === true;
+    const attributionReasonLabels: Record<string, string> = {
+      matched_unique_employee: 'Найден один сотрудник с совпадающими именем и фамилией.',
+      no_active_employees: 'У точки нет активных сотрудников для сопоставления.',
+      no_self_introduction: 'В начале разговора не найдено уверенное представление с именем и фамилией.',
+      incomplete_name: 'Менеджер назвал неполное имя — для привязки нужны имя и фамилия.',
+      invalid_evidence: 'AI не смог подтвердить представление точной цитатой из транскрибации.',
+      employee_not_found: 'Сотрудник с названными именем и фамилией не найден в этой точке.',
+      ambiguous_employee_match: 'Найдено несколько подходящих сотрудников, поэтому звонок оставлен за точкой.',
+      classifier_unavailable: 'Сервис определения сотрудника был временно недоступен.',
+      not_applicable: 'Автоматическое определение сотрудника для этого звонка не применяется.',
+    };
+    const probableManagerMatches = canViewAttribution
+      && session.attributionType === 'dealership'
+      && session.dealershipId
+      && session.attributionIntroducedName
+      ? rankProbableManagers(
+        session.attributionIntroducedName,
+        await prisma.managerProfile.findMany({
+          where: {
+            dealershipId: session.dealershipId,
+            status: 'active',
+            OR: [{ accountId: null }, { account: { is: { status: 'active' } } }],
+          },
+          select: { id: true, fullName: true },
+          orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
+        }),
+      )
+      : [];
 
     let evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
     const planCriteria = extractPlanCriteriaEvaluation(evaluation);
@@ -9363,6 +9495,20 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions, evaluation },
       catalog,
     );
+    if (unifiedReport) {
+      const repairedReport = await ensureFindingBetterExamples(unifiedReport, reportTranscript);
+      if (repairedReport !== unifiedReport) {
+        unifiedReport = repairedReport;
+        evaluation = {
+          ...(evaluation ?? {}),
+          unified_call_report: unifiedReport,
+        };
+        await prisma.voiceCallSession.update({
+          where: { id: session.id },
+          data: { evaluationJson: JSON.stringify(evaluation) },
+        });
+      }
+    }
     if (!unifiedReport && type === 'call' && evaluation && reportTranscript.length >= 2) {
       try {
         unifiedReport = await generateUnifiedCallReport({
@@ -9412,6 +9558,24 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         scenarioName: type === 'trainer' ? session.scenario ?? session.plan?.name ?? null : null,
         assignedBy: null,
         failReason: session.failureReason,
+        ...(canViewAttribution ? {
+          attribution: session.attributionSource ? {
+            type: session.attributionType === 'manager' || session.attributionType === 'dealership'
+              ? session.attributionType
+              : null,
+            source: session.attributionSource,
+            reasonCode: session.attributionReason,
+            reason: attributionReasonLabels[session.attributionReason || ''] || 'Причина атрибуции не указана.',
+            introducedName: session.attributionIntroducedName,
+            evidence: session.attributionEvidence,
+            confidence: session.attributionConfidence,
+            probableMatches: probableManagerMatches.map((candidate) => ({
+              managerId: candidate.id,
+              name: candidate.fullName,
+              confidence: candidate.confidence,
+            })),
+          } : null,
+        } : {}),
         recordingStatus: session.recordingStatus,
         recordingUrl: session.recordingUrl,
         unifiedReport,

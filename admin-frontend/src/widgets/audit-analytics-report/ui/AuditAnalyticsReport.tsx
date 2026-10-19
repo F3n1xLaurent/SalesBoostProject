@@ -387,8 +387,9 @@ export function AuditAnalyticsReport({
   onOpenEmployee?: (id: string) => void;
 }) {
   const auth = useUnit($auth);
-  const canDownloadRecording = auth.status === 'authenticated'
+  const isPlatformSuperadmin = auth.status === 'authenticated'
     && auth.user.memberships.some((membership) => membership.role === 'platform_superadmin');
+  const canDownloadRecording = isPlatformSuperadmin;
   const report = detail.unifiedReport;
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [findingsOpen, setFindingsOpen] = useState(false);
@@ -469,6 +470,73 @@ export function AuditAnalyticsReport({
           )}
         </div>
       </div>
+
+      {isPlatformSuperadmin && detail.type === 'call' && detail.attribution ? (
+        <section className={`sa-call-report-attribution sa-call-report-attribution--${detail.attribution.type === 'manager' ? 'matched' : 'unmatched'}`}>
+          <div className="sa-call-report-attribution__header">
+            <div className="sa-call-report-attribution__title-wrap">
+              <span className="sa-call-report-attribution__icon" aria-hidden>
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM4.5 20c.7-3.7 3.2-5.5 7.5-5.5s6.8 1.8 7.5 5.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
+              </span>
+              <div>
+                <div className="sa-call-report-attribution__eyebrow">Диагностика · только для суперадмина</div>
+                <strong>Атрибуция звонка</strong>
+              </div>
+            </div>
+            <span className="sa-call-report-attribution__status">
+              {detail.attribution.type === 'manager' ? 'Назначен сотруднику' : 'Оставлен за точкой'}
+            </span>
+          </div>
+          <div className="sa-call-report-attribution__reason">{detail.attribution.reason}</div>
+          <div className="sa-call-report-attribution__details">
+            {detail.attribution.introducedName ? (
+              <div className="sa-call-report-attribution__detail">
+                <span>Представился как</span>
+                <strong>{detail.attribution.introducedName}</strong>
+              </div>
+            ) : null}
+            {detail.attribution.confidence != null ? (
+              <div className="sa-call-report-attribution__detail">
+                <span>Уверенность распознавания</span>
+                <strong>{Math.round(detail.attribution.confidence * 100)}%</strong>
+              </div>
+            ) : null}
+          </div>
+          {detail.attribution.probableMatches?.length ? (
+            <div className="sa-call-report-attribution__suggestion">
+              <div className="sa-call-report-attribution__suggestion-icon" aria-hidden>≈</div>
+              <div>
+                <strong>
+                  {detail.attribution.probableMatches.length === 1
+                    ? 'Вероятное совпадение'
+                    : 'Несколько вероятных совпадений'}
+                </strong>
+                <p>
+                  {detail.attribution.probableMatches.length === 1
+                    ? 'Имя похоже на сотрудника точки, но звонок не назначен автоматически.'
+                    : 'Однозначно выбрать профиль нельзя, поэтому звонок оставлен за точкой.'}
+                </p>
+                <div className="sa-call-report-attribution__matches">
+                  {detail.attribution.probableMatches.map((candidate) => (
+                    <span key={candidate.managerId}>
+                      {candidate.name}
+                      <small>{Math.round(candidate.confidence * 100)}% сходства</small>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          {detail.attribution.evidence ? (
+            <blockquote>
+              <span>Фрагмент транскрибации</span>
+              «{detail.attribution.evidence}»
+            </blockquote>
+          ) : null}
+        </section>
+      ) : null}
 
       {report ? (
         <>

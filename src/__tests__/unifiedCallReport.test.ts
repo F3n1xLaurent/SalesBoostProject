@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { normalizeUnifiedCallReport } from '../voice/unifiedCallReport';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { openai } from '../lib/openaiClient';
+import { ensureFindingBetterExamples, normalizeUnifiedCallReport } from '../voice/unifiedCallReport';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('unified call report normalization', () => {
   it('uses calculated trainer scores and falls back to evaluator recommendations', () => {
@@ -322,6 +327,82 @@ describe('unified call report normalization', () => {
     );
 
     expect(report?.keyFindings[0]?.betterExample).toBe('');
+  });
+
+  it('regenerates a missing Как лучше example from the context known at the quoted reply', async () => {
+    const quote = 'Автомобиль комфортный и просторный.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 75,
+        categories: [],
+        keyFindings: [{
+          problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+          importance: 'Средне',
+          category: 'Продукт',
+          quote,
+          comment: 'Не раскрыта польза характеристик для клиента.',
+          betterExample: 'Это просторный и комфортный автомобиль.',
+        }],
+      },
+      {
+        totalScore: 75,
+        transcript: [
+          { role: 'client', text: 'Мне важен комфорт в ежедневных поездках.' },
+          { role: 'manager', text: quote },
+        ],
+      },
+    );
+    expect(report?.keyFindings[0]?.betterExample).toBe('');
+    vi.spyOn(openai.chat.completions, 'create').mockResolvedValue({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            items: [{
+              index: 0,
+              betterExample: 'Для ваших ежедневных поездок просторный салон сделает дорогу комфортнее.',
+            }],
+          }),
+        },
+      }],
+    } as any);
+
+    const repaired = await ensureFindingBetterExamples(report!, [
+      { role: 'client', text: 'Мне важен комфорт в ежедневных поездках.' },
+      { role: 'manager', text: quote },
+    ]);
+
+    expect(repaired.keyFindings[0]?.betterExample)
+      .toBe('Для ваших ежедневных поездок просторный салон сделает дорогу комфортнее.');
+  });
+
+  it('uses a safe problem fallback when regenerated Как лучше examples are rejected', async () => {
+    const quote = 'Да, предложение актуально. Чем я могу вам помочь?';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 60,
+        categories: [],
+        keyFindings: [{
+          problemTitle: 'Не выявил потребности клиента (поверхностные вопросы)',
+          importance: 'Важно',
+          category: 'Диагностика',
+          quote,
+          comment: 'Менеджер не задал вопросов о потребностях клиента.',
+          betterExample: '',
+        }],
+      },
+      { totalScore: 60, transcript: [{ role: 'manager', text: quote }] },
+    );
+    const create = vi.spyOn(openai.chat.completions, 'create').mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({
+        items: [{ index: 0, betterExample: 'Предложение актуально. Чем я могу вам помочь?' }],
+      }) } }],
+    } as any);
+
+    const repaired = await ensureFindingBetterExamples(report!, [{ role: 'manager', text: quote }]);
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(repaired.keyFindings[0]?.betterExample)
+      .toBe('Подскажите, пожалуйста, что для вас особенно важно при выборе?');
   });
 
   it('does not keep a perfect category score when its comment contains a concern', () => {

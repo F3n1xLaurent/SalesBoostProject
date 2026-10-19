@@ -96,6 +96,33 @@ function canManageHoldingForAccount(account: ScopedAccount, holdingId: string): 
   return getHoldingIds(account).includes(holdingId);
 }
 
+/**
+ * Legacy types without holdingId are company-scoped by their existing usage;
+ * they must never become global choices for every company.
+ */
+function companyPhoneNumberTypeWhere(
+  holdingId: string,
+  ownership?: PhoneNumberOwnership,
+): Prisma.PhoneNumberTypeWhereInput {
+  return {
+    ...(ownership ? { ownership } : {}),
+    OR: [
+      { holdingId },
+      {
+        holdingId: null,
+        phoneNumbers: {
+          some: {
+            OR: [
+              { dealership: { holdingId } },
+              { account: { managerProfiles: { some: { dealership: { holdingId } } } } },
+            ],
+          },
+        },
+      },
+    ],
+  };
+}
+
 function normalizeHoldingResponse(
   holding: Prisma.HoldingGetPayload<{
     include: {
@@ -1533,6 +1560,7 @@ export async function handleListPhoneNumberTypes(req: Request, res: Response): P
   const ownershipRaw = parseString(req.query.ownership);
   const ownership = ownershipRaw === 'dealership' || ownershipRaw === 'user' ? ownershipRaw : null;
   const holdingId = parseString(req.query.holdingId);
+  const dealershipId = parseString(req.query.dealershipId);
   const onlyActive = parseString(req.query.active) === 'true';
 
   try {
@@ -1540,7 +1568,32 @@ export async function handleListPhoneNumberTypes(req: Request, res: Response): P
       ...(ownership ? { ownership } : {}),
       ...(onlyActive ? { isActive: true } : {}),
     };
-    if (holdingId) {
+    if (dealershipId) {
+      const dealership = await prisma.dealership.findUnique({
+        where: { id: dealershipId },
+        select: { id: true, holdingId: true },
+      });
+      if (!dealership) {
+        res.status(404).json({ error: 'Точка не найдена.' });
+        return;
+      }
+      if (!canManageDealershipForAccount(account, {
+        dealershipId: dealership.id,
+        holdingId: dealership.holdingId,
+      })) {
+        res.status(403).json({ error: 'Нет доступа к этой точке.' });
+        return;
+      }
+      if (!dealership.holdingId) {
+        res.json({ items: [] });
+        return;
+      }
+      if (holdingId && holdingId !== dealership.holdingId) {
+        res.status(400).json({ error: 'Точка не относится к выбранной компании.' });
+        return;
+      }
+      where.AND = [companyPhoneNumberTypeWhere(dealership.holdingId, ownership || undefined)];
+    } else if (holdingId) {
       if (!canManageHoldingForAccount(account, holdingId) && !isDealershipAdmin(account)) {
         res.status(403).json({ error: 'Нет доступа к этой компании.' });
         return;
@@ -1815,12 +1868,18 @@ export async function handleCreateDealershipPhoneNumber(req: Request, res: Respo
       return;
     }
 
-    const type = await prisma.phoneNumberType.findUnique({
-      where: { id: typeId },
-      select: { id: true, ownership: true, isActive: true },
-    });
-    if (!type || type.ownership !== 'dealership' || !type.isActive) {
-      res.status(400).json({ error: 'Выберите активный тип номера для точки.' });
+    const type = dealership.holdingId
+      ? await prisma.phoneNumberType.findFirst({
+          where: {
+            id: typeId,
+            isActive: true,
+            AND: [companyPhoneNumberTypeWhere(dealership.holdingId, 'dealership')],
+          },
+          select: { id: true },
+        })
+      : null;
+    if (!type) {
+      res.status(400).json({ error: 'Выберите активный тип номера компании, к которой относится точка.' });
       return;
     }
 
@@ -1872,12 +1931,18 @@ export async function handleUpdateDealershipPhoneNumber(req: Request, res: Respo
     }
 
     if (typeId) {
-      const type = await prisma.phoneNumberType.findUnique({
-        where: { id: typeId },
-        select: { id: true, ownership: true, isActive: true },
-      });
-      if (!type || type.ownership !== 'dealership' || !type.isActive) {
-        res.status(400).json({ error: 'Выберите активный тип номера для точки.' });
+      const type = existing.dealership.holdingId
+        ? await prisma.phoneNumberType.findFirst({
+            where: {
+              id: typeId,
+              isActive: true,
+              AND: [companyPhoneNumberTypeWhere(existing.dealership.holdingId, 'dealership')],
+            },
+            select: { id: true },
+          })
+        : null;
+      if (!type) {
+        res.status(400).json({ error: 'Выберите активный тип номера компании, к которой относится точка.' });
         return;
       }
     }
