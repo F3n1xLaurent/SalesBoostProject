@@ -604,4 +604,22 @@ describe('unified call report normalization', () => {
       comment: 'Менеджер представился.',
     });
   });
+
+  it('rebuilds stored report weaknesses with custom checklist titles on read', () => {
+    const criterionId = 'f349f657-9f7f-4cfd-8d1a-43de145b4516';
+    const report = normalizeUnifiedCallReport(
+      { totalScore: 45, categories: [], weaknesses: [`${criterionId}: Не уточнил запрос.`] },
+      {
+        totalScore: 45,
+        transcript: [{ role: 'manager', text: 'Добрый день.' }],
+        evaluation: {
+          checklist_definition: { items: [{ id: criterionId, title: 'Идентификация запроса клиента' }] },
+          checklist: [{ code: criterionId, status: 'NO', comment: 'Не уточнил запрос клиента.' }],
+        },
+      },
+    );
+
+    expect(report?.weaknesses).toEqual(['Идентификация запроса клиента: Не уточнил запрос клиента.']);
+    expect(JSON.stringify(report?.weaknesses)).not.toContain(criterionId);
+  });
 });
