@@ -229,7 +229,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   }
 
   function isAutomatedOrWaitingMessage(text) {
-    return /подожд|ожидайте|оставайтесь на линии|соединя(?:ем|ю|ет)|перевожу|вам ответит|оператор ответит|ваш звонок|вы позвонили|добро пожаловать|вас приветствует|нажмите|выберите пункт|голосов(?:ое|ого) меню|после сигнала|абонент (?:занят|недоступен)/i.test(
+    return /подожд|ожидайте|оставайтесь на линии|соединя(?:ем|ю|ет)|перевожу|вам ответит|оператор ответит|ваш звонок|вы позвонили|добро пожаловать|вас приветству(?:ет|ют)|приветству(?:ет|ют|ем) вас|рад(?:ы|а)? приветствовать вас|нажмите|выберите (?:пункт|цифру|клавишу)|голосов(?:ое|ого) меню|после сигнала|абонент (?:занят|недоступен)|не может ответить|оставьте сообщение|автоответчик|автоматическ(?:ий|ая) (?:помощник|ассистент)|виртуальн(?:ый|ая) (?:помощник|ассистент)|голосовой помощник|я робот/i.test(
       text
     );
   }
@@ -241,11 +241,15 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
   }
 
   function isClearlyLiveHuman(text) {
-    return /(?:^|[.!?\s,])(алло|слушаю|вас слушаю|говорите|здравствуйте|добрый день|добрый вечер|чем могу помочь|чем помочь|по какому вопросу|что вас интересует|повторите|повторите пожалуйста|не расслышал|не расслышала|кто это|кто говорит)(?:$|[.!?\s,])/i.test(
-      text
-    ) || /(?:меня зовут|[а-я]+,?\s+(?:менеджер|администратор|оператор)|менеджер|отдел продаж|отдел сервиса|сервисный центр|автосалон|автоцентр|салон|компания).*(?:слушает|на связи|говорит|чем могу помочь|чем помочь)?/i.test(
-      text
-    );
+    // This check runs only after isAutomatedOrWaitingMessage(). Standard
+    // greetings therefore open the audio immediately, while recorded company
+    // greetings such as "приветствует вас" remain muted. Avoiding the remote classifier here is
+    // important: ElevenLabs can start TTS while that request is in flight, so
+    // reconnecting the media afterwards would cut off the start of the reply.
+    return /(?:^|[.!?\s,])(алло|да|здравствуйте|здравствуй|добрый день|доброе утро|добрый вечер|слушаю|вас слушаю|говорите|чем могу помочь|чем помочь|по какому вопросу|что вас интересует|повторите|повторите пожалуйста|не расслышал|не расслышала|кто это|кто говорит)(?:$|[.!?\s,])/i.test(text)
+      || /меня зовут\s+[а-я-]{2,}/i.test(text)
+      || /это\s+(?!компани|автоответ|автоматич|виртуальн|робот)[а-я-]{2,}/i.test(text)
+      || /[а-я-]{2,},?\s+(?:менеджер|администратор|оператор|консультант)(?:$|[.!?\s,])/i.test(text);
   }
 
   function isInternalCompletionStatus(text) {
@@ -351,7 +355,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
         call_id: callId,
         turn_id: String(detectionRevision),
         candidate_text: text,
-        transcript: transcript.slice(-6),
+        transcript: transcript.slice(-2),
       },
       function (decision) {
         if (

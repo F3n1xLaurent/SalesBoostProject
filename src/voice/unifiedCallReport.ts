@@ -4,7 +4,7 @@ import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { isUnreliableManagerUtterance } from './transcriptReliability';
-import { buildEvaluationHighlights } from '../logic/evaluationHighlights';
+import { buildEvaluationHighlights, normalizeManagerNarrationGender } from '../logic/evaluationHighlights';
 import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
@@ -174,6 +174,30 @@ function mergeUniqueText(items: string[], limit: number): string[] {
     if (text && key && !result.some((existing) => existing.toLocaleLowerCase('ru-RU').replace(/[«»"'.,:;!?—–-]/g, '').replace(/\s+/g, ' ').trim() === key)) {
       result.push(text);
     }
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function weaknessTopic(value: string): string | null {
+  const text = findingTextKey(value);
+  if (/(?:не представил|не представился|не назвал компани|приветств)/u.test(text)) return 'introduction';
+  if (/(?:не уточнил запрос|уточнен[а-яa-z]* интересующ[а-яa-z]* автомобил|какой именно автомобил)/u.test(text)) {
+    return 'request-clarification';
+  }
+  if (/презентац/u.test(text)) return 'product-presentation';
+  if (/(?:следующ[а-яa-z]* шаг|повторн[а-яa-z]* контакт)/u.test(text)) return 'next-step';
+  return null;
+}
+
+function mergeUniqueWeaknesses(primaryItems: string[], secondaryItems: string[], limit: number): string[] {
+  const result = mergeUniqueText(primaryItems, limit);
+  const primaryTopics = new Set(result.map(weaknessTopic).filter((topic): topic is string => Boolean(topic)));
+  for (const item of secondaryItems) {
+    const topic = weaknessTopic(item);
+    if (topic && primaryTopics.has(topic)) continue;
+    const merged = mergeUniqueText([...result, item], limit);
+    result.splice(0, result.length, ...merged);
     if (result.length >= limit) break;
   }
   return result;
@@ -415,7 +439,7 @@ export function normalizeUnifiedCallReport(
       score,
       comment: scoreMismatch
         ? `Оценка блока по рассчитанным метрикам: ${score}/100.`
-        : asText(raw?.comment) || 'Комментарий по категории не сформирован.',
+        : normalizeManagerNarrationGender(asText(raw?.comment)) || 'Комментарий по категории не сформирован.',
     };
   });
 
@@ -433,7 +457,7 @@ export function normalizeUnifiedCallReport(
         importance: normalizeImportance(raw.importance),
         category: problem.category,
         quote,
-        comment: normalizeCompanyWording(meaningfulText(raw.comment)),
+        comment: normalizeManagerNarrationGender(normalizeCompanyWording(meaningfulText(raw.comment))),
         betterExample: sanitizeBetterExample(raw.betterExample, quote, fallback.transcript),
       };
     })
@@ -507,7 +531,9 @@ export function normalizeUnifiedCallReport(
     const betterExample = role === 'manager' && rawMark === 'negative'
       ? sanitizeBetterExample(raw.betterExample, turn.text, fallback.transcript, index) || null
       : null;
-    const comment = role === 'manager' ? meaningfulText(raw.comment) || null : null;
+    const comment = role === 'manager'
+      ? normalizeManagerNarrationGender(meaningfulText(raw.comment)) || null
+      : null;
     return {
       role,
       text: turn.text,
@@ -553,7 +579,7 @@ export function normalizeUnifiedCallReport(
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       const problem = raw.problemTitle ? problemByTitle(catalog, raw.problemTitle) : null;
       return {
-        text: asText(raw.text || raw.recommendation || raw.title || raw.description || item),
+        text: normalizeManagerNarrationGender(asText(raw.text || raw.recommendation || raw.title || raw.description || item)),
         category: normalizeCategory(raw.category, problem?.category ?? 'Коммуникация'),
         problemTitle: problem?.title ?? null,
       };
@@ -574,12 +600,16 @@ export function normalizeUnifiedCallReport(
     );
 
   const reportSource = source.source === 'trainer' || fallback.source === 'trainer' ? 'trainer' : 'call';
-  const aiStrengths = arrayOfText(source.strengths, 8);
-  const aiWeaknesses = arrayOfText(source.weaknesses, 8);
+  const aiStrengths = arrayOfText(source.strengths, 8).map(normalizeManagerNarrationGender);
+  const aiWeaknesses = arrayOfText(source.weaknesses, 8).map(normalizeManagerNarrationGender);
+  const positiveManagerTurnIndexes = new Set(dialog.flatMap((line, index) => (
+    line.role === 'manager' && line.mark === 'positive' ? [index] : []
+  )));
   const evaluatedHighlights = buildEvaluationHighlights(
     fallback.evaluation,
     8,
     fallback.transcript,
+    { positiveManagerTurnIndexes },
   );
   const demonstratedStrengths = dialog
     .filter((line) => line.role === 'manager' && line.mark === 'positive'
@@ -592,7 +622,7 @@ export function normalizeUnifiedCallReport(
   const findingWeaknesses = findings.map((finding) => finding.comment
     ? `${finding.problemTitle}: ${finding.comment}`
     : finding.problemTitle);
-  const weaknesses = mergeUniqueText([...findingWeaknesses, ...baseWeaknesses], 8);
+  const weaknesses = mergeUniqueWeaknesses(findingWeaknesses, baseWeaknesses, 8);
   const correctedSummary = totalScore < 50
     ? `Разговор требует существенной доработки.${weaknessSummary ? ` Основные зоны роста: ${weaknessSummary}.` : ''}`
     : totalScore < 76
@@ -604,7 +634,7 @@ export function normalizeUnifiedCallReport(
     source: reportSource,
     summary: scoreMismatch
       ? correctedSummary
-      : asText(source.summary) || 'Резюме разговора не сформировано.',
+      : normalizeManagerNarrationGender(asText(source.summary)) || 'Резюме разговора не сформировано.',
     totalScore,
     verdict: unifiedVerdict(totalScore),
     categories,
@@ -779,6 +809,7 @@ export async function generateUnifiedCallReport(input: {
     '- При проверке условия учитывай смысл нескольких последовательных реплик менеджера вместе, если ответ был разбит на части.',
     '- recommendations должны быть конкретными следующими шагами для менеджера/руководителя филиала.',
     '- Все пользовательские тексты строго на русском.',
+    '- Слово «менеджер» во всех аналитических формулировках согласуй только в мужском роде: «менеджер представился», «назвал», «ответил», независимо от пола или голоса сотрудника.',
     '',
     'Справочник проблем:',
     problemCatalog,

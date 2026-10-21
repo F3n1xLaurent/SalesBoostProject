@@ -42,6 +42,15 @@ type EvaluationHighlights = {
   hasClassification: boolean;
 };
 
+type EvaluationHighlightOptions = {
+  /**
+   * When supplied, a checklist strength must be evidenced by one of these
+   * final, positively marked manager turns. This prevents a turn marked
+   * "negative" in the dialog from also producing report strengths.
+   */
+  positiveManagerTurnIndexes?: ReadonlySet<number>;
+};
+
 function recordOf(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -50,6 +59,83 @@ function recordOf(value: unknown): Record<string, unknown> | null {
 
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
+}
+
+const FEMININE_MANAGER_VERBS: Record<string, string> = {
+  представилась: 'представился',
+  представила: 'представил',
+  поздоровалась: 'поздоровался',
+  назвала: 'назвал',
+  уточнила: 'уточнил',
+  спросила: 'спросил',
+  выяснила: 'выяснил',
+  объяснила: 'объяснил',
+  предложила: 'предложил',
+  согласовала: 'согласовал',
+  договорилась: 'договорился',
+  ответила: 'ответил',
+  подтвердила: 'подтвердил',
+  поддерживала: 'поддерживал',
+  сохраняла: 'сохранял',
+  презентовала: 'презентовал',
+  отработала: 'отработал',
+  вела: 'вёл',
+  получила: 'получил',
+  перевела: 'перевёл',
+  связала: 'связал',
+  провела: 'провёл',
+  раскрыла: 'раскрыл',
+  дополнила: 'дополнил',
+  обозначила: 'обозначил',
+  проявила: 'проявил',
+  использовала: 'использовал',
+  зафиксировала: 'зафиксировал',
+  озвучила: 'озвучил',
+  продемонстрировала: 'продемонстрировал',
+  сформулировала: 'сформулировал',
+  перешла: 'перешёл',
+  реагировала: 'реагировал',
+  задала: 'задал',
+  рассказала: 'рассказал',
+  сообщила: 'сообщил',
+  указала: 'указал',
+  помогла: 'помог',
+  сделала: 'сделал',
+  дала: 'дал',
+  смогла: 'смог',
+  начала: 'начал',
+  продолжила: 'продолжил',
+  завершила: 'завершил',
+};
+
+/** Keep the generic role name "менеджер" grammatically masculine in report prose. */
+export function normalizeManagerNarrationGender(value: string): string {
+  if (!/(?:^|[^а-яёa-z])менеджер(?:$|[^а-яёa-z])/iu.test(value)) return value;
+  return value.split(/(?<=[.!?])(?=\s|$)/u).map((sentence) => {
+    const subjectPattern = /(^|[^а-яёa-z])(менеджер|клиент|клиентка|покупатель|покупательница|компания|организация|команда|девушка|женщина|она)(?=$|[^а-яёa-z])/giu;
+    const subjects = [...sentence.matchAll(subjectPattern)];
+    if (!subjects.some((match) => match[2]?.toLocaleLowerCase('ru-RU') === 'менеджер')) return sentence;
+
+    let result = '';
+    let cursor = 0;
+    subjects.forEach((subject, index) => {
+      if (subject[2]?.toLocaleLowerCase('ru-RU') !== 'менеджер') return;
+      const clauseStart = (subject.index ?? 0) + (subject[1]?.length ?? 0);
+      const nextSubject = subjects[index + 1];
+      const clauseEnd = nextSubject
+        ? (nextSubject.index ?? sentence.length) + (nextSubject[1]?.length ?? 0)
+        : sentence.length;
+      result += sentence.slice(cursor, clauseStart);
+      const clause = sentence.slice(clauseStart, clauseEnd)
+        .replace(/(^|[^а-яёa-z])должна была(?=$|[^а-яёa-z])/giu, '$1должен был')
+        .replace(/(^|[^а-яёa-z])должна(?=$|[^а-яёa-z])/giu, '$1должен');
+      result += Object.entries(FEMININE_MANAGER_VERBS).reduce((text, [feminine, masculine]) => (
+        text.replace(new RegExp(`(^|[^а-яёa-z])${feminine}(?=$|[^а-яёa-z])`, 'giu'), `$1${masculine}`)
+      ), clause);
+      cursor = clauseEnd;
+    });
+    return `${result}${sentence.slice(cursor)}`;
+  }).join('');
 }
 
 function numeric(value: unknown): number | null {
@@ -85,7 +171,7 @@ export function resolveChecklistItemLabel(evaluation: unknown, rawItem: unknown)
 
 function checklistHighlight(item: Record<string, unknown>, status: 'YES' | 'PARTIAL' | 'NO'): string {
   const label = cleanText(item.label) || 'Пункт чек-листа';
-  const comment = cleanText(item.comment);
+  const comment = normalizeManagerNarrationGender(cleanText(item.comment));
   if (comment && !cleanText(item.label)) return comment;
   if (comment) return `${label}: ${comment}`;
   if (status === 'YES') return `${label} — выполнено`;
@@ -95,7 +181,7 @@ function checklistHighlight(item: Record<string, unknown>, status: 'YES' | 'PART
 
 function managerActionHighlight(item: Record<string, unknown>): string {
   const code = cleanText(item.code).toUpperCase();
-  const comment = cleanText(item.comment);
+  const comment = normalizeManagerNarrationGender(cleanText(item.comment));
   if (/(?:^|\s)(?:не|частично|но)(?=\s|[.,!])/iu.test(comment)) return '';
   if (/^(?:менеджер|сотрудник|консультант|продавец)\s+/iu.test(comment)
     && /(?:представил|представился|поздоровался|назвал|уточнил|спросил|выяснил|объяснил|предложил|согласовал|договорился|ответил|поддерживал|сохранял|презентовал|отработал)/iu.test(comment)) return comment;
@@ -104,6 +190,54 @@ function managerActionHighlight(item: Record<string, unknown>): string {
   const evidence = Array.isArray(item.evidence) ? cleanText(item.evidence[0]) : '';
   const quote = evidence.replace(/^(?:менеджер|сотрудник|продавец|консультант)\s*:\s*/iu, '');
   return quote ? `${action}: «${quote.slice(0, 160)}»` : action;
+}
+
+function normalizeEvidenceText(value: unknown): string {
+  return cleanText(value)
+    .replace(/^(менеджер|сотрудник|продавец|консультант)\s*:\s*/iu, '')
+    .toLocaleLowerCase('ru-RU')
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/giu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function evidenceMatchesTurn(evidence: string, turnText: unknown): boolean {
+  const expected = normalizeEvidenceText(evidence);
+  const actual = normalizeEvidenceText(turnText);
+  if (!expected || !actual) return false;
+  if (expected === actual) return true;
+  if ((expected.length >= 12 && actual.includes(expected))
+    || (actual.length >= 12 && expected.includes(actual))) return true;
+
+  const expectedTokens = new Set(expected.split(' ').filter((token) => token.length > 2));
+  const actualTokens = new Set(actual.split(' ').filter((token) => token.length > 2));
+  if (expectedTokens.size < 3 || actualTokens.size < 3) return false;
+  const common = [...expectedTokens].filter((token) => actualTokens.has(token)).length;
+  return common / expectedTokens.size >= 0.75 && common / actualTokens.size >= 0.45;
+}
+
+function hasPositiveTurnEvidence(
+  item: Record<string, unknown>,
+  transcript: ChecklistTranscriptTurn[],
+  positiveManagerTurnIndexes: ReadonlySet<number>,
+): boolean {
+  const evidence = Array.isArray(item.evidence)
+    ? item.evidence.map(cleanText).filter(Boolean)
+    : cleanText(item.evidence) ? [cleanText(item.evidence)] : [];
+  return evidence.some((quote) => {
+    const matchingManagerTurnIndexes = transcript.flatMap((turn, index) => (
+      (turn.role === 'manager' || turn.role === 'assistant')
+      && evidenceMatchesTurn(quote, turn.content ?? turn.text)
+        ? [index]
+        : []
+    ));
+
+    // When the same quote occurs more than once, its provenance is ambiguous.
+    // Treat it as positive only if every matching manager turn is positive.
+    return matchingManagerTurnIndexes.length > 0
+      && matchingManagerTurnIndexes.every((index) => positiveManagerTurnIndexes.has(index));
+  });
 }
 
 /**
@@ -115,6 +249,7 @@ export function buildEvaluationHighlights(
   evaluation: unknown,
   limit = 8,
   transcript?: ChecklistTranscriptTurn[],
+  options: EvaluationHighlightOptions = {},
 ): EvaluationHighlights {
   const source = recordOf(evaluation);
   if (!source) return { strengths: [], weaknesses: [], hasClassification: false };
@@ -180,8 +315,12 @@ export function buildEvaluationHighlights(
     if (status === 'NA' || !['YES', 'PARTIAL', 'NO'].includes(status)) continue;
 
     hasClassification = true;
-    if (status === 'YES') appendUnique(strengths,
-      transcript ? managerActionHighlight(item) : checklistHighlight(item, 'YES'), limit);
+    if (status === 'YES') {
+      const allowedByDialogMark = !transcript || !options.positiveManagerTurnIndexes
+        || hasPositiveTurnEvidence(item, transcript, options.positiveManagerTurnIndexes);
+      if (allowedByDialogMark) appendUnique(strengths,
+        transcript ? managerActionHighlight(item) : checklistHighlight(item, 'YES'), limit);
+    }
     else appendUnique(weaknesses, checklistHighlight(item, status as 'PARTIAL' | 'NO'), limit);
   }
 

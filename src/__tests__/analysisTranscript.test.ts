@@ -3,6 +3,23 @@ import { prepareTranscriptForAnalysis } from '../voice/analysisTranscript';
 import type { TranscriptTurn } from '../voice/callHistory';
 
 describe('analysis transcript preparation', () => {
+  it('removes the recorded greeting and premature AI reply from call 786', () => {
+    const transcript: TranscriptTurn[] = [
+      { role: 'manager', text: 'Салон «Автомобильная группа» приветствует вас!' },
+      { role: 'client', text: 'Здравствуйте! Я звонил по предложению из выборки, уточню, актуально ли оно ещё?' },
+      { role: 'manager', text: 'Спецтелефон как центральный концерн, добрый день!' },
+      { role: 'client', text: 'Добрый день. Я звонил по предложению из выборки, уточню, актуально ли оно ещё?' },
+      { role: 'manager', text: 'Какой автомобиль вас интересовал, подскажите, пожалуйста?' },
+      { role: 'client', text: 'Я звонил по предложению из выборки, уточню, актуально ли оно ещё?' },
+    ];
+
+    const result = prepareTranscriptForAnalysis(transcript, { ivrDetected: false });
+
+    expect(result.reason).toBe('automatic_anchor');
+    expect(result.removedPrefixTurns).toBe(2);
+    expect(result.transcript).toEqual(transcript.slice(2));
+  });
+
   it('removes the automatic prefix from call 199 using the IVR greeting', () => {
     const transcript: TranscriptTurn[] = [
       { role: 'manager', text: 'Добро пожаловать в группу компаний «Канавто». Все разговоры записываются. Пожалуйста, дождитесь ответа оператора.' },

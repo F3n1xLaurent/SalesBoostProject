@@ -34,7 +34,7 @@ import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voic
 import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
 import { filterUnreliableManagerTurns } from './voice/transcriptReliability';
 import { classifyCallCompletion, type CompletionTranscriptTurn } from './voice/callCompletionClassifier';
-import { classifyLiveSpeaker, type LiveSpeakerTranscriptTurn } from './voice/callLiveSpeakerClassifier';
+import { classifyLiveSpeaker, classifyLiveSpeakerLocally, type LiveSpeakerTranscriptTurn } from './voice/callLiveSpeakerClassifier';
 import { rankProbableManagers } from './voice/callManagerAttribution';
 import { evaluateDemoExampleFromTranscript } from './voice/demoExampleEvaluation';
 import { computeUiDimensionScoresFromChecklist } from './voice/uiDimensionScores';
@@ -123,8 +123,10 @@ import { transcribeVoice, transcribeVoiceFast } from './voice/stt';
 import { classifyBehavior, type BehaviorSignal } from './logic/behaviorClassifier';
 import {
   buildTrainerInitialClientMessage,
+  ensureTrainerVisitSchedulingAnswer,
   importedItemMatchesTrainerTags,
   isNonProgressingTrainerReply,
+  trainerReplyMissesVisitSchedulingAnswer,
 } from './trainer/trainerScenario';
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
 import { adminApiAuthMiddleware, handleAuthLogin, handleAuthMe } from './auth/http';
@@ -2813,10 +2815,11 @@ async function runTrainerSessionTurn(params: {
           elevenLabsVoiceId,
         });
         console.log(`[trainer] ElevenLabs agent turn done session=${session.id} hasAudio=${Boolean(agentOut.audioBase64)} conversation=${agentOut.conversationId || 'n/a'}`);
-        if (isNonProgressingTrainerReply(agentOut.clientMessage)) {
+        if (isNonProgressingTrainerReply(agentOut.clientMessage)
+          || trainerReplyMissesVisitSchedulingAnswer(params.managerText, agentOut.clientMessage)) {
           elevenLabsTextAgentDisabled = true;
           closeElevenLabsAgentConversation(session.id);
-          throw new Error(`ElevenLabs returned a non-progressing reply: ${agentOut.clientMessage || '(empty)'}`);
+          throw new Error(`ElevenLabs returned an invalid trainer reply: ${agentOut.clientMessage || '(empty)'}`);
         }
         clientMessage = agentOut.clientMessage.trim();
         clientAudioBase64 = agentOut.audioBase64;
@@ -2847,9 +2850,11 @@ async function runTrainerSessionTurn(params: {
           maxResponseTokens: 700,
         });
         nextState = advanceTrainerStateFromVirtualReply(state, out);
-        clientMessage = out.client_message;
+        clientMessage = ensureTrainerVisitSchedulingAnswer(params.managerText, out.client_message);
+        const schedulingReplyWasReplaced = clientMessage !== out.client_message.trim();
         nextHistory = [...history, { role: 'client', content: clientMessage }];
-        endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
+        endConversation = !schedulingReplyWasReplaced
+          && (Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage));
         result = endConversation ? buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null) : null;
       }
     } else {
@@ -2867,9 +2872,11 @@ async function runTrainerSessionTurn(params: {
       });
 
       nextState = advanceTrainerStateFromVirtualReply(state, out);
-      clientMessage = out.client_message;
+      clientMessage = ensureTrainerVisitSchedulingAnswer(params.managerText, out.client_message);
+      const schedulingReplyWasReplaced = clientMessage !== out.client_message.trim();
       nextHistory = [...history, { role: 'client', content: clientMessage }];
-      endConversation = Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage);
+      endConversation = !schedulingReplyWasReplaced
+        && (Boolean(out.end_conversation) || shouldForceConversationEnd(clientMessage));
       result = endConversation ? buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null) : null;
     }
   }
@@ -7167,6 +7174,20 @@ app.post('/webhooks/vox/classify-live-speaker', async (req, res) => {
     return;
   }
 
+  // Most real greetings and IVR phrases are deterministic. Reply before the
+  // database and model round-trips so Voximplant can open (or keep closed) the
+  // audio channel before ElevenLabs starts speaking.
+  const localDecision = classifyLiveSpeakerLocally(candidateText);
+  if (localDecision) {
+    res.status(200).json({
+      speaker_type: localDecision.speakerType,
+      confidence: localDecision.confidence,
+      reason: localDecision.reason,
+      turn_id: turnId,
+    });
+    return;
+  }
+
   const session = await prisma.voiceCallSession.findUnique({
     where: { callId },
     select: { endedAt: true },
@@ -7191,12 +7212,12 @@ app.post('/webhooks/vox/classify-live-speaker', async (req, res) => {
   }
 
   const recentTranscript = (Array.isArray(payload.transcript) ? payload.transcript : [])
-    .slice(-6)
+    .slice(-2)
     .flatMap((raw): LiveSpeakerTranscriptTurn[] => {
       if (!raw || typeof raw !== 'object') return [];
       const turn = raw as Record<string, unknown>;
       const role = String(turn.role ?? '').trim();
-      const text = String(turn.text ?? '').trim().slice(0, 800);
+      const text = String(turn.text ?? '').trim().slice(0, 240);
       if (!text || (role !== 'manager' && role !== 'client')) return [];
       return [{ role, text }];
     });

@@ -622,4 +622,214 @@ describe('unified call report normalization', () => {
     expect(report?.weaknesses).toEqual(['Идентификация запроса клиента: Не уточнил запрос клиента.']);
     expect(JSON.stringify(report?.weaknesses)).not.toContain(criterionId);
   });
+
+  it('does not build strengths from checklist evidence on a negatively marked dialog turn', () => {
+    const quote = 'Добрый день, меня зовут Анна, компания «Сальса».';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 45,
+        categories: [],
+        keyFindings: [],
+        dialog: [{ role: 'manager', text: quote, mark: 'negative', comment: 'Менеджер не ответил на вопрос клиента.' }],
+      },
+      {
+        totalScore: 45,
+        transcript: [{ role: 'manager', text: quote }],
+        evaluation: {
+          checklist: [
+            { code: 'INTRODUCTION', status: 'YES', evidence: [`Менеджер: ${quote}`], comment: 'Менеджер поздоровался.' },
+            { code: 'SALON_NAME', status: 'YES', evidence: [`Менеджер: ${quote}`], comment: 'Менеджер назвал компанию.' },
+          ],
+        },
+      },
+    );
+
+    expect(report?.dialog[0]?.mark).toBe('negative');
+    expect(report?.strengths).toEqual([]);
+  });
+
+  it('keeps checklist strengths evidenced by a positively marked dialog turn', () => {
+    const quote = 'Добрый день, меня зовут Анна.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 85,
+        categories: [],
+        keyFindings: [],
+        dialog: [{ role: 'manager', text: quote, mark: 'positive', comment: 'Менеджер поздоровался и представился.' }],
+      },
+      {
+        totalScore: 85,
+        transcript: [{ role: 'manager', text: quote }],
+        evaluation: {
+          checklist: [{
+            code: 'INTRODUCTION', status: 'YES', evidence: [`Менеджер: ${quote}`], comment: 'Менеджер поздоровался и представился.',
+          }],
+        },
+      },
+    );
+
+    expect(report?.strengths).toContain('Менеджер поздоровался и представился.');
+  });
+
+  it('does not let a short positive fragment validate evidence from a negative turn', () => {
+    const negativeQuote = 'Добрый день, меня зовут Анна, я представляю компанию «Сальса».';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 45,
+        categories: [],
+        keyFindings: [],
+        dialog: [
+          { role: 'manager', text: negativeQuote, mark: 'negative', comment: 'Не ответил на вопрос.' },
+          { role: 'manager', text: 'Анна.', mark: 'positive', comment: 'Менеджер повторил имя.' },
+        ],
+      },
+      {
+        totalScore: 45,
+        transcript: [
+          { role: 'manager', text: negativeQuote },
+          { role: 'manager', text: 'Анна.' },
+        ],
+        evaluation: {
+          checklist: [{
+            code: 'INTRODUCTION', status: 'YES', evidence: [`Менеджер: ${negativeQuote}`], comment: 'Менеджер поздоровался и представился.',
+          }],
+        },
+      },
+    );
+
+    expect(report?.strengths).not.toContain('Менеджер поздоровался и представился.');
+  });
+
+  it('does not accept ambiguous evidence repeated in positive and negative turns', () => {
+    const repeatedQuote = 'Добрый день, меня зовут Анна.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 45,
+        categories: [],
+        keyFindings: [],
+        dialog: [
+          { role: 'manager', text: repeatedQuote, mark: 'negative', comment: 'Не ответил на вопрос клиента.' },
+          { role: 'manager', text: repeatedQuote, mark: 'positive', comment: 'Менеджер представился.' },
+        ],
+      },
+      {
+        totalScore: 45,
+        transcript: [
+          { role: 'manager', text: repeatedQuote },
+          { role: 'manager', text: repeatedQuote },
+        ],
+        evaluation: {
+          checklist: [{
+            code: 'INTRODUCTION',
+            status: 'YES',
+            evidence: [`Менеджер: ${repeatedQuote}`],
+            comment: 'Менеджер поздоровался и представился.',
+          }],
+        },
+      },
+    );
+
+    expect(report?.strengths).not.toContain('Менеджер поздоровался и представился.');
+  });
+
+  it('deduplicates semantically equivalent findings and checklist weaknesses', () => {
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 40,
+        categories: [],
+        keyFindings: [
+          {
+            problemTitle: 'Не уточнил запрос клиента',
+            importance: 'Важно',
+            category: 'Диагностика',
+            quote: 'Предлагаю приехать к нам завтра.',
+            comment: 'Менеджер не уточнил, какой именно автомобиль интересует клиента.',
+            betterExample: 'Какой именно автомобиль вас интересует?',
+          },
+          {
+            problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+            importance: 'Важно',
+            category: 'Продукт',
+            quote: 'Пробег небольшой.',
+            comment: 'Менеджер не связал характеристики с потребностями клиента.',
+            betterExample: 'Для ваших поездок небольшой пробег снижает будущие расходы.',
+          },
+          {
+            problemTitle: 'Не предложил следующий шаг',
+            importance: 'Важно',
+            category: 'Закрытие',
+            quote: 'Запишите мой номер.',
+            comment: 'Менеджер не согласовал конкретный последующий контакт.',
+            betterExample: 'Давайте созвонимся завтра в 12:00.',
+          },
+        ],
+      },
+      {
+        totalScore: 40,
+        transcript: [
+          { role: 'manager', text: 'Предлагаю приехать к нам завтра.' },
+          { role: 'manager', text: 'Пробег небольшой.' },
+          { role: 'manager', text: 'Запишите мой номер.' },
+        ],
+        evaluation: {
+          checklist: [
+            { code: 'CAR_IDENTIFICATION', status: 'NO', comment: 'Менеджер не уточнил модель автомобиля.' },
+            { code: 'NEEDS_DISCOVERY', status: 'PARTIAL', comment: 'Менеджер выяснил только часть потребностей.' },
+            { code: 'PRODUCT_PRESENTATION', status: 'NO', comment: 'Не было структурированной презентации.' },
+            { code: 'FOLLOW_UP_AGREEMENT', status: 'NO', comment: 'Конкретный повторный контакт не согласован.' },
+          ],
+        },
+      },
+    );
+
+    expect(report?.weaknesses).toEqual([
+      'Не уточнил запрос клиента: Менеджер не уточнил, какой именно автомобиль интересует клиента.',
+      'Презентация не структурирована, нет акцента на выгодах: Менеджер не связал характеристики с потребностями клиента.',
+      'Не предложил следующий шаг: Менеджер не согласовал конкретный последующий контакт.',
+      'Выявление потребностей: В стенограмме нет подтверждающей реплики менеджера.',
+    ]);
+  });
+
+  it('uses one grammatical gender for the manager throughout the report', () => {
+    const intro = 'Добрый день, меня зовут Анна.';
+    const credit = 'Кредит возможен без первоначального взноса на семь лет.';
+    const report = normalizeUnifiedCallReport(
+      {
+        totalScore: 80,
+        summary: 'Менеджер представилась и предложила обсудить условия. Менеджер спросила, клиентка ответила утвердительно. Менеджер уточнила условия, затем менеджер согласовала встречу. Менеджер озвучила решение, компания сообщила о сроках.',
+        categories: [{ name: 'Контакт', score: 80, comment: 'Менеджер поздоровалась и назвала своё имя.' }],
+        dialog: [
+          { role: 'manager', text: intro, mark: 'positive', comment: 'Менеджер представилась по имени.' },
+          { role: 'manager', text: credit, mark: 'positive', comment: 'Менеджер ответила на вопрос.' },
+        ],
+        recommendations: [{ text: 'Менеджер должна была уточнить срок.', category: 'Продукт' }],
+      },
+      {
+        totalScore: 80,
+        transcript: [
+          { role: 'manager', text: intro },
+          { role: 'manager', text: credit },
+        ],
+        evaluation: {
+          checklist: [
+            { code: 'INTRODUCTION', status: 'YES', evidence: [intro], comment: 'Менеджер представилась по имени.' },
+            {
+              code: 'CREDIT_EXPLANATION',
+              status: 'YES',
+              evidence: [credit],
+              comment: 'Менеджер ответила на вопрос, подтвердила возможность займа и назвала срок.',
+            },
+          ],
+        },
+      },
+    );
+
+    const visibleText = JSON.stringify(report);
+    expect(visibleText).toContain('Менеджер представился по имени.');
+    expect(visibleText).toContain('Менеджер ответил на вопрос, подтвердил возможность займа и назвал срок.');
+    expect(report?.summary).toContain('Менеджер спросил, клиентка ответила утвердительно.');
+    expect(report?.summary).toContain('Менеджер уточнил условия, затем менеджер согласовал встречу.');
+    expect(report?.summary).toContain('Менеджер озвучил решение, компания сообщила о сроках.');
+    expect(visibleText).not.toMatch(/представилась|предложила|поздоровалась|назвала|подтвердила|уточнила|согласовала|озвучила|должна/u);
+  });
 });

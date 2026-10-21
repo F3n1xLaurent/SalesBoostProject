@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeLiveSpeakerDecision } from '../voice/callLiveSpeakerClassifier';
+import { classifyLiveSpeakerLocally, normalizeLiveSpeakerDecision } from '../voice/callLiveSpeakerClassifier';
 
 describe('live speaker classifier contract', () => {
   it('accepts only a high-confidence live human decision', () => {
@@ -27,5 +27,24 @@ describe('live speaker classifier contract', () => {
       speakerType: 'unexpected',
       confidence: Number.NaN,
     })).toMatchObject({ speakerType: 'uncertain', confidence: 0 });
+  });
+});
+
+describe('fast local live speaker classifier', () => {
+  it('accepts common live replies and introductions immediately', () => {
+    expect(classifyLiveSpeakerLocally('Да?')?.speakerType).toBe('live_human');
+    expect(classifyLiveSpeakerLocally('Здравствуйте, меня зовут Анна.')?.speakerType).toBe('live_human');
+    expect(classifyLiveSpeakerLocally('Алексей, менеджер отдела продаж.')?.speakerType).toBe('live_human');
+  });
+
+  it('rejects recordings before considering greeting words', () => {
+    expect(classifyLiveSpeakerLocally('Здравствуйте! Вас приветствует компания.')?.speakerType).toBe('ivr_or_recording');
+    expect(classifyLiveSpeakerLocally('Это автоматический помощник.')?.speakerType).toBe('ivr_or_recording');
+    expect(classifyLiveSpeakerLocally('Набранный вами абонент недоступен.')?.speakerType).toBe('ivr_or_recording');
+  });
+
+  it('leaves genuinely ambiguous speech for the remote decision model', () => {
+    expect(classifyLiveSpeakerLocally('Автогарант.')).toBeNull();
+    expect(classifyLiveSpeakerLocally('Минуточку.')).toBeNull();
   });
 });

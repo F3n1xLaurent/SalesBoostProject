@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { buildCustomerScenarioPromptCore } from '../voice/customerScenarioPrompt';
 import {
   buildTrainerInitialClientMessage,
+  ensureTrainerVisitSchedulingAnswer,
   importedItemMatchesTrainerTags,
   isNonProgressingTrainerReply,
+  trainerReplyMissesVisitSchedulingAnswer,
 } from '../trainer/trainerScenario';
 import { buildProgressingVirtualClientFallback } from '../llm/virtualClient';
 
@@ -114,7 +116,61 @@ describe('trainer scenario selection', () => {
       expect(prompt).toContain('Не начинай следующую реплику, пока сотрудник не закончил говорить');
       expect(prompt).toContain('не задавай продавцу вопрос «Когда вам удобно приехать?»');
       expect(prompt).toContain('Если вопрос из сценария обращён к клиенту, отвечай на него');
+      expect(prompt).toContain('всегда сначала ответь на последний вопрос сотрудника');
+      expect(prompt).toContain('получится ли приехать сегодня или завтра');
     }
+  });
+
+  it('rejects a new scenario question when the employee asks when the client can visit', () => {
+    const managerMessage = 'У вас получится приехать сегодня или завтра?';
+
+    expect(trainerReplyMissesVisitSchedulingAnswer(
+      managerMessage,
+      'А сколько времени занимает диагностика?',
+    )).toBe(true);
+    expect(trainerReplyMissesVisitSchedulingAnswer(
+      managerMessage,
+      'Да. А сколько времени занимает диагностика?',
+    )).toBe(true);
+    expect(trainerReplyMissesVisitSchedulingAnswer(
+      managerMessage,
+      'Завтра смогу, ближе к вечеру.',
+    )).toBe(false);
+    expect(trainerReplyMissesVisitSchedulingAnswer(
+      managerMessage,
+      'Мне подойдет любой вариант.',
+    )).toBe(false);
+    expect(trainerReplyMissesVisitSchedulingAnswer(
+      'Вы сможете подъехать сегодня?',
+      'Могу к 18:00.',
+    )).toBe(false);
+  });
+
+  it('replaces an ignored repeated scheduling question with a direct answer', () => {
+    const managerMessage = 'Я еще раз уточню: получится ли вам подъехать сегодня или завтра?';
+    const reply = ensureTrainerVisitSchedulingAnswer(
+      managerMessage,
+      'Подскажите, а какая гарантия предусмотрена?',
+    );
+
+    expect(reply).toContain('завтра подходит');
+    expect(reply).toContain('на какое время');
+    expect(reply).not.toContain('гарантия');
+  });
+
+  it('preserves valid scheduling answers and leaves unrelated questions untouched', () => {
+    expect(ensureTrainerVisitSchedulingAnswer(
+      'Можете приехать завтра?',
+      'Да, завтра смогу к шести.',
+    )).toBe('Да, завтра смогу к шести.');
+    expect(ensureTrainerVisitSchedulingAnswer(
+      'Какой у вас бюджет?',
+      'А какая гарантия предусмотрена?',
+    )).toBe('А какая гарантия предусмотрена?');
+    expect(ensureTrainerVisitSchedulingAnswer(
+      'Когда вам удобно записаться на повторный звонок?',
+      'А какие еще есть условия?',
+    )).toBe('Завтра подходит. Подскажите, пожалуйста, на какое время?');
   });
 
   it('does not start the substantive scenario before a live employee answers', () => {

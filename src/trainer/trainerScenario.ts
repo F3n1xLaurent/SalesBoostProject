@@ -81,3 +81,47 @@ export function isNonProgressingTrainerReply(value: unknown): boolean {
   if (!normalized) return true;
   return /^(?:(?:да|ну)\s+)?(?:понял|поняла|понятно|хорошо|ладно|ясно|ага|угу)(?:\s+(?:понял|поняла|понятно|хорошо|ладно|ясно|ага|угу))*$/.test(normalized);
 }
+
+function normalizeDialogText(value: unknown): string {
+  return cleanText(value)
+    .toLocaleLowerCase('ru-RU')
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9\s]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Scheduling is a role-sensitive moment: the employee asks when the customer
+ * can visit, so another customer question is not a valid answer even if it
+ * advances the scripted checklist.
+ */
+export function trainerReplyMissesVisitSchedulingAnswer(managerMessage: unknown, clientReply: unknown): boolean {
+  const manager = normalizeDialogText(managerMessage);
+  const mentionsVisit = /(?:приех|подъех|заех|визит|встреч|запис)/u.test(manager);
+  const asksWhen = /(?:сегодня|завтра|послезавтра|когда|во\s+сколько|какое\s+время|в\s+какое\s+время|какой\s+день|дату|удобн|получится|смож)/u.test(manager);
+  if (!mentionsVisit || !asksWhen) return false;
+
+  const reply = normalizeDialogText(clientReply);
+  if (!reply) return true;
+  if (manager.includes('сегодня') && manager.includes('завтра')) {
+    const selectsOfferedDay = /(?:сегодня|завтра|оба\s+варианта|любой\s+(?:день|вариант))/u.test(reply);
+    return !selectsOfferedDay;
+  }
+  const hasDirectAnswer = /(?:^|\s)(?:да|нет)(?:\s|$)|(?:сегодня|завтра|послезавтра|могу|не\s+могу|смогу|не\s+смогу|получится|не\s+получится|подходит|не\s+подходит|удобно|неудобно|приеду|подъеду|заеду)|(?:в|к)\s+\d{1,2}(?:\s+\d{2})?/u.test(reply);
+  return !hasDirectAnswer;
+}
+
+export function ensureTrainerVisitSchedulingAnswer(managerMessage: unknown, clientReply: unknown): string {
+  const reply = cleanText(clientReply);
+  if (!trainerReplyMissesVisitSchedulingAnswer(managerMessage, reply)) return reply;
+
+  const manager = normalizeDialogText(managerMessage);
+  if (manager.includes('завтра')) {
+    return 'Да, завтра подходит. Подскажите, пожалуйста, на какое время?';
+  }
+  if (manager.includes('сегодня')) {
+    return 'Да, сегодня подходит. Подскажите, пожалуйста, на какое время?';
+  }
+  return 'Завтра подходит. Подскажите, пожалуйста, на какое время?';
+}
