@@ -117,7 +117,7 @@ export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInp
   const replyLength = asText(input.replyLength) || 'короткие или средние';
   const communicationStyle = asText(input.communicationStyle) || 'живой разговорный стиль без канцелярита';
   const context = asText(input.context) || 'Потребность не указана. Уточняй только детали текущего сценария.';
-  const itemTitle = asText(input.itemTitle) || (genericMode ? 'тема выбранного сценария' : 'предложение из выборки');
+  const itemTitle = asText(input.itemTitle) || (genericMode ? 'тема выбранного сценария' : 'предложение');
   const itemDescription = asText(input.itemDescription);
   const companyName = asText(input.companyName);
   const companyDescription = asText(input.companyDescription);
@@ -125,7 +125,7 @@ export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInp
   const targetSection = runtime === 'call' ? buildCallTargetLocationSection(input.target) : '';
   const spokenNumberAnchors = buildSpokenNumberAnchors(`${context}\n${itemDescription}\n${buildQuestionLines(input.questions)}`);
   const role = genericMode ? 'реальный клиент' : 'реальный покупатель';
-  const subject = genericMode ? 'теме выбранного сценария' : 'конкретному предложению из выборки';
+  const subject = genericMode ? 'теме выбранного сценария' : 'конкретному предложению';
 
   const firstContact = input.includeFirstMessage === false ? '' : [
     '# Первый контакт',

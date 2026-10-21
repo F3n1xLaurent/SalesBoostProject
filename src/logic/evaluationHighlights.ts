@@ -66,10 +66,27 @@ function appendUnique(target: string[], value: string, limit: number): void {
   target.push(value);
 }
 
-function checklistHighlight(item: Record<string, unknown>, status: 'YES' | 'PARTIAL' | 'NO'): string {
+/** Resolve a custom criterion from the checklist snapshot stored with its evaluation. */
+export function resolveChecklistItemLabel(evaluation: unknown, rawItem: unknown): string | null {
+  const item = recordOf(rawItem);
+  if (!item) return null;
   const code = cleanText(item.code).toUpperCase();
-  const label = CHECKLIST_LABELS[code] || cleanText(item.label) || code || 'Пункт чек-листа';
+  const source = recordOf(evaluation);
+  const definition = recordOf(source?.checklist_definition);
+  const definitions = Array.isArray(definition?.items) ? definition.items : [];
+  const matchingDefinition = definitions
+    .map(recordOf)
+    .find((candidate) => candidate && cleanText(candidate.id).toUpperCase() === code);
+  return cleanText(matchingDefinition?.title)
+    || cleanText(item.label || item.title)
+    || CHECKLIST_LABELS[code]
+    || null;
+}
+
+function checklistHighlight(item: Record<string, unknown>, status: 'YES' | 'PARTIAL' | 'NO'): string {
+  const label = cleanText(item.label) || 'Пункт чек-листа';
   const comment = cleanText(item.comment);
+  if (comment && !cleanText(item.label)) return comment;
   if (comment) return `${label}: ${comment}`;
   if (status === 'YES') return `${label} — выполнено`;
   if (status === 'PARTIAL') return `${label} — выполнено частично`;
@@ -144,6 +161,7 @@ export function buildEvaluationHighlights(
     .filter((item): item is Record<string, unknown> => Boolean(recordOf(item)))
     .map((item) => ({
       code: cleanText(item.code).toUpperCase() as ChecklistItem['code'],
+      label: resolveChecklistItemLabel(source, item),
       weight: numeric(item.weight) ?? 0,
       status: cleanText(item.status).toUpperCase() as ChecklistItem['status'],
       evidence: Array.isArray(item.evidence)

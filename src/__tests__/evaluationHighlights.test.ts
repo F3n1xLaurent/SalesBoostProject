@@ -124,4 +124,35 @@ describe('evaluation highlights', () => {
     ]);
     expect(result.strengths).toEqual(['Менеджер представился по имени.']);
   });
+
+  it('shows saved custom criterion titles instead of their UUIDs in strengths and weaknesses', () => {
+    const greetingId = 'fb308823-ef83-4fbb-8e2e-4b562c4b009f';
+    const needsId = '57b39032-9ae4-44dc-882e-8efcdd66be7f';
+    const result = buildEvaluationHighlights({
+      checklist_definition: { items: [
+        { id: greetingId, title: 'Приветствие' },
+        { id: needsId, title: 'Выявление потребностей' },
+      ] },
+      checklist: [
+        { code: greetingId, status: 'YES', comment: 'Менеджер поздоровался.' },
+        { code: needsId, status: 'NO', comment: 'Уточняющие вопросы не заданы.' },
+      ],
+    });
+
+    expect(result.strengths).toEqual(['Приветствие: Менеджер поздоровался.']);
+    expect(result.weaknesses).toEqual(['Выявление потребностей: Уточняющие вопросы не заданы.']);
+    expect([...result.strengths, ...result.weaknesses].join(' ')).not.toContain(greetingId.toUpperCase());
+  });
+
+  it('never exposes an opaque criterion ID when an older evaluation lacks its definition', () => {
+    const result = buildEvaluationHighlights({
+      checklist: [{
+        code: 'fb308823-ef83-4fbb-8e2e-4b562c4b009f',
+        status: 'NO',
+        comment: 'Менеджер не представился.',
+      }],
+    });
+
+    expect(result.weaknesses).toEqual(['Менеджер не представился.']);
+  });
 });

@@ -7,6 +7,7 @@ import type { Telegraf } from 'telegraf';
 import type { Prisma } from '@prisma/client';
 import { WebSocketServer } from 'ws';
 import { prisma } from './db';
+import { handleGetDiagnosticCase } from './diagnostics/http';
 import { config } from './config';
 import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import { buildScriptCriteriaEvaluationPrompt } from './llm/scriptCriteriaPrompt';
@@ -76,6 +77,7 @@ import { buildDealershipFromCar } from './llm/virtualClient';
 import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
 import { evaluateSessionV2 } from './llm/evaluatorV2';
+import { resolveChecklistItemLabel } from './logic/evaluationHighlights';
 import { generateSpeechBuffer, generateSpeechElevenLabsVoice, generateSpeechOpenAI } from './voice/tts';
 import { buildCustomerScenarioPromptCore } from './voice/customerScenarioPrompt';
 import {
@@ -1397,22 +1399,6 @@ function communicationFlagFromSessions(sessions: AnalyticsSession[]): 'ok' | 'fi
   return 'ok';
 }
 
-const AUDIT_CHECKLIST_LABELS: Record<string, string> = {
-  INTRODUCTION: 'Приветствие',
-  SALON_NAME: 'Представление компании / точки',
-  CAR_IDENTIFICATION: 'Уточнение интересующего автомобиля',
-  NEEDS_DISCOVERY: 'Выявление потребностей',
-  INITIATIVE: 'Инициатива менеджера',
-  PRODUCT_PRESENTATION: 'Презентация продукта',
-  CREDIT_EXPLANATION: 'Объяснение кредита / условий',
-  TRADEIN_OFFER: 'Предложение trade-in',
-  OBJECTION_HANDLING: 'Работа с возражениями',
-  NEXT_STEP_PROPOSAL: 'Предложение следующего шага',
-  DATE_FIXATION: 'Фиксация даты / времени',
-  FOLLOW_UP_AGREEMENT: 'Договорённость о контакте',
-  COMMUNICATION_TONE: 'Тон и качество коммуникации',
-};
-
 const AUDIT_ISSUE_LABELS: Record<string, string> = {
   NO_INTRO: 'Нет корректного приветствия',
   NO_SALON_NAME: 'Не названа компания / точка',
@@ -1459,7 +1445,7 @@ function extractReportIssuesFromSession(
     for (const item of rawChecklist) {
       const status = String(item.status || '').toUpperCase();
       if (!['NO', 'PARTIAL'].includes(status)) continue;
-      const fallback = AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Провальный пункт чек-листа';
+      const fallback = resolveChecklistItemLabel(evaluation, item) || item.comment || 'Провальный пункт чек-листа';
       const label = problemTitleByCode(catalog, item.code, fallback);
       issues.push(label);
     }
@@ -3274,6 +3260,11 @@ function buildVoiceCallDetailResponse(session: {
 // Health check: verify server is running (e.g. curl http://localhost:3000/health)
 app.get('/health', (_req, res) => {
   res.json({ ok: true, message: 'Sales Boost server is running' });
+});
+
+// Read-only, token-gated production diagnostics. Never expose through browser admin auth.
+app.get('/api/internal/diagnostics/:kind/:id', (req, res) => {
+  void handleGetDiagnosticCase(req, res);
 });
 
 const bitrixSupportBody = express.urlencoded({ extended: true, limit: '256kb' });
@@ -9168,7 +9159,7 @@ async function buildTrainerAuditDetailItem(session: {
     .map((item) => {
       const normalized = String(item.status || '').toUpperCase();
       return {
-        label: AUDIT_CHECKLIST_LABELS[item.code || ''] || item.comment || item.code || 'Пункт чек-листа',
+        label: resolveChecklistItemLabel(evaluation, item) || item.comment || 'Пункт чек-листа',
         result: normalized === 'YES' ? 'pass' as const : normalized === 'NO' ? 'fail' as const : 'warn' as const,
         quote: item.comment || (normalized === 'YES' ? 'Выполнено' : normalized === 'NO' ? 'Не выполнено' : 'Частично выполнено'),
       };
@@ -9383,7 +9374,6 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       hint: `Средний балл блока «${dimensionLabel(key)}»`,
     })).sort((a, b) => a.score - b.score);
 
-    const checklistLabels = AUDIT_CHECKLIST_LABELS;
     const issueLabels = AUDIT_ISSUE_LABELS;
     const severityScore = (severity: unknown) => {
       const normalized = String(severity || '').toUpperCase();
@@ -9412,7 +9402,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
             ? ((item as { evidence?: unknown[] }).evidence ?? []).map((value) => String(value).trim()).filter(Boolean)
             : [];
           return {
-            label: checklistLabels[item.code || ''] || item.comment || item.code || 'Пункт чек-листа',
+            label: resolveChecklistItemLabel(evaluation, item) || item.comment || 'Пункт чек-листа',
             result: normalized === 'YES' ? 'pass' as const : normalized === 'NO' ? 'fail' as const : 'warn' as const,
             quote: evidence[0] || item.comment || (normalized === 'YES' ? 'Выполнено' : normalized === 'NO' ? 'Не выполнено' : 'Частично выполнено'),
           };
@@ -9451,7 +9441,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       : rawChecklist
         .filter((item) => ['NO', 'PARTIAL'].includes(String(item.status || '').toUpperCase()))
         .slice(0, 5)
-        .map((item) => checklistLabels[item.code || ''] || item.comment || item.code || 'Провальный пункт чек-листа');
+        .map((item) => resolveChecklistItemLabel(evaluation, item) || item.comment || 'Провальный пункт чек-листа');
     const recommendationRows = recommendations.slice(0, 3).map((item) => {
       const text = typeof item === 'string'
         ? item
@@ -9472,7 +9462,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         const status = String(item.status || '').toUpperCase();
         const weight = typeof (item as { weight?: unknown }).weight === 'number' ? Number((item as { weight?: number }).weight) : 6;
         return {
-          issue: checklistLabels[item.code || ''] || item.comment || item.code || 'Ошибка чек-листа',
+          issue: resolveChecklistItemLabel(evaluation, item) || item.comment || 'Ошибка чек-листа',
           percent: status === 'NO' ? Math.min(100, Math.max(40, weight * 10)) : Math.min(70, Math.max(30, weight * 7)),
         };
       });
