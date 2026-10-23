@@ -997,14 +997,15 @@ export function buildRealtimeCallPrompt(input: {
   const patience = labelForPatience(profile?.patience || '');
   const replyLength = labelForReplyLength(profile?.replyLength || '');
   const communicationStyle = profile?.communicationStyle?.trim() || 'Говори естественно, как реальный клиент по телефону.';
-  const context = input.script.context?.trim() || 'Потребность клиента не указана. Веди себя как реалистичный покупатель и уточняй детали по предложению.';
-  const itemTitle = importedItem?.title?.trim() || 'предложение из выборки';
+  const context = input.script.context?.trim() || 'Потребность клиента не указана. Веди себя как реалистичный клиент и уточняй детали текущего обращения.';
+  const itemTitle = importedItem?.title?.trim() || '';
   const itemDescription = importedItem?.description?.trim() || '';
   const objections = safeJsonParse<Array<{ phrase?: string; whenAppropriate?: string }>>(input.script.objectionsJson, []);
   const questions = safeJsonParse<Array<{ text?: string; required?: boolean }>>(input.script.questionsJson, []);
   const criteria = safeJsonParse<Array<{ sourceType?: string; sourceId?: string; expectedAnswer?: string; score?: number }>>(input.script.successCriteriaJson, []);
   const scenarioCore = buildCustomerScenarioPromptCore({
     runtime: 'call',
+    conversationBasis: importedItem ? 'selection' : 'need',
     clientName: input.clientName,
     age,
     temperament,

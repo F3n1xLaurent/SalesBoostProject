@@ -12,6 +12,7 @@ export type ProblemCatalogItem = {
 export const DEFAULT_CALL_REPORT_PROBLEMS: ProblemCatalogItem[] = [
   { code: 'NO_INTRO_COMPANY', title: 'Не представился / не назвал компанию', category: 'Контакт', sortOrder: 10 },
   { code: 'NO_CLIENT_NAME', title: 'Не уточнил / не подтвердил имя клиента', category: 'Контакт', sortOrder: 20 },
+  { code: 'WRONG_CLIENT_NAME', title: 'Перепутал имя клиента', category: 'Коммуникация', sortOrder: 25 },
   { code: 'WEAK_DIALOG_OPENING', title: 'Не открыл диалог грамотно после приветствия (сухо передал слово клиенту, не задал открывающий вопрос)', category: 'Контакт', sortOrder: 30 },
   { code: 'NO_NEEDS_DISCOVERY', title: 'Не выявил потребности клиента (поверхностные вопросы)', category: 'Диагностика', sortOrder: 40 },
   { code: 'NO_REQUEST_CLARIFICATION', title: 'Не уточнил запрос клиента', category: 'Диагностика', sortOrder: 45 },

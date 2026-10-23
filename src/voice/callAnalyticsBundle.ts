@@ -8,6 +8,7 @@ import {
   getCallReportProblemCatalog,
 } from './problemCatalog';
 import {
+  ensureRecommendationFindingCoverage,
   normalizeUnifiedCallReport,
   ensureFindingBetterExamples,
   UNIFIED_REPORT_CATEGORIES,
@@ -90,6 +91,9 @@ export async function generateCallAnalyticsBundle(input: {
     '- version строго "call-report-v1"; source строго "call".',
     '- categories должны быть ровно 5 и только: Контакт, Диагностика, Продукт, Закрытие, Коммуникация.',
     '- keyFindings.problemTitle выбирай ТОЛЬКО из справочника проблем.',
+    '- Каждая существенная ошибка менеджера, упомянутая в summary, комментарии категории, weaknesses или recommendations, ОБЯЗАТЕЛЬНО должна иметь отдельный пункт keyFindings с реальной цитатой менеджера.',
+    '- Разные ошибки в одной реплике сохраняй как отдельные keyFindings. Неверная модель/марка/цена/характеристика — отдельная фактическая ошибка; отсутствие прямого ответа — отдельная проблема.',
+    '- Если менеджер узнал имя клиента, но позже назвал его другим именем, используй проблему «Перепутал имя клиента», а не «Пассивный стиль, низкая вовлечённость».',
     '- Заголовок, comment, quote и betterExample одной keyFinding должны описывать одну и ту же проблему. Не объединяй имя клиента и уточнение его запроса в одной находке.',
     '- Не добавляй проблему «Не уточнил / не подтвердил имя клиента», если менеджер спросил «Как вас зовут?» или «Как я могу к вам обращаться?».',
     '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
@@ -99,7 +103,7 @@ export async function generateCallAnalyticsBundle(input: {
     '- Для реплики менеджера mark: positive | normal | negative, comment короткий, до 90 символов.',
     '- Для mark=normal или mark=negative comment обязателен и конкретно объясняет пометку. Без объяснения ставь mark=null.',
     '- betterExample добавляй только для mark=negative и только если он явно устраняет указанную проблему. Используй лишь факты, известные к моменту этой реплики; не используй сведения клиента из более поздних реплик. Если безопасного улучшения нет или это простое перефразирование, верни null.',
-    '- keyFindings: 2-5 пунктов.',
+    '- keyFindings: все подтверждённые существенные ошибки, обычно 2-5 пунктов, максимум 8. Перед возвратом JSON сверь их с summary, categories, weaknesses и recommendations.',
     '- strengths/weaknesses/recommendations: по 2-4 коротких пункта.',
     '',
     'Верни JSON строго по схеме:',
@@ -150,11 +154,14 @@ export async function generateCallAnalyticsBundle(input: {
     { totalScore, transcript: input.transcript, source: 'call', evaluation: input.evaluation },
     catalog,
   );
+  const coveredReport = unifiedCallReport
+    ? await ensureRecommendationFindingCoverage(unifiedCallReport, input.transcript, catalog, input.evaluation)
+    : null;
   return {
     callSummary: null,
     replyImprovements: null,
-    unifiedCallReport: unifiedCallReport
-      ? await ensureFindingBetterExamples(unifiedCallReport, input.transcript, input.scenarioContext)
+    unifiedCallReport: coveredReport
+      ? await ensureFindingBetterExamples(coveredReport, input.transcript, input.scenarioContext)
       : null,
   };
 }

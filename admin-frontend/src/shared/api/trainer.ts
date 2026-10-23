@@ -140,7 +140,7 @@ export async function startTrainerSession(payload: {
   return apiJson(`${API_BASE}/api/trainer/session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, replyMode: 'text+voice', voice: 'male' }),
+    body: JSON.stringify({ ...payload, replyMode: 'text+voice' }),
   });
 }
 
@@ -197,6 +197,6 @@ export async function sendTrainerVoiceMessage(id: string, payload: {
   return apiJson(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/voice-message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, replyMode: 'text+voice', voice: 'male' }),
+    body: JSON.stringify({ ...payload, replyMode: 'text+voice' }),
   });
 }

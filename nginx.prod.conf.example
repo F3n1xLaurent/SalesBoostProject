@@ -314,6 +314,16 @@ server {
         proxy_read_timeout 300s;
     }
 
+    # A trainer turn can include STT, the text agent, the initial ElevenLabs
+    # TTS attempt and up to five retries before the OpenAI fallback is used.
+    location ~ ^/api/trainer/session/[^/]+/voice-message$ {
+        limit_req zone=salesboost_ai burst=10 nodelay;
+        proxy_pass http://salesboost_backend;
+        include proxy_params;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
     location /api/ {
         limit_req zone=salesboost_api burst=40 nodelay;
         proxy_pass http://salesboost_backend;

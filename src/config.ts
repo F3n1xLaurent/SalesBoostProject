@@ -35,6 +35,7 @@ export const config = {
   elevenLabsVoiceId: env.elevenLabsVoiceId,
   elevenLabsAgentId: env.elevenLabsAgentId,
   elevenLabsProxyUrl: env.elevenLabsProxyUrl,
+  elevenLabsTtsTimeoutMs: env.elevenLabsTtsTimeoutMs,
   ttsProvider: env.ttsProvider,
   httpsProxy: env.httpsProxy,
   authTokenSecret: env.authTokenSecret,

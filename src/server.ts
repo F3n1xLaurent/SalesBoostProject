@@ -78,7 +78,8 @@ import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
 import { evaluateSessionV2 } from './llm/evaluatorV2';
 import { resolveChecklistItemLabel } from './logic/evaluationHighlights';
-import { generateSpeechBuffer, generateSpeechElevenLabsVoice, generateSpeechOpenAI } from './voice/tts';
+import { generateSpeechBuffer, generateSpeechElevenLabsVoice, generateSpeechOpenAI, generateSpeechOpenAIVoice } from './voice/tts';
+import { resolveTrainerVoiceSelection, type TrainerVoiceSelection } from './voice/trainerVoice';
 import { buildCustomerScenarioPromptCore } from './voice/customerScenarioPrompt';
 import {
   closeElevenLabsAgentConversation,
@@ -732,6 +733,7 @@ function buildTrainerCaseContext(params: {
     voiceId: string;
     voiceName?: string | null;
     elevenLabsVoiceId?: string | null;
+    openaiVoiceId?: string | null;
     age: number;
     ageFrom: number;
     ageTo: number;
@@ -762,6 +764,7 @@ function buildTrainerCaseContext(params: {
       voiceId: params.customerProfile?.voiceId ?? null,
       voiceName: params.customerProfile?.voiceName ?? null,
       elevenLabsVoiceId: params.customerProfile?.elevenLabsVoiceId ?? null,
+      openaiVoiceId: params.customerProfile?.openaiVoiceId ?? null,
       age: clientAge,
       ageFrom: params.customerProfile?.ageFrom ?? params.customerProfile?.age ?? null,
       ageTo: params.customerProfile?.ageTo ?? params.customerProfile?.age ?? null,
@@ -2231,18 +2234,48 @@ function trainerGeneratedAudioMimeType(audio: Buffer): string {
 async function ttsBase64(
   text: string,
   replyMode: 'text' | 'text+voice',
-  ttsVoice: TtsVoice,
-  elevenLabsVoiceId?: string | null,
+  voice: TrainerVoiceSelection,
 ): Promise<{ audioBase64: string; audioMimeType: string } | null> {
   if (replyMode !== 'text+voice' || !text.trim()) return null;
+
+  const encode = (buf: Buffer) => buf.length
+    ? { audioBase64: buf.toString('base64'), audioMimeType: trainerGeneratedAudioMimeType(buf) }
+    : null;
+
+  if (voice.provider === 'elevenlabs' && voice.voiceId) {
+    const maxRetries = 5;
+    const maxAttempts = maxRetries + 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const audio = encode(await generateSpeechElevenLabsVoice(text, voice.voiceId));
+        if (audio) return audio;
+        throw new Error('ElevenLabs TTS returned empty audio');
+      } catch (error) {
+        console.error(`[trainer] ElevenLabs TTS error attempt=${attempt}/${maxAttempts}:`, error);
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 700));
+        }
+      }
+    }
+
+    console.warn('[trainer] ElevenLabs TTS unavailable after 5 retries; falling back to OpenAI TTS');
+    try {
+      const fallback = voice.openaiVoiceId
+        ? await generateSpeechOpenAIVoice(text, voice.openaiVoiceId)
+        : await generateSpeechOpenAI(text, voice.fallbackVoice);
+      return encode(fallback);
+    } catch (error) {
+      console.error('[trainer] OpenAI TTS fallback error:', error);
+      return null;
+    }
+  }
+
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const buf = elevenLabsVoiceId?.trim()
-        ? await generateSpeechElevenLabsVoice(text, elevenLabsVoiceId.trim())
-        : await generateSpeechBuffer(text, ttsVoice);
-      return buf.length
-        ? { audioBase64: buf.toString('base64'), audioMimeType: trainerGeneratedAudioMimeType(buf) }
-        : null;
+      const buf = voice.provider === 'openai' && voice.voiceId
+        ? await generateSpeechOpenAIVoice(text, voice.voiceId)
+        : await generateSpeechBuffer(text, voice.fallbackVoice);
+      return encode(buf);
     } catch (error) {
       console.error(`[trainer] TTS error attempt=${attempt}:`, error);
       if (attempt < 3) {
@@ -2250,35 +2283,27 @@ async function ttsBase64(
       }
     }
   }
-  if (elevenLabsVoiceId?.trim()) {
-    try {
-      console.warn('[trainer] ElevenLabs TTS unavailable, falling back to OpenAI TTS');
-      const fallback = await generateSpeechOpenAI(text, ttsVoice);
-      return fallback.length
-        ? { audioBase64: fallback.toString('base64'), audioMimeType: trainerGeneratedAudioMimeType(fallback) }
-        : null;
-    } catch (error) {
-      console.error('[trainer] OpenAI TTS fallback error:', error);
-    }
-  }
+  console.warn(`[trainer] profile TTS unavailable provider=${voice.provider}; returning text-only response`);
   return null;
 }
 
 /** Prefer voice bubbles, but keep the trainer flow alive if TTS is temporarily unavailable. */
 async function ensureTrainerClientAudio(params: {
   text: string;
-  ttsVoice: TtsVoice;
-  elevenLabsVoiceId?: string | null;
+  voice: TrainerVoiceSelection;
   audioBase64?: string | null;
   audioMimeType?: string | null;
 }): Promise<{ audioBase64: string | null; audioMimeType: string | null }> {
-  if (params.audioBase64) {
+  // The text agent may occasionally include ElevenLabs audio even in chat
+  // mode. Accept it only when this session is locked to ElevenLabs; otherwise
+  // it would replace the selected OpenAI profile voice for a single turn.
+  if (params.audioBase64 && params.voice.provider === 'elevenlabs') {
     return {
       audioBase64: params.audioBase64,
       audioMimeType: params.audioMimeType ?? null,
     };
   }
-  const audio = await ttsBase64(params.text, 'text+voice', params.ttsVoice, params.elevenLabsVoiceId);
+  const audio = await ttsBase64(params.text, 'text+voice', params.voice);
   if (!audio) {
     console.warn('[trainer] TTS unavailable, returning text-only client message');
     return { audioBase64: null, audioMimeType: null };
@@ -2595,6 +2620,7 @@ async function initializeTrainerDialog(params: {
 
   const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
   const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
+  const trainerVoice = resolveTrainerVoiceSelection(caseContext, config.ttsProvider, params.ttsVoice);
 
   const finalizeFirstTurn = async (input: {
     clientMessage: string;
@@ -2607,8 +2633,7 @@ async function initializeTrainerDialog(params: {
     let audioMimeType = input.audioMimeType ?? null;
     const ensured = await ensureTrainerClientAudio({
       text: input.clientMessage,
-      ttsVoice: params.ttsVoice,
-      elevenLabsVoiceId,
+      voice: trainerVoice,
       audioBase64,
       audioMimeType,
     });
@@ -2768,6 +2793,7 @@ async function runTrainerSessionTurn(params: {
 
   const caseContext = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
   const elevenLabsVoiceId = trainerElevenLabsVoiceId(caseContext);
+  const trainerVoice = resolveTrainerVoiceSelection(caseContext, config.ttsProvider, params.ttsVoice);
   const runtime = getTrainerRuntime(caseContext);
   const transcriptBefore = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
   const phoneScenarioPrompt = trainerScenarioPrompt(caseContext, transcriptBefore, params.ttsVoice);
@@ -2884,8 +2910,7 @@ async function runTrainerSessionTurn(params: {
   const nowIso = new Date().toISOString();
   const clientAudio = await ensureTrainerClientAudio({
     text: clientMessage,
-    ttsVoice: params.ttsVoice,
-    elevenLabsVoiceId,
+    voice: trainerVoice,
     audioBase64: clientAudioBase64,
     audioMimeType: clientAudioMimeType,
   });
@@ -4172,7 +4197,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
     const customerVoice = customerProfile?.voiceId
       ? await prisma.callCustomerVoice.findFirst({
         where: { id: customerProfile.voiceId, isDeleted: false, isEnabled: true },
-        select: { name: true, elevenLabsCode: true },
+        select: { name: true, elevenLabsCode: true, openaiCode: true },
       })
       : null;
     const trainerCustomerProfile = customerProfile
@@ -4180,6 +4205,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
         ...customerProfile,
         voiceName: customerVoice?.name?.trim() || null,
         elevenLabsVoiceId: customerVoice?.elevenLabsCode?.trim() || null,
+        openaiVoiceId: customerVoice?.openaiCode?.trim() || null,
       }
       : null;
 

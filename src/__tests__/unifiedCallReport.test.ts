@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openai } from '../lib/openaiClient';
-import { ensureFindingBetterExamples, normalizeUnifiedCallReport } from '../voice/unifiedCallReport';
+import {
+  ensureFindingBetterExamples,
+  ensureRecommendationFindingCoverage,
+  normalizeUnifiedCallReport,
+} from '../voice/unifiedCallReport';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -290,6 +294,120 @@ describe('unified call report normalization', () => {
     expect(report?.dialog[1]).toMatchObject({
       mark: 'negative', comment: 'Менеджер не объяснил, что проверяли.',
     });
+  });
+
+  it('keeps distinct manager errors from the same reply as separate findings', () => {
+    const quote = 'Niva Chevrolet отлично подходит для бездорожья. В дороге не подведёт.';
+    const report = normalizeUnifiedCallReport({
+      totalScore: 60,
+      keyFindings: [
+        {
+          problemTitle: 'Слабое знание характеристик / фактическая ошибка (дезинформация)',
+          importance: 'Важно', category: 'Продукт', quote,
+          comment: 'Менеджер назвал Niva Chevrolet вместо LADA Niva Legend.',
+          betterExample: 'Правильно понимаю, речь идёт о LADA Niva Legend?',
+        },
+        {
+          problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+          importance: 'Важно', category: 'Продукт', quote,
+          comment: 'Менеджер не раскрыл возможности автомобиля для бездорожья.',
+          betterExample: 'Уточню ваши условия эксплуатации и расскажу о подходящих возможностях автомобиля.',
+        },
+      ],
+    }, {
+      totalScore: 60,
+      transcript: [{ role: 'manager', text: quote }],
+    });
+
+    expect(report?.keyFindings).toHaveLength(2);
+    expect(report?.keyFindings.map((item) => item.problemTitle)).toEqual([
+      'Слабое знание характеристик / фактическая ошибка (дезинформация)',
+      'Презентация не структурирована, нет акцента на выгодах',
+    ]);
+  });
+
+  it('supports a dedicated finding when the manager uses the wrong client name', () => {
+    const quote = 'Завтра в девятнадцать часов, Василий, мы вас будем ожидать.';
+    const report = normalizeUnifiedCallReport({
+      totalScore: 75,
+      keyFindings: [{
+        problemTitle: 'Перепутал имя клиента',
+        importance: 'Важно', category: 'Коммуникация', quote,
+        comment: 'Менеджер назвал Андрея Василием.',
+        betterExample: 'Спасибо, Андрей. Будем ждать вас завтра в девятнадцать часов.',
+      }],
+    }, {
+      totalScore: 75,
+      transcript: [
+        { role: 'client', text: 'Меня зовут Андрей.' },
+        { role: 'manager', text: quote },
+      ],
+    });
+
+    expect(report?.keyFindings).toHaveLength(1);
+    expect(report?.keyFindings[0]).toMatchObject({
+      problemTitle: 'Перепутал имя клиента',
+      category: 'Коммуникация',
+    });
+    expect(report?.dialog[1]).toMatchObject({ mark: 'negative' });
+  });
+
+  it('repairs a catalog problem present in recommendations but missing from key findings', async () => {
+    const quote = 'Niva Chevrolet отлично подходит для бездорожья.';
+    const report = normalizeUnifiedCallReport({
+      totalScore: 70,
+      summary: 'Менеджер назвал модель иначе, чем клиент.',
+      categories: [{
+        name: 'Продукт', score: 50,
+        comment: 'Менеджер назвал Niva Chevrolet вместо LADA Niva Legend.',
+      }],
+      keyFindings: [],
+      recommendations: [{
+        text: 'Сверять название модели с запросом клиента.',
+        category: 'Продукт',
+        problemTitle: 'Слабое знание характеристик / фактическая ошибка (дезинформация)',
+      }],
+    }, {
+      totalScore: 70,
+      source: 'trainer',
+      transcript: [
+        { role: 'client', text: 'Звоню по LADA Niva Legend.' },
+        { role: 'manager', text: quote },
+      ],
+    });
+    expect(report).not.toBeNull();
+    const categoryScoresBeforeRepair = report!.categories.map(({ name, score }) => ({ name, score }));
+
+    vi.spyOn(openai.chat.completions, 'create').mockResolvedValue({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            keyFindings: [{
+              problemTitle: 'Слабое знание характеристик / фактическая ошибка (дезинформация)',
+              importance: 'Важно',
+              category: 'Продукт',
+              quote,
+              comment: 'Менеджер назвал другую модель автомобиля.',
+              betterExample: 'Правильно понимаю, речь идёт о LADA Niva Legend?',
+            }],
+          }),
+        },
+      }],
+    } as any);
+
+    const repaired = await ensureRecommendationFindingCoverage(report!, [
+      { role: 'client', text: 'Звоню по LADA Niva Legend.' },
+      { role: 'manager', text: quote },
+    ]);
+
+    expect(repaired.keyFindings).toHaveLength(1);
+    expect(repaired.keyFindings[0]).toMatchObject({
+      problemTitle: 'Слабое знание характеристик / фактическая ошибка (дезинформация)',
+      quote,
+    });
+    expect(repaired.dialog[1]).toMatchObject({ mark: 'negative' });
+    expect(repaired.categories.map(({ name, score }) => ({ name, score })))
+      .toEqual(categoryScoresBeforeRepair);
   });
 
   it('does not create a negative finding or mark from visibly broken ASR', () => {

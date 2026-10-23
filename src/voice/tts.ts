@@ -7,7 +7,6 @@ import { fetchElevenLabs, isElevenLabsProxyEnabled } from './elevenLabsHttp';
 import { normalizeRussianSpeechNumbers } from './speechFacts';
 
 const TTS_MAX_CHARS = 360;
-const ELEVENLABS_TTS_TIMEOUT_MS = 25_000;
 const ELEVENLABS_TTS_MODEL = 'eleven_v4_turbo';
 const ELEVENLABS_TTS_VOICE_SETTINGS = {
   stability: 0.75,
@@ -65,8 +64,8 @@ async function generateSpeechElevenLabs(text: string, voiceId = config.elevenLab
     voice_settings: ELEVENLABS_TTS_VOICE_SETTINGS,
   });
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ELEVENLABS_TTS_TIMEOUT_MS);
-  console.log(`[tts] ElevenLabs request chars=${ttsText.length} model=${ELEVENLABS_TTS_MODEL} proxy=${isElevenLabsProxyEnabled()}`);
+  const timeout = setTimeout(() => controller.abort(), config.elevenLabsTtsTimeoutMs);
+  console.log(`[tts] ElevenLabs request chars=${ttsText.length} model=${ELEVENLABS_TTS_MODEL} timeout_ms=${config.elevenLabsTtsTimeoutMs} proxy=${isElevenLabsProxyEnabled()}`);
   try {
     const response = await fetchElevenLabs(
       `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(resolvedVoiceId)}?output_format=opus_48000_128`,
@@ -114,10 +113,16 @@ export async function generateSpeechElevenLabsVoice(text: string, voiceId: strin
 
 /** OpenAI opus = OGG/Opus, suitable for Telegram sendVoice (voice message). */
 export async function generateSpeechOpenAI(text: string, voice: TtsVoice = 'male'): Promise<Buffer> {
+  return generateSpeechOpenAIVoice(text, OPENAI_VOICE_MAP[voice]);
+}
+
+export async function generateSpeechOpenAIVoice(text: string, voiceId: string): Promise<Buffer> {
+  const trimmed = text.trim();
+  if (!trimmed) return Buffer.alloc(0);
   const response = await openai.audio.speech.create({
     model: config.openaiTtsModel,
-    voice: OPENAI_VOICE_MAP[voice] as any,
-    input: buildTtsText(text),
+    voice: voiceId as any,
+    input: buildTtsText(trimmed),
     response_format: 'opus',
   });
   const blob = await (response as any).blob();

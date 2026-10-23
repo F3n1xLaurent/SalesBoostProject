@@ -261,7 +261,7 @@ function deduplicateFindings(
       quoteIndex >= 0
         ? findTranscriptQuoteIndex(existing.quote, transcript) === quoteIndex
         : findingTextKey(existing.quote) === key)
-      && (existing.category === item.category
+      && (existing.problemTitle === item.problemTitle
         || similarAdvice(existing.betterExample, item.betterExample)
         || similarAdvice(existing.comment, item.comment)));
     if (existingIndex < 0) {
@@ -321,6 +321,7 @@ function safeFallbackBetterExample(finding: UnifiedCallReport['keyFindings'][num
   const byCode: Record<string, string> = {
     NO_INTRO_COMPANY: 'Здравствуйте! Меня зовут [имя], компания [название компании]. Чем могу вам помочь?',
     NO_CLIENT_NAME: 'Подскажите, пожалуйста, как я могу к вам обращаться?',
+    WRONG_CLIENT_NAME: 'Спасибо, [имя клиента]. Будем ждать вас в согласованное время.',
     WEAK_DIALOG_OPENING: 'Здравствуйте! Подскажите, пожалуйста, по какому вопросу вы обращаетесь?',
     NO_NEEDS_DISCOVERY: 'Подскажите, пожалуйста, что для вас особенно важно при выборе?',
     NO_REQUEST_CLARIFICATION: 'Уточните, пожалуйста, какой именно вариант вас интересует и что вы хотели бы узнать?',
@@ -649,6 +650,96 @@ export function normalizeUnifiedCallReport(
 }
 
 /**
+ * A recommendation linked to a catalog problem means the report has already
+ * classified a concrete coaching issue. Do not let that issue disappear from
+ * key findings merely because the first model response omitted its card.
+ */
+export async function ensureRecommendationFindingCoverage(
+  report: UnifiedCallReport,
+  transcript: TranscriptTurn[],
+  catalog: ProblemCatalogItem[] = DEFAULT_CALL_REPORT_PROBLEMS,
+  evaluation?: EvaluationInput | Record<string, unknown> | null,
+): Promise<UnifiedCallReport> {
+  const existingTitles = new Set(report.keyFindings.map((finding) => finding.problemTitle));
+  const missingProblems = report.recommendations
+    .map((recommendation) => recommendation.problemTitle
+      ? problemByTitle(catalog, recommendation.problemTitle)
+      : null)
+    .filter((problem): problem is ProblemCatalogItem => Boolean(problem))
+    .filter((problem, index, items) => !existingTitles.has(problem.title)
+      && items.findIndex((item) => item.code === problem.code) === index)
+    .slice(0, Math.max(0, 8 - report.keyFindings.length));
+  if (missingProblems.length === 0 || transcript.length === 0) return report;
+
+  const transcriptText = transcript
+    .map((turn, index) => `${index + 1}. ${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`)
+    .join('\n');
+  const context = [
+    `Итог: ${report.summary}`,
+    ...report.categories.map((category) => `${category.name}: ${category.comment}`),
+    ...report.weaknesses.map((weakness) => `Слабая сторона: ${weakness}`),
+    ...report.recommendations.map((recommendation) => `Рекомендация: ${recommendation.text}`),
+  ].join('\n');
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: config.openaiChatModel,
+      messages: [
+        {
+          role: 'system',
+          content: 'Ты проверяешь полноту отчёта по разговору. Возвращай только валидный JSON и не придумывай факты или цитаты.',
+        },
+        {
+          role: 'user',
+          content: [
+            'В отчёте есть рекомендации по подтверждённым проблемам, но для них отсутствуют карточки keyFindings.',
+            'Для КАЖДОЙ перечисленной проблемы верни отдельную находку только при наличии реальной подтверждающей реплики менеджера.',
+            'quote скопируй дословно из реплики менеджера. Не заменяй проблему другой и не объединяй разные ошибки одной реплики.',
+            'betterExample должен исправлять именно эту ошибку без новых неподтверждённых фактов.',
+            `Пропущенные проблемы:\n${missingProblems.map((problem) => `- ${problem.title} (${problem.category})`).join('\n')}`,
+            `Контекст отчёта:\n${context}`,
+            `Диалог:\n${transcriptText}`,
+            'Формат: {"keyFindings":[{"problemTitle":"точно из списка","importance":"Важно","category":"категория из списка","quote":"дословная реплика менеджера","comment":"что именно сделано неверно","betterExample":"как ответить лучше"}]}',
+          ].join('\n\n'),
+        },
+      ],
+      response_format: { type: 'json_object' },
+      ...compatibleChatTemperature(config.openaiChatModel, 0.1),
+      max_completion_tokens: 2500,
+    });
+    const content = response.choices[0]?.message?.content?.trim();
+    if (!content) return report;
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const repairedItems = Array.isArray(parsed.keyFindings) ? parsed.keyFindings : [];
+    if (repairedItems.length === 0) return report;
+    // This is a repair of an already-normalized report. Preserve its
+    // authoritative calculated category scores while normalizing only the
+    // newly returned findings.
+    const preservedDimensionScores: Record<string, number> = {
+      first_contact: report.categories.find((item) => item.name === 'Контакт')?.score ?? report.totalScore,
+      needs_discovery: report.categories.find((item) => item.name === 'Диагностика')?.score ?? report.totalScore,
+      product_and_sales: report.categories.find((item) => item.name === 'Продукт')?.score ?? report.totalScore,
+      closing_commitment: report.categories.find((item) => item.name === 'Закрытие')?.score ?? report.totalScore,
+      communication: report.categories.find((item) => item.name === 'Коммуникация')?.score ?? report.totalScore,
+    };
+    return normalizeUnifiedCallReport(
+      { ...report, keyFindings: [...report.keyFindings, ...repairedItems] },
+      {
+        totalScore: report.totalScore,
+        transcript,
+        source: report.source,
+        dimensionScores: preservedDimensionScores,
+        evaluation,
+      },
+      catalog,
+    ) ?? report;
+  } catch (error) {
+    console.warn('[unified-report] finding coverage repair failed:', error instanceof Error ? error.message : error);
+    return report;
+  }
+}
+
+/**
  * The main report generation intentionally drops coaching examples that use
  * future context or merely paraphrase the manager. A missing example should
  * not silently remove the "Как лучше" block, though, so make one focused
@@ -794,6 +885,12 @@ export async function generateUnifiedCallReport(input: {
     '- weaknesses включают только пункты checklist со статусом PARTIAL/NO и условия plan_criteria, выполненные менее чем на 80%.',
     '- Пункты checklist со статусом NA не включай ни в strengths, ни в weaknesses. Один пункт не может одновременно быть сильной и слабой стороной.',
     '- keyFindings: problemTitle выбирай ТОЛЬКО из справочника ниже. Нельзя придумывать новые названия проблем.',
+    '- Каждая существенная ошибка менеджера, упомянутая в summary, комментарии категории, weaknesses или recommendations, ОБЯЗАТЕЛЬНО должна иметь отдельный пункт keyFindings с реальной цитатой менеджера. Перед возвратом JSON сверь эти четыре раздела с keyFindings.',
+    '- Разные ошибки в одной реплике не объединяй и не выбрасывай: например, неверная модель автомобиля и отсутствие презентации — это две отдельные keyFindings, даже если quote совпадает.',
+    '- Если менеджер назвал другую модель, марку, цену, характеристику или иной факт вопреки словам клиента, обязательно добавь keyFinding «Слабое знание характеристик / фактическая ошибка (дезинформация)» и пометь реплику negative.',
+    '- Если менеджер сначала узнал имя клиента, а затем назвал его другим именем, обязательно добавь keyFinding «Перепутал имя клиента» с ошибочной репликой в quote. Не подменяй эту ошибку проблемой «Пассивный стиль, низкая вовлечённость».',
+    '- Если менеджер не ответил на прямой вопрос клиента, обязательно добавь отдельную keyFinding «Ушёл от вопроса клиента / не дал прямого ответа», даже когда в той же реплике есть другая ошибка.',
+    '- keyFindings должны содержать все подтверждённые существенные ошибки, но не более 8 пунктов. Не добавляй замечания без подтверждения в диалоге.',
     '- Заголовок, comment, quote и betterExample одной keyFinding должны описывать одну и ту же проблему. Не объединяй имя клиента и уточнение его запроса в одной находке.',
     '- Не добавляй проблему «Не уточнил / не подтвердил имя клиента», если менеджер спросил «Как вас зовут?» или «Как я могу к вам обращаться?».',
     '- keyFindings.quote должна быть реальной цитатой из диалога. Если точной цитаты нет, возьми самый близкий фрагмент из стенограммы.',
@@ -877,7 +974,8 @@ export async function generateUnifiedCallReport(input: {
     catalog,
   );
   if (!normalized) throw new Error('Invalid unified report JSON');
-  return ensureFindingBetterExamples(normalized, input.transcript);
+  const covered = await ensureRecommendationFindingCoverage(normalized, input.transcript, catalog, input.evaluation);
+  return ensureFindingBetterExamples(covered, input.transcript);
 }
 
 export async function generateUnifiedTrainerReport(input: {

@@ -76,4 +76,37 @@ describe('buildRealtimeCallPrompt', () => {
     expect(prompt).toContain('Не добивайся эталонной формулировки');
     expect(prompt).not.toContain('После двух попыток вернуть разговор к вопросу');
   });
+
+  it('без импортированной записи начинает разговор из потребности и вопросов скрипта', () => {
+    const prompt = buildRealtimeCallPrompt({
+      script: {
+        ...script,
+        context: 'Стоимость — 859 900 рублей. Планируется приобретение в кредит.',
+        questionsJson: JSON.stringify([
+          { id: 'q1', text: 'Здравствуйте! Черная Toyota Corolla 2008 года еще в продаже?', required: true },
+        ]),
+      },
+      profile,
+      importedItem: null,
+      holding: { name: 'Тестовая компания', description: null },
+    });
+
+    expect(prompt).toContain('Черная Toyota Corolla 2008 года еще в продаже?');
+    expect(prompt).toContain('Импортированная запись не выбрана');
+    expect(prompt).toContain('Ориентируйся на потребность и обязательные вопросы');
+    expect(prompt).not.toContain('предложение из выборки');
+    expect(prompt).not.toContain('уточни, актуально ли предложение');
+  });
+
+  it('после явной переадресации не требует повторять исходный вопрос', () => {
+    const prompt = buildRealtimeCallPrompt({
+      script,
+      profile,
+      importedItem: null,
+      holding: { name: 'Тестовая компания', description: null },
+    });
+
+    expect(prompt).toContain('не повторяй исходный вопрос');
+    expect(prompt).toContain('не спорь, не настаивай и не повторяй вопрос');
+  });
 });
