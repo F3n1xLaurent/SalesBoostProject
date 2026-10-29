@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import WebSocket from 'ws';
 import { config } from '../config';
-import { resolveRealtimeTestPlanConfiguration } from './callSettingsManagement';
 import { normalizeRussianSpeechNumbers } from './speechFacts';
 import { startVoiceCall } from './startVoiceCall';
 import { elevenLabsWebSocketOptions, fetchElevenLabs } from './elevenLabsHttp';
@@ -384,6 +383,7 @@ export async function handleStartYandexRealtimeTest(req: Request, res: Response)
     return;
   }
   try {
+    const { resolveRealtimeTestPlanConfiguration } = await import('./callSettingsManagement');
     const plan = await resolveRealtimeTestPlanConfiguration(req, planId);
     const elevenLabsTts = await resolveAgentTtsSettings();
     // The original ElevenLabs Agent also applies the plan/profile voice as an

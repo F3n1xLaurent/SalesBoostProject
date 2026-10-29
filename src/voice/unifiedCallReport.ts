@@ -649,6 +649,36 @@ export function normalizeUnifiedCallReport(
   };
 }
 
+/** Reading an existing report must never wait for an AI repair or rewrite it. */
+export function normalizeStoredUnifiedCallReport(
+  ...args: Parameters<typeof normalizeUnifiedCallReport>
+): UnifiedCallReport | null {
+  const report = normalizeUnifiedCallReport(...args);
+  return report ? withFallbackFindingBetterExamples(report, args[1].transcript) : null;
+}
+
+function withFallbackFindingBetterExamples(
+  report: UnifiedCallReport,
+  transcript: TranscriptTurn[],
+): UnifiedCallReport {
+  let changed = false;
+  const keyFindings = report.keyFindings.map((finding) => {
+    if (finding.betterExample.trim()) return finding;
+    changed = true;
+    const quoteIndex = findTranscriptQuoteIndex(finding.quote, transcript);
+    const precedingClient = quoteIndex >= 0
+      ? [...transcript.slice(0, quoteIndex)].reverse().find((turn) => turn.role === 'client')
+      : undefined;
+    return {
+      ...finding,
+      betterExample: precedingClient && /(?:что\s+(?:входит|включает)|из\s+чего\s+состоит|что\s+провер|какие\s+(?:работы|этапы|операции))/iu.test(precedingClient.text)
+        ? 'Я уточню полный перечень работ по этой проверке и перечислю его вам, чтобы не пропустить важное.'
+        : safeFallbackBetterExample(finding),
+    };
+  });
+  return changed ? { ...report, keyFindings } : report;
+}
+
 /**
  * A recommendation linked to a catalog problem means the report has already
  * classified a concrete coaching issue. Do not let that issue disappear from
@@ -828,26 +858,10 @@ export async function ensureFindingBetterExamples(
     }
   }
 
-  for (const { finding, index } of allMissing) {
-    if (!repaired[index]?.betterExample.trim()) {
-      repaired[index] = {
-        ...repaired[index],
-        betterExample: (() => {
-          const quoteIndex = findTranscriptQuoteIndex(finding.quote, transcript);
-          const precedingClient = quoteIndex >= 0
-            ? [...transcript.slice(0, quoteIndex)].reverse().find((turn) => turn.role === 'client')
-            : undefined;
-          return precedingClient && /(?:что\s+(?:входит|включает)|из\s+чего\s+состоит|что\s+провер|какие\s+(?:работы|этапы|операции))/iu.test(precedingClient.text)
-            ? 'Я уточню полный перечень работ по этой проверке и перечислю его вам, чтобы не пропустить важное.'
-            : safeFallbackBetterExample(finding);
-        })(),
-      };
-    }
-  }
-
-  return repaired.some((finding, index) => finding.betterExample !== report.keyFindings[index]?.betterExample)
+  const result = repaired.some((finding, index) => finding.betterExample !== report.keyFindings[index]?.betterExample)
     ? { ...report, keyFindings: repaired }
     : report;
+  return withFallbackFindingBetterExamples(result, transcript);
 }
 
 export async function generateUnifiedCallReport(input: {

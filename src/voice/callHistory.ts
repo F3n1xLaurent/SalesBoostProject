@@ -29,11 +29,11 @@ function normalizePhone(v: string): string {
   return digits ? '+' + digits : v;
 }
 
-export function addCall(callId: string, to: string): void {
+export function addCall(callId: string, to: string, startedAt = new Date().toISOString()): void {
   const record: VoiceCallRecord = {
     callId,
     to: normalizePhone(to),
-    startedAt: new Date().toISOString(),
+    startedAt,
     connectedAt: null,
     transcript: [],
     voxSessionId: null,

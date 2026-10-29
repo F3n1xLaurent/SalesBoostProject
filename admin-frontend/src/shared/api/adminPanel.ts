@@ -2229,11 +2229,24 @@ export async function fetchAudits(limit = 100): Promise<AuditItem[]> {
 }
 
 export async function fetchAuditDetail(id: string): Promise<AuditDetailItem | null> {
-  const res = await apiFetch(`${API_BASE}/api/admin/audits/${encodeURIComponent(id)}`);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error('Не удалось загрузить проверку.');
-  const data = await res.json().catch(() => ({}));
-  return data.item ?? null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const res = await apiFetch(`${API_BASE}/api/admin/audits/${encodeURIComponent(id)}`, {
+      signal: controller.signal,
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error('Не удалось загрузить проверку.');
+    const data = await res.json();
+    return data.item ?? null;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error('Сервер не ответил за 20 секунд. Попробуйте открыть аналитику ещё раз.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function fetchTimeSeries(): Promise<TimeSeriesPoint[]> {

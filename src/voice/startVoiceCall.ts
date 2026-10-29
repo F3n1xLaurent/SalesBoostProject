@@ -30,7 +30,7 @@ function isPublicHttpUrl(value: string): boolean {
   }
 }
 
-export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure' | 'yandex_realtime_test' | 'comet_realtime_test';
+export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure' | 'yandex_realtime_test' | 'comet_realtime_test' | 'openai_realtime';
 
 export interface StartVoiceCallOptions {
   /** 'dialog' = our LLM (voice_dialog), 'realtime' = OpenAI Realtime. Default: 'dialog'. */
@@ -45,6 +45,8 @@ export interface StartVoiceCallOptions {
   callId?: string;
   /** Short-lived secret used to authenticate Voximplant to the isolated media WebSocket. */
   streamToken?: string;
+  /** Separate per-call authentication for production lifecycle webhooks. */
+  webhookToken?: string;
 }
 
 export interface StartVoiceCallResult {
@@ -122,7 +124,21 @@ export async function startVoiceCall(
   let ruleName: string;
   let customData: Record<string, unknown>;
 
-  if (scenario === 'comet_realtime_test') {
+  if (scenario === 'openai_realtime') {
+    if (!baseUrl || !options.streamToken || !options.webhookToken) {
+      return { error: 'Production OpenAI Realtime requires a public media URL and per-call authentication tokens.' };
+    }
+    scriptName = process.env.VOX_OPENAI_REALTIME_SCENARIO_NAME || 'voice_openai_realtime';
+    ruleName = process.env.VOX_OPENAI_REALTIME_RULE_NAME || 'voice_openai_realtime_rule';
+    customData = {
+      call_id: callId, to: toNormalized,
+      event_url: `${eventUrlBase || baseUrl}/webhooks/vox-openai-realtime`,
+      event_token: options.webhookToken,
+      stream_url: baseUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+        + `/voice/openai-realtime?call_id=${encodeURIComponent(callId)}&token=${encodeURIComponent(options.streamToken)}`,
+      caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+    };
+  } else if (scenario === 'comet_realtime_test') {
     if (!baseUrl) {
       return { error: 'VOICE_DIALOG_BASE_URL or MINI_APP_URL must be set for Comet Realtime test.' };
     }

@@ -41,6 +41,7 @@ import {
   handleStartCometRealtimeTest,
 } from './voice/cometRealtimeTest';
 import { handleStartRealtimeRegression, handleGetRealtimeRegression, handleCancelRealtimeRegression, handleRegressionAudio, handleListRealtimeRegressions, handleCompareRealtimeRegressions } from './voice/realtimeRegression';
+import { handleProductionRealtimeWebhook } from './voice/productionRealtimeWebhook';
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
@@ -63,9 +64,9 @@ import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
 import { getCallRecordingFilePath, resumePendingRecordingFetches } from './voice/voximplantRecordingService';
 import {
-  ensureFindingBetterExamples,
   generateUnifiedCallReport,
   generateUnifiedTrainerReport,
+  normalizeStoredUnifiedCallReport,
   normalizeUnifiedCallReport,
 } from './voice/unifiedCallReport';
 import {
@@ -7409,9 +7410,25 @@ app.post('/webhooks/vox/classify-completion', async (req, res) => {
 
 // Voximplant webhook: call events (disconnected, failed, no_answer, busy)
 app.post('/webhooks/vox', async (req, res) => {
-  res.status(200).end();
   const requestId = (req as express.Request & { voxRequestId?: string }).voxRequestId || null;
   const payload = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
+  // Production Realtime must use its authenticated endpoint; otherwise the
+  // legacy public webhook could bypass per-call authentication by call_id.
+  try {
+    const callId = typeof payload.call_id === 'string' ? payload.call_id : '';
+    const session = callId ? await prisma.voiceCallSession.findUnique({ where: { callId }, select: { scenario: true } }) : null;
+    if (session?.scenario === 'openai_realtime') {
+      res.status(403).json({ error: 'Use the authenticated realtime lifecycle endpoint.' }); return;
+    }
+  } catch (error) {
+    console.error('[webhooks/vox] lifecycle routing failed:', error instanceof Error ? error.message : error);
+    res.status(503).end(); return;
+  }
+  res.status(200).end();
+  await processVoxWebhookPayload(payload, requestId);
+});
+
+async function processVoxWebhookPayload(payload: Record<string, unknown>, requestId: string | null = null): Promise<void> {
   const voxSessionIdRaw =
     (payload as { vox_session_id?: unknown }).vox_session_id ??
     (payload as { vox_call_id?: unknown }).vox_call_id ??
@@ -7524,6 +7541,13 @@ app.post('/webhooks/vox', async (req, res) => {
       });
     });
   }
+}
+
+app.post('/webhooks/vox-openai-realtime', (req, res) => {
+  void handleProductionRealtimeWebhook(req, res, processVoxWebhookPayload).catch((error) => {
+    console.error('[voice/realtime] lifecycle processing failed:', error instanceof Error ? error.message : error);
+    if (!res.headersSent) res.status(500).json({ error: 'Realtime lifecycle processing failed.' });
+  });
 });
 
 // Admin: call history from DB (persisted; same phone = multiple cards)
@@ -9302,7 +9326,7 @@ async function buildTrainerAuditDetailItem(session: {
       text: String(line.text || line.content || '').trim(),
     }))
     .filter((line) => line.text);
-  let unifiedReport = normalizeUnifiedCallReport(
+  let unifiedReport = normalizeStoredUnifiedCallReport(
     evaluation?.unified_call_report,
     {
       totalScore: score,
@@ -9314,20 +9338,6 @@ async function buildTrainerAuditDetailItem(session: {
     },
     catalog,
   );
-  if (unifiedReport) {
-    const repairedReport = await ensureFindingBetterExamples(unifiedReport, reportTranscript);
-    if (repairedReport !== unifiedReport) {
-      unifiedReport = repairedReport;
-      evaluation = {
-        ...(evaluation ?? {}),
-        unified_call_report: unifiedReport,
-      };
-      await prisma.trainerSession.update({
-        where: { id: session.id },
-        data: { evaluationJson: JSON.stringify(evaluation) },
-      });
-    }
-  }
   if (!unifiedReport && reportTranscript.length >= 2) {
     try {
       unifiedReport = await generateUnifiedTrainerReport({
@@ -9592,25 +9602,11 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       }))
       .filter((line) => line.text);
     const catalog = await getCallReportProblemCatalog(prisma);
-    let unifiedReport = normalizeUnifiedCallReport(
+    let unifiedReport = normalizeStoredUnifiedCallReport(
       evaluation?.unified_call_report,
       { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions, evaluation },
       catalog,
     );
-    if (unifiedReport) {
-      const repairedReport = await ensureFindingBetterExamples(unifiedReport, reportTranscript);
-      if (repairedReport !== unifiedReport) {
-        unifiedReport = repairedReport;
-        evaluation = {
-          ...(evaluation ?? {}),
-          unified_call_report: unifiedReport,
-        };
-        await prisma.voiceCallSession.update({
-          where: { id: session.id },
-          data: { evaluationJson: JSON.stringify(evaluation) },
-        });
-      }
-    }
     if (!unifiedReport && type === 'call' && evaluation && reportTranscript.length >= 2) {
       try {
         unifiedReport = await generateUnifiedCallReport({
@@ -9964,6 +9960,10 @@ export function startServer(): Promise<void> {
     function attachVoiceStream(server: http.Server | https.Server): void {
       const wss = new WebSocketServer({ noServer: true });
       wss.on('connection', (ws, request) => {
+        if (request.url?.startsWith('/voice/openai-realtime')) {
+          handleCometRealtimeTestSocket(ws, request.url);
+          return;
+        }
         if (request.url?.startsWith('/voice/comet-realtime-test')) {
           console.log('[voice/comet-realtime-test] Voximplant media connected');
           handleCometRealtimeTestSocket(ws, request.url);
@@ -9980,6 +9980,7 @@ export function startServer(): Promise<void> {
       server.on('upgrade', (request, socket, head) => {
         if (
           request.url?.startsWith('/voice/stream')
+          || request.url?.startsWith('/voice/openai-realtime')
           || request.url?.startsWith('/voice/comet-realtime-test')
           || request.url?.startsWith('/voice/yandex-realtime-test')
         ) {

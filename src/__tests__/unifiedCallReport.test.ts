@@ -3,6 +3,7 @@ import { openai } from '../lib/openaiClient';
 import {
   ensureFindingBetterExamples,
   ensureRecommendationFindingCoverage,
+  normalizeStoredUnifiedCallReport,
   normalizeUnifiedCallReport,
 } from '../voice/unifiedCallReport';
 
@@ -11,6 +12,75 @@ afterEach(() => {
 });
 
 describe('unified call report normalization', () => {
+  it.each([
+    { source: 'call' as const, score: 0 },
+    { source: 'call' as const, score: 2 },
+    { source: 'trainer' as const, score: 50 },
+  ])('opens stored $source reports with score $score without AI repair or mutation', ({ source, score }) => {
+    const create = vi.spyOn(openai.chat.completions, 'create').mockImplementation(() => {
+      throw new Error('Reading a stored report must not call AI');
+    });
+    const transcript = [
+      { role: 'manager' as const, text: 'Алло.' },
+      { role: 'client' as const, text: 'Здравствуйте. Меня зовут Алексей.' },
+    ];
+    const stored = {
+      source,
+      totalScore: score,
+      summary: 'Сохранённое резюме разговора.',
+      keyFindings: [{
+        problemTitle: 'Не представился / не назвал компанию',
+        importance: 'Важно',
+        category: 'Контакт',
+        quote: 'Алло.',
+        comment: 'Не представился.',
+        betterExample: 'Здравствуйте! Меня зовут Алексей, компания Автомир.',
+      }],
+    };
+    const original = JSON.stringify(stored);
+    const fallback = { source, totalScore: score, transcript };
+    // Reproduces the read-time rejection that previously triggered an awaited AI request.
+    expect(normalizeUnifiedCallReport(stored, fallback)?.keyFindings[0].betterExample).toBe('');
+
+    const report = normalizeStoredUnifiedCallReport(stored, fallback);
+
+    expect(report?.totalScore).toBe(score);
+    expect(report?.summary).toBe(stored.summary);
+    expect(report?.source).toBe(source);
+    expect(report?.keyFindings[0].betterExample).toBe(
+      'Здравствуйте! Меня зовут [имя], компания [название компании]. Чем могу вам помочь?',
+    );
+    expect(normalizeStoredUnifiedCallReport(stored, fallback)).toEqual(report);
+    expect(normalizeStoredUnifiedCallReport(report, fallback)).toEqual(report);
+    expect(JSON.stringify(stored)).toBe(original);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('keeps missing reports missing instead of triggering read-time generation', () => {
+    expect(normalizeStoredUnifiedCallReport(null, { totalScore: 0, transcript: [] })).toBeNull();
+  });
+
+  it('fills a missing inspection example locally without inventing the list of works', () => {
+    const transcript = [
+      { role: 'client' as const, text: 'Что входит в проверку автомобиля?' },
+      { role: 'manager' as const, text: 'Машина прошла проверку.' },
+    ];
+    const report = normalizeStoredUnifiedCallReport({
+      totalScore: 65,
+      keyFindings: [{
+        problemTitle: 'Презентация не структурирована, нет акцента на выгодах',
+        importance: 'Важно',
+        category: 'Продукт',
+        quote: transcript[1].text,
+        comment: 'Не рассказал, что входит в проверку.',
+        betterExample: 'Что для вас важнее всего?',
+      }],
+    }, { totalScore: 65, transcript });
+    expect(report?.keyFindings[0].betterExample).toBe(
+      'Я уточню полный перечень работ по этой проверке и перечислю его вам, чтобы не пропустить важное.',
+    );
+  });
+
   it('uses calculated trainer scores and falls back to evaluator recommendations', () => {
     const report = normalizeUnifiedCallReport(
       {

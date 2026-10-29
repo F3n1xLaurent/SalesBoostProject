@@ -126,6 +126,35 @@ describe('hypothesis 2 real bridge interruptions', () => {
     expect(simulation.snapshot().conversationFlow.events.some((x) => x.reason === 'strong_command')).toBe(true);
   });
 
+  it('keeps a fully played answer when overlapping ASR arrives after Vox playback ended (e844 regression)', async () => {
+    const { vox, provider, simulation } = await setup();
+    await speech(vox, 200); await vi.advanceTimersByTimeAsync(300);
+    provider.server({ type: 'input_audio_buffer.committed', item_id: 'late-answer' });
+    await finishOpening(vox, provider);
+    const spoken = simulation.snapshot().transcript.find(turn => turn.role === 'client')?.text;
+    expect(spoken).toBeTruthy();
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'late-answer', transcript: 'Нет.' });
+    expect(simulation.snapshot().transcript.find(turn => turn.role === 'client')?.text).toBe(spoken);
+    expect(simulation.snapshot().transcript.some(turn => turn.text === '[реплика не прозвучала]')).toBe(false);
+    expect(provider.sent.some((event: any) => event.type === 'conversation.item.delete' && event.item_id === 'a1')).toBe(false);
+    expect(simulation.snapshot().transcript.some(turn => turn.role === 'manager' && turn.text === 'Нет.')).toBe(true);
+    expect(simulation.snapshot().conversationFlow.events.at(-1)?.reason).toBe('probed_playback_already_finished');
+  });
+
+  it('does not let a stale probe cancel a newer assistant turn', async () => {
+    const { vox, provider, simulation } = await setup();
+    await speech(vox, 200); await vi.advanceTimersByTimeAsync(300);
+    provider.server({ type: 'input_audio_buffer.committed', item_id: 'old-probe' });
+    await finishOpening(vox, provider);
+    provider.server({ type: 'response.created', response: { id: 'r2' } });
+    provider.server({ type: 'response.output_item.added', response_id: 'r2', item: { type: 'message', id: 'a2' } });
+    provider.server({ type: 'response.output_text.delta', response_id: 'r2', delta: 'А пробег актуальный?' });
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'old-probe', transcript: 'Да.' });
+    expect(provider.sent.some((event: any) => event.type === 'response.cancel' && event.response_id === 'r2')).toBe(false);
+    expect(provider.sent.some((event: any) => event.type === 'conversation.item.delete' && event.item_id === 'a2')).toBe(false);
+    expect(simulation.snapshot().transcript.some(turn => turn.metrics.interrupted)).toBe(false);
+  });
+
   it('does not confuse a delayed ordinary transcription with an overlapping acknowledgement', async () => {
     const { vox, provider, simulation } = await setup();
     await speech(vox, 200); await vi.advanceTimersByTimeAsync(300);

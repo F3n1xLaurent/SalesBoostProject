@@ -1,9 +1,16 @@
 // Shared by the live TTS gate and the regression checker. Keep business facts
 // ("запишу адрес", "договорились на завтра") distinct from narrated workflow.
 const CLOSING_INTENTION = /(?:(?:зафиксир[а-яё]*|фиксир[а-яё]*)\s*[,—:]?\s*(?:(?:нашу|эту|всю)\s+)?(?:договор[её]нност[а-яё]*|что\s+мы\s+договорились|итог[а-яё]*\s+(?:разговора|звонка|диалога))|(?:закро[а-яё]*|закрыва[а-яё]*|закон[а-яё]*|заверш[а-яё]*)\s+(?:(?:наш|этот|текущий)\s+)?(?:разговор|звонок|диалог|общение|сценарий)|(?:перейду|перехожу|приступлю)\s+к\s+завершению|(?:оформлю|выполню)\s+завершение)/iu;
+// Realtime 2.1 also narrates a transition rather than saying "завершу":
+// "подведём разговор к завершению" (sometimes even "подвезу разговор").
+// Require an explicit conversation object: ordinary plans such as
+// "сориентируюсь по цене" or "подведём итог осмотра" are not technical speech.
+const NARRATED_CLOSING_TRANSITION = /(?:подвед[а-яё]*|подвод[а-яё]*|подвест[а-яё]*|подвез[а-яё]*|довед[а-яё]*|довод[а-яё]*|привед[а-яё]*|привод[а-яё]*|свед[а-яё]*|свод[а-яё]*)\s+(?:(?:наш|этот|текущий|телефонный|аккуратно|плавно|коротко)\s+){0,3}(?:разговор|диалог|звонок|общение)\s+(?:к\s+(?:(?:логическому|естественному|плавному|аккуратному)\s+){0,2}(?:завершению|окончанию|концу)|до\s+(?:(?:логического|естественного)\s+)?(?:завершения|окончания|конца))(?=$|[^а-яё])/iu;
 const FAREWELL = /(?:до\s+свидания|всего\s+(?:доброго|хорошего)|хорошего\s+(?:дня|вечера)|до\s+(?:связи|встречи)|будем\s+на\s+связи|прощайте)(?=$|[^а-яё])/iu;
 
-export function hasClosingIntention(text: string): boolean { return CLOSING_INTENTION.test(text); }
+export function hasClosingIntention(text: string): boolean {
+  return CLOSING_INTENTION.test(text) || NARRATED_CLOSING_TRANSITION.test(text);
+}
 
 export function hasNaturalFarewell(text: string): boolean {
   return FAREWELL.test(text) || /(?:^|[.!?,;]\s*)(?:ну\s*,?\s*)?пока[.!\s]*$/iu.test(text.trim());

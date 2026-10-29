@@ -28,6 +28,8 @@ import { filterUnreliableManagerTurns } from './transcriptReliability';
 import { attributeCallToIntroducedManager } from './callManagerAttribution';
 import * as Sentry from '@sentry/node';
 import { recordProductEvent, type ProductEventProperty } from '../analytics/productAnalytics';
+import { flushProductionRealtimeState } from './productionRealtimeState';
+import { finishProductionCallPlanTelephony } from './callPlanTelephony';
 
 const TRANSCRIPT_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 
@@ -324,6 +326,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
     : sanitizeTranscriptTurns(patch.transcript);
   const phoneNumberSource = await resolvePhoneNumberSourceSnapshot(existing.phone, existing.phoneNumberTypeId);
   const analyticsFields = extractAnalyticsEvaluationFields(patch.evaluation);
+  const sessionContext = await prisma.voiceCallSession.findUnique({ where: { callId }, select: { caseContextJson: true } });
   await prisma.callPlanCall.update({
     where: { callId },
     data: {
@@ -356,6 +359,7 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
       dimensionsJson: analyticsFields.dimensionsJson,
       checklistResultsJson: analyticsFields.checklistResultsJson,
       caseContextJson: JSON.stringify({
+        ...safeJsonParse<Record<string, unknown>>(sessionContext?.caseContextJson, {}),
         planId: existing.planId,
         scriptId: existing.scriptId,
         profileId: existing.profileId,
@@ -370,7 +374,19 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
 /**
  * Called when Vox sends event (e.g. disconnected). Persists session and runs evaluation if we have transcript.
  */
-export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Promise<void> {
+const activeFinalizations = new Map<string, Promise<void>>();
+
+export function finalizeVoiceCallSession(payload: VoxWebhookPayload): Promise<void> {
+  const callId = payload.call_id;
+  if (!callId) return finalizeVoiceCallSessionOnce(payload);
+  const active = activeFinalizations.get(callId);
+  if (active) return active;
+  const task = finalizeVoiceCallSessionOnce(payload).finally(() => activeFinalizations.delete(callId));
+  activeFinalizations.set(callId, task);
+  return task;
+}
+
+async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise<void> {
   const callId = payload.call_id;
   const event = (normalizeVoxWebhookEvent(payload.event) || 'disconnected') as VoxWebhookEvent;
 
@@ -397,8 +413,46 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
       originalTranscriptJson: true,
       ivrDetected: true,
       ivrPathJson: true,
+      scenario: true,
+      endedAt: true,
+      evaluationJson: true,
+      totalScore: true,
+      outcome: true,
+      failureReason: true,
     },
   });
+  // Replayed lifecycle deliveries must not reset a finished report or charge
+  // for another evaluation. Failed/incomplete processing can still be retried.
+  if (existingSession?.endedAt && existingSession.evaluationJson) {
+    // A prior attempt may have saved the report but failed to mirror it into
+    // the plan. Repair that link without paying for another evaluation.
+    await syncCallPlanCallFromSession(callId, {
+      outcome: existingSession.outcome, endedAt: existingSession.endedAt,
+      transcript: safeJsonParse<TranscriptTurn[]>(existingSession.transcriptJson, []),
+      evaluation: safeJsonParse<unknown>(existingSession.evaluationJson, null),
+      totalScore: existingSession.totalScore, failureReason: existingSession.failureReason,
+    });
+    return;
+  }
+  if (existingSession?.scenario === 'openai_realtime') {
+    await finishProductionCallPlanTelephony(callId, event, payload.ts ?? new Date().toISOString());
+    const durable = await flushProductionRealtimeState(callId);
+    if (durable) {
+      payload = { ...payload,
+        transcript: durable.snapshot.transcript.length ? durable.snapshot.transcript : payload.transcript,
+        ivr: payload.ivr || durable.snapshot.ivrDetected,
+        ivr_path: Array.isArray(payload.ivr_path) && payload.ivr_path.length ? payload.ivr_path : durable.snapshot.ivrPath,
+        recording_started: payload.recording_started === true || ['pending', 'processing', 'ready'].includes(existingSession.recordingStatus ?? ''),
+      };
+      await prisma.voiceCallSession.update({ where: { callId }, data: {
+        caseContextJson: JSON.stringify({ ...safeJsonParse<Record<string, unknown>>(existingSession.caseContextJson, {}),
+          realtime: { model: durable.snapshot.model, voice: durable.snapshot.voice, metrics: durable.snapshot.metrics,
+            tools: durable.snapshot.tools, errors: durable.snapshot.errors,
+            usage: durable.snapshot.usage,
+            turns: durable.snapshot.transcript.map((turn) => ({ role: turn.role, at: turn.at, metrics: turn.metrics })) } }),
+      } });
+    }
+  }
   const to = String(payload.to ?? existingSession?.to ?? record?.to ?? '').trim();
   if (!to) {
     console.warn('[voice/session] finalizeVoiceCallSession: phone is unavailable', { callId });
@@ -453,7 +507,7 @@ export async function finalizeVoiceCallSession(payload: VoxWebhookPayload): Prom
   // 1) Save session immediately so admin shows "Processing..." right after hangup
   const initialTranscript = payloadTranscript.length > 0
     ? payloadTranscript
-    : sanitizeTranscriptTurns(record?.transcript ?? []);
+    : sanitizeTranscriptTurns(record?.transcript?.length ? record.transcript : safeJsonParse<TranscriptTurn[]>(existingSession?.transcriptJson, []));
   const outcome = resolveVoxCallOutcome(event, {
     connected: connectedAt != null,
     transcriptTurns: initialTranscript.length,

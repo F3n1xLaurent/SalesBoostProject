@@ -27,6 +27,7 @@
     "check-openai": "tsx scripts/check-openai.ts",
     "check-comet-realtime": "tsx scripts/check-comet-realtime.ts",
     "check-openai-realtime": "REALTIME_CHECK_PROVIDER=openai tsx scripts/check-comet-realtime.ts",
+    "deploy:openai-realtime": "tsx scripts/deploy-openai-realtime.ts",
     "test:realtime-hypothesis2": "tsx scripts/test-realtime-hypothesis2.ts",
     "demo-reports:generate": "tsx scripts/generate-demo-example-reports.ts",
     "economics:sync-tariffs": "tsx scripts/sync-economics-tariffs.ts",

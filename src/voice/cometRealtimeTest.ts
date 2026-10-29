@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import WebSocket from 'ws';
 import { config } from '../config';
-import { resolveRealtimeTestPlanConfiguration, type RealtimeTestPlanConfiguration } from './callSettingsManagement';
+import type { RealtimeTestPlanConfiguration } from './callSettingsManagement';
 import { classifyLiveSpeaker, classifyLiveSpeakerLocally, type LiveSpeakerDecision } from './callLiveSpeakerClassifier';
 import { elevenLabsWebSocketOptions } from './elevenLabsHttp';
 import { startVoiceCall } from './startVoiceCall';
@@ -55,6 +55,8 @@ type TranscriptTurn = {
 type RealtimeTestProvider = 'comet' | 'openai';
 
 type CometRealtimeTestSession = {
+  production?: boolean;
+  mediaAttached?: boolean;
   callId: string;
   token: string;
   provider: RealtimeTestProvider;
@@ -83,6 +85,7 @@ type CometRealtimeTestSession = {
   ivrPath: string[];
   connectionState: 'awaiting_answer' | 'waiting_operator' | 'live_conversation';
   errors: string[];
+  usage?: Array<{ responseId: string; usage: unknown }>;
   flowEvents?: Array<{ type: 'barge_in_candidate' | 'barge_in_confirmed' | 'barge_in_ignored'; at: string; reason: string; latencyMs?: number }>;
 };
 
@@ -185,6 +188,7 @@ function publicSession(session: CometRealtimeTestSession) {
       events: session.flowEvents ?? [],
     },
     errors: session.errors,
+    usage: session.usage ?? [],
     metrics: {
       answerMs: elapsed(session.startedAt, session.connectedAt),
       yandexConnectMs: elapsed(session.connectedAt ?? session.startedAt, session.providerConnectedAt),
@@ -196,6 +200,44 @@ function publicSession(session: CometRealtimeTestSession) {
       textToFirstAudioMs: elapsed(session.firstTextAfterSpeechAt, session.firstAudioAfterSpeechAt),
     },
   };
+}
+
+/** Both phone launch paths use this exact session configuration. Production
+ * adds persistence/lifecycle handling, not a different dialogue engine. */
+function createPhoneRealtimeSession(input: {
+  callId: string; phone: string; provider: RealtimeTestProvider; model: string;
+  plan: RealtimeTestPlanConfiguration; tts: ElevenLabsTtsSettings; voiceId: string; production?: boolean;
+}): CometRealtimeTestSession {
+  return {
+    production: input.production, callId: input.callId, token: randomUUID(), provider: input.provider, model: input.model,
+    planId: input.plan.planId, planName: input.plan.planName, phone: normalizePhone(input.phone), prompt: input.plan.prompt,
+    subjectTitle: input.plan.subjectTitle, elevenLabsVoiceId: input.voiceId, elevenLabsTts: input.tts,
+    status: 'starting', createdAt: isoNow(), startedAt: null, connectedAt: null, endedAt: null,
+    providerConnectedAt: null, providerReadyAt: null, providerWarmupDoneAt: null,
+    firstSpeechStoppedAt: null, firstTextAfterSpeechAt: null, firstAudioAfterSpeechAt: null,
+    transcript: [], tools: [], ivrDetected: false, ivrPath: [], connectionState: 'awaiting_answer', errors: [],
+  };
+}
+
+class RealtimeProviderUnavailableError extends Error {}
+
+async function preparePhoneRealtimeSession(session: CometRealtimeTestSession): Promise<void> {
+  sessions.set(session.callId, session);
+  try {
+    prepareRealtimeProviders(session);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const prepared = preparedCometConnections.get(session.callId);
+      if (prepared && await prepared.waitUntilReady(5_000)) return;
+      session.errors.push(`${providerLabel(session)}: предварительное соединение не готово (${attempt}/3)`);
+      prepared?.close();
+      if (attempt < 3) preparedCometConnections.set(session.callId, new PreparedCometConnection(session));
+    }
+    throw new RealtimeProviderUnavailableError(`${providerLabel(session)} Realtime сейчас недоступен: соединение закрывается до создания сессии. Звонок не был инициирован.`);
+  } catch (error) {
+    disposePreparedProviders(session.callId);
+    sessions.delete(session.callId);
+    throw error;
+  }
 }
 
 export async function handleStartCometRealtimeTest(req: Request, res: Response): Promise<void> {
@@ -228,6 +270,7 @@ export async function handleStartCometRealtimeTest(req: Request, res: Response):
   }
 
   try {
+    const { resolveRealtimeTestPlanConfiguration } = await import('./callSettingsManagement');
     const plan = await resolveRealtimeTestPlanConfiguration(req, planId);
     const elevenLabsTts = await resolveAgentTtsSettings();
     const voiceId = plan.elevenLabsVoiceId || elevenLabsTts.defaultVoiceId || config.elevenLabsVoiceId;
@@ -236,62 +279,12 @@ export async function handleStartCometRealtimeTest(req: Request, res: Response):
       return;
     }
     const callId = randomUUID();
-    const token = randomUUID();
-    const session: CometRealtimeTestSession = {
-      callId,
-      token,
-      provider,
-      model,
-      planId: plan.planId,
-      planName: plan.planName,
-      phone,
-      prompt: plan.prompt,
-      subjectTitle: plan.subjectTitle,
-      elevenLabsVoiceId: voiceId,
-      elevenLabsTts,
-      status: 'starting',
-      createdAt: isoNow(),
-      startedAt: null,
-      connectedAt: null,
-      endedAt: null,
-      providerConnectedAt: null,
-      providerReadyAt: null,
-      providerWarmupDoneAt: null,
-      firstSpeechStoppedAt: null,
-      firstTextAfterSpeechAt: null,
-      firstAudioAfterSpeechAt: null,
-      transcript: [],
-      tools: [],
-      ivrDetected: false,
-      ivrPath: [],
-      connectionState: 'awaiting_answer',
-      errors: [],
-    };
-    sessions.set(callId, session);
-    prepareRealtimeProviders(session);
-    let providerReady = false;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const prepared = preparedCometConnections.get(callId);
-      if (prepared && await prepared.waitUntilReady(5_000)) {
-        providerReady = true;
-        break;
-      }
-      session.errors.push(`${providerName}: предварительное соединение не готово (${attempt}/3)`);
-      prepared?.close();
-      if (attempt < 3) preparedCometConnections.set(callId, new PreparedCometConnection(session));
-    }
-    if (!providerReady) {
-      disposePreparedProviders(callId);
-      sessions.delete(callId);
-      res.status(503).json({
-        error: `${providerName} Realtime сейчас недоступен: соединение закрывается до создания сессии. Звонок не был инициирован.`,
-      });
-      return;
-    }
+    const session = createPhoneRealtimeSession({ callId, phone, provider, model, plan, tts: elevenLabsTts, voiceId });
+    await preparePhoneRealtimeSession(session);
     const result = await startVoiceCall(phone, {
       scenario: 'comet_realtime_test',
       callId,
-      streamToken: token,
+      streamToken: session.token,
     });
     if ('error' in result) {
       disposePreparedProviders(callId);
@@ -304,15 +297,45 @@ export async function handleStartCometRealtimeTest(req: Request, res: Response):
     res.json(publicSession(session));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось запустить гипотезу 2.';
-    res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
+    res.status(error instanceof RealtimeProviderUnavailableError ? 503 : message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
   }
 }
 
 export function handleGetCometRealtimeTest(req: Request, res: Response): boolean {
   const session = sessions.get(String(req.params.callId ?? ''));
-  if (!session) return false;
+  if (!session || session.production) return false;
   res.json(publicSession(session));
   return true;
+}
+
+/** Prepare the proven hypothesis-2 bridge, without dialing or test endpoints. */
+export async function prepareProductionOpenAiRealtimeCall(input: {
+  callId: string; phone: string; plan: RealtimeTestPlanConfiguration;
+}) {
+  if (!config.openaiRealtimeApiKey || !config.elevenLabsApiKey) throw new Error('Для основной телефонии нужны OPENAI_REALTIME_API_KEY и ELEVENLABS_API_KEY.');
+  const tts = await resolveAgentTtsSettings();
+  const voiceId = input.plan.elevenLabsVoiceId || tts.defaultVoiceId || config.elevenLabsVoiceId;
+  if (!voiceId) throw new Error('Для профиля не задан голос ElevenLabs.');
+  const session = createPhoneRealtimeSession({ ...input, production: true, provider: 'openai', model: config.openaiRealtimeModel, tts, voiceId });
+  await preparePhoneRealtimeSession(session);
+  return {
+    streamToken: session.token,
+    voiceId,
+    snapshot: () => publicSession(session),
+    markDialing: (startedAt: string) => { session.status = 'dialing'; session.startedAt = startedAt; },
+    dispose: () => { disposePreparedProviders(session.callId); sessions.delete(session.callId); },
+  };
+}
+
+export function updateProductionRealtimeLifecycle(callId: string, event: string, at: string): void {
+  const session = sessions.get(callId);
+  if (!session?.production) return;
+  if (session.endedAt) return;
+  if (event === 'connected') { session.connectedAt = at; session.status = 'connected'; }
+  if (['disconnected', 'failed', 'busy', 'no_answer', 'cancelled'].includes(event)) {
+    session.status = event; session.endedAt = at;
+    disposePreparedProviders(callId);
+  }
 }
 
 /** Same bridge and providers as a call, without StartScenarios or telephony. */
@@ -365,7 +388,7 @@ export async function createHypothesis2Simulation(
 export function handleCometRealtimeTestWebhook(req: Request, res: Response): void {
   res.status(200).end();
   const session = sessions.get(String(req.body?.call_id ?? '').trim());
-  if (!session) return;
+  if (!session || session.production) return;
   const event = String(req.body?.event ?? '').trim();
   if (event === 'connected') {
     session.status = session.providerConnectedAt ? 'ready' : 'connected';
@@ -563,6 +586,7 @@ function elevenLabsSpeechSocketUrl(session: CometRealtimeTestSession): string {
 class CometElevenLabsTurn {
   readonly alignment: SpeechAlignmentPoint[] = [];
   playbackStartedAt: string | null = null;
+  playbackEndedAt: string | null = null;
   get totalAudioMs(): number { return this.audioBytes / 8; }
   private ws: WebSocket | null = null;
   private opened = false;
@@ -1258,10 +1282,13 @@ function disposePreparedProviders(callId: string): void {
 export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string): void {
   const url = new URL(requestUrl, 'http://localhost');
   const session = sessions.get(String(url.searchParams.get('call_id') ?? ''));
-  if (!session || url.searchParams.get('token') !== session.token) {
+  if (!session || url.searchParams.get('token') !== session.token || session.endedAt
+    || (session.production && session.mediaAttached)
+    || (url.pathname === '/voice/openai-realtime') !== Boolean(session.production)) {
     vox.close(1008, 'invalid session');
     return;
   }
+  if (session.production) session.mediaAttached = true;
   if (!providerConfiguration(session).apiKey) {
     session.errors.push(`${session.provider === 'openai' ? 'OPENAI_REALTIME_API_KEY' : 'COMETAPI_API_KEY'} is missing`);
     vox.close(1011, 'provider is not configured');
@@ -1314,12 +1341,14 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   let bargeLastVoiceAt: string | null = null;
   let bargeVoicedMs = 0;
   let bargeTimer: NodeJS.Timeout | null = null;
-  const bargeProbes: Array<{ startedAt: string; stoppedAt: string; voicedMs: number }> = [];
+  let bargePlaybackTurn: CometElevenLabsTurn | null = null;
+  type BargeProbe = { startedAt: string; stoppedAt: string; voicedMs: number; playbackTurn: CometElevenLabsTurn | null };
+  const bargeProbes: BargeProbe[] = [];
   const pendingCommitKinds: Array<'manager' | 'probe'> = [];
   type ManagerCommitTiming = { startedAt: string | null; stoppedAt: string | null; lastVoiceAt: string | null; vadMs: number | null };
   const pendingManagerTimings: ManagerCommitTiming[] = [];
   const committedManagerTimings = new Map<string, ManagerCommitTiming>();
-  const committedProbeItems = new Map<string, { startedAt: string; stoppedAt: string; voicedMs: number }>();
+  const committedProbeItems = new Map<string, BargeProbe>();
   let endCallRequested = false;
   let awaitingAssistantMediaEnd = false;
   let finishAfterPlayback = false;
@@ -1405,6 +1434,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     bargeStartedAt = null;
     bargeLastVoiceAt = null;
     bargeVoicedMs = 0;
+    bargePlaybackTurn = null;
   };
 
   const cancelActiveResponse = () => {
@@ -1450,8 +1480,15 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     } });
   };
 
-  const interruptAssistant = (reason: string, startedAt: string) => {
+  const interruptAssistant = (reason: string, startedAt: string, probedTurn?: CometElevenLabsTurn | null) => {
     if (endCallRequested || finishAfterPlayback || hangupSent) return;
+    // ASR for speech overlapping the last word often arrives AFTER Vox has
+    // acknowledged playback completion. It is a normal manager reply by then,
+    // not permission to delete a fully heard answer (or a newer AI turn).
+    if (probedTurn && (probedTurn.playbackEndedAt || probedTurn !== playbackTurn)) {
+      flowEvent('barge_in_ignored', 'probed_playback_already_finished', startedAt);
+      return;
+    }
     flowEvent('barge_in_confirmed', reason, startedAt);
     finishAfterPlayback = false;
     queuedServerFarewell = false;
@@ -1496,7 +1533,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   const submitBargeProbe = () => {
     bargeTimer = null;
     if (!bargeStartedAt || bargeVoicedMs < 100) return clearBargeCandidate();
-    const probe = { startedAt: bargeStartedAt, stoppedAt: bargeLastVoiceAt ?? isoNow(), voicedMs: bargeVoicedMs };
+    const probe = { startedAt: bargeStartedAt, stoppedAt: bargeLastVoiceAt ?? isoNow(), voicedMs: bargeVoicedMs, playbackTurn: bargePlaybackTurn };
     const audio = resamplePcm16Base64To24Khz(Buffer.concat(bargeFrames).toString('base64'));
     clearBargeCandidate();
     bargeProbes.push(probe);
@@ -1809,7 +1846,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
           probeContinuation = { audio: Buffer.concat(bargeFrames), startedAt: bargeStartedAt, lastVoiceAt: bargeLastVoiceAt, voicedMs: bargeVoicedMs };
         }
         clearBargeCandidate();
-        interruptAssistant(decision.reason, probe.startedAt);
+        interruptAssistant(decision.reason, probe.startedAt, probe.playbackTurn);
         lastSpeechStartedAt = probe.startedAt;
         lastSpeechStoppedAt = probe.stoppedAt;
         lastVoiceActivityAt = probe.stoppedAt;
@@ -2094,6 +2131,10 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     }
     if (eventType === 'response.done') {
       if (message.response?.id && activeResponseId && message.response.id !== activeResponseId) return;
+      if (session.production && message.response?.usage && !session.usage?.some((entry) => entry.responseId === message.response.id)) {
+        session.usage ??= [];
+        session.usage.push({ responseId: String(message.response.id), usage: message.response.usage });
+      }
       responseActive = false;
       responseRequestPending = false;
       if (suppressInterruptedOutput) {
@@ -2217,7 +2258,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       }
       session.errors.push(`${providerLabel(session)}: ${String(message.error?.message ?? message.error ?? 'unknown error')}`);
     }
-    if (session.transcript.length > MAX_ITEMS) session.transcript.splice(0, session.transcript.length - MAX_ITEMS);
+    if (!session.production && session.transcript.length > MAX_ITEMS) session.transcript.splice(0, session.transcript.length - MAX_ITEMS);
     if (session.tools.length > MAX_ITEMS) session.tools.splice(0, session.tools.length - MAX_ITEMS);
   };
 
@@ -2263,6 +2304,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       if (!managerHasFloor && (assistantSpeaking || awaitingAssistantMediaEnd || responseActive || responseRequestPending)) {
         if (hasVoice && !bargeStartedAt) {
           bargeStartedAt = isoNow();
+          bargePlaybackTurn = playbackTurn;
           flowEvent('barge_in_candidate', 'speech_over_assistant');
         }
         if (bargeStartedAt) {
@@ -2333,6 +2375,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       return;
     }
     if (message.customEvent === 'media_status' && message.status === 'ended') {
+      if (playbackTurn) playbackTurn.playbackEndedAt = isoNow();
       if (awaitingAssistantMediaEnd) {
         releaseInputAfterPlayback();
       }

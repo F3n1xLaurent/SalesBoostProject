@@ -70,6 +70,11 @@ describe('Comet Realtime PCM bridge', () => {
     'Сейчас зафиксирую, что мы договорились.',
     'Перехожу к завершению.',
     'Оформлю завершение разговора.',
+    'Хорошо, тогда я коротко сориентируюсь и аккуратно подвезу разговор к завершению.',
+    'Хорошо, давайте тогда коротко закрепим договорённость и аккуратно подведём разговор к завершению.',
+    'Плавно подведем наш диалог к логическому завершению.',
+    'Давайте подвести этот разговор к концу.',
+    'Тогда доведу наш разговор до конца.',
   ])('blocks a narrated closing intention: %s', (text) => {
     expect(sanitizeRealtimeSpokenText(text)).toBe('');
     expect(sanitizeRealtimeSpokenText(`${text} Спасибо, до свидания.`)).toBe('Спасибо, до свидания.');
@@ -77,6 +82,29 @@ describe('Comet Realtime PCM bridge', () => {
 
   it('retains the farewell from a sentence containing a technical intention', () => {
     expect(sanitizeRealtimeSpokenText('Зафиксирую договорённость и закроем разговор, до свидания.')).toBe('до свидания.');
+    expect(sanitizeRealtimeSpokenText('Аккуратно подведём разговор к завершению, до свидания.')).toBe('до свидания.');
+  });
+
+  it.each([
+    'Хорошо, тогда я коротко сориентируюсь и аккуратно подвезу разговор к завершению. До свидания.',
+    'Хорошо, давайте тогда коротко закрепим договорённость и аккуратно подведём разговор к завершению. До свидания.',
+  ])('keeps only the actual goodbye from the recorded 2.1 closing: %s', (text) => {
+    expect(sanitizeRealtimeSpokenText(text)).toBe('До свидания.');
+  });
+
+  it.each([
+    'Договорились, завтра приеду к пяти. Спасибо, до свидания.',
+    'Хорошо, резерв на два дня. До свидания.',
+    'Сориентируюсь по цене и перезвоню завтра. До свидания.',
+    'Давайте подведём итог осмотра: машина без ДТП.',
+    'Когда приеду, доведём проверку до конца.',
+  ])('preserves concrete agreements and ordinary business plans: %s', (text) => {
+    expect(sanitizeRealtimeSpokenText(text)).toBe(text);
+  });
+
+  it('preserves an agreement before a technical sentence and removes duplicate goodbyes', () => {
+    expect(sanitizeRealtimeSpokenText('Договорились, завтра к пяти. Подведём разговор к завершению. До свидания. Всего доброго.'))
+      .toBe('Договорились, завтра к пяти. До свидания.');
   });
 
   it('preserves real agreements and stops after the first goodbye', () => {

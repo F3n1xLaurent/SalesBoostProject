@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../db';
-import { addCall, setVoxSessionId } from './callHistory';
-import { startVoiceCall } from './startVoiceCall';
+import { markCallPlanLaunchFailed, prepareCallPlanTelephony, resolveCallPlanTelephonyProvider } from './callPlanTelephony';
+import { resolveCustomerVoiceForProfile } from './customerVoiceSelection';
 import {
   buildCallTargetLocationSection,
   buildCustomerScenarioPromptCore,
@@ -1341,20 +1341,16 @@ export function buildRealtimeCallPrompt(input: {
   ].join('\n'));
 }
 
-async function resolveCustomerVoiceForProfile(
+async function resolvePlanCustomerVoiceForProfile(
   profile: Pick<Prisma.CallCustomerProfileGetPayload<{}>, 'voiceId'> | null,
 ) {
-  if (!profile?.voiceId) return null;
-  return prisma.callCustomerVoice.findFirst({
-    where: { id: profile.voiceId, isDeleted: false, isEnabled: true },
-    select: { id: true, name: true, elevenLabsCode: true },
-  });
+  return resolveCustomerVoiceForProfile(profile, resolveCallPlanTelephonyProvider() === 'openai_realtime');
 }
 
 async function resolveScheduledCallCustomerVoice(
   call: Prisma.CallPlanCallGetPayload<{ include: { plan: true } }>,
 ) {
-  if (!call.profileId) return null;
+  if (!call.profileId) return resolvePlanCustomerVoiceForProfile(null);
   const profile = await prisma.callCustomerProfile.findFirst({
     where: {
       id: call.profileId,
@@ -1362,7 +1358,7 @@ async function resolveScheduledCallCustomerVoice(
     },
     select: { voiceId: true },
   });
-  return resolveCustomerVoiceForProfile(profile);
+  return resolvePlanCustomerVoiceForProfile(profile);
 }
 
 async function buildScheduledCallContext(plan: Prisma.CallPlanGetPayload<{}>) {
@@ -1440,7 +1436,7 @@ async function createScheduledPlanCall(
   toMinutes: number,
 ): Promise<Prisma.CallPlanCallGetPayload<{}>> {
   const profile = pickRandom(context.profiles);
-  const customerVoice = await resolveCustomerVoiceForProfile(profile);
+  const customerVoice = await resolvePlanCustomerVoiceForProfile(profile);
   const prompt = buildRealtimeCallPrompt({
     script: context.script,
     profile,
@@ -1509,6 +1505,7 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
     return;
   }
 
+  let prepared: Awaited<ReturnType<typeof prepareCallPlanTelephony>> | null = null;
   try {
     const eligibility = await validateScheduledPlanCall(call);
     if (!eligibility.allowed) {
@@ -1545,21 +1542,22 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
       city: targetDealership?.city ?? null,
       address: targetDealership?.address ?? null,
     });
-    const result = await startVoiceCall(call.phone, {
-      scenario: 'realtime_pure',
-      instructions: prompt,
-      elevenLabsVoiceId,
+    const subject = call.importedItemId
+      ? await prisma.importedItem.findUnique({ where: { id: call.importedItemId }, select: { title: true, description: true } }) : null;
+    prepared = await prepareCallPlanTelephony(call.phone, {
+      planId: call.planId, planName: call.plan.name, prompt, elevenLabsVoiceId,
       customerVoiceId: customerVoice?.id ?? null,
+      // Scheduled calls keep their saved prompt even if the imported listing
+      // was edited later. Never inject a different vehicle into entity guards.
+      subjectTitle: subject?.title && prompt.includes(subject.title) ? subject.title : null,
+      subjectDescription: subject?.title && prompt.includes(subject.title) ? subject.description : null,
     });
-    if ('error' in result) throw new Error(result.error);
-    addCall(result.callId, call.phone);
-    if (result.callSessionHistoryId) setVoxSessionId(result.callId, result.callSessionHistoryId);
-    const startedAt = new Date(result.startedAt);
+    const startedAt = new Date(prepared.startedAt);
     await prisma.$transaction([
       prisma.callPlanCall.update({
         where: { id: call.id },
         data: {
-          callId: result.callId,
+          callId: prepared.callId,
           status: 'running',
           startedAt,
           failureReason: null,
@@ -1568,9 +1566,9 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
       }),
       prisma.voiceCallSession.create({
         data: {
-          callId: result.callId,
+          callId: prepared.callId,
           to: call.phone,
-          scenario: result.scenario ?? 'realtime_pure',
+          scenario: prepared.scenario,
           source: 'scheduled',
           dealershipId: call.dealershipId,
           managerId: call.employeeId,
@@ -1582,18 +1580,18 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
             scriptId: call.scriptId,
             profileId: call.profileId ?? null,
             customerVoiceId: customerVoice?.id ?? null,
-            elevenLabsVoiceId,
+            elevenLabsVoiceId: prepared.telephony.voiceId,
+            telephony: prepared.telephony,
             importedItemId: call.importedItemId ?? null,
             scheduledAt: call.scheduledAt?.toISOString() ?? null,
           }),
           startedAt,
         },
       }),
-      prisma.callPlan.update({
-        where: { id: call.planId },
-        data: { lastInitiatedAt: startedAt, lastBatchId: result.callId },
-      }),
     ]);
+    const result = await prepared.start();
+    await prisma.callPlan.update({ where: { id: call.planId }, data: { lastInitiatedAt: startedAt, lastBatchId: result.callId } })
+      .catch((error) => console.warn('[call-plan-scheduler] call started, plan metadata update failed', { callId: result.callId, error: String(error) }));
     console.log('[call-plan-scheduler] scheduled call started', {
       callPlanCallId: call.id,
       planId: call.planId,
@@ -1603,6 +1601,10 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
       elevenLabsVoiceConfigured: Boolean(elevenLabsVoiceId),
     });
   } catch (error) {
+    if (prepared) {
+      await prepared.dispose().catch(() => undefined);
+      await markCallPlanLaunchFailed(prepared.callId, error);
+    }
     console.error('[call-plan-scheduler] scheduled call failed', {
       callPlanCallId: call.id,
       planId: call.planId,
@@ -1715,7 +1717,7 @@ async function launchManualPlanTarget(
   context: Awaited<ReturnType<typeof buildScheduledCallContext>>,
 ): Promise<string> {
   const profile = pickRandom(context.profiles);
-  const customerVoice = await resolveCustomerVoiceForProfile(profile);
+  const customerVoice = await resolvePlanCustomerVoiceForProfile(profile);
   const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
   const prompt = buildRealtimeCallPrompt({
     script: context.script,
@@ -1729,68 +1731,73 @@ async function launchManualPlanTarget(
       address: target.dealershipAddress,
     },
   });
-  const result = await startVoiceCall(target.phoneNumber.phone, {
-    scenario: 'realtime_pure',
-    instructions: prompt,
-    elevenLabsVoiceId,
+  const prepared = await prepareCallPlanTelephony(target.phoneNumber.phone, {
+    planId: plan.id, planName: plan.name, prompt, elevenLabsVoiceId,
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
+    subjectTitle: context.importedItem?.title ?? null,
+    subjectDescription: context.importedItem?.description ?? null,
   });
-  if ('error' in result) throw new Error(result.error);
-  const startedAt = new Date(result.startedAt);
-  const toNormalized = '+' + String(target.phoneNumber.phone).replace(/\D/g, '');
-  const criteria = safeJsonParse(context.script.successCriteriaJson, []);
-  await prisma.$transaction([
-    prisma.voiceCallSession.create({
-      data: {
-        callId: result.callId,
-        to: toNormalized,
-        scenario: result.scenario ?? 'realtime_pure',
-        source: 'scheduled',
-        dealershipId: target.dealershipId,
-        managerId: target.employee?.id ?? null,
-        attributionType: target.targetKind === 'dealership' ? 'dealership' : 'manager',
-        planId: plan.id,
-        phoneNumberId: target.phoneNumber.id,
-        phoneNumberTypeId: target.phoneNumber.typeId,
-        phoneNumberTypeName: target.phoneNumber.type.name,
-        phoneNumberOwnership: target.phoneNumber.type.ownership,
-        caseContextJson: JSON.stringify({
+  try {
+    const startedAt = new Date(prepared.startedAt);
+    const toNormalized = '+' + String(target.phoneNumber.phone).replace(/\D/g, '');
+    const criteria = safeJsonParse(context.script.successCriteriaJson, []);
+    await prisma.$transaction([
+      prisma.voiceCallSession.create({
+        data: {
+          callId: prepared.callId,
+          to: toNormalized,
+          scenario: prepared.scenario,
+          source: 'scheduled',
+          dealershipId: target.dealershipId,
+          managerId: target.employee?.id ?? null,
+          attributionType: target.targetKind === 'dealership' ? 'dealership' : 'manager',
           planId: plan.id,
+          phoneNumberId: target.phoneNumber.id,
+          phoneNumberTypeId: target.phoneNumber.typeId,
+          phoneNumberTypeName: target.phoneNumber.type.name,
+          phoneNumberOwnership: target.phoneNumber.type.ownership,
+          caseContextJson: JSON.stringify({
+            planId: plan.id,
+            scriptId: context.script.id,
+            profileId: profile?.id ?? null,
+            customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
+            elevenLabsVoiceId: prepared.telephony.voiceId,
+            telephony: prepared.telephony,
+            importedItemId: context.importedItem?.id ?? null,
+          }),
+          startedAt,
+        },
+      }),
+      prisma.callPlanCall.create({
+        data: {
+          planId: plan.id,
+          callId: prepared.callId,
+          employeeId: target.employee?.id ?? null,
+          employeeName: target.employee?.fullName ?? null,
+          dealershipId: target.dealershipId,
+          dealershipName: target.dealershipName,
+          phone: toNormalized,
+          phoneNumberTypeId: target.phoneNumber.typeId,
+          phoneNumberId: target.phoneNumber.id,
+          targetKind: target.targetKind,
           scriptId: context.script.id,
           profileId: profile?.id ?? null,
-          customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
-          elevenLabsVoiceId,
           importedItemId: context.importedItem?.id ?? null,
-        }),
-        startedAt,
-      },
-    }),
-    prisma.callPlanCall.create({
-      data: {
-        planId: plan.id,
-        callId: result.callId,
-        employeeId: target.employee?.id ?? null,
-        employeeName: target.employee?.fullName ?? null,
-        dealershipId: target.dealershipId,
-        dealershipName: target.dealershipName,
-        phone: toNormalized,
-        phoneNumberTypeId: target.phoneNumber.typeId,
-        phoneNumberId: target.phoneNumber.id,
-        targetKind: target.targetKind,
-        scriptId: context.script.id,
-        profileId: profile?.id ?? null,
-        importedItemId: context.importedItem?.id ?? null,
-        promptText: prompt,
-        criteriaJson: JSON.stringify(criteria),
-        status: 'running',
-        scheduledAt: startedAt,
-        startedAt,
-      },
-    }),
-  ]);
-  addCall(result.callId, target.phoneNumber.phone);
-  if (result.callSessionHistoryId) setVoxSessionId(result.callId, result.callSessionHistoryId);
-  return result.callId;
+          promptText: prompt,
+          criteriaJson: JSON.stringify(criteria),
+          status: 'running',
+          scheduledAt: startedAt,
+          startedAt,
+        },
+      }),
+    ]);
+    const result = await prepared.start();
+    return result.callId;
+  } catch (error) {
+    await prepared.dispose().catch(() => undefined);
+    await markCallPlanLaunchFailed(prepared.callId, error);
+    throw error;
+  }
 }
 
 export function startCallPlanScheduler(): void {
@@ -1878,7 +1885,7 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
       : [];
     const profile = pickRandom(profiles);
     const importedItem = await pickImportedSampleForScript(script);
-    const customerVoice = await resolveCustomerVoiceForProfile(profile);
+    const customerVoice = await resolvePlanCustomerVoiceForProfile(profile);
     const previewTarget = (await buildCallPlanTargets(plan))[0] ?? null;
     const prompt = buildRealtimeCallPrompt({
       script,
@@ -1933,20 +1940,13 @@ export async function resolveRealtimeTestPlanConfiguration(
   if (!plan) throw new Error('План прозвона не найден.');
   const context = await buildScheduledCallContext(plan);
   const profile = pickRandom(context.profiles);
-  const customerVoice = await resolveCustomerVoiceForProfile(profile);
-  const streamingVoice = customerVoice?.elevenLabsCode?.trim()
-    ? customerVoice
-    : await prisma.callCustomerVoice.findFirst({
-      where: { isDeleted: false, isEnabled: true, elevenLabsCode: { not: null } },
-      select: { id: true, name: true, elevenLabsCode: true },
-      orderBy: { createdAt: 'asc' },
-    });
+  const customerVoice = await resolveCustomerVoiceForProfile(profile, true);
   const previewTarget = (await buildCallPlanTargets(plan))[0] ?? null;
   const prompt = buildRealtimeCallPrompt({
     script: context.script,
     profile,
     importedItem: context.importedItem,
-    customerVoiceName: streamingVoice?.name ?? customerVoice?.name ?? null,
+    customerVoiceName: customerVoice?.name ?? null,
     holding: context.holding,
     target: previewTarget ? {
       name: previewTarget.dealershipName,
@@ -1958,8 +1958,8 @@ export async function resolveRealtimeTestPlanConfiguration(
     planId: plan.id,
     planName: plan.name,
     prompt,
-    elevenLabsVoiceId: streamingVoice?.elevenLabsCode?.trim() || null,
-    customerVoiceId: streamingVoice?.id ?? customerVoice?.id ?? profile?.voiceId ?? null,
+    elevenLabsVoiceId: customerVoice?.elevenLabsCode?.trim() || null,
+    customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title?.trim() || null,
     subjectDescription: context.importedItem?.description?.trim() || null,
   };
