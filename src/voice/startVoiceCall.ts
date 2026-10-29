@@ -30,7 +30,7 @@ function isPublicHttpUrl(value: string): boolean {
   }
 }
 
-export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure';
+export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure' | 'yandex_realtime_test' | 'comet_realtime_test';
 
 export interface StartVoiceCallOptions {
   /** 'dialog' = our LLM (voice_dialog), 'realtime' = OpenAI Realtime. Default: 'dialog'. */
@@ -41,6 +41,10 @@ export interface StartVoiceCallOptions {
   elevenLabsVoiceId?: string | null;
   /** Internal customer voice row id, useful for diagnostics. */
   customerVoiceId?: string | null;
+  /** Caller-supplied id used by isolated realtime bridges that must register before StartScenarios. */
+  callId?: string;
+  /** Short-lived secret used to authenticate Voximplant to the isolated media WebSocket. */
+  streamToken?: string;
 }
 
 export interface StartVoiceCallResult {
@@ -102,7 +106,7 @@ export async function startVoiceCall(
   const accountId = process.env.VOX_ACCOUNT_ID;
   const apiKey = process.env.VOX_API_KEY;
   const appId = process.env.VOX_APP_ID;
-  const { baseUrl, eventUrl } = resolveVoiceCallUrls();
+  const { baseUrl, eventUrl, eventUrlBase } = resolveVoiceCallUrls();
 
   if (!accountId || !apiKey || !appId) {
     return { error: 'VOX_ACCOUNT_ID, VOX_API_KEY, VOX_APP_ID must be set in env.' };
@@ -112,13 +116,49 @@ export async function startVoiceCall(
     return { error: 'Invalid phone number.' };
   }
 
-  const callId = randomUUID();
+  const callId = options.callId?.trim() || randomUUID();
 
   let scriptName: string;
   let ruleName: string;
   let customData: Record<string, unknown>;
 
-  if (scenario === 'realtime_pure') {
+  if (scenario === 'comet_realtime_test') {
+    if (!baseUrl) {
+      return { error: 'VOICE_DIALOG_BASE_URL or MINI_APP_URL must be set for Comet Realtime test.' };
+    }
+    if (!options.streamToken) {
+      return { error: 'streamToken must be set for Comet Realtime test.' };
+    }
+    scriptName = process.env.VOX_COMET_REALTIME_SCENARIO_NAME || 'voice_comet_realtime_test';
+    ruleName = process.env.VOX_COMET_REALTIME_RULE_NAME || 'voice_comet_realtime_test_rule';
+    const streamUrl = baseUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+      + `/voice/comet-realtime-test?call_id=${encodeURIComponent(callId)}&token=${encodeURIComponent(options.streamToken)}`;
+    customData = {
+      call_id: callId,
+      to: toNormalized,
+      event_url: `${eventUrlBase || baseUrl}/webhooks/vox-comet-realtime-test`,
+      stream_url: streamUrl,
+      caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+    };
+  } else if (scenario === 'yandex_realtime_test') {
+    if (!baseUrl) {
+      return { error: 'VOICE_DIALOG_BASE_URL or MINI_APP_URL must be set for Yandex Realtime test.' };
+    }
+    if (!options.streamToken) {
+      return { error: 'streamToken must be set for Yandex Realtime test.' };
+    }
+    scriptName = process.env.VOX_YANDEX_REALTIME_SCENARIO_NAME || 'voice_yandex_realtime_test';
+    ruleName = process.env.VOX_YANDEX_REALTIME_RULE_NAME || 'voice_yandex_realtime_test_rule';
+    const streamUrl = baseUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+      + `/voice/yandex-realtime-test?call_id=${encodeURIComponent(callId)}&token=${encodeURIComponent(options.streamToken)}`;
+    customData = {
+      call_id: callId,
+      to: toNormalized,
+      event_url: `${eventUrlBase || baseUrl}/webhooks/vox-yandex-realtime-test`,
+      stream_url: streamUrl,
+      caller_id: process.env.VOX_CALLER_ID ? normalizePhone(process.env.VOX_CALLER_ID) : undefined,
+    };
+  } else if (scenario === 'realtime_pure') {
     scriptName = process.env.VOX_REALTIME_PURE_SCENARIO_NAME || 'voice_realtime_pure';
     ruleName = process.env.VOX_REALTIME_PURE_RULE_NAME || 'voice_realtime_pure_rule';
     customData = {

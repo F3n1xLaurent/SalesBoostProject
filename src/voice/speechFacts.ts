@@ -61,6 +61,12 @@ export function buildSpokenNumberAnchors(source: string): string[] {
 
 export function normalizeRussianSpeechNumbers(text: string): string {
   return text
+    // Russian TTS often interprets a Cyrillic model index "Х5" as the letter
+    // name "ха пять". In car names X/Х always denotes the spoken "икс".
+    .replace(/(^|[\s(«"'])(?:x|х|ха)\s*-?\s*(\d{1,2})(?=$|[\s),.!?;:»"'])/giu, (_match, prefix: string, digits: string) => {
+      const words = russianNumberWords(Number(digits));
+      return `${prefix}икс ${words ?? digits}`;
+    })
     .replace(/\b\d{1,3}(?:[\s\u00a0]\d{3}){1,3}\s*(?:₽|руб(?:лей|ля|ль|\.)?)|\b\d{5,9}\s*(?:₽|руб(?:лей|ля|ль|\.)?)/giu, (match) => {
       const value = Number(match.replace(/\D/g, ''));
       const words = russianNumberWords(value);

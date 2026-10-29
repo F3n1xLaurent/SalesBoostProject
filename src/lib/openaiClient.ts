@@ -56,3 +56,14 @@ export function compatibleChatTemperature(model: string, temperature: number): {
   const requiresDefaultTemperature = /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/.test(modelName);
   return requiresDefaultTemperature ? {} : { temperature };
 }
+
+/** GPT-5/o-series reject the legacy max_tokens field. */
+export function compatibleChatMaxTokens(
+  model: string,
+  maxTokens: number,
+): { max_tokens: number } | { max_completion_tokens: number } {
+  const modelName = model.trim().toLowerCase().split('/').pop() || '';
+  return /^(?:gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/.test(modelName)
+    ? { max_completion_tokens: maxTokens }
+    : { max_tokens: maxTokens };
+}

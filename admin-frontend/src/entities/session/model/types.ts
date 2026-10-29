@@ -14,6 +14,7 @@ export type AdminTab =
   | 'analytics'
   | 'callSettings'
   | 'internalAnalytics'
+  | 'testing'
   | 'dictionaries'
   | 'settings'
   | 'dealer-companies'

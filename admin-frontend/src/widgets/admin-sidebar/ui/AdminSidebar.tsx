@@ -51,13 +51,18 @@ const SUPER_NAV: NavEntry[] = [
   ...buildNav(SUPER_NAV_MAIN, SUPER_NAV_SECONDARY),
   { type: 'separator' },
   { id: 'internalAnalytics', label: 'Внутренняя аналитика', icon: 'chart' },
+  { id: 'testing', label: 'Тестирование', icon: 'flask-light' },
   { id: 'dictionaries', label: 'Справочники', icon: 'book-open' },
 ];
 
-const COMPANY_NAV: NavEntry[] = buildNav(
-  SUPER_NAV_MAIN.filter((item) => item.id !== 'holdings'),
-  SUPER_NAV_SECONDARY.filter((item) => item.id !== 'typesNumbers'),
-);
+const COMPANY_NAV: NavEntry[] = [
+  ...buildNav(
+    SUPER_NAV_MAIN.filter((item) => item.id !== 'holdings'),
+    SUPER_NAV_SECONDARY.filter((item) => item.id !== 'typesNumbers'),
+  ),
+  { type: 'separator' },
+  { id: 'testing', label: 'Тестирование', icon: 'flask-light' },
+];
 
 const DEALER_NAV: NavItem[] = [
   { id: 'dealer-companies', label: 'Дашборд', icon: 'chart' },

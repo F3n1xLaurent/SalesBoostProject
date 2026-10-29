@@ -25,6 +25,7 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
   'analytics',
   'callSettings',
   'internalAnalytics',
+  'testing',
   'dictionaries',
   'settings',
 ];
@@ -79,6 +80,8 @@ export function tabToPath(tab: AdminTab): string {
       return '/call-settings/profiles';
     case 'internalAnalytics':
       return '/internal-analytics';
+    case 'testing':
+      return '/testing';
     case 'dictionaries':
       return '/dictionaries';
     case 'settings':
@@ -124,6 +127,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   if (section === 'autodealers') return { tab: 'autodealers', employeeId: resource };
   if (section === 'train') return { role: 'staff', tab: 'staff-trainer', trainerSessionId: resource };
   if (section === 'analytics') return { tab: 'analytics' };
+  if (section === 'testing' || (section === 'call-settings' && resource === 'realtime-test')) return { tab: 'testing' };
   if (section === 'call-settings') return { tab: 'callSettings' };
   if (section === 'internal-analytics') return { tab: 'internalAnalytics' };
   if (section === 'dictionaries') return { tab: 'dictionaries' };

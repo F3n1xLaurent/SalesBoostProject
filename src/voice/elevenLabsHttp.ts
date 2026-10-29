@@ -1,8 +1,12 @@
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { config } from '../config';
 
 const elevenLabsProxyAgent = config.elevenLabsProxyUrl
   ? new ProxyAgent(config.elevenLabsProxyUrl)
+  : null;
+const elevenLabsWebSocketProxyAgent = config.elevenLabsProxyUrl
+  ? new HttpsProxyAgent(config.elevenLabsProxyUrl)
   : null;
 
 type ElevenLabsFetchInit = NonNullable<Parameters<typeof undiciFetch>[1]>;
@@ -24,4 +28,9 @@ export async function fetchElevenLabs(
 
 export function isElevenLabsProxyEnabled(): boolean {
   return Boolean(elevenLabsProxyAgent);
+}
+
+/** Node's WebSocket client does not inherit the undici dispatcher. */
+export function elevenLabsWebSocketOptions(): { agent?: HttpsProxyAgent<string> } {
+  return elevenLabsWebSocketProxyAgent ? { agent: elevenLabsWebSocketProxyAgent } : {};
 }

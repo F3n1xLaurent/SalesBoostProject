@@ -1049,6 +1049,10 @@ export function buildRealtimeCallPrompt(input: {
 '',
 'Ты всегда ПОКУПАТЕЛЬ/КЛИЕНТ, который сам звонит сотруднику компании по конкретному предложению.',
 '',
+'Ты инициатор ИСХОДЯЩЕГО звонка. Запрещено спрашивать сотрудника «по какому вопросу звонок?», «зачем вы звоните?», «чем могу помочь?» или «что вас интересует?». Эти фразы принадлежат принимающей стороне.',
+'',
+'Если сотрудник спрашивает, по какому вопросу ты звонишь, кратко повтори собственную причину звонка из сценария.',
+'',
 'Никогда не переходи в роль менеджера, продавца, оператора, консультанта, секретаря или другого сотрудника компании.',
 '',
 'Не говори от имени компании.',
@@ -1903,6 +1907,62 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
     const message = error instanceof Error ? error.message : 'Не удалось сгенерировать промпт.';
     res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
   }
+}
+
+export type RealtimeTestPlanConfiguration = {
+  planId: string;
+  planName: string;
+  prompt: string;
+  elevenLabsVoiceId: string | null;
+  customerVoiceId: string | null;
+  subjectTitle: string | null;
+  subjectDescription: string | null;
+};
+
+/**
+ * Resolves one random client profile/sample exactly like a normal plan call, but
+ * does not create a scheduled call or analytics record. Used only by the
+ * isolated Yandex Realtime hypothesis screen.
+ */
+export async function resolveRealtimeTestPlanConfiguration(
+  req: Request,
+  planId: string,
+): Promise<RealtimeTestPlanConfiguration> {
+  await assertCanAccessPlan(req, planId);
+  const plan = await prisma.callPlan.findUnique({ where: { id: planId } });
+  if (!plan) throw new Error('План прозвона не найден.');
+  const context = await buildScheduledCallContext(plan);
+  const profile = pickRandom(context.profiles);
+  const customerVoice = await resolveCustomerVoiceForProfile(profile);
+  const streamingVoice = customerVoice?.elevenLabsCode?.trim()
+    ? customerVoice
+    : await prisma.callCustomerVoice.findFirst({
+      where: { isDeleted: false, isEnabled: true, elevenLabsCode: { not: null } },
+      select: { id: true, name: true, elevenLabsCode: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  const previewTarget = (await buildCallPlanTargets(plan))[0] ?? null;
+  const prompt = buildRealtimeCallPrompt({
+    script: context.script,
+    profile,
+    importedItem: context.importedItem,
+    customerVoiceName: streamingVoice?.name ?? customerVoice?.name ?? null,
+    holding: context.holding,
+    target: previewTarget ? {
+      name: previewTarget.dealershipName,
+      city: previewTarget.dealershipCity,
+      address: previewTarget.dealershipAddress,
+    } : null,
+  });
+  return {
+    planId: plan.id,
+    planName: plan.name,
+    prompt,
+    elevenLabsVoiceId: streamingVoice?.elevenLabsCode?.trim() || null,
+    customerVoiceId: streamingVoice?.id ?? customerVoice?.id ?? profile?.voiceId ?? null,
+    subjectTitle: context.importedItem?.title?.trim() || null,
+    subjectDescription: context.importedItem?.description?.trim() || null,
+  };
 }
 
 export async function handleListCallPlanCalls(req: Request, res: Response): Promise<void> {

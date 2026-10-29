@@ -28,6 +28,19 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { handleVoiceDialog } from './voice/voiceDialog';
 import { handleVoiceStreamMessage } from './voice/voiceStream';
+import {
+  handleGetYandexRealtimeTest,
+  handleStartYandexRealtimeTest,
+  handleYandexRealtimeTestSocket,
+  handleYandexRealtimeTestWebhook,
+} from './voice/yandexRealtimeTest';
+import {
+  handleCometRealtimeTestSocket,
+  handleCometRealtimeTestWebhook,
+  handleGetCometRealtimeTest,
+  handleStartCometRealtimeTest,
+} from './voice/cometRealtimeTest';
+import { handleStartRealtimeRegression, handleGetRealtimeRegression, handleCancelRealtimeRegression, handleRegressionAudio, handleListRealtimeRegressions, handleCompareRealtimeRegressions } from './voice/realtimeRegression';
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
@@ -4798,6 +4811,43 @@ app.post('/api/admin/call-settings/plans/:id/schedule/:callId/recreate', (req, r
   });
 });
 
+app.post('/api/admin/realtime-test/regressions', (req, res) => {
+  void handleStartRealtimeRegression(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/realtime-test/regressions', (req, res) => {
+  void handleListRealtimeRegressions(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/realtime-test/regressions/:runId/compare', (req, res) => {
+  void handleCompareRealtimeRegressions(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/realtime-test/regressions/:runId', (req, res) => {
+  void handleGetRealtimeRegression(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.post('/api/admin/realtime-test/regressions/:runId/cancel', (req, res) => {
+  void handleCancelRealtimeRegression(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/realtime-test/regressions/:runId/audio/:caseId', (req, res) => {
+  void handleRegressionAudio(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.post('/api/admin/realtime-test/calls', (req, res) => {
+  if (req.body?.provider === 'comet' || req.body?.provider === 'openai') {
+    handleStartCometRealtimeTest(req, res).catch((error) => {
+      console.error('Start GPT Realtime test call error:', error);
+      res.status(500).json({ error: 'Не удалось запустить гипотезу 2.' });
+    });
+    return;
+  }
+  handleStartYandexRealtimeTest(req, res).catch((error) => {
+    console.error('Start Yandex Realtime test call error:', error);
+    res.status(500).json({ error: 'Не удалось запустить тестовый звонок.' });
+  });
+});
+
+app.get('/api/admin/realtime-test/calls/:callId', (req, res) => {
+  if (handleGetCometRealtimeTest(req, res)) return;
+  handleGetYandexRealtimeTest(req, res);
+});
+
 app.post('/api/imports', (req, res) => {
   handleCreateImport(req, res).catch((error) => {
     console.error('Create import error:', error);
@@ -7152,6 +7202,9 @@ function safeVoxPayloadPreview(value: unknown, maxLen = 4000): string {
     return '[unserializable payload]';
   }
 }
+
+app.post('/webhooks/vox-yandex-realtime-test', handleYandexRealtimeTestWebhook);
+app.post('/webhooks/vox-comet-realtime-test', handleCometRealtimeTestWebhook);
 
 app.use('/webhooks/vox', (req, _res, next) => {
   const body = req.body && typeof req.body === 'object' ? req.body : null;
@@ -9910,14 +9963,26 @@ export function startServer(): Promise<void> {
 
     function attachVoiceStream(server: http.Server | https.Server): void {
       const wss = new WebSocketServer({ noServer: true });
-      wss.on('connection', (ws, _req) => {
+      wss.on('connection', (ws, request) => {
+        if (request.url?.startsWith('/voice/comet-realtime-test')) {
+          console.log('[voice/comet-realtime-test] Voximplant media connected');
+          handleCometRealtimeTestSocket(ws, request.url);
+          return;
+        }
+        if (request.url?.startsWith('/voice/yandex-realtime-test')) {
+          console.log('[voice/yandex-realtime-test] Voximplant media connected');
+          handleYandexRealtimeTestSocket(ws, request.url);
+          return;
+        }
         console.log('[voice/stream] Client connected, waiting for message');
-        ws.on('message', (data: Buffer | string) => {
-          handleVoiceStreamMessage(ws, data.toString());
-        });
+        ws.on('message', (data: Buffer | string) => handleVoiceStreamMessage(ws, data.toString()));
       });
       server.on('upgrade', (request, socket, head) => {
-        if (request.url?.startsWith('/voice/stream')) {
+        if (
+          request.url?.startsWith('/voice/stream')
+          || request.url?.startsWith('/voice/comet-realtime-test')
+          || request.url?.startsWith('/voice/yandex-realtime-test')
+        ) {
           wss.handleUpgrade(request, socket, head, (ws) => {
             wss.emit('connection', ws, request);
           });

@@ -13,6 +13,11 @@ describe('spoken facts in call and trainer prompts', () => {
       .toBe('Цена два миллиона двести пятьдесят тысяч рублей, диски пятнадцать дюймов.');
   });
 
+  it('pronounces car X indexes as Russian икс, not ха', () => {
+    expect(normalizeRussianSpeechNumbers('BMW X5 и БМВ Х5, а не Ха5.'))
+      .toBe('BMW икс пять и БМВ икс пять, а не икс пять.');
+  });
+
   it('pins the called branch address and forbids another address', () => {
     const section = buildCallTargetLocationSection({ city: 'Москва', address: 'улица Ленина, 7' });
     expect(section).toContain('произноси только этот адрес: улица Ленина, 7');

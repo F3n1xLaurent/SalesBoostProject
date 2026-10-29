@@ -991,6 +991,104 @@ export interface CallPlanCallItem {
   updatedAt: string;
 }
 
+export interface RealtimeTestCall {
+  callId: string;
+  provider?: 'yandex' | 'comet' | 'openai';
+  model?: string;
+  planId: string;
+  planName: string;
+  phone: string;
+  status: string;
+  createdAt: string;
+  startedAt: string | null;
+  connectedAt: string | null;
+  endedAt: string | null;
+  yandexConnectedAt: string | null;
+  voice: {
+    voiceId: string;
+    modelId: string;
+    stability: number;
+    similarityBoost: number;
+    speed: number;
+    source: 'agent' | 'fallback';
+  };
+  transcript: Array<{
+    role: 'manager' | 'client';
+    text: string;
+    at: string;
+    updatedAt?: string;
+    metrics: {
+      speechDurationMs?: number | null;
+      speechToTextMs?: number | null;
+      vadEndpointMs?: number | null;
+      endpointWaitMs?: number | null;
+      endpointStabilityMs?: number | null;
+      llmFirstTextMs?: number | null;
+      llmTextGenerationMs?: number | null;
+      ttsRequestDelayMs?: number | null;
+      ttsSocketWaitMs?: number | null;
+      ttsFirstAudioMs?: number | null;
+      ttsGenerationMs?: number | null;
+      audioDurationMs?: number | null;
+      speechToFirstAudioMs?: number | null;
+      speechToPlaybackMs?: number | null;
+      speechToVoxPlaybackMs?: number | null;
+      silentResponseRetries?: number;
+      interrupted?: boolean;
+      interruptionPlaybackMs?: number | null;
+      heardTextOnInterruption?: string | null;
+      contextCorrected?: boolean;
+      deliveryStyle?: 'curious' | 'warm' | 'gentle' | 'engaged' | 'neutral';
+    };
+  }>;
+  tools: Array<{ name: string; arguments: Record<string, unknown>; at: string }>;
+  ivrDetected?: boolean;
+  ivrPath?: string[];
+  connectionState?: 'awaiting_answer' | 'waiting_operator' | 'live_conversation';
+  conversationFlow: {
+    bargeInEnabled: boolean;
+    smartBargeInEnabled: boolean;
+    backchannelEnabled: boolean;
+    listeningBackchannelEnabled: boolean;
+    bargeInSustainedMs: number;
+    endpointSilenceMs: number;
+    incompleteTurnEnabled: boolean;
+    turnGraceMs: number;
+    incompleteTurnGraceMs: number;
+    semanticTurnEnabled: boolean;
+    semanticTurnTimeoutMs: number;
+    backchannelMinSpeechMs: number;
+    backchannelCooldownMs: number;
+    backchannelMaxPerTurn: number;
+    seamlessHandoffEnabled: boolean;
+    handoffPauseMs: number;
+    events: Array<{
+      type: 'barge_in_candidate' | 'barge_in_confirmed' | 'barge_in_ignored'
+        | 'backchannel_scheduled' | 'backchannel_played' | 'backchannel_cancelled'
+        | 'endpoint_continuation_detected' | 'endpoint_completion_grace_started'
+        | 'endpoint_semantic_assessed' | 'endpoint_turn_committed'
+        | 'entity_mismatch_detected' | 'manager_audio_discarded'
+        | 'speculative_response_started' | 'speculative_response_cancelled'
+        | 'handoff_started' | 'handoff_cutover';
+      at: string;
+      reason: string;
+      speechDurationMs?: number | null;
+      latencyMs?: number | null;
+    }>;
+  };
+  errors: string[];
+  metrics: {
+    answerMs: number | null;
+    yandexConnectMs: number | null;
+    providerConnectMs?: number | null;
+    providerReadyMs?: number | null;
+    providerWarmupMs?: number | null;
+    speechToFirstTextMs: number | null;
+    speechToFirstAudioMs: number | null;
+    textToFirstAudioMs: number | null;
+  };
+}
+
 export type PhoneNumberOwnership = 'dealership' | 'user';
 
 export interface PhoneNumberTypeItem {
@@ -2036,6 +2134,84 @@ export async function recreateCallPlanScheduleCall(planId: string, callId: strin
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось пересоздать расписание прозвона.');
   return data.item as CallPlanCallItem;
+}
+
+export type RealtimeRegressionCheck = { id: string; title: string; status: 'pass' | 'fail' | 'review' | 'not_run'; evidence: string[] };
+export type RealtimeRegressionRun = {
+  id: string; planId: string; planName: string; model: string; status: 'running' | 'completed' | 'cancelled' | 'failed';
+  createdAt: string; progress: string; error?: string; checklist: RealtimeRegressionCheck[];
+  evaluatorVersion?: string; selectedCheckIds?: string[]; parentRunId?: string; configurationHash?: string;
+  cases: Array<{ id: string; title: string; status: string; error?: string; audioFile?: string; checks: RealtimeRegressionCheck[]; session?: RealtimeTestCall }>;
+};
+export type RealtimeRegressionTiming = { samples: number; medianMs: number | null; p95Ms: number | null };
+export type RealtimeRegressionSummary = Pick<RealtimeRegressionRun, 'id' | 'planId' | 'planName' | 'model' | 'status' | 'createdAt' | 'checklist' | 'parentRunId' | 'evaluatorVersion' | 'selectedCheckIds' | 'configurationHash'> & {
+  endedAt?: string; scenarioIds: string[]; casesCompleted: number; casesTotal: number;
+  counts: Record<RealtimeRegressionCheck['status'], number>; timing: RealtimeRegressionTiming;
+};
+export type RealtimeRegressionHistory = {
+  items: RealtimeRegressionSummary[]; total: number; offset: number; limit: number;
+  checks: Array<{ id: string; title: string; scenarioIds: string[] }>;
+  scenarios: Array<{ id: string; title: string; checks: string[] }>;
+};
+export type RealtimeRegressionComparison = {
+  beforeId: string; afterId: string; warnings: string[];
+  rows: Array<{ id: string; title: string; before: RealtimeRegressionCheck | null; after: RealtimeRegressionCheck | null;
+    change: 'unchanged' | 'fixed' | 'regressed' | 'changed' | 'not_rerun' | 'new'; comparable: boolean;
+    coverageBefore: string[]; coverageAfter: string[]; timingBefore: RealtimeRegressionTiming; timingAfter: RealtimeRegressionTiming; medianDeltaMs: number | null }>;
+};
+export async function fetchRealtimeRegressionHistory(planId: string, offset = 0): Promise<RealtimeRegressionHistory> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/regressions?${new URLSearchParams({ planId, offset: String(offset) })}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Не удалось загрузить историю тестов.');
+  return data;
+}
+export async function compareRealtimeRegressions(beforeId: string, afterId: string): Promise<RealtimeRegressionComparison> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/regressions/${encodeURIComponent(beforeId)}/compare?${new URLSearchParams({ against: afterId })}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Не удалось сравнить тесты.');
+  return data;
+}
+export type RealtimeRegressionSelection = { checkIds?: string[]; scenarioIds?: string[]; referenceRunId?: string };
+export async function startRealtimeRegression(planId: string, model: string, selection: RealtimeRegressionSelection = {}): Promise<RealtimeRegressionRun> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/regressions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planId, model, ...selection }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Не удалось запустить тест.');
+  return data;
+}
+export async function fetchRealtimeRegression(id: string): Promise<RealtimeRegressionRun> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/regressions/${encodeURIComponent(id)}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Не удалось загрузить тест.');
+  return data;
+}
+export async function cancelRealtimeRegression(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/regressions/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+  if (!res.ok) throw new Error('Не удалось остановить тест.');
+}
+export async function fetchRegressionAudio(runId: string, caseId: string): Promise<Blob> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/regressions/${encodeURIComponent(runId)}/audio/${encodeURIComponent(caseId)}`);
+  if (!res.ok) throw new Error('Не удалось загрузить запись.');
+  return res.blob();
+}
+
+export async function startRealtimeTestCall(payload: { planId: string; to: string; provider?: 'yandex' | 'comet' | 'openai'; model?: string }): Promise<RealtimeTestCall> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/calls`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось запустить тестовый звонок.');
+  return data as RealtimeTestCall;
+}
+
+export async function fetchRealtimeTestCall(callId: string): Promise<RealtimeTestCall> {
+  const res = await apiFetch(`${API_BASE}/api/admin/realtime-test/calls/${encodeURIComponent(callId)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || 'Не удалось обновить состояние тестового звонка.');
+  return data as RealtimeTestCall;
 }
 
 export async function fetchVoiceDashboard(): Promise<PlatformVoice | null> {
