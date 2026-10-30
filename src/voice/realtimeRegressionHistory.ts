@@ -21,6 +21,7 @@ export function regressionTiming(run: RegressionRun, checkId?: CheckId): Regress
 export function summarizeRegression(run: RegressionRun) {
   return {
     id: run.id, planId: run.planId, planName: run.planName, model: run.model, status: run.status,
+    target: run.target ?? 'hypothesis2', executionMode: run.executionMode ?? 'simulation',
     createdAt: run.createdAt, endedAt: run.endedAt, parentRunId: run.parentRunId,
     evaluatorVersion: run.evaluatorVersion, configurationHash: run.configurationHash,
     selectedCheckIds: run.selectedCheckIds, scenarioIds: run.cases.map((c) => c.id),
@@ -63,6 +64,7 @@ function scenarioCoverage(run: RegressionRun, id: CheckId): string[] {
 export function compareRegressionRuns(before: RegressionRun, after: RegressionRun) {
   const warnings: string[] = [];
   if (before.planId !== after.planId) warnings.push('Разные планы прозвона.');
+  if ((before.target ?? 'hypothesis2') !== (after.target ?? 'hypothesis2')) warnings.push('Разные контуры: старая гипотеза и основная телефония.');
   if (before.model !== after.model) warnings.push('Разные Realtime-модели.');
   if (!before.configurationHash || !after.configurationHash) warnings.push('В старом отчёте нет снимка конфигурации; идентичность профиля и голоса не подтверждена.');
   else if (before.configurationHash !== after.configurationHash) warnings.push('Различаются профиль, голос или настройки диалога.');

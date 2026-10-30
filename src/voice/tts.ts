@@ -39,7 +39,7 @@ export function estimateTtsCostPerSession(): string {
   return `~$${cost.toFixed(3)} за сессию (${avgTurns} сообщений × ~${avgCharsPerTurn} симв.)`;
 }
 
-function buildTtsText(fullText: string): string {
+export function buildTtsText(fullText: string): string {
   fullText = normalizeRussianSpeechNumbers(fullText);
   if (fullText.length <= TTS_MAX_CHARS) return fullText;
   const slice = fullText.slice(0, TTS_MAX_CHARS);

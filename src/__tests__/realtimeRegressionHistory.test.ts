@@ -52,6 +52,13 @@ describe('targeted regression certification', () => {
     expect(comparison.rows.find((x) => x.id === 'interruption')?.comparable).toBe(false);
     expect(compareRegressionRuns(report('full'), report('part', 'pass', ['acknowledgement'])).rows.find((x) => x.id === 'interruption')?.comparable).toBe(false);
   });
+  it('does not call a production fix comparable to an old hypothesis test', () => {
+    const old = report('hypothesis', 'fail');
+    const production = { ...report('production', 'pass'), target: 'call_plan' as const };
+    const compared = compareRegressionRuns(old, production);
+    expect(compared.warnings).toContain('Разные контуры: старая гипотеза и основная телефония.');
+    expect(compared.rows.find((row) => row.id === 'interruption')?.comparable).toBe(false);
+  });
 });
 
 describe('persistent owner-scoped regression history', () => {

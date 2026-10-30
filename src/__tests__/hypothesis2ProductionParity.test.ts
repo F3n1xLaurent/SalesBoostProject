@@ -4,13 +4,13 @@ import type WebSocket from 'ws';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../config';
 import { handleCometRealtimeTestSocket, handleCometRealtimeTestWebhook, handleStartCometRealtimeTest,
-  prepareProductionOpenAiRealtimeCall, updateProductionRealtimeLifecycle } from '../voice/cometRealtimeTest';
+  prepareProductionOpenAiRealtimeCall, updateProductionRealtimeLifecycle, createCallPlanSimulation } from '../voice/cometRealtimeTest';
 
 const mocks = vi.hoisted(() => ({ sockets: [] as any[], failuresRemaining: 0, start: vi.fn(),
   plan: { planId: 'plan', planName: 'План', prompt: 'Ты Анна, женщина. Звонишь по Kia Carnival. Уточни цену.',
     elevenLabsVoiceId: 'profile-voice', customerVoiceId: 'voice-row', subjectTitle: 'Kia Carnival', subjectDescription: null },
   tts: { modelId: 'eleven_v4_turbo', defaultVoiceId: 'agent-default', stability: 0.75, similarityBoost: 0.75, speed: 1.13,
-    source: 'agent', optimizeStreamingLatency: 0, pronunciationDictionaryLocators: [] },
+    source: 'agent' as const, optimizeStreamingLatency: 0, pronunciationDictionaryLocators: [] },
 }));
 vi.mock('../voice/callSettingsManagement', () => ({ resolveRealtimeTestPlanConfiguration: async () => mocks.plan }));
 vi.mock('../voice/startVoiceCall', () => ({ startVoiceCall: mocks.start }));
@@ -83,6 +83,27 @@ async function launch(mode: 'test' | 'production') {
 }
 
 describe('actual hypothesis-2 and production launch parity (no live providers)', () => {
+  it('uses the real production session/configuration for a plan simulation without dialing', async () => {
+    config.openaiRealtimeModel = 'gpt-realtime-2.1';
+    const production = await launch('production');
+    const dialCount = mocks.start.mock.calls.length;
+    const offset = mocks.sockets.length;
+    const vox = new Vox();
+    const pending = createCallPlanSimulation(mocks.plan, vox as unknown as WebSocket, mocks.tts);
+    await vi.advanceTimersByTimeAsync(0);
+    const simulation = await pending;
+    cleanups.push(simulation.close);
+    const sockets = mocks.sockets.slice(offset);
+    const provider = sockets.find((socket) => socket.url.includes('/realtime'));
+    const tts = sockets.find((socket) => socket.url.includes('elevenlabs'));
+    expect(mocks.start).toHaveBeenCalledTimes(dialCount);
+    expect(provider.url).toBe(production.provider.url);
+    expect(provider.sent.find((event: any) => event.type === 'session.update'))
+      .toEqual(production.provider.sent.find((event: any) => event.type === 'session.update'));
+    expect(tts.url).toBe(production.tts.url);
+    expect(tts.sent).toEqual(production.tts.sent);
+    expect(simulation.snapshot()).toMatchObject({ model: 'gpt-realtime-2.1', phone: 'simulation', planId: 'plan' });
+  });
   it.each(['gpt-realtime-2', 'gpt-realtime-2.1'])('uses identical OpenAI instructions, tools and ElevenLabs settings for %s', async (model) => {
     config.openaiRealtimeModel = model;
     const test = await launch('test'); const production = await launch('production');

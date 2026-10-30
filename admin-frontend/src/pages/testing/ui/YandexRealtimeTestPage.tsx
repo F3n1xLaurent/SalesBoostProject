@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { RealtimeRegressionPanel } from './RealtimeRegressionPanel';
 import {
   fetchRealtimeTestCall,
   startRealtimeTestCall,
@@ -215,8 +214,6 @@ export function YandexRealtimeTestPage(props: { plans: CallPlanItem[]; loading: 
       </div>
 
       {error && <div className="sa-batch-live-error">{error}</div>}
-
-      {provider === 'openai' && <RealtimeRegressionPanel planId={selectedPlanAvailable ? planId : ''} model={cometModel} disabled={props.loading || starting || Boolean(call && !TERMINAL_STATUSES.has(call.status))} />}
 
       {call && (
         <>

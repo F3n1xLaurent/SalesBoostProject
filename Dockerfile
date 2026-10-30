@@ -52,7 +52,7 @@ RUN npm prune --omit=dev --ignore-scripts && npm cache clean --force
 
 FROM node:20-slim AS production
 
-RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

@@ -40,7 +40,11 @@ import {
   handleGetCometRealtimeTest,
   handleStartCometRealtimeTest,
 } from './voice/cometRealtimeTest';
-import { handleStartRealtimeRegression, handleGetRealtimeRegression, handleCancelRealtimeRegression, handleRegressionAudio, handleListRealtimeRegressions, handleCompareRealtimeRegressions } from './voice/realtimeRegression';
+import { handleStartRealtimeRegression, handleGetRealtimeRegression, handleCancelRealtimeRegression, handleRegressionAudio, handleListRealtimeRegressions, handleCompareRealtimeRegressions,
+  handleStartCallPlanAutoTest, handleAutoTestingCatalog, handleAutoTestingLiveTicket, loadOwnedRegressionRun } from './voice/realtimeRegression';
+import { createAutoTestingUpgradeHandler } from './testing/autoTestingLive';
+import { createTrainerAutoTesting, type TrainerTestSource, type TrainerTestTurn } from './testing/trainerAutoTesting';
+import { synthesizeTrainerFixture } from './testing/trainerTestFixtures';
 import { handleProductionRealtimeWebhook } from './voice/productionRealtimeWebhook';
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
@@ -92,14 +96,21 @@ import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
 import { evaluateSessionV2 } from './llm/evaluatorV2';
 import { resolveChecklistItemLabel } from './logic/evaluationHighlights';
-import { generateSpeechBuffer, generateSpeechElevenLabsVoice, generateSpeechOpenAI, generateSpeechOpenAIVoice } from './voice/tts';
+import { buildTtsText, generateSpeechBuffer, generateSpeechElevenLabsVoice, generateSpeechOpenAI, generateSpeechOpenAIVoice } from './voice/tts';
 import { resolveTrainerVoiceSelection, type TrainerVoiceSelection } from './voice/trainerVoice';
+import { createTrainerTurnTimer, trainerTranscriptWithoutAudio, type TrainerTurnTimings } from './trainer/trainerTurnPerformance';
+import { TrainerSimulationStore, createBuiltinTrainerSimulationRow } from './trainer/trainerSimulationStore';
+import { isTrainerBuiltinSource, trainerBuiltinSources } from './testing/trainerBuiltinFixtures';
+import { claimTrainerTurn, transcribeTrainerVoice } from './trainer/trainerVoicePipeline';
+import { trainerRecordingService, trainerRecordingPath } from './trainer/trainerRecording';
+import { createTrainerRecordingHandler } from './trainer/trainerRecordingHttp';
 import { buildCustomerScenarioPromptCore } from './voice/customerScenarioPrompt';
 import {
   closeElevenLabsAgentConversation,
   hasElevenLabsAgentConversation,
   isElevenLabsAgentEnabled,
   runElevenLabsAgentTurn,
+  warmUpElevenLabsAgentConversation,
 } from './voice/elevenLabsAgent';
 import {
   handleCreateCallCustomerProfile,
@@ -2019,6 +2030,7 @@ type TrainerTranscriptTurn = {
   createdAt?: string;
   audioBase64?: string | null;
   audioMimeType?: string | null;
+  timings?: TrainerTurnTimings;
 };
 
 function wavBase64FromPcm16Base64(audioBase64: string, sampleRate = 16000): string {
@@ -2249,22 +2261,29 @@ async function ttsBase64(
   text: string,
   replyMode: 'text' | 'text+voice',
   voice: TrainerVoiceSelection,
+  onVoice?: TrainerSimulationStore['observeVoice'],
+  signal?: AbortSignal,
 ): Promise<{ audioBase64: string; audioMimeType: string } | null> {
+  signal?.throwIfAborted();
   if (replyMode !== 'text+voice' || !text.trim()) return null;
 
-  const encode = (buf: Buffer) => buf.length
-    ? { audioBase64: buf.toString('base64'), audioMimeType: trainerGeneratedAudioMimeType(buf) }
-    : null;
+  const encode = (buf: Buffer, provider = voice.provider, voiceId = voice.voiceId) => {
+    if (!buf.length) return null;
+    onVoice?.({ provider, voiceId, spokenText: buildTtsText(text) });
+    return { audioBase64: buf.toString('base64'), audioMimeType: trainerGeneratedAudioMimeType(buf) };
+  };
 
   if (voice.provider === 'elevenlabs' && voice.voiceId) {
     const maxRetries = 5;
     const maxAttempts = maxRetries + 1;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      signal?.throwIfAborted();
       try {
         const audio = encode(await generateSpeechElevenLabsVoice(text, voice.voiceId));
         if (audio) return audio;
         throw new Error('ElevenLabs TTS returned empty audio');
       } catch (error) {
+        signal?.throwIfAborted();
         console.error(`[trainer] ElevenLabs TTS error attempt=${attempt}/${maxAttempts}:`, error);
         if (attempt < maxAttempts) {
           await new Promise((resolve) => setTimeout(resolve, attempt * 700));
@@ -2277,20 +2296,23 @@ async function ttsBase64(
       const fallback = voice.openaiVoiceId
         ? await generateSpeechOpenAIVoice(text, voice.openaiVoiceId)
         : await generateSpeechOpenAI(text, voice.fallbackVoice);
-      return encode(fallback);
+      return encode(fallback, 'openai', voice.openaiVoiceId || (voice.fallbackVoice === 'female' ? 'nova' : 'onyx'));
     } catch (error) {
+      signal?.throwIfAborted();
       console.error('[trainer] OpenAI TTS fallback error:', error);
       return null;
     }
   }
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    signal?.throwIfAborted();
     try {
       const buf = voice.provider === 'openai' && voice.voiceId
         ? await generateSpeechOpenAIVoice(text, voice.voiceId)
         : await generateSpeechBuffer(text, voice.fallbackVoice);
       return encode(buf);
     } catch (error) {
+      signal?.throwIfAborted();
       console.error(`[trainer] TTS error attempt=${attempt}:`, error);
       if (attempt < 3) {
         await new Promise((resolve) => setTimeout(resolve, attempt * 700));
@@ -2307,17 +2329,20 @@ async function ensureTrainerClientAudio(params: {
   voice: TrainerVoiceSelection;
   audioBase64?: string | null;
   audioMimeType?: string | null;
+  onVoice?: TrainerSimulationStore['observeVoice'];
+  signal?: AbortSignal;
 }): Promise<{ audioBase64: string | null; audioMimeType: string | null }> {
   // The text agent may occasionally include ElevenLabs audio even in chat
   // mode. Accept it only when this session is locked to ElevenLabs; otherwise
   // it would replace the selected OpenAI profile voice for a single turn.
   if (params.audioBase64 && params.voice.provider === 'elevenlabs') {
+    params.onVoice?.({ provider: 'elevenlabs', voiceId: params.voice.elevenLabsVoiceId, spokenText: params.text });
     return {
       audioBase64: params.audioBase64,
       audioMimeType: params.audioMimeType ?? null,
     };
   }
-  const audio = await ttsBase64(params.text, 'text+voice', params.voice);
+  const audio = await ttsBase64(params.text, 'text+voice', params.voice, params.onVoice, params.signal);
   if (!audio) {
     console.warn('[trainer] TTS unavailable, returning text-only client message');
     return { audioBase64: null, audioMimeType: null };
@@ -2617,8 +2642,10 @@ async function initializeTrainerDialog(params: {
   sessionId: string;
   replyMode: 'text' | 'text+voice';
   ttsVoice: TtsVoice;
+  simulation?: TrainerSimulationStore;
 }) {
-  const session = await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
+  const timer = createTrainerTurnTimer();
+  const session = params.simulation ? await params.simulation.load() : await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
   if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
 
   const existingTranscript = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
@@ -2645,12 +2672,14 @@ async function initializeTrainerDialog(params: {
   }) => {
     let audioBase64 = input.audioBase64;
     let audioMimeType = input.audioMimeType ?? null;
-    const ensured = await ensureTrainerClientAudio({
+    const ensured = await timer.measure('ttsMs', () => ensureTrainerClientAudio({
       text: input.clientMessage,
       voice: trainerVoice,
       audioBase64,
       audioMimeType,
-    });
+      onVoice: params.simulation?.observeVoice,
+      signal: params.simulation?.signal,
+    }));
     audioBase64 = ensured.audioBase64;
     audioMimeType = ensured.audioMimeType;
     const transcript: TrainerTranscriptTurn[] = sanitizeTranscriptTurns([{
@@ -2659,20 +2688,22 @@ async function initializeTrainerDialog(params: {
       createdAt: new Date().toISOString(),
       audioBase64,
       audioMimeType,
+      timings: timer.snapshot(),
     }]);
     const quickTitle = fallbackTrainerDialogTitle(transcript);
     const caseContextWithTitle = quickTitle
       ? { ...input.caseContext, dialogTitle: quickTitle }
       : input.caseContext;
-    await prisma.trainerSession.update({
+    const firstTurnData = {
+      transcriptJson: jsonStringify(transcript), caseContextJson: jsonStringify(caseContextWithTitle), ...(input.extraSessionData || {}),
+    };
+    await timer.measure('persistenceMs', () => params.simulation ? params.simulation.update(firstTurnData) : prisma.trainerSession.update({
       where: { id: session.id },
-      data: {
-        transcriptJson: jsonStringify(transcript),
-        caseContextJson: jsonStringify(caseContextWithTitle),
-        ...(input.extraSessionData || {}),
-      },
-    });
-    if (quickTitle) {
+      data: firstTurnData,
+    }));
+    if (params.simulation) {
+      // Isolated tests must not create titles, sessions or analytics in the employee's history.
+    } else if (quickTitle) {
       try {
         await prisma.trainerSession.update({
           where: { id: session.id },
@@ -2702,34 +2733,36 @@ async function initializeTrainerDialog(params: {
       audioBase64,
       audioMimeType,
       transcript,
+      timings: timer.snapshot(),
     };
   };
 
   if (USE_ELEVENLABS_TEXT_AGENT_FOR_WEB_TRAINER && isElevenLabsAgentEnabled()) {
-    try {
-      const firstMessage = buildTrainerInitialClientMessage(caseContext);
-      const agentOut = await runElevenLabsAgentTurn({
-        sessionId: session.id,
-        prompt: trainerScenarioPrompt(caseContext, existingTranscript, params.ttsVoice),
-        firstMessage,
-        elevenLabsVoiceId,
+    const firstMessage = buildTrainerInitialClientMessage(caseContext);
+    // Do not put connection setup and the agent's echo of our fixed opening
+    // on the first voice's critical path. Later turns await this warmup.
+    void warmUpElevenLabsAgentConversation({
+      sessionId: session.id,
+      prompt: trainerScenarioPrompt(caseContext, existingTranscript, params.ttsVoice),
+      firstMessage,
+      elevenLabsVoiceId,
+    }).then(async (opening) => {
+      if (params.simulation) {
+        if (params.simulation.closed || params.simulation.signal.aborted) closeElevenLabsAgentConversation(session.id);
+        return;
+      }
+      if (!opening.conversationId) return;
+      // Keep accounting linkage without overwriting newer dialog/runtime data.
+      await prisma.trainerSession.updateMany({
+        where: { id: session.id, elevenLabsConversationId: null, status: 'in_progress' },
+        data: { elevenLabsConversationId: opening.conversationId },
+      }).catch((error) => {
+        console.warn('[trainer] failed to persist warmed conversation ID:', error instanceof Error ? error.message : error);
       });
-      const clientMessage = agentOut.clientMessage || firstMessage;
-      const runtime = getTrainerRuntime(caseContext);
-      const nextRuntime = {
-        ...runtime,
-        elevenLabsConversationId: agentOut.conversationId,
-      };
-      return await finalizeFirstTurn({
-        clientMessage,
-        audioBase64: agentOut.audioBase64,
-        audioMimeType: agentOut.audioMimeType,
-        caseContext: withTrainerRuntime(caseContext, nextRuntime),
-        extraSessionData: { elevenLabsConversationId: agentOut.conversationId },
-      });
-    } catch (error) {
-      console.error('[trainer] ElevenLabs agent init error:', error);
-    }
+    }).catch((error) => {
+      closeElevenLabsAgentConversation(session.id);
+      console.warn('[trainer] agent warmup failed; next turn will reconnect:', error instanceof Error ? error.message : error);
+    });
   }
 
   const runtime = getTrainerRuntime(caseContext);
@@ -2754,6 +2787,9 @@ type TrainerDialogInitialization = Awaited<ReturnType<typeof initializeTrainerDi
 
 const trainerDialogInitializationTasks = new Map<string, Promise<TrainerDialogInitialization>>();
 const trainerTurnTasks = new Set<string>();
+// Leaving the page can mark a session completed before its last voice is
+// persisted. Do not publish a recording missing that in-flight final turn.
+trainerRecordingService.setActivityCheck((id) => trainerTurnTasks.has(id) || trainerDialogInitializationTasks.has(id));
 
 function ensureTrainerDialogInitialized(params: {
   sessionId: string;
@@ -2791,15 +2827,18 @@ async function runTrainerSessionTurn(params: {
   ttsVoice: TtsVoice;
   managerAudioBase64?: string | null;
   managerAudioMimeType?: string | null;
+  timer?: ReturnType<typeof createTrainerTurnTimer>;
+  simulation?: TrainerSimulationStore;
 }) {
-  const session = await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
+  const timer = params.timer ?? createTrainerTurnTimer();
+  const session = params.simulation ? await params.simulation.load() : await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
   if (!session) throw new Error('TRAINER_SESSION_NOT_FOUND');
   if (session.status === 'completed' || session.status === 'failed' || session.status === 'cancelled') {
     throw new Error('TRAINER_SESSION_CLOSED');
   }
 
   return withCostContext({
-    entityType: 'trainer_session',
+    entityType: params.simulation ? 'trainer_autotest' : 'trainer_session',
     entityId: session.id,
     companyId: session.companyId,
     stage: 'dialog_turn',
@@ -2831,6 +2870,8 @@ async function runTrainerSessionTurn(params: {
   let result: WebTrainingResult | null = null;
   let nextElevenLabsConversationId = runtime.elevenLabsConversationId ?? null;
   let elevenLabsTextAgentDisabled = runtime.elevenLabsTextAgentDisabled === true;
+  let agentTurn: Awaited<ReturnType<typeof runElevenLabsAgentTurn>> | null = null;
+  const textStartedAt = performance.now();
 
   if (behavior.toxic || hardRude || behavior.disengaging) {
     clientMessage = behavior.disengaging
@@ -2862,6 +2903,7 @@ async function runTrainerSessionTurn(params: {
           throw new Error(`ElevenLabs returned an invalid trainer reply: ${agentOut.clientMessage || '(empty)'}`);
         }
         clientMessage = agentOut.clientMessage.trim();
+        agentTurn = agentOut;
         clientAudioBase64 = agentOut.audioBase64;
         clientAudioMimeType = agentOut.audioMimeType;
         nextHistory = [...history, { role: 'client', content: clientMessage }];
@@ -2873,6 +2915,7 @@ async function runTrainerSessionTurn(params: {
         };
         nextElevenLabsConversationId = agentOut.conversationId ?? nextElevenLabsConversationId;
       } catch (error) {
+        params.simulation?.signal.throwIfAborted();
         console.error('[trainer] ElevenLabs agent turn error:', error);
         elevenLabsTextAgentDisabled = true;
         closeElevenLabsAgentConversation(session.id);
@@ -2922,12 +2965,22 @@ async function runTrainerSessionTurn(params: {
   }
 
   const nowIso = new Date().toISOString();
-  const clientAudio = await ensureTrainerClientAudio({
+  const textMs = Math.round(performance.now() - textStartedAt);
+  params.simulation?.signal.throwIfAborted();
+  const clientAudio = await timer.measure('ttsMs', () => ensureTrainerClientAudio({
     text: clientMessage,
     voice: trainerVoice,
     audioBase64: clientAudioBase64,
     audioMimeType: clientAudioMimeType,
-  });
+    onVoice: params.simulation?.observeVoice,
+    signal: params.simulation?.signal,
+  }));
+  // Text-only responses no longer wait for trailing tool events. Retain an
+  // end_call received during TTS, including when the socket has since closed.
+  if (!endConversation && agentTurn?.endedByAgent) {
+    endConversation = true;
+    result = buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null);
+  }
   clientAudioBase64 = clientAudio.audioBase64;
   clientAudioMimeType = clientAudio.audioMimeType;
   const transcript: TrainerTranscriptTurn[] = sanitizeTranscriptTurns([
@@ -2946,6 +2999,7 @@ async function runTrainerSessionTurn(params: {
       createdAt: nowIso,
       audioBase64: clientAudioBase64,
       audioMimeType: clientAudioMimeType,
+      timings: { ...timer.snapshot(), textMs },
     },
   ]);
   const nextRuntime = {
@@ -2968,14 +3022,14 @@ async function runTrainerSessionTurn(params: {
     updateData.completedAt = new Date();
     updateData.failureReason = result.reasonCode;
   }
-  const updated = await prisma.trainerSession.update({
+  const updated = await timer.measure('persistenceMs', () => params.simulation ? params.simulation.update(updateData) : prisma.trainerSession.update({
     where: { id: session.id },
     data: updateData,
     include: { scenario: { select: { id: true, name: true } } },
-  });
+  }));
   if (endConversation && result) {
     closeElevenLabsAgentConversation(updated.id);
-    scheduleTrainerSessionFinalization(updated.id);
+    if (!params.simulation) scheduleTrainerSessionFinalization(updated.id);
   }
 
   return {
@@ -2987,7 +3041,8 @@ async function runTrainerSessionTurn(params: {
     managerTranscript: params.managerText,
     result,
     session: trainerSessionSummary(updated),
-    transcript,
+    transcript: trainerTranscriptWithoutAudio(transcript),
+    timings: { ...timer.snapshot(), textMs },
   };
   });
 }
@@ -3122,6 +3177,10 @@ function scheduleTrainerSessionFinalization(sessionId: string): void {
 
     const session = await prisma.trainerSession.findUnique({ where: { id: sessionId } });
     if (!session || !['completed', 'failed'].includes(session.status)) return;
+    // Independent background task: audio conversion never blocks or fails evaluation.
+    void trainerRecordingService.forReport(session.id, session.status).catch((error) => {
+      console.warn('[trainer-recording] scheduling failed:', error instanceof Error ? error.message : error);
+    });
     if (session.evaluationJson?.trim() && session.evaluationJson !== '{}' && session.evaluationJson !== 'null') {
       await finalizeTrainerSessionSideEffects(session.id);
       return;
@@ -4332,6 +4391,7 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
   let lockedSessionId: string | null = null;
   try {
     const requestStartedAt = Date.now();
+    const timer = createTrainerTurnTimer();
     console.log(`[trainer] voice-message received session=${String(req.params.id)}`);
     const manager = await resolveTrainerManager(req);
     if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
@@ -4352,53 +4412,40 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     if (!audioBase64 || typeof audioBase64 !== 'string') {
       return res.status(400).json({ error: 'audioBase64 обязателен' });
     }
-    if (trainerTurnTasks.has(session.id)) {
-      return res.status(409).json({ error: 'Предыдущая реплика ещё обрабатывается. Дождитесь ответа клиента.' });
-    }
-    trainerTurnTasks.add(session.id);
+    try { claimTrainerTurn(trainerTurnTasks, session.id); }
+    catch { return res.status(409).json({ error: 'Предыдущая реплика ещё обрабатывается. Дождитесь ответа клиента.' }); }
     lockedSessionId = session.id;
 
     // The opening client turn must be persisted before the manager can reply.
     // Otherwise both async operations can overwrite transcriptJson.
-    await ensureTrainerDialogInitialized({
+    await timer.measure('initializationMs', () => ensureTrainerDialogInitialized({
       sessionId: session.id,
       replyMode,
       ttsVoice,
-    });
+    }));
 
     const isPcm = String(mimeType || '').toLowerCase().includes('audio/pcm');
 
     // Always finish STT before asking the text agent. The browser's stop-recording
     // action is the only end-of-turn signal; silence inside the recording is ignored.
-    let tmpPath = '';
     let sttAudioBase64 = audioBase64;
     let sttMimeType = mimeType || 'audio/webm';
     if (isPcm) {
       sttAudioBase64 = wavBase64FromPcm16Base64(audioBase64);
       sttMimeType = 'audio/wav';
-      tmpPath = path.join(os.tmpdir(), `trainer-voice-${Date.now()}.wav`);
-    } else {
-      const ext = mimeType?.includes('ogg') ? 'ogg' : mimeType?.includes('mp4') ? 'm4a' : mimeType?.includes('wav') ? 'wav' : 'webm';
-      tmpPath = path.join(os.tmpdir(), `trainer-voice-${Date.now()}.${ext}`);
     }
     const buf = Buffer.from(sttAudioBase64, 'base64');
     if (buf.length < 512) {
       return res.status(400).json({ error: 'Слишком короткое голосовое сообщение. Запишите ещё раз.' });
     }
-    await fs.promises.writeFile(tmpPath, buf);
     console.log(`[trainer] voice-message audio saved session=${session.id} bytes=${buf.length} mime=${sttMimeType}`);
 
-    let managerText = '';
-    try {
-      console.log(`[trainer] STT start session=${session.id}`);
-      managerText = await withCostContext(
+    console.log(`[trainer] STT start session=${session.id}`);
+    const managerText = await timer.measure('sttMs', () => withCostContext(
         { entityType: 'trainer_session', entityId: session.id, stage: 'manager_stt' },
-        () => withTimeout(transcribeVoiceFast(tmpPath), 30000, 'Trainer STT'),
-      );
-      console.log(`[trainer] STT done session=${session.id} chars=${managerText.length}`);
-    } finally {
-      fs.promises.unlink(tmpPath).catch(() => {});
-    }
+        () => withTimeout(transcribeTrainerVoice(sttAudioBase64, sttMimeType), 30000, 'Trainer STT'),
+      ));
+    console.log(`[trainer] STT done session=${session.id} chars=${managerText.length}`);
     if (!managerText.trim()) {
       return res.status(400).json({ error: 'Не удалось распознать речь. Говорите чуть громче и дольше, затем попробуйте снова.' });
     }
@@ -4411,8 +4458,9 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
       ttsVoice,
       managerAudioBase64: sttAudioBase64,
       managerAudioMimeType: sttMimeType,
+      timer,
     });
-    console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt}`);
+    console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt} timings=${JSON.stringify(out.timings)}`);
     res.json(out);
   } catch (error) {
     console.error('trainer/session/voice-message error:', error);
@@ -4435,6 +4483,7 @@ app.get('/api/trainer/session/:id/report', async (req, res) => {
       include: { scenario: { select: { id: true, name: true } } },
     });
     if (!session) return res.status(404).json({ error: 'Тренировка не найдена.' });
+    const recording = await trainerRecordingService.forReport(session.id, session.status);
     if (
       (session.status === 'completed' || session.status === 'failed')
       && (!session.evaluationJson?.trim() || session.evaluationJson === '{}' || session.evaluationJson === 'null')
@@ -4445,6 +4494,7 @@ app.get('/api/trainer/session/:id/report', async (req, res) => {
     res.json({
       item: {
         ...trainerSessionSummary(session),
+        ...recording,
         caseContext: safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {}),
         transcript: safeArray(session.transcriptJson),
         dimensions: safeJsonParseLocal<Record<string, unknown> | null>(session.dimensionsJson, null),
@@ -4812,6 +4862,87 @@ app.post('/api/admin/call-settings/plans/:id/schedule/:callId/recreate', (req, r
   });
 });
 
+const trainerAutoTesting = createTrainerAutoTesting({
+  canRun: () => Boolean(config.openaiApiKey || config.proxyApiKey),
+  async loadBuiltins() {
+    const voices = await prisma.callCustomerVoice.findMany({ where: { isEnabled: true, isDeleted: false }, select: { id: true, name: true, elevenLabsCode: true, openaiCode: true }, orderBy: { id: 'asc' } });
+    return trainerBuiltinSources(voices);
+  },
+  async loadSource(req, id) {
+    const session = await prisma.trainerSession.findFirst({ where: { AND: [{ id }, buildTrainerSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] }, include: { scenario: { select: { id: true, name: true } } } });
+    if (!session) throw new Error('Тренировка-образец не найдена или недоступна.');
+    const context = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+    if (!context.scenario || !context.clientProfile) throw new Error('В образце нет сохранённого сценария и профиля клиента.');
+    delete context.runtime; delete context.dialogTitle;
+    return { id: session.id, name: `${session.scenario?.name || 'Сценарий'} · ${String((context.clientProfile as Record<string, unknown>).name || 'Клиент')}`, companyId: session.companyId, context,
+      female: resolveTrainerVoiceSelection(context, config.ttsProvider).fallbackVoice === 'female' };
+  },
+  async listSources(req) {
+    const sessions = await prisma.trainerSession.findMany({ where: { AND: [buildTrainerSessionScopeWhere(req.authAccount, getActiveAdminRole(req)), ...(req.query.holdingId ? [{ companyId: String(req.query.holdingId) }] : [])] }, orderBy: { startedAt: 'desc' }, take: 100, include: { scenario: { select: { id: true, name: true } } } });
+    return sessions.map((session) => {
+      const context = safeJsonParseLocal<Record<string, unknown>>(session.caseContextJson, {});
+      return { id: session.id, name: `${session.scenario?.name || 'Сценарий'} · ${String((context.clientProfile as Record<string, unknown> | undefined)?.name || 'Клиент')} · ${session.startedAt.toLocaleDateString('ru-RU')}`, companyId: session.companyId, female: resolveTrainerVoiceSelection(context, config.ttsProvider).fallbackVoice === 'female' };
+    });
+  },
+  async createSession(source, id, signal) {
+    const original = isTrainerBuiltinSource(source.id) ? createBuiltinTrainerSimulationRow(id, source.context)
+      : await prisma.trainerSession.findUniqueOrThrow({ where: { id: source.id }, include: { scenario: { select: { id: true, name: true } } } });
+    const store = new TrainerSimulationStore({ ...original, id, status: 'in_progress', caseContextJson: JSON.stringify(source.context), transcriptJson: '[]', elevenLabsConversationId: null, evaluationJson: null, score: null, finalPoints: null, failureReason: null, startedAt: new Date(), completedAt: null }, signal);
+    const stop = () => closeElevenLabsAgentConversation(id);
+    signal.addEventListener('abort', stop, { once: true });
+    return {
+      async initialize() { await withCostContext({ entityType: 'trainer_autotest', entityId: id, stage: 'initialization' }, () => initializeTrainerDialog({ sessionId: id, replyMode: 'text+voice', ttsVoice: 'male', simulation: store })); },
+      async voice(audio) {
+        const release = claimTrainerTurn(trainerTurnTasks, id);
+        try {
+          const timer = createTrainerTurnTimer();
+          const text = await timer.measure('sttMs', () => withTimeout(transcribeTrainerVoice(audio.audioBase64, audio.mimeType), 30000, 'Trainer STT'));
+          if (!text.trim()) throw new Error('Голосовое не распознано.');
+          const result = await runTrainerSessionTurn({ sessionId: id, managerText: text, durationSec: null, replyMode: 'text+voice', ttsVoice: 'male', managerAudioBase64: audio.audioBase64, managerAudioMimeType: audio.mimeType, timer, simulation: store });
+          return { endConversation: result.endConversation };
+        } finally { release(); }
+      },
+      snapshot() { return { transcript: safeArray<TrainerTestTurn>(store.row.transcriptJson), voices: [...store.voices], expectedVoice: resolveTrainerVoiceSelection(source.context, config.ttsProvider) }; },
+      close() { store.closed = true; signal.removeEventListener('abort', stop); closeElevenLabsAgentConversation(id); },
+    };
+  },
+  synthesize: synthesizeTrainerFixture,
+});
+app.get('/api/admin/auto-testing/trainer/sources', (req, res) => { void trainerAutoTesting.handle(req, res, 'sources'); });
+app.post('/api/admin/auto-testing/trainer/runs', (req, res) => { void trainerAutoTesting.handle(req, res, 'start'); });
+app.get('/api/admin/auto-testing/trainer/runs', (req, res) => { void trainerAutoTesting.handle(req, res, 'history'); });
+app.get('/api/admin/auto-testing/trainer/runs/:runId', (req, res) => { void trainerAutoTesting.handle(req, res, 'get'); });
+app.get('/api/admin/auto-testing/trainer/runs/:runId/compare', (req, res) => { void trainerAutoTesting.handle(req, res, 'compare'); });
+app.post('/api/admin/auto-testing/trainer/runs/:runId/live-ticket', (req, res) => { void trainerAutoTesting.handle(req, res, 'ticket'); });
+app.post('/api/admin/auto-testing/trainer/runs/:runId/cancel', (req, res) => { void trainerAutoTesting.handle(req, res, 'cancel'); });
+app.get('/api/admin/auto-testing/trainer/runs/:runId/audio/:caseId', (req, res) => { void trainerAutoTesting.handle(req, res, 'audio'); });
+
+app.get('/api/admin/auto-testing/catalog', (req, res) => {
+  void handleAutoTestingCatalog(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.post('/api/admin/auto-testing/call-plan/runs', (req, res) => {
+  void handleStartCallPlanAutoTest(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/auto-testing/call-plan/runs', (req, res) => {
+  void handleListRealtimeRegressions(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/auto-testing/call-plan/runs/:runId', (req, res) => {
+  void handleGetRealtimeRegression(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/auto-testing/call-plan/runs/:runId/compare', (req, res) => {
+  void handleCompareRealtimeRegressions(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.post('/api/admin/auto-testing/call-plan/runs/:runId/live-ticket', (req, res) => {
+  void handleAutoTestingLiveTicket(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.post('/api/admin/auto-testing/call-plan/runs/:runId/cancel', (req, res) => {
+  void handleCancelRealtimeRegression(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+app.get('/api/admin/auto-testing/call-plan/runs/:runId/audio/:caseId', (req, res) => {
+  void handleRegressionAudio(req, res).catch((error) => res.status(500).json({ error: String(error) }));
+});
+
+// Legacy URLs/reports remain readable; new UI starts the production-call target.
 app.post('/api/admin/realtime-test/regressions', (req, res) => {
   void handleStartRealtimeRegression(req, res).catch((error) => res.status(500).json({ error: String(error) }));
 });
@@ -9265,6 +9396,7 @@ async function buildTrainerAuditDetailItem(session: {
   company?: { id: string; name: string } | null;
   scenario?: { id: string; name: string } | null;
 }) {
+  const recording = await trainerRecordingService.forReport(session.id, session.status);
   let evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
   const score = scoreFromTrainerEvaluation(evaluation, session.score);
   const planCriteria = extractPlanCriteriaEvaluation(evaluation);
@@ -9392,8 +9524,20 @@ async function buildTrainerAuditDetailItem(session: {
     assignedBy: null,
     failReason: session.failureReason ? getFailureReasonLabel(session.failureReason) : null,
     unifiedReport,
+    ...recording,
   };
 }
+
+// The same scope as the trainer report applies to playback, status and download.
+// Staff can only access their own sessions; admins remain company/dealer scoped.
+app.get('/api/admin/trainer-recordings/:sessionId/:action?', createTrainerRecordingHandler({
+  findScopedSession: (req, id) => prisma.trainerSession.findFirst({
+      where: { AND: [{ id }, buildTrainerSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] },
+      select: { id: true, status: true },
+  }),
+  forReport: (id, status) => trainerRecordingService.forReport(id, status),
+  recordingPath: trainerRecordingPath,
+}));
 
 app.get('/api/admin/audits/:id', async (req, res) => {
   try {
@@ -9958,6 +10102,7 @@ export function startServer(): Promise<void> {
     };
 
     function attachVoiceStream(server: http.Server | https.Server): void {
+      const upgradeAutoTesting = createAutoTestingUpgradeHandler((id, ownerId, target) => target === 'trainer' ? trainerAutoTesting.load(id, ownerId) : loadOwnedRegressionRun(id, ownerId));
       const wss = new WebSocketServer({ noServer: true });
       wss.on('connection', (ws, request) => {
         if (request.url?.startsWith('/voice/openai-realtime')) {
@@ -9978,6 +10123,7 @@ export function startServer(): Promise<void> {
         ws.on('message', (data: Buffer | string) => handleVoiceStreamMessage(ws, data.toString()));
       });
       server.on('upgrade', (request, socket, head) => {
+        if (upgradeAutoTesting(request, socket, head)) return;
         if (
           request.url?.startsWith('/voice/stream')
           || request.url?.startsWith('/voice/openai-realtime')

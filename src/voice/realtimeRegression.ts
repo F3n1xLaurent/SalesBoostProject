@@ -6,7 +6,9 @@ import type WebSocket from 'ws';
 import { config } from '../config';
 import { compatibleChatMaxTokens, openai } from '../lib/openaiClient';
 import { resolveRealtimeTestPlanConfiguration, type RealtimeTestPlanConfiguration } from './callSettingsManagement';
-import { containsTechnicalRealtimeSpeech, createHypothesis2Simulation, hasExplicitHoldInstruction, type Hypothesis2Snapshot } from './cometRealtimeTest';
+import { containsTechnicalRealtimeSpeech, createCallPlanSimulation, createHypothesis2Simulation, hasExplicitHoldInstruction, type Hypothesis2Snapshot } from './cometRealtimeTest';
+import { autoTestingCatalog, callPlanAutoTestConfiguration } from '../testing/autoTestingTargets';
+import { issueAutoTestingTicket, publishAutoTestingRun } from '../testing/autoTestingLive';
 import { fetchElevenLabs } from './elevenLabsHttp';
 import { resolveAgentTtsSettings, type ElevenLabsTtsSettings } from './yandexRealtimeTest';
 import { SimulatedVoxSocket, type SimulationEvent } from './realtimeRegressionAudio';
@@ -21,6 +23,8 @@ export type RegressionCase = {
   checks: RegressionCheck[]; session?: Hypothesis2Snapshot; events?: SimulationEvent[];
   audioFile?: string; error?: string; startedAt?: string; endedAt?: string;
   assessment?: { model: string; finishReason?: string; response?: unknown; error?: string };
+  phase?: 'preparing_audio' | 'connecting' | 'dialogue' | 'assessing' | 'completed' | 'failed';
+  step?: { current: number; total: number };
 };
 export type RegressionRun = {
   id: string; ownerId: string; planId: string; planName: string; model: string;
@@ -30,13 +34,19 @@ export type RegressionRun = {
   selectedCheckIds?: CheckId[];
   parentRunId?: string;
   configurationHash?: string;
-  configuration?: { plan: RealtimeTestPlanConfiguration; tts: ElevenLabsTtsSettings };
+  configuration?: { plan: RealtimeTestPlanConfiguration; tts: ElevenLabsTtsSettings; runtime?: ReturnType<typeof callPlanAutoTestConfiguration> };
   executorPid?: number;
+  target?: 'hypothesis2' | 'call_plan';
+  executionMode?: 'simulation';
 };
 const ROOT = REGRESSION_ROOT;
 const runs = new Map<string, RegressionRun>();
 const aborters = new Map<string, AbortController>();
-export function cancelRegression(id: string): void { aborters.get(id)?.abort(new Error('Тест остановлен пользователем.')); }
+export function cancelRegression(id: string): void {
+  const run = runs.get(id);
+  if (run?.status === 'running') progress(run, 'Останавливаем тест… Сохраняем уже полученные результаты.');
+  aborters.get(id)?.abort(new Error('Тест остановлен пользователем.'));
+}
 const check = (id: CheckId, status: RegressionCheck['status'], ...evidence: string[]): RegressionCheck => ({
   id, title: REGRESSION_CHECKLIST.find(([key]) => key === id)![1], status, evidence,
 });
@@ -59,6 +69,11 @@ async function save(run: RegressionRun): Promise<void> {
   const target = path.join(ROOT, run.id, 'report.json');
   await fs.writeFile(`${target}.tmp`, JSON.stringify(run, null, 2));
   await fs.rename(`${target}.tmp`, target);
+  publishAutoTestingRun(run);
+}
+
+function progress(run: RegressionRun, message: string): void {
+  run.progress = message; aggregate(run); publishAutoTestingRun(run);
 }
 
 async function managerAudio(text: string, voiceId: string, signal: AbortSignal): Promise<Buffer> {
@@ -156,7 +171,7 @@ export function evaluateTransport(scenario: RegressionScenario, session: Hypothe
   return results;
 }
 
-async function judge(scenario: RegressionScenario, plan: RealtimeTestPlanConfiguration, session: Hypothesis2Snapshot, item: RegressionCase): Promise<RegressionCheck[]> {
+async function judge(scenario: RegressionScenario, plan: RealtimeTestPlanConfiguration, session: Hypothesis2Snapshot, item: RegressionCase, signal?: AbortSignal): Promise<RegressionCheck[]> {
   const ids = scenario.checks.filter((id) => !['automation', 'turns', 'interruption', 'audio', 'pronunciation', 'technical'].includes(id));
   if (!ids.length) return [];
   try {
@@ -167,7 +182,7 @@ async function judge(scenario: RegressionScenario, plan: RealtimeTestPlanConfigu
           scope: regressionAssessmentScope(scenario.id), evaluatedRole: 'ai_client',
           transcript: session.transcript.map((turn, turnIndex) => ({ turnIndex, role: turn.role, speaker: turn.role === 'client' ? 'ai_client' : 'manager_fixture', text: turn.text })), tools: session.tools, errors: session.errors }) }],
       response_format: { type: 'json_object' }, ...compatibleChatMaxTokens(config.openaiChatModel, 2400),
-    }, { timeout: 45_000, maxRetries: 0 });
+    }, { timeout: 45_000, maxRetries: 0, signal });
     const parsed = JSON.parse(response.choices[0]?.message?.content ?? '{}');
     item.assessment = { model: config.openaiChatModel, finishReason: response.choices[0]?.finish_reason, response: parsed };
     return parseRegressionAssessment(ids, session.transcript, parsed);
@@ -180,8 +195,10 @@ async function judge(scenario: RegressionScenario, plan: RealtimeTestPlanConfigu
 async function executeCase(run: RegressionRun, item: RegressionCase, scenario: RegressionScenario,
   plan: RealtimeTestPlanConfiguration, tts: ElevenLabsTtsSettings, signal: AbortSignal): Promise<void> {
   item.status = 'running'; item.startedAt = new Date().toISOString();
+  item.phase = 'preparing_audio';
   const vox = new SimulatedVoxSocket();
   let simulation: Awaited<ReturnType<typeof createHypothesis2Simulation>> | undefined;
+  let liveTimer: ReturnType<typeof setInterval> | undefined;
   const stop = () => vox.close();
   signal.addEventListener('abort', stop, { once: true });
   try {
@@ -191,13 +208,26 @@ async function executeCase(run: RegressionRun, item: RegressionCase, scenario: R
     const prepared: Array<{ pcm: Buffer | null; overlapPcm: Buffer | null }> = [];
     for (let i = 0; i < scenario.steps.length; i++) {
       signal.throwIfAborted();
-      run.progress = `${scenario.title}: подготовка аудио ${i + 1}/${scenario.steps.length}`;
+      item.step = { current: i + 1, total: scenario.steps.length };
+      progress(run, `${scenario.title}: подготовка аудио ${i + 1}/${scenario.steps.length}`);
       const step = scenario.steps[i];
       prepared.push({ pcm: step.text ? await managerAudio(step.text, voice, signal) : null,
         overlapPcm: step.overlap ? await managerAudio(step.overlap === 'ack' ? 'Угу.' : 'Подождите, пожалуйста. У меня другой вопрос, я хотел уточнить комплектацию.', voice, signal) : null });
     }
-    simulation = await createHypothesis2Simulation({ ...plan, prompt: plan.prompt + (scenario.persona ? `\n\n${scenario.persona}` : '') }, run.model, vox as unknown as WebSocket, tts);
+    item.phase = 'connecting'; progress(run, `${scenario.title}: подключение к основной цепочке`);
+    const scenarioPlan = { ...plan, prompt: plan.prompt + (scenario.persona ? `\n\n${scenario.persona}` : '') };
+    simulation = run.target === 'call_plan'
+      ? await createCallPlanSimulation(scenarioPlan, vox as unknown as WebSocket, tts)
+      : await createHypothesis2Simulation(scenarioPlan, run.model, vox as unknown as WebSocket, tts);
     const snapshot = simulation.snapshot;
+    item.phase = 'dialogue';
+    let lastLive = '';
+    liveTimer = setInterval(() => {
+      item.session = snapshot(); item.events = vox.events;
+      const signature = JSON.stringify({ transcript: item.session.transcript, tools: item.session.tools,
+        errors: item.session.errors, events: vox.events.length });
+      if (signature !== lastLive) { lastLive = signature; aggregate(run); publishAutoTestingRun(run); }
+    }, 700);
     // A continuous silent microphone is essential for endpoint and interruption timers.
     let streaming = false;
     const silentMic = setInterval(() => { if (!streaming) vox.input(Buffer.alloc(640)); }, 20);
@@ -222,7 +252,8 @@ async function executeCase(run: RegressionRun, item: RegressionCase, scenario: R
           if (!hasOnlyFarewellSteps(scenario.steps.slice(index))) throw new Error('Звонок завершён до проверки содержательных реплик сценария.');
           break;
         }
-        run.progress = `${scenario.title}: реплика ${index + 1}/${scenario.steps.length}`;
+        item.step = { current: index + 1, total: scenario.steps.length };
+        progress(run, `${scenario.title}: реплика ${index + 1}/${scenario.steps.length}`);
         const step = scenario.steps[index];
         // Synthesize before the manager turn; this network time is not dialogue latency.
         const { pcm, overlapPcm } = prepared[index];
@@ -250,7 +281,8 @@ async function executeCase(run: RegressionRun, item: RegressionCase, scenario: R
       }
       if (scenario.id === 'script') {
         for (let i = 0; i < 16 && !vox.hungUp; i++) {
-          run.progress = `${scenario.title}: ответ менеджера ${i + 1}/16`;
+          item.step = { current: i + 1, total: 16 };
+          progress(run, `${scenario.title}: ответ менеджера ${i + 1}/16`);
           const last = [...snapshot().transcript].reverse().find((x) => x.role === 'client')?.text ?? '';
           const text = managerReplyTo(last, plan.subjectTitle ?? 'выбранный автомобиль');
           const pcm = await managerAudio(text, voice, signal);
@@ -265,12 +297,16 @@ async function executeCase(run: RegressionRun, item: RegressionCase, scenario: R
         }
       }
       item.session = snapshot(); item.events = vox.events;
-      item.checks = [...evaluateTransport(scenario, item.session, vox.events), ...await judge(scenario, plan, item.session, item)];
+      item.checks = evaluateTransport(scenario, item.session, vox.events);
+      item.phase = 'assessing'; progress(run, `${scenario.title}: проверка результатов и смысловая оценка`);
+      item.checks.push(...await judge(scenario, plan, item.session, item, signal));
       item.status = item.session.errors.length ? 'failed' : 'completed';
       if (item.session.errors.length) item.error = item.session.errors.join('; ');
+      item.phase = item.status === 'failed' ? 'failed' : 'completed';
     } finally { clearInterval(silentMic); }
   } catch (error) {
     item.status = 'failed'; item.error = error instanceof Error ? error.message : String(error);
+    item.phase = 'failed';
     if (simulation) {
       item.session = simulation.snapshot();
       item.checks = evaluateTransport(scenario, item.session, vox.events);
@@ -280,6 +316,7 @@ async function executeCase(run: RegressionRun, item: RegressionCase, scenario: R
       if (!item.checks.some((x) => x.id === id && x.status === 'fail')) item.checks.push(check(id, 'review', item.error));
     }
   } finally {
+    if (liveTimer) clearInterval(liveTimer);
     item.events = vox.events;
     item.audioFile = `${scenario.id}.wav`;
     try {
@@ -290,17 +327,19 @@ async function executeCase(run: RegressionRun, item: RegressionCase, scenario: R
       if (simulation) item.session = simulation.snapshot();
     }
     item.endedAt = new Date().toISOString();
+    aggregate(run); publishAutoTestingRun(run);
   }
 }
 
 export async function startRegression(plan: RealtimeTestPlanConfiguration, ownerId: string, model: string, selected?: string[],
-  options: { checkIds?: string[]; parentRunId?: string } = {}): Promise<RegressionRun> {
+  options: { checkIds?: string[]; parentRunId?: string; target?: 'hypothesis2' | 'call_plan' } = {}): Promise<RegressionRun> {
   if (aborters.size) throw new Error('Другой регрессионный тест уже выполняется. Дождитесь окончания или остановите его.');
   if (!config.openaiRealtimeApiKey || !config.elevenLabsApiKey) throw new Error('Не заданы ключи OpenAI Realtime или ElevenLabs.');
   if (!['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini'].includes(model)) throw new Error('Неподдерживаемая Realtime-модель.');
   const scenarios = selectRegressionScenarios(plan.subjectTitle ?? 'выбранный автомобиль', { scenarioIds: selected, checkIds: options.checkIds });
   if (!scenarios.length) throw new Error('Не выбраны тестовые сценарии.');
   const run: RegressionRun = { id: randomUUID(), ownerId, planId: plan.planId, planName: plan.planName, model,
+    target: options.target ?? 'hypothesis2', executionMode: 'simulation',
     status: 'running', createdAt: new Date().toISOString(), cases: scenarios.map((s) => ({ id: s.id, title: s.title, status: 'pending', checks: s.checks.map((id) => check(id, 'not_run')) })), checklist: [], progress: 'Подготовка голосов и соединения',
     evaluatorVersion: EVALUATOR_VERSION, selectedCheckIds: options.checkIds as CheckId[] | undefined, parentRunId: options.parentRunId, executorPid: process.pid };
   const controller = new AbortController(); aborters.set(run.id, controller); runs.set(run.id, run);
@@ -309,11 +348,14 @@ export async function startRegression(plan: RealtimeTestPlanConfiguration, owner
   void (async () => {
     try {
       const tts = await resolveAgentTtsSettings();
-      run.configuration = { plan: structuredClone(plan), tts };
-      run.configurationHash = createHash('sha256').update(JSON.stringify({ plan, tts,
+      run.configuration = { plan: structuredClone(plan), tts,
+        ...(run.target === 'call_plan' ? { runtime: callPlanAutoTestConfiguration() } : {}) };
+      run.configurationHash = createHash('sha256').update(JSON.stringify({ plan, tts, target: run.target, model,
         endpointSilenceMs: config.openaiRealtimeEndpointSilenceMs,
         longTurnSilenceMs: config.openaiRealtimeLongTurnEndpointSilenceMs,
         transcriptionModel: config.openaiRealtimeTranscriptionModel,
+        longTurnThresholdMs: config.openaiRealtimeLongTurnThresholdMs,
+        reasoningEffort: config.openaiRealtimeReasoningEffort,
       })).digest('hex');
       await save(run);
       for (let i = 0; i < scenarios.length; i++) {
@@ -347,8 +389,18 @@ async function authorizedRun(req: Request, id = String(req.params.runId ?? '')):
   return run;
 }
 export async function handleStartRealtimeRegression(req: Request, res: Response): Promise<void> {
+  return handleStartRegression(req, res, 'hypothesis2');
+}
+export async function handleStartCallPlanAutoTest(req: Request, res: Response, startRun: typeof startRegression = startRegression): Promise<void> {
+  return handleStartRegression(req, res, 'call_plan', startRun);
+}
+async function handleStartRegression(req: Request, res: Response, target: 'hypothesis2' | 'call_plan', startRun = startRegression): Promise<void> {
   try {
     if (!req.authAccount) { res.status(401).json({ error: 'Требуется авторизация.' }); return; }
+    if (target === 'call_plan') {
+      const current = callPlanAutoTestConfiguration();
+      if (!current.available) { res.status(409).json({ error: current.reason }); return; }
+    }
     const referenceRunId = typeof req.body?.referenceRunId === 'string' ? req.body.referenceRunId : undefined;
     const reference = referenceRunId ? await authorizedRun(req, referenceRunId) : null;
     if (referenceRunId && !reference) { res.status(404).json({ error: 'Исходный тест не найден.' }); return; }
@@ -356,16 +408,32 @@ export async function handleStartRealtimeRegression(req: Request, res: Response)
     const resolvedPlan = await resolveRealtimeTestPlanConfiguration(req, String(req.body?.planId ?? ''));
     // Preserve the sampled client/profile/subject on repeat, even when a plan
     // normally selects them randomly. Recheck current plan access first.
-    const plan = reference?.configuration?.plan ?? resolvedPlan;
+    const plan = target === 'call_plan' ? resolvedPlan : reference?.configuration?.plan ?? resolvedPlan;
     const scenarioIds = req.body?.scenarioIds;
     const checkIds = req.body?.checkIds;
     for (const value of [scenarioIds, checkIds]) {
       if (value !== undefined && (!Array.isArray(value) || value.some((x: unknown) => typeof x !== 'string'))) throw new Error('Список проверок должен содержать идентификаторы.');
     }
-    const model = String(req.body?.model || config.openaiRealtimeModel);
+    const model = target === 'call_plan' ? config.openaiRealtimeModel : String(req.body?.model || config.openaiRealtimeModel);
     if (!['gpt-realtime-2', 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini'].includes(model)) throw new Error('Неподдерживаемая Realtime-модель.');
-    res.status(202).json(await startRegression(plan, req.authAccount.id, model, scenarioIds, { checkIds, parentRunId: reference?.id }));
+    res.status(202).json(await startRun(plan, req.authAccount.id, model, scenarioIds, { checkIds, parentRunId: reference?.id, target }));
   } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : String(error) }); }
+}
+export async function loadOwnedRegressionRun(id: string, ownerId: string): Promise<RegressionRun | null> {
+  const memory = runs.get(id);
+  const run = memory?.ownerId === ownerId ? memory : await loadRegressionReport(id, ownerId);
+  if (run) markInterruptedRun(run);
+  return run;
+}
+export async function handleAutoTestingCatalog(req: Request, res: Response): Promise<void> {
+  if (!req.authAccount) { res.status(401).end(); return; }
+  res.json(autoTestingCatalog());
+}
+export async function handleAutoTestingLiveTicket(req: Request, res: Response): Promise<void> {
+  const run = await authorizedRun(req);
+  if (!run) { res.status(404).json({ error: 'Тест не найден.' }); return; }
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.json({ ticket: issueAutoTestingTicket(run.id, run.ownerId), expiresInMs: 45_000 });
 }
 export async function handleGetRealtimeRegression(req: Request, res: Response): Promise<void> {
   const run = await authorizedRun(req);

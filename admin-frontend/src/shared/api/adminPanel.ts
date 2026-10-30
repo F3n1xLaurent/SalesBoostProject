@@ -180,6 +180,8 @@ export interface AuditDetailItem {
   } | null;
   recordingStatus?: 'pending' | 'processing' | 'ready' | 'failed' | null;
   recordingUrl?: string | null;
+  recordingError?: string | null;
+  recordingDurationSec?: number;
   unifiedReport: {
     version: 'call-report-v1';
     source: 'call' | 'trainer';
@@ -2140,11 +2142,13 @@ export type RealtimeRegressionCheck = { id: string; title: string; status: 'pass
 export type RealtimeRegressionRun = {
   id: string; planId: string; planName: string; model: string; status: 'running' | 'completed' | 'cancelled' | 'failed';
   createdAt: string; progress: string; error?: string; checklist: RealtimeRegressionCheck[];
-  evaluatorVersion?: string; selectedCheckIds?: string[]; parentRunId?: string; configurationHash?: string;
-  cases: Array<{ id: string; title: string; status: string; error?: string; audioFile?: string; checks: RealtimeRegressionCheck[]; session?: RealtimeTestCall }>;
+  evaluatorVersion?: string; selectedCheckIds?: string[]; parentRunId?: string; configurationHash?: string; femaleSourceId?: string;
+  target?: 'hypothesis2' | 'call_plan' | 'trainer'; executionMode?: 'simulation';
+  cases: Array<{ id: string; title: string; status: string; error?: string; audioFile?: string; checks: RealtimeRegressionCheck[]; session?: RealtimeTestCall;
+    phase?: 'preparing_audio' | 'connecting' | 'dialogue' | 'assessing' | 'completed' | 'failed'; step?: { current: number; total: number } }>;
 };
 export type RealtimeRegressionTiming = { samples: number; medianMs: number | null; p95Ms: number | null };
-export type RealtimeRegressionSummary = Pick<RealtimeRegressionRun, 'id' | 'planId' | 'planName' | 'model' | 'status' | 'createdAt' | 'checklist' | 'parentRunId' | 'evaluatorVersion' | 'selectedCheckIds' | 'configurationHash'> & {
+export type RealtimeRegressionSummary = Pick<RealtimeRegressionRun, 'id' | 'planId' | 'planName' | 'model' | 'status' | 'createdAt' | 'checklist' | 'parentRunId' | 'evaluatorVersion' | 'selectedCheckIds' | 'configurationHash' | 'target'> & {
   endedAt?: string; scenarioIds: string[]; casesCompleted: number; casesTotal: number;
   counts: Record<RealtimeRegressionCheck['status'], number>; timing: RealtimeRegressionTiming;
 };

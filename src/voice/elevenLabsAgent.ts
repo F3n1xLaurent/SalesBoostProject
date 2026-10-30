@@ -20,6 +20,7 @@ type AgentConversation = {
   lastEventAt: number | null;
   recentEventTypes: string[];
   lastServerError: string | null;
+  endedByAgent: boolean;
   waiters: Array<{
     resolve: (value: AgentTurnResult) => void;
     reject: (error: Error) => void;
@@ -33,6 +34,7 @@ type AgentConversation = {
 };
 
 const conversations = new Map<string, AgentConversation>();
+const conversationWarmups = new Map<string, Promise<AgentTurnResult>>();
 const TEXT_AGENT_RESPONSE_TIMEOUT_MS = 30_000;
 
 export function isElevenLabsAgentEnabled(): boolean {
@@ -53,6 +55,28 @@ export function closeElevenLabsAgentConversation(sessionId: string): void {
 export function hasElevenLabsAgentConversation(sessionId: string): boolean {
   const conversation = conversations.get(sessionId);
   return Boolean(conversation && conversation.ws.readyState === WebSocket.OPEN);
+}
+
+/** Consume the configured opening in parallel with our own whole-message TTS. */
+export function warmUpElevenLabsAgentConversation(
+  params: Parameters<typeof runElevenLabsAgentTurn>[0],
+): Promise<AgentTurnResult> {
+  const existing = conversationWarmups.get(params.sessionId);
+  if (existing) return existing;
+  const task = runElevenLabsAgentTurn({ ...params, managerText: undefined })
+    .then((opening) => {
+      // If the agent ignored the fixed opening, do not reuse divergent history.
+      if (params.firstMessage && opening.clientMessage.trim() !== params.firstMessage.trim()) {
+        closeElevenLabsAgentConversation(params.sessionId);
+        throw new Error('ElevenLabs opening differs from the trainer greeting');
+      }
+      return opening;
+    })
+    .finally(() => {
+      if (conversationWarmups.get(params.sessionId) === task) conversationWarmups.delete(params.sessionId);
+    });
+  conversationWarmups.set(params.sessionId, task);
+  return task;
 }
 
 async function getConversationUrl(): Promise<string> {
@@ -131,7 +155,7 @@ function completeNextWaiter(conversation: AgentConversation): void {
     audioMimeType: audio.audioMimeType,
     conversationId: conversation.conversationId,
     userTranscript: waiter.userTranscript.trim() || null,
-    endedByAgent: waiter.endedByAgent,
+    get endedByAgent() { return waiter.endedByAgent || conversation.endedByAgent; },
   });
 }
 
@@ -226,6 +250,7 @@ async function getOrCreateConversation(
     lastEventAt: null,
     recentEventTypes: [],
     lastServerError: null,
+    endedByAgent: false,
     waiters: [],
     ready: Promise.resolve(),
   };
@@ -288,11 +313,40 @@ async function getOrCreateConversation(
       ws.send(JSON.stringify({ type: 'pong', event_id: event.ping_event.event_id }));
       return;
     }
+    // A text reply can already be in TTS when a trailing end_call arrives.
+    // Always acknowledge tools and retain termination, even without a waiter.
+    if (event.type === 'client_tool_call') {
+      const toolCall = getClientToolCall(event);
+      if (toolCall?.id) {
+        sendClientToolResult(ws, toolCall.id, {
+          ok: true,
+          handled_by: 'salesboost_trainer',
+          tool_name: toolCall.name,
+        });
+      }
+      if (toolCall?.name === 'end_call' || toolCall?.name === 'end_conversation') {
+        conversation.endedByAgent = true;
+        const activeWaiter = conversation.waiters[0];
+        if (activeWaiter) {
+          activeWaiter.endedByAgent = true;
+          scheduleIdleCompletion(conversation, 250);
+        }
+      }
+      return;
+    }
+    const sessionEnded = isConversationFinalEvent(event.type)
+      && event.type !== 'agent_response_complete' && event.type !== 'end_of_turn';
+    if (sessionEnded) {
+      conversation.endedByAgent = true;
+    }
     const waiter = conversation.waiters[0];
     if (!waiter) return;
     if (event.type === 'agent_response') {
       waiter.text = String(event.agent_response_event?.agent_response || waiter.text || '');
-      scheduleIdleCompletion(conversation);
+      // agent_response is the complete message, unlike agent_chat_response_part.
+      // In text-only mode there is no trailing audio to collect.
+      if (conversation.textOnly && waiter.text.trim()) completeNextWaiter(conversation);
+      else scheduleIdleCompletion(conversation);
       return;
     }
     if (event.type === 'agent_response_correction') {
@@ -311,29 +365,19 @@ async function getOrCreateConversation(
       scheduleIdleCompletion(conversation);
       return;
     }
-    if (event.type === 'client_tool_call') {
-      const toolCall = getClientToolCall(event);
-      if (toolCall?.id) {
-        sendClientToolResult(ws, toolCall.id, {
-          ok: true,
-          handled_by: 'salesboost_trainer',
-          tool_name: toolCall.name,
-        });
-      }
-      if (toolCall?.name === 'end_call' || toolCall?.name === 'end_conversation') {
-        waiter.endedByAgent = true;
-        scheduleIdleCompletion(conversation, 250);
-      }
-      return;
-    }
     if (isConversationFinalEvent(event.type)) {
-      waiter.endedByAgent = waiter.endedByAgent || event.type !== 'agent_response_complete';
-      completeNextWaiter(conversation);
+      waiter.endedByAgent = waiter.endedByAgent || sessionEnded;
+      // A trailing completion of the previous message may arrive after the
+      // browser has already submitted another answer. It must not resolve the
+      // new, still-empty waiter or turn it into an empty fallback reply.
+      if (sessionEnded || waiter.text.trim() || waiter.audioChunks.length > 0) {
+        completeNextWaiter(conversation);
+      }
     }
   });
 
   ws.on('close', () => {
-    conversations.delete(sessionId);
+    if (conversations.get(sessionId) === conversation) conversations.delete(sessionId);
     for (const waiter of conversation.waiters.splice(0)) {
       clearTimeout(waiter.timeout);
       if (waiter.idleTimeout) clearTimeout(waiter.idleTimeout);
@@ -370,6 +414,11 @@ export async function runElevenLabsAgentTurn(params: {
   firstMessage?: string | null;
   elevenLabsVoiceId?: string | null;
 }): Promise<AgentTurnResult> {
+  if (params.managerText?.trim()) {
+    // The opening may still be connecting while its separately generated voice
+    // is already available in the browser. Never send an answer to its waiter.
+    await conversationWarmups.get(params.sessionId)?.catch(() => undefined);
+  }
   const conversation = await getOrCreateConversation(
     params.sessionId,
     params.prompt,

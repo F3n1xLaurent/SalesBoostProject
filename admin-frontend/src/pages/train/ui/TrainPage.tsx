@@ -15,6 +15,7 @@ import {
   type TrainerProfile,
   type TrainerScenario,
   type TrainerSessionSummary,
+  type TrainerTurnTimings,
 } from '../../../shared/api/trainer';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 import { buildTrainerSessionPath, parseAdminPath } from '../../../shared/routing/adminRoutes';
@@ -38,6 +39,7 @@ type ChatMessage = {
   durationSec?: number | null;
   textFallback?: string;
   autoPlay?: boolean;
+  timings?: TrainerTurnTimings;
 };
 
 const difficultyLabels: Record<string, string> = {
@@ -912,6 +914,21 @@ function AudioBubble(props: { message: ChatMessage; onPlayed?: () => void }) {
       ) : (
         <div className="train-voice-pending">{props.message.textFallback || 'Голосовое сообщение'}</div>
       )}
+      {props.message.role === 'client' && props.message.timings && (
+        <details className="train-voice-timings">
+          <summary>Подготовка ответа: {((props.message.timings.roundTripMs ?? props.message.timings.totalMs) / 1000).toFixed(1)} с</summary>
+          {([
+            ['initializationMs', 'Подготовка сессии'],
+            ['sttMs', 'Распознавание'],
+            ['textMs', 'Ответ агента'],
+            ['ttsMs', 'Озвучка целиком'],
+            ['persistenceMs', 'Сохранение'],
+            ['transferAndParsingMs', 'Передача и разбор ответа'],
+          ] as const).map(([key, label]) => props.message.timings?.[key] != null
+            ? <div key={key}>{label}: {props.message.timings[key]} мс</div>
+            : null)}
+        </details>
+      )}
     </div>
   );
 }
@@ -940,6 +957,7 @@ function SessionPreview(props: {
         durationSec: turn.durationSec ?? estimateDurationFromAudioUrl(audioDataUrl(turn.audioBase64, turn.audioMimeType)),
         textFallback: turn.text || (turn.role === 'client' ? 'Сообщение клиента' : 'Сообщение менеджера'),
         autoPlay: props.session.status === 'in_progress' && index === lastClientIndex,
+        timings: turn.timings,
       }));
     }
     const first = props.initialMessage;
@@ -1093,6 +1111,7 @@ function SessionPreview(props: {
           durationSec: clientAudioUrl ? estimateDurationFromAudioUrl(clientAudioUrl) : null,
           textFallback: data.clientMessage,
           autoPlay: Boolean(clientAudioUrl),
+          timings: data.timings,
         }
         : message));
       if (data.endConversation) {

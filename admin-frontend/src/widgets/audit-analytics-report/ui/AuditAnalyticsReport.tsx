@@ -240,7 +240,8 @@ function CallRecordingPlayer({
   }, [recordingUrl]);
 
   const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
-  const downloadUrl = canDownload && recordingUrl.startsWith('/api/admin/call-recordings/')
+  const isTrainerRecording = recordingUrl.startsWith('/api/admin/trainer-recordings/');
+  const downloadUrl = canDownload && (recordingUrl.startsWith('/api/admin/call-recordings/') || isTrainerRecording)
     ? `${recordingUrl}/download`
     : null;
 
@@ -285,10 +286,10 @@ function CallRecordingPlayer({
       if (blob.size === 0) throw new Error('Recording is empty');
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
-      const encodedCallId = recordingUrl.slice('/api/admin/call-recordings/'.length);
+      const encodedCallId = recordingUrl.slice((isTrainerRecording ? '/api/admin/trainer-recordings/' : '/api/admin/call-recordings/').length);
       const callId = decodeURIComponent(encodedCallId).replace(/[^A-Za-z0-9_-]/g, '_') || 'recording';
       anchor.href = objectUrl;
-      anchor.download = `call-${callId}.mp3`;
+      anchor.download = `${isTrainerRecording ? 'trainer' : 'call'}-${callId}.mp3`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -304,8 +305,8 @@ function CallRecordingPlayer({
     <section className="sa-call-report-recording">
       <div className="sa-call-report-recording-copy">
         <div className="sa-call-report-recording-copy-text">
-          <strong>Запись звонка</strong>
-          <span>{loading ? 'Загружаем аудио…' : error ? 'Не удалось загрузить запись' : downloadError ? 'Не удалось скачать запись' : 'Можно прослушать разговор целиком'}</span>
+          <strong>{isTrainerRecording ? 'Запись тренировки' : 'Запись звонка'}</strong>
+          <span>{loading ? 'Загружаем аудио…' : error ? 'Не удалось загрузить запись' : downloadError ? 'Не удалось скачать запись' : isTrainerRecording ? 'Собрана из голосовых сообщений; паузы между репликами сокращены' : 'Можно прослушать разговор целиком'}</span>
         </div>
         {downloadUrl ? (
           <button
@@ -377,6 +378,72 @@ function CallRecordingPlayer({
       </div>
     </section>
   );
+}
+
+function TrainerRecordingPlayer({ detail }: { detail: AuditDetailItem }) {
+  const [info, setInfo] = useState<Pick<AuditDetailItem, 'recordingStatus' | 'recordingUrl' | 'recordingError'>>(detail);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const sessionId = detail.id.replace(/^trainer-/, '');
+  useEffect(() => {
+    setInfo({ recordingStatus: detail.recordingStatus, recordingUrl: detail.recordingUrl, recordingError: detail.recordingError });
+    setRequestError(null);
+    if (detail.recordingStatus === 'ready' || detail.recordingStatus === 'failed') return;
+    const controller = new AbortController();
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = window.setTimeout(() => {
+      controller.abort();
+      setRequestError('Сборка занимает больше времени. Можно проверить статус ещё раз — отчёт уже доступен.');
+    }, 180_000);
+    async function poll() {
+      try {
+        const response = await apiFetch(`/api/admin/trainer-recordings/${encodeURIComponent(sessionId)}/status`, { signal: controller.signal });
+        if (!response.ok) throw new Error('Не удалось проверить готовность записи.');
+        const next = await response.json();
+        if (cancelled || controller.signal.aborted) return;
+        setInfo(next);
+        if (next.recordingStatus === 'ready' || next.recordingStatus === 'failed' || next.recordingStatus == null) {
+          window.clearTimeout(deadline);
+          return;
+        }
+        pollTimer = window.setTimeout(() => { void poll(); }, 1500);
+      } catch (error) {
+        if (!cancelled && !controller.signal.aborted) {
+          window.clearTimeout(deadline);
+          setRequestError(error instanceof Error ? error.message : 'Не удалось загрузить запись.');
+        }
+      }
+    }
+    void poll();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(deadline);
+      window.clearTimeout(pollTimer);
+    };
+  }, [sessionId, detail.recordingStatus, detail.recordingUrl, detail.recordingError, reload]);
+
+  if (info.recordingStatus === 'ready' && info.recordingUrl) {
+    return <CallRecordingPlayer recordingUrl={info.recordingUrl} canDownload />;
+  }
+  return (
+    <section className="sa-call-report-recording">
+      <div className="sa-call-report-recording-copy">
+        <div className="sa-call-report-recording-copy-text">
+          <strong>Запись тренировки</strong>
+          <span>{requestError || info.recordingError || 'Собираем единое аудио из голосовых сообщений… Отчёт можно читать независимо от готовности записи.'}</span>
+        </div>
+        {requestError && <button type="button" onClick={() => setReload((value) => value + 1)}>Проверить ещё раз</button>}
+      </div>
+    </section>
+  );
+}
+
+function AuditRecording({ detail, canDownloadCall }: { detail: AuditDetailItem; canDownloadCall: boolean }) {
+  if (detail.type === 'trainer') return <TrainerRecordingPlayer detail={detail} />;
+  return detail.recordingStatus === 'ready' && detail.recordingUrl
+    ? <CallRecordingPlayer recordingUrl={detail.recordingUrl} canDownload={canDownloadCall} /> : null;
 }
 
 export function AuditAnalyticsReport({
@@ -562,9 +629,7 @@ export function AuditAnalyticsReport({
             </div>
           </section>
 
-          {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
-            <CallRecordingPlayer recordingUrl={detail.recordingUrl} canDownload={canDownloadRecording} />
-          )}
+          <AuditRecording detail={detail} canDownloadCall={canDownloadRecording} />
 
           <section className="sa-call-report-block">
             <h2 className="sa-section-title">Категории</h2>
@@ -772,9 +837,7 @@ export function AuditAnalyticsReport({
         </>
       ) : (
         <>
-          {detail.type === 'call' && detail.recordingStatus === 'ready' && detail.recordingUrl && (
-            <CallRecordingPlayer recordingUrl={detail.recordingUrl} canDownload={canDownloadRecording} />
-          )}
+          <AuditRecording detail={detail} canDownloadCall={canDownloadRecording} />
           <section className="sa-call-report-section">
             <h2 className="sa-section-title">Отчёт</h2>
             <p className="sa-call-report-section-desc">

@@ -344,29 +344,26 @@ export async function createHypothesis2Simulation(
   model: string,
   vox: WebSocket,
   tts: ElevenLabsTtsSettings,
+  options: { production?: boolean } = {},
 ) {
   if (!COMET_REALTIME_TEST_MODELS.has(model)) throw new Error('Неподдерживаемая Realtime-модель.');
   const at = isoNow();
-  const session: CometRealtimeTestSession = {
-    callId: randomUUID(), token: randomUUID(), provider: 'openai', model,
-    planId: plan.planId, planName: plan.planName, phone: 'simulation', prompt: plan.prompt,
-    subjectTitle: plan.subjectTitle,
-    elevenLabsVoiceId: plan.elevenLabsVoiceId || tts.defaultVoiceId || config.elevenLabsVoiceId || '',
-    elevenLabsTts: tts, status: 'starting', createdAt: at, startedAt: at, connectedAt: at,
-    endedAt: null, providerConnectedAt: null, providerReadyAt: null, providerWarmupDoneAt: null,
-    firstSpeechStoppedAt: null, firstTextAfterSpeechAt: null, firstAudioAfterSpeechAt: null,
-    transcript: [], tools: [], ivrDetected: false, ivrPath: [], connectionState: 'awaiting_answer', errors: [],
-  };
+  const session = createPhoneRealtimeSession({
+    callId: randomUUID(), phone: '', provider: 'openai', model, plan, tts,
+    voiceId: plan.elevenLabsVoiceId || tts.defaultVoiceId || config.elevenLabsVoiceId || '',
+    production: options.production,
+  });
+  session.phone = 'simulation';
+  session.startedAt = at;
+  session.connectedAt = at;
   if (!config.openaiRealtimeApiKey || !config.elevenLabsApiKey || !session.elevenLabsVoiceId) {
     throw new Error('Для стенда нужны ключи OpenAI Realtime, ElevenLabs и голос выбранного плана.');
   }
   sessions.set(session.callId, session);
   try {
-    prepareRealtimeProviders(session);
-    if (!await preparedCometConnections.get(session.callId)!.waitUntilReady(15_000)) {
-      throw new Error(session.errors.join('; ') || 'OpenAI Realtime не создал сессию.');
-    }
-    handleCometRealtimeTestSocket(vox, `/voice/comet-realtime-test?call_id=${session.callId}&token=${session.token}`);
+    await preparePhoneRealtimeSession(session);
+    const route = session.production ? '/voice/openai-realtime' : '/voice/comet-realtime-test';
+    handleCometRealtimeTestSocket(vox, `${route}?call_id=${session.callId}&token=${session.token}`);
     session.status = 'ready';
     return {
       snapshot: () => publicSession(session),
@@ -383,6 +380,11 @@ export async function createHypothesis2Simulation(
     sessions.delete(session.callId);
     throw error;
   }
+}
+
+/** Main plan-call engine/configuration, but no dialing, jobs or call analytics. */
+export function createCallPlanSimulation(plan: RealtimeTestPlanConfiguration, vox: WebSocket, tts: ElevenLabsTtsSettings) {
+  return createHypothesis2Simulation(plan, config.openaiRealtimeModel, vox, tts, { production: true });
 }
 
 export function handleCometRealtimeTestWebhook(req: Request, res: Response): void {

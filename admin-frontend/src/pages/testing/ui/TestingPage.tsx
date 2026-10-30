@@ -4,10 +4,14 @@ import { fetchCallPlans, fetchHoldings, type CallPlanItem, type HoldingItem } fr
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { YandexRealtimeTestPage } from './YandexRealtimeTestPage';
+import { AutoTestingPage } from './AutoTestingPage';
+import { parseTestingTab, testingTabSearch } from '../model/testingTabs';
+import './testing-page.css';
 
 export function TestingPage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const tab = parseTestingTab(location.search);
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [holdingsLoading, setHoldingsLoading] = useState(true);
   const [holdingError, setHoldingError] = useState<string | null>(null);
@@ -53,6 +57,18 @@ export function TestingPage() {
   return (
     <div>
       <h1 className="sa-page-title">Тестирование</h1>
+      <div className="testing-tabs" role="tablist" aria-label="Раздел тестирования">
+        {([['hypotheses', 'Гипотезы'], ['autotesting', 'Автотестирование']] as const).map(([id, label]) =>
+          <button key={id} id={`testing-tab-${id}`} type="button" role="tab" aria-selected={tab === id}
+            tabIndex={tab === id ? 0 : -1} aria-controls={`testing-panel-${id}`}
+            onKeyDown={(event) => {
+              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              event.preventDefault();
+              const next = event.key === 'Home' ? 'hypotheses' : event.key === 'End' ? 'autotesting' : tab === 'hypotheses' ? 'autotesting' : 'hypotheses';
+              navigate({ pathname: '/testing', search: testingTabSearch(location.search, next) });
+              document.getElementById(`testing-tab-${next}`)?.focus();
+            }} onClick={() => navigate({ pathname: '/testing', search: testingTabSearch(location.search, id) })}>{label}</button>)}
+      </div>
       <div className="sa-toolbar sa-toolbar-split sa-holdings-toolbar">
         <div className="sa-toolbar-filters">
           <HoldingSelectPicker holdings={holdings} value={selectedHoldingId} onChange={setSelectedHoldingId}
@@ -60,8 +76,14 @@ export function TestingPage() {
         </div>
       </div>
       {error && <div className="sa-batch-live-error" style={{ marginBottom: 12 }} role="alert">{error}</div>}
-      <YandexRealtimeTestPage plans={currentPlans ? planState.plans : []}
-        loading={holdingsLoading || (hasHolding && (!currentPlans || planState.loading))} />
+      <section role="tabpanel" id="testing-panel-hypotheses" aria-labelledby="testing-tab-hypotheses" hidden={tab !== 'hypotheses'}>
+        <YandexRealtimeTestPage plans={currentPlans ? planState.plans : []}
+          loading={holdingsLoading || (hasHolding && (!currentPlans || planState.loading))} />
+      </section>
+      <section role="tabpanel" id="testing-panel-autotesting" aria-labelledby="testing-tab-autotesting" hidden={tab !== 'autotesting'}>
+        <AutoTestingPage holdingId={hasHolding ? selectedHoldingId : undefined} plans={currentPlans ? planState.plans : []}
+          loading={holdingsLoading || (hasHolding && (!currentPlans || planState.loading))} />
+      </section>
     </div>
   );
 }

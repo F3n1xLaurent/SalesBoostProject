@@ -89,6 +89,18 @@ export interface TrainerDialogMessage {
   createdAt?: string;
   audioBase64?: string | null;
   audioMimeType?: string | null;
+  timings?: TrainerTurnTimings;
+}
+
+export interface TrainerTurnTimings {
+  initializationMs?: number;
+  sttMs?: number;
+  textMs?: number;
+  ttsMs?: number;
+  persistenceMs?: number;
+  totalMs: number;
+  roundTripMs?: number;
+  transferAndParsingMs?: number;
 }
 
 export interface TrainerInitialMessage {
@@ -108,6 +120,7 @@ export interface TrainerTurnResponse {
   result: Record<string, unknown> | null;
   session: TrainerSessionSummary;
   transcript: TrainerDialogMessage[];
+  timings?: TrainerTurnTimings;
 }
 
 export async function fetchTrainerProfile(): Promise<TrainerProfile> {
@@ -194,9 +207,21 @@ export async function sendTrainerVoiceMessage(id: string, payload: {
   mimeType: string;
   durationSec: number;
 }): Promise<TrainerTurnResponse> {
-  return apiJson(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/voice-message`, {
+  const startedAt = performance.now();
+  const data = await apiJson<TrainerTurnResponse>(`${API_BASE}/api/trainer/session/${encodeURIComponent(id)}/voice-message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, replyMode: 'text+voice' }),
   });
+  const roundTripMs = Math.round(performance.now() - startedAt);
+  return data.timings ? {
+    ...data,
+    timings: {
+      ...data.timings,
+      roundTripMs,
+      // Includes upload, server queue/serialization, download and JSON parsing;
+      // this is not a ping measurement or the time to actual speaker playback.
+      transferAndParsingMs: Math.max(0, roundTripMs - data.timings.totalMs),
+    },
+  } : data;
 }

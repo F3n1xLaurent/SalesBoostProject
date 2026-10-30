@@ -1,33 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { cancelRealtimeRegression, compareRealtimeRegressions, fetchRealtimeRegression, fetchRealtimeRegressionHistory, fetchRegressionAudio, startRealtimeRegression,
-  type RealtimeRegressionCheck, type RealtimeRegressionRun, type RealtimeRegressionHistory, type RealtimeRegressionSummary,
+import React, { useEffect, useMemo, useState } from 'react';
+import { type RealtimeRegressionRun, type RealtimeRegressionHistory, type RealtimeRegressionSummary,
   type RealtimeRegressionComparison, type RealtimeRegressionSelection } from '../../../shared/api/adminPanel';
+import { autoTestingClient, watchCallPlanAutoTest,
+  type AutoTestingConnection } from '../../../shared/api/autoTesting';
+import { timingLabel } from '../model/regressionReport';
+import { RegressionReport } from './RegressionReport';
+import { RunIdentity } from './RunIdentity';
 
-const labels = { pass: 'Пройдено', fail: 'Ошибка', review: 'Нужно проверить', not_run: 'Не проверено' };
 const dateLabel = (value: string) => new Date(value).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
-const timingLabel = (value: number | null) => value == null ? '—' : `${value} мс`;
 const runLabel = (item: { createdAt: string; model: string }) => `${dateLabel(item.createdAt)} · ${item.model}`;
-function Checks({ items, onTest, disabled }: { items: RealtimeRegressionCheck[]; onTest?: (id: string) => void; disabled?: boolean }) {
-  return <div style={{ display: 'grid', gap: 8 }}>{items.map((item, index) => <div key={`${item.id}-${index}`} style={{ borderBottom: '1px solid var(--sa-border, #ddd)', padding: '8px 0' }}>
-    <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
-      <span><strong style={{ color: item.status === 'fail' ? '#b42318' : item.status === 'pass' ? '#18794e' : 'inherit' }}>{labels[item.status]}</strong> · {item.title}</span>
-      {onTest && <button type="button" className="sa-btn" disabled={disabled} onClick={() => onTest(item.id)}>Проверить пункт</button>}
-    </div>
-    {item.evidence.map((text, i) => <div key={i} className="sa-meta" style={{ marginTop: 4 }}>{text}</div>)}
-  </div>)}</div>;
-}
 
-function Recording({ runId, caseId }: { runId: string; caseId: string }) {
-  const [url, setUrl] = useState('');
-  const [error, setError] = useState('');
-  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
-  return <div style={{ marginTop: 8 }}>{url ? <audio controls src={url} style={{ width: '100%', maxWidth: 600 }} />
-    : <button type="button" className="sa-btn" onClick={() => void fetchRegressionAudio(runId, caseId).then((blob) => setUrl(URL.createObjectURL(blob))).catch((e) => setError(String(e)))}>Прослушать запись</button>}
-    {error && <div className="sa-batch-live-error">{error}</div>}</div>;
-}
-
-export function RealtimeRegressionPanel({ planId, model, disabled }: { planId: string; model: string; disabled: boolean }) {
-  const [run, setRun] = useState<RealtimeRegressionRun | null>(null);
+export function RealtimeRegressionPanel({ planId, model, disabled, initialRun, onSelectRun, target = 'call_plan', femaleSourceId }: {
+  planId: string; model: string; disabled: boolean; initialRun?: RealtimeRegressionRun; onSelectRun?: (run: RealtimeRegressionRun) => void;
+  target?: 'call_plan' | 'trainer'; femaleSourceId?: string;
+}) {
+  const { fetchRun: fetchRealtimeRegression, history: fetchRealtimeRegressionHistory, compare: compareRealtimeRegressions, cancel: cancelRealtimeRegression, start: startTest } = useMemo(() => autoTestingClient(target), [target]);
+  const [run, setRun] = useState<RealtimeRegressionRun | null>(initialRun ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [history, setHistory] = useState<RealtimeRegressionHistory | null>(null);
@@ -35,31 +23,41 @@ export function RealtimeRegressionPanel({ planId, model, disabled }: { planId: s
   const [comparison, setComparison] = useState<RealtimeRegressionComparison | null>(null);
   const [mode, setMode] = useState<'all' | 'checks' | 'scenarios'>('all');
   const [selected, setSelected] = useState<string[]>([]);
+  const [connection, setConnection] = useState<AutoTestingConnection>('connecting');
+  const [historyLoading, setHistoryLoading] = useState(Boolean(planId));
   const active = busy || run?.status === 'running' || Boolean(history?.items.some((x) => x.status === 'running'));
-  const cannotStart = disabled || !planId || active;
+  const cannotStart = disabled || !planId || active || historyLoading;
   useEffect(() => {
     let disposed = false;
-    setRun(null); setHistory(null); setComparison(null); setBaselineId(''); setError(''); setSelected([]);
+    setRun(initialRun ?? null); setHistory(null); setComparison(null); setBaselineId(''); setError(''); setSelected([]);
+    setHistoryLoading(Boolean(planId));
     if (planId) void fetchRealtimeRegressionHistory(planId).then(async (data) => {
       if (disposed) return;
       setHistory(data);
-      if (data.items[0]) {
-        const latest = await fetchRealtimeRegression(data.items[0].id);
+      const latestItem = target === 'trainer' ? data.items.find((item) => item.planId === planId) : data.items[0];
+      if (initialRun || latestItem) {
+        const latest = initialRun ?? await fetchRealtimeRegression(latestItem!.id);
         if (disposed) return;
-        setRun(latest); setBaselineId(latest.parentRunId || data.items[1]?.id || '');
+        if (!initialRun) setRun(latest);
+        setBaselineId(latest.parentRunId || data.items.find((item) => item.id !== latest.id && item.createdAt < latest.createdAt)?.id || '');
       }
-    }).catch((e) => { if (!disposed) setError(String(e)); });
+    }).catch((e) => { if (!disposed) setError(String(e)); }).finally(() => { if (!disposed) setHistoryLoading(false); });
     return () => { disposed = true; };
-  }, [planId]);
+  }, [planId, initialRun]);
   useEffect(() => {
     if (run?.status !== 'running') return;
     let disposed = false;
-    const timer = window.setInterval(() => void fetchRealtimeRegression(run.id).then((data) => {
-      if (disposed) return;
-      setRun(data);
-      if (data.status !== 'running') void fetchRealtimeRegressionHistory(planId).then((next) => { if (!disposed) setHistory(next); }).catch((e) => { if (!disposed) setError(String(e)); });
-    }).catch((e) => { if (!disposed) setError(String(e)); }), 2000);
-    return () => { disposed = true; window.clearInterval(timer); };
+    const watchedPlanId = run.planId;
+    const stop = watchCallPlanAutoTest(run.id, {
+      onUpdate: (data) => {
+        if (disposed || data.planId !== watchedPlanId) return;
+        setRun(data); setError('');
+        if (data.status !== 'running') void fetchRealtimeRegressionHistory(planId).then((next) => { if (!disposed) setHistory(next); }).catch((e) => { if (!disposed) setError(String(e)); });
+      },
+      onConnection: (value) => { if (!disposed) setConnection(value); },
+      onError: (error) => { if (!disposed) setError(`Обновления временно недоступны: ${error.message}. Переподключаемся автоматически.`); },
+    }, target);
+    return () => { disposed = true; stop(); };
   }, [run?.id, run?.status, planId]);
   useEffect(() => {
     let disposed = false; setComparison(null);
@@ -71,8 +69,10 @@ export function RealtimeRegressionPanel({ planId, model, disabled }: { planId: s
   async function open(item: RealtimeRegressionSummary) {
     setError('');
     try {
-      setRun(await fetchRealtimeRegression(item.id));
+      const selectedRun = await fetchRealtimeRegression(item.id);
+      setRun(selectedRun);
       setBaselineId(item.parentRunId || history?.items.find((x) => x.id !== item.id && x.createdAt < item.createdAt)?.id || '');
+      onSelectRun?.(selectedRun);
     } catch (e) { setError(String(e)); }
   }
   async function refreshHistory() {
@@ -91,22 +91,23 @@ export function RealtimeRegressionPanel({ planId, model, disabled }: { planId: s
     try {
       const scope = selection ?? (mode === 'checks' ? { checkIds: selected } : mode === 'scenarios' ? { scenarioIds: selected } : {});
       const source = run?.planId === planId ? run.id : undefined;
-      const next = await startRealtimeRegression(planId, model, { referenceRunId: source, ...scope });
+      const next = await startTest(planId, { referenceRunId: source, ...scope }, femaleSourceId);
       setBaselineId(source || ''); setRun(next); setComparison(null);
       await refreshHistory();
+      onSelectRun?.(next);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   }
   function download() {
     const url = URL.createObjectURL(new Blob([JSON.stringify(run, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a'); link.href = url; link.download = `hypothesis2-${run?.id}.json`; link.click(); URL.revokeObjectURL(url);
+    const link = document.createElement('a'); link.href = url; link.download = `${target}-autotest-${run?.id}.json`; link.click(); URL.revokeObjectURL(url);
   }
-  return <div className="sa-companies-table-wrap" style={{ padding: 20 }}>
-    <div className="sa-cell-name">Автопроверка гипотезы 2</div>
-    <p className="sa-meta">Полная серия или точечная проверка выбранных пунктов. Используются реальные OpenAI и ElevenLabs, расходуется баланс API. Каждый запуск сохраняется отдельно вместе с записью, транскриптом и результатами.</p>
+  return <div className="sa-companies-table-wrap testing-regression-panel" style={{ padding: 20 }}>
+    <div className="sa-cell-name">{target === 'trainer' ? 'Автопроверка тренировок' : 'Автопроверка звонка по плану прозвона'}</div>
+    <p className="sa-meta">{target === 'trainer' ? 'Встроенные тестовые сценарии и профили: реальные STT, генерация ответа и TTS; без баллов и обычных отчётов сотрудников.' : 'Номер не набирается. Проверяем основную цепочку диалога на голосовых сценариях.'} Реальные OpenAI и ElevenLabs расходуют баланс API. Запуски, записи и результаты сохраняются для сравнения.</p>
     <label className="sa-meta">Что проверить{' '}
       <select className="sa-input" value={mode} disabled={active} onChange={(event) => { setMode(event.target.value as typeof mode); setSelected([]); }}>
-        <option value="all">Все 17 пунктов · 10 сценариев</option>
+        <option value="all">Все {history?.checks.length ?? (target === 'trainer' ? 20 : 17)} пунктов · {history?.scenarios.length ?? (target === 'trainer' ? 7 : 10)} сценариев</option>
         <option value="checks">Выбранные пункты чеклиста</option>
         <option value="scenarios">Отдельные сценарии</option>
       </select>
@@ -123,14 +124,33 @@ export function RealtimeRegressionPanel({ planId, model, disabled }: { planId: s
       {run?.status === 'running' && <button type="button" className="sa-btn" onClick={() => void cancelRealtimeRegression(run.id).catch((e) => setError(String(e)))}>Остановить</button>}
       {run && <button type="button" className="sa-btn" onClick={download}>Скачать отчёт</button>}
     </div>
-    {run && <p className="sa-meta">Следующий запуск использует профиль и предмет из открытого отчёта, если сохранён их снимок. Модель — выбранная выше; настройки голоса — текущие. У старых отчётов точное совпадение конфигурации проверить нельзя.</p>}
-    <details open style={{ marginTop: 18 }}>
+    {run && <p className="sa-meta">{target === 'trainer' ? 'Следующий запуск проверит встроенный набор текущим кодом тренажёра. История тренировок сотрудников не используется и не изменяется.' : `Следующий запуск проверит текущую конфигурацию плана и серверную модель ${model}. Различия условий будут отмечены при сравнении. Старые тесты гипотезы остаются в истории.`}</p>}
+    {run && <section className="testing-live-overview" aria-label="Ход автотестирования">
+      <div className="testing-live-heading"><strong>{run.status === 'running' ? 'Проверка выполняется' : run.status === 'completed' ? 'Серия завершена' : run.status === 'cancelled' ? 'Остановлено' : 'Ошибка выполнения'}</strong>
+        {run.status === 'running' && <span className={`testing-live-connection testing-live-connection--${connection}`} role="status">{connection === 'live' ? '● WebSocket · в реальном времени' : connection === 'polling' ? '● Резервное обновление · переподключаемся' : 'Подключаем живые обновления…'}</span>}
+      </div>
+      <div className="testing-live-progress" role="progressbar" aria-label="Завершённые сценарии" aria-valuemin={0} aria-valuemax={run.cases.length}
+        aria-valuenow={run.cases.filter((item) => ['completed', 'failed'].includes(item.status)).length}>
+        <span style={{ width: `${run.cases.length ? run.cases.filter((item) => ['completed', 'failed'].includes(item.status)).length / run.cases.length * 100 : 0}%` }} />
+      </div>
+      <div className="testing-live-counts">
+        <span>Сценарии: {run.cases.filter((item) => ['completed', 'failed'].includes(item.status)).length}/{run.cases.length}</span>
+      </div>
+      <p className="sa-meta" aria-live="polite">{run.progress}</p>
+      {run.target !== 'call_plan' && run.target !== 'trainer' && <p className="sa-meta">Архивный запуск гипотезы. Новые запуски выполняются в контуре основной телефонии.</p>}
+    </section>}
+    {error && <div className="sa-batch-live-error" style={{ marginTop: 10 }}>{error}</div>}
+    {run && <RegressionReport key={run.id} run={run} disabled={cannotStart} comparison={comparison} baselineId={baselineId}
+      baselines={history?.items.filter((x) => x.id !== run.id && x.status !== 'running').map((item) => ({ id: item.id, label: runLabel(item) })) ?? []}
+      onBaselineChange={setBaselineId} onTest={(selection) => void start(selection)} />}
+    <details className="testing-report-history" style={{ marginTop: 18 }}>
       <summary>История тестов{history ? ` · ${history.total}` : ''}</summary>
+      {historyLoading && <p className="sa-meta" role="status">Загружаем историю запусков…</p>}
       <button type="button" className="sa-btn" style={{ marginTop: 8 }} onClick={() => void refreshHistory()}>Обновить историю</button>
       <div style={{ overflowX: 'auto', marginTop: 10 }}><table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
-        <thead><tr><th>Запуск, МСК</th><th>Сценарии</th><th>Результаты</th><th>Пауза, медиана</th><th /></tr></thead>
+        <thead><tr><th>Запуск, МСК</th><th>Сценарии</th><th>Результаты</th><th>{target === 'trainer' ? 'Ответ, медиана' : 'Пауза, медиана'}</th><th /></tr></thead>
         <tbody>{history?.items.map((item) => <tr key={item.id} style={{ background: item.id === run?.id ? 'var(--sa-bg-secondary, #f5f5f5)' : undefined }}>
-          <td style={{ padding: 8 }}>{runLabel(item)}<div className="sa-meta">{item.status === 'running' ? 'Выполняется' : item.status === 'completed' ? 'Завершён' : item.status === 'cancelled' ? 'Остановлен' : 'Ошибка'}</div></td>
+          <td style={{ padding: 8 }}>{runLabel(item)}<div className="sa-meta">{item.status === 'running' ? 'Выполняется' : item.status === 'completed' ? 'Завершён' : item.status === 'cancelled' ? 'Остановлен' : 'Ошибка'} · {item.target === 'trainer' ? 'Тренажёр' : item.target === 'call_plan' ? 'Основная телефония' : 'Архив гипотезы'}</div><RunIdentity id={item.id} target={target} compact /></td>
           <td>{item.casesCompleted}/{item.casesTotal}</td>
           <td className="sa-meta">Пройдено {item.counts.pass} · ошибок {item.counts.fail} · проверить {item.counts.review} · не запускали {item.counts.not_run}</td>
           <td>{timingLabel(item.timing.medianMs)}</td>
@@ -140,46 +160,5 @@ export function RealtimeRegressionPanel({ planId, model, disabled }: { planId: s
       {history?.items.length === 0 && <p className="sa-meta">В этом плане ещё нет сохранённых тестов.</p>}
       {history && history.items.length < history.total && <button type="button" className="sa-btn" onClick={() => void loadMore()}>Показать ещё</button>}
     </details>
-    {error && <div className="sa-batch-live-error" style={{ marginTop: 10 }}>{error}</div>}
-    {run && <div style={{ marginTop: 18 }}>
-      <div className="sa-cell-name">{run.status === 'running' ? 'Выполняется' : run.status === 'completed' ? 'Серия завершена' : run.status === 'cancelled' ? 'Остановлен' : 'Ошибка'} · {run.planName} · {run.model}</div>
-      <div className="sa-meta" style={{ marginTop: 6 }}>{run.progress}</div>
-      {run.error && <div className="sa-batch-live-error">{run.error}</div>}
-      <p className="sa-meta">Тайминги относятся к эмуляции воспроизведения. Телефонную сеть и реальные буферы Voximplant проверяет контрольный звонок. Ударения и естественность голоса оценивайте по записи; женская легенда проверяет текст, голос остаётся из выбранного плана.</p>
-      <label className="sa-meta">Сравнить с{' '}
-        <select className="sa-input" value={baselineId} onChange={(event) => setBaselineId(event.target.value)}>
-          <option value="">Без сравнения</option>
-          {history?.items.filter((x) => x.id !== run.id && x.status !== 'running').map((item) => <option key={item.id} value={item.id}>{runLabel(item)}</option>)}
-        </select>
-      </label>
-      {comparison && <div style={{ marginTop: 14 }}>
-        {comparison.warnings.map((warning) => <p className="sa-meta" key={warning}>{warning}</p>)}
-        <div style={{ overflowX: 'auto' }}><table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
-          <thead><tr><th>Проверка</th><th>Было</th><th>Стало</th><th>Изменение</th><th>Пауза</th></tr></thead>
-          <tbody>{comparison.rows.map((row) => <tr key={row.id}>
-            <td style={{ padding: 8 }}>{row.title}
-              <details className="sa-meta"><summary>Свидетельства</summary>
-                <p>Было: {row.before?.evidence.join(' · ') || 'Нет данных'}</p>
-                <p>Стало: {row.after?.evidence.join(' · ') || 'Нет данных'}</p>
-                <p>Сценарии: {row.coverageBefore.join(', ') || '—'} → {row.coverageAfter.join(', ') || '—'}</p>
-              </details>
-            </td>
-            <td>{row.before ? labels[row.before.status] : 'Не проверено'}</td>
-            <td>{row.after ? labels[row.after.status] : 'Не проверено'}</td>
-            <td>{{ unchanged: 'Без изменений', fixed: 'Исправлено', regressed: 'Ухудшилось', changed: 'Статус изменился', not_rerun: 'Не перезапускали', new: 'Новая проверка' }[row.change]}{!row.comparable && row.change !== 'not_rerun' ? ' · условия отличаются или не подтверждены' : ''}</td>
-            <td className="sa-meta">{timingLabel(row.timingBefore.medianMs)} → {timingLabel(row.timingAfter.medianMs)}{row.medianDeltaMs != null ? ` (${row.medianDeltaMs > 0 ? '+' : ''}${row.medianDeltaMs} мс)` : ''}</td>
-          </tr>)}</tbody>
-        </table></div>
-      </div>}
-      <Checks items={run.checklist} onTest={(id) => void start({ checkIds: [id] })} disabled={cannotStart} />
-      <div style={{ marginTop: 18 }}>{run.cases.map((item) => <details key={item.id} style={{ padding: '10px 0' }}>
-        <summary>{item.title} · {item.status === 'pending' ? 'ожидает' : item.status === 'running' ? 'выполняется' : item.status === 'failed' ? 'ошибка' : 'завершён'}</summary>
-        <button type="button" className="sa-btn" disabled={cannotStart} onClick={() => void start({ scenarioIds: [item.id] })}>Повторить сценарий</button>
-        {item.error && <div className="sa-batch-live-error">{item.error}</div>}
-        <Checks items={item.checks} />
-        {item.audioFile && <Recording runId={run.id} caseId={item.id} />}
-        {item.session?.transcript.map((turn, index) => <p key={index} className="sa-meta"><strong>{turn.role === 'manager' ? 'Менеджер' : 'AI-клиент'}:</strong> {turn.text}{turn.metrics.interrupted ? ' [прервано]' : ''}</p>)}
-      </details>)}</div>
-    </div>}
   </div>;
 }
