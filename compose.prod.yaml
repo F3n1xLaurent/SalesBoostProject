@@ -43,6 +43,7 @@ services:
       - salesboost_audio_tmp:/app/tmp
       - salesboost_recordings:/app/storage/recordings
       - salesboost_support_attachments:/app/storage/support-attachments
+      - salesboost_voice_realtime:/app/storage/voice-realtime
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=1770
@@ -71,6 +72,8 @@ volumes:
     name: salesboost_recordings
   salesboost_support_attachments:
     name: salesboost_support_attachments
+  salesboost_voice_realtime:
+    name: salesboost_voice_realtime
 
 secrets:
   sentry_auth_token:
