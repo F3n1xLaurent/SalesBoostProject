@@ -26,6 +26,13 @@ beforeEach(() => {
 afterEach(() => { for (const stop of cleanups.splice(0)) stop(); vi.useRealTimers(); vi.resetAllMocks(); vi.unstubAllGlobals(); });
 
 describe('autotest live UI transport', () => {
+  it('uses report endpoints, preserves criterion scopes and accepts only report live events', async () => {
+    await autoTestingClient('report').start('report-builtin-v1', { checkIds: ['report-summary'] });
+    expect(apiFetch).toHaveBeenCalledWith('/api/admin/auto-testing/report/runs', expect.objectContaining({ method: 'POST' }));
+    const update = vi.fn(); cleanups.push(watchCallPlanAutoTest('run', { onUpdate: update, onConnection: vi.fn() }, 'report'));
+    await vi.advanceTimersByTimeAsync(0); const ws = Socket.instances[0]; expect(String(ws.url)).toContain('/report/runs/run/live?ticket='); ws.open(); ws.message(run()); expect(update).not.toHaveBeenCalled();
+    ws.onmessage?.({ data: JSON.stringify({ type: 'run.snapshot', target: 'report', run: run('completed') }) }); expect(update).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+  });
   it('runs trainer scopes against the trainer API without accepting a phone number or model', async () => {
     await autoTestingClient('trainer').start('source', { checkIds: ['trainer-identity'], referenceRunId: 'parent' }, 'female-source');
     expect(apiFetch).toHaveBeenCalledWith('/api/admin/auto-testing/trainer/runs', expect.objectContaining({ method: 'POST', body: JSON.stringify({ sourceId: 'source', checkIds: ['trainer-identity'], referenceRunId: 'parent', femaleSourceId: 'female-source' }) }));

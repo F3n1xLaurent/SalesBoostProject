@@ -9,6 +9,7 @@ export const config = {
   proxyApiKey: env.proxyApiKey,
   openaiBaseUrl: env.openaiBaseUrl,
   openaiChatModel: env.openaiChatModel,
+  openaiReasoningEffort: env.openaiReasoningEffort,
   openaiImportModel: env.openaiImportModel,
   openaiSttModel: env.openaiSttModel,
   openaiTtsModel: env.openaiTtsModel,

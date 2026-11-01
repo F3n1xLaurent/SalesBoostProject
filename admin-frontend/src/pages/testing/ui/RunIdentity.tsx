@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { autoTestRunPath } from '../model/autoTestRunId';
 
-export function RunIdentity({ id, compact = false, target = 'call_plan' }: { id: string; compact?: boolean; target?: 'call_plan' | 'trainer' }) {
+export function RunIdentity({ id, compact = false, target = 'call_plan' }: { id: string; compact?: boolean; target?: 'call_plan' | 'trainer' | 'report' }) {
   const [feedback, setFeedback] = useState('');
   async function copy(link: boolean) {
     try {

@@ -45,8 +45,9 @@ type EvaluationHighlights = {
 type EvaluationHighlightOptions = {
   /**
    * When supplied, a checklist strength must be evidenced by one of these
-   * final, positively marked manager turns. This prevents a turn marked
-   * "negative" in the dialog from also producing report strengths.
+   * final, eligible manager turns. Call reports include positive and mixed
+   * normal turns: a specific weakness does not erase other grounded actions.
+   * The caller chooses eligible indexes; negative/ambiguous evidence stays out.
    */
   positiveManagerTurnIndexes?: ReadonlySet<number>;
 };
@@ -184,7 +185,7 @@ function managerActionHighlight(item: Record<string, unknown>): string {
   const comment = normalizeManagerNarrationGender(cleanText(item.comment));
   if (/(?:^|\s)(?:не|частично|но)(?=\s|[.,!])/iu.test(comment)) return '';
   if (/^(?:менеджер|сотрудник|консультант|продавец)\s+/iu.test(comment)
-    && /(?:представил|представился|поздоровался|назвал|уточнил|спросил|выяснил|объяснил|предложил|согласовал|договорился|ответил|поддерживал|сохранял|презентовал|отработал)/iu.test(comment)) return comment;
+    && /(?:представил|представился|поздоровался|назвал|уточнил|подтвердил|сообщил|спросил|выяснил|объяснил|предложил|согласовал|договорился|ответил|поддерживал|сохранял|презентовал|отработал)/iu.test(comment)) return comment;
   const action = MANAGER_ACTIONS[code];
   if (!action) return '';
   const evidence = Array.isArray(item.evidence) ? cleanText(item.evidence[0]) : '';

@@ -15,6 +15,8 @@ const baseUrl = (provider === 'openai'
   || (provider === 'openai' ? 'wss://api.openai.com/v1/realtime' : 'wss://api.cometapi.com/v1/realtime');
 const protocol = process.env.COMETAPI_REALTIME_PROTOCOL?.trim().toLowerCase() === 'legacy' ? 'legacy' : 'ga';
 const productionShape = process.env.COMETAPI_REALTIME_CHECK_PRODUCTION?.trim() === '1';
+// Opt-in idle-connection probe. No phone call, just two tiny requests on one WS.
+const holdMs = Math.max(0, Math.min(300_000, Number(process.env.REALTIME_CHECK_HOLD_MS) || 0));
 
 if (!apiKey) {
   console.error(`${provider === 'openai' ? 'OPENAI_REALTIME_API_KEY' : 'COMETAPI_API_KEY'} is not configured.`);
@@ -33,6 +35,8 @@ let firstTextAt: number | null = null;
 let sessionUpdateSent = false;
 let requestSent = false;
 let completed = false;
+let holdTimer: NodeJS.Timeout | undefined;
+let secondRequest = false;
 
 function sendSessionUpdate(socket: WebSocket): void {
   if (sessionUpdateSent || socket.readyState !== WebSocket.OPEN) return;
@@ -159,7 +163,7 @@ const timeout = setTimeout(() => {
     console.error(`${provider === 'openai' ? 'OpenAI' : 'CometAPI'} Realtime check timed out.`);
   socket.close();
   process.exitCode = 1;
-}, 20_000);
+}, 20_000 + holdMs);
 
 socket.on('open', () => {
   socketOpenedAt = performance.now();
@@ -192,6 +196,24 @@ socket.on('message', (raw) => {
   }
   if (event.type === 'response.done') {
     const doneAt = performance.now();
+    if (event.response?.status !== 'completed' || firstTextAt == null) {
+      console.error('Realtime returned an unsuccessful or empty response.');
+      process.exitCode = 1;
+      socket.terminate();
+      return;
+    }
+    if (holdMs && !secondRequest) {
+      printMetrics(doneAt);
+      console.log(`Keeping the same connection idle for ${holdMs} ms, then requesting another response.`);
+      secondRequest = true;
+      holdTimer = setTimeout(() => {
+        requestSent = false;
+        responseCreatedAt = null;
+        firstTextAt = null;
+        sendTestRequest(socket);
+      }, holdMs);
+      return;
+    }
     completed = true;
     process.stdout.write(`\n${provider === 'openai' ? 'OpenAI' : 'CometAPI'} Realtime is ready.\n`);
     printMetrics(doneAt);
@@ -213,9 +235,10 @@ socket.on('error', (error) => {
 });
 socket.on('close', (code, reason) => {
   clearTimeout(timeout);
+  clearTimeout(holdTimer);
   if (!completed) {
     console.error(`WebSocket closed: code=${code}, reason=${reason.toString() || '—'}, after=${elapsed(startedAt)} ms`);
-    if (code !== 1000) process.exitCode = 1;
+    process.exitCode = 1;
   }
 });
 

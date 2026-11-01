@@ -182,6 +182,13 @@ export interface AuditDetailItem {
   recordingUrl?: string | null;
   recordingError?: string | null;
   recordingDurationSec?: number;
+  analyticsProgress?: {
+    stage: 'transcription' | 'evaluation' | 'report';
+    status: 'waiting' | 'processing' | 'ready' | 'failed' | 'unavailable';
+    transcriptReady: boolean;
+    evaluationReady: boolean;
+    message: string;
+  };
   unifiedReport: {
     version: 'call-report-v1';
     source: 'call' | 'trainer';
@@ -191,7 +198,10 @@ export interface AuditDetailItem {
     categories: Array<{ name: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация'; score: number; comment: string }>;
     strengths: string[];
     weaknesses: string[];
+    transcriptionUncertainties?: Array<{ turnIndex: number; quote: string; token: string; reason: string }>;
+    exampleReviews?: Array<{ turnIndex: number; exampleHash: string; status: 'pass' | 'fail' | 'review'; issues: string[]; rejectedCandidates?: Array<{ text: string; issues: string[] }> }>;
     keyFindings: Array<{
+      problemCode?: string;
       problemTitle: string;
       importance: 'Критично' | 'Важно' | 'Средне';
       category: 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация';
@@ -1071,7 +1081,8 @@ export interface RealtimeTestCall {
         | 'endpoint_semantic_assessed' | 'endpoint_turn_committed'
         | 'entity_mismatch_detected' | 'manager_audio_discarded'
         | 'speculative_response_started' | 'speculative_response_cancelled'
-        | 'handoff_started' | 'handoff_cutover';
+        | 'handoff_started' | 'handoff_cutover'
+        | 'provider_disconnected' | 'provider_reconnecting' | 'provider_reconnected' | 'provider_recovery_failed';
       at: string;
       reason: string;
       speechDurationMs?: number | null;
@@ -2143,8 +2154,9 @@ export type RealtimeRegressionRun = {
   id: string; planId: string; planName: string; model: string; status: 'running' | 'completed' | 'cancelled' | 'failed';
   createdAt: string; progress: string; error?: string; checklist: RealtimeRegressionCheck[];
   evaluatorVersion?: string; selectedCheckIds?: string[]; parentRunId?: string; configurationHash?: string; femaleSourceId?: string;
-  target?: 'hypothesis2' | 'call_plan' | 'trainer'; executionMode?: 'simulation';
+  target?: 'hypothesis2' | 'call_plan' | 'trainer' | 'report'; executionMode?: 'simulation';
   cases: Array<{ id: string; title: string; status: string; error?: string; audioFile?: string; checks: RealtimeRegressionCheck[]; session?: RealtimeTestCall;
+    fixture?: import('../../../../src/testing/reportTestCatalog').ReportFixture; output?: import('../../../../src/testing/reportTestEvaluation').ReportOutput;
     phase?: 'preparing_audio' | 'connecting' | 'dialogue' | 'assessing' | 'completed' | 'failed'; step?: { current: number; total: number } }>;
 };
 export type RealtimeRegressionTiming = { samples: number; medianMs: number | null; p95Ms: number | null };
@@ -2232,24 +2244,30 @@ export async function fetchAudits(limit = 100): Promise<AuditItem[]> {
   return data.audits ?? [];
 }
 
-export async function fetchAuditDetail(id: string): Promise<AuditDetailItem | null> {
+export async function fetchAuditDetail(id: string, signal?: AbortSignal): Promise<AuditDetailItem | null> {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
     const res = await apiFetch(`${API_BASE}/api/admin/audits/${encodeURIComponent(id)}`, {
       signal: controller.signal,
+      cache: 'no-store',
     });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('Не удалось загрузить проверку.');
     const data = await res.json();
     return data.item ?? null;
   } catch (error) {
+    if (signal?.aborted) throw error;
     if (controller.signal.aborted) {
       throw new Error('Сервер не ответил за 20 секунд. Попробуйте открыть аналитику ещё раз.');
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
   }
 }
 

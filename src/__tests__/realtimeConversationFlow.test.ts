@@ -65,6 +65,9 @@ describe('realtime conversation flow', () => {
   });
 
   it('keeps unfinished answers open across a short pause', () => {
+    expect(assessUserTurnCompletion('Нет, ничего не...', '').incomplete).toBe(true);
+    expect(assessUserTurnCompletion('Нет, ничего не', '').reason).toBe('hanging_function_word');
+    expect(assessUserTurnCompletion('Нет, не было.', '').incomplete).toBe(false);
     expect(assessUserTurnCompletion('Ну, за последний год там', 'Что с машиной было за последний год?')).toEqual({
       incomplete: true,
       reason: 'short_open_answer',

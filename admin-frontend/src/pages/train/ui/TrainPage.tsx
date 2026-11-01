@@ -996,8 +996,14 @@ function SessionPreview(props: {
   const recordStartedAtRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const finishAbortRef = useRef<AbortController | null>(null);
+  const pendingVoiceRequestsRef = useRef(0);
+  const nextMessageIdRef = useRef(1);
+  const activeSessionIdRef = useRef(props.session.id);
+  const recordingActiveRef = useRef(false);
 
   useEffect(() => () => {
+    activeSessionIdRef.current = '';
+    recordingActiveRef.current = false;
     processorRef.current?.disconnect();
     sourceRef.current?.disconnect();
     audioContextRef.current?.close().catch(() => {});
@@ -1006,7 +1012,22 @@ function SessionPreview(props: {
   }, []);
 
   useEffect(() => {
+    if (!ended) return;
+    recordingActiveRef.current = false;
+    processorRef.current?.disconnect();
+    sourceRef.current?.disconnect();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    audioContextRef.current?.close().catch(() => {});
+    processorRef.current = null; sourceRef.current = null; streamRef.current = null; audioContextRef.current = null;
+    pcmChunksRef.current = [];
+    setRecording(false);
+  }, [ended]);
+
+  useEffect(() => {
     setMessages(buildInitialMessages());
+    activeSessionIdRef.current = props.session.id;
+    pendingVoiceRequestsRef.current = 0;
+    nextMessageIdRef.current = 1;
     const isEnded = props.session.status === 'completed' || props.session.status === 'failed';
     setEnded(isEnded);
     setCompletionPhase(isEnded ? (props.session.reportReady ? 'ready' : 'report') : 'idle');
@@ -1088,12 +1109,15 @@ function SessionPreview(props: {
     managerAudioUrl: string;
   }) {
     const managerAudioUrl = params.managerAudioUrl;
-    const idBase = messages.length ? messages[messages.length - 1].id + 1 : 1;
+    const sessionId = props.session.id;
+    const idBase = Math.max(nextMessageIdRef.current, messages.length ? Math.max(...messages.map((message) => message.id)) + 1 : 1);
+    nextMessageIdRef.current = idBase + 2;
     setMessages((prev) => [
       ...prev,
       { id: idBase, role: 'manager', audioUrl: managerAudioUrl, durationSec: params.durationSec },
       { id: idBase + 1, role: 'client', audioUrl: null, textFallback: 'Клиент отвечает...' },
     ]);
+    pendingVoiceRequestsRef.current += 1;
     setSending(true);
     setError(null);
     try {
@@ -1102,6 +1126,11 @@ function SessionPreview(props: {
         mimeType: params.mimeType,
         durationSec: params.durationSec,
       });
+      if (activeSessionIdRef.current !== sessionId) return;
+      if (data.superseded) {
+        setMessages((prev) => prev.filter((message) => message.id !== idBase + 1));
+        return; // The latest accepted correction owns the single client reply.
+      }
       const clientAudioUrl = audioDataUrl(data.audioBase64, data.audioMimeType);
       setMessages((prev) => prev.map((message) => message.id === idBase + 1
         ? {
@@ -1110,7 +1139,7 @@ function SessionPreview(props: {
           audioUrl: clientAudioUrl,
           durationSec: clientAudioUrl ? estimateDurationFromAudioUrl(clientAudioUrl) : null,
           textFallback: data.clientMessage,
-          autoPlay: Boolean(clientAudioUrl),
+          autoPlay: Boolean(clientAudioUrl) && !recordingActiveRef.current,
           timings: data.timings,
         }
         : message));
@@ -1120,14 +1149,19 @@ function SessionPreview(props: {
         props.onSessionUpdate(data.session);
       }
     } catch (sendError) {
+      if (activeSessionIdRef.current !== sessionId) return;
       setMessages((prev) => prev.filter((message) => message.id !== idBase + 1));
       setError(sendError instanceof Error ? sendError.message : 'Не удалось отправить голосовое сообщение.');
     } finally {
-      setSending(false);
+      if (activeSessionIdRef.current === sessionId) {
+        pendingVoiceRequestsRef.current = Math.max(0, pendingVoiceRequestsRef.current - 1);
+        setSending(pendingVoiceRequestsRef.current > 0);
+      }
     }
   }
 
   async function stopPcmRecording() {
+    recordingActiveRef.current = false;
     const audioContext = audioContextRef.current;
     processorRef.current?.disconnect();
     sourceRef.current?.disconnect();
@@ -1167,7 +1201,7 @@ function SessionPreview(props: {
       await stopPcmRecording();
       return;
     }
-    if (sending || ended || !dialogReady) return;
+    if (ended || leaving || !dialogReady) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -1192,6 +1226,8 @@ function SessionPreview(props: {
       audioContextRef.current = audioContext;
       sourceRef.current = source;
       processorRef.current = processor;
+      messagesEndRef.current?.closest('.train-chat-shell')?.querySelectorAll<HTMLAudioElement>('audio').forEach((audio) => audio.pause());
+      recordingActiveRef.current = true;
       setRecording(true);
       setError(null);
     } catch (recordError) {
@@ -1302,9 +1338,9 @@ function SessionPreview(props: {
             )}
             <button
               className={`train-record-button ${recording ? 'train-record-button-active' : ''}`}
-              title={dialogReady ? 'Записать голосовое сообщение' : 'Дождитесь подключения клиента'}
-              aria-label={dialogReady ? 'Записать голосовое сообщение' : 'Дождитесь подключения клиента'}
-              disabled={sending || leaving || !dialogReady}
+              title={dialogReady ? sending ? 'Уточнить предыдущую реплику голосовым' : 'Записать голосовое сообщение' : 'Дождитесь подключения клиента'}
+              aria-label={dialogReady ? sending ? 'Уточнить предыдущую реплику голосовым' : 'Записать голосовое сообщение' : 'Дождитесь подключения клиента'}
+              disabled={leaving || !dialogReady}
               onClick={toggleRecording}
             >
               <span className="train-record-button-core" />

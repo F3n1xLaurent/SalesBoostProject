@@ -50,6 +50,7 @@ export function autoTestDiagnostics(run: RegressionRun, selection: { checkId?: s
     ],
     // Deliberate allowlists: never dump environment, authentication, owner record or arbitrary configuration fields.
     configuration: {
+      fixtureVersion: run.configuration?.fixtureVersion,
       plan: plan ? { prompt: redact(plan.prompt), subjectTitle: plan.subjectTitle, subjectDescription: plan.subjectDescription, elevenLabsVoiceId: plan.elevenLabsVoiceId, customerVoiceId: plan.customerVoiceId } : undefined,
       tts: tts ? { modelId: tts.modelId, defaultVoiceId: tts.defaultVoiceId, stability: tts.stability, similarityBoost: tts.similarityBoost, speed: tts.speed, source: tts.source, optimizeStreamingLatency: tts.optimizeStreamingLatency } : undefined,
       runtime: runtime ? { provider: runtime.provider, model: runtime.model, endpointSilenceMs: runtime.endpointSilenceMs, longTurnSilenceMs: runtime.longTurnSilenceMs, longTurnThresholdMs: runtime.longTurnThresholdMs, reasoningEffort: runtime.reasoningEffort, transcriptionModel: runtime.transcriptionModel } : undefined,

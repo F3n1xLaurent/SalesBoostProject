@@ -3,12 +3,13 @@ import WebSocket from 'ws';
 import { expect, it } from 'vitest';
 import type { RegressionRun } from '../voice/realtimeRegression';
 import type { TrainerTestRun } from '../testing/trainerAutoTesting';
+import type { ReportTestRun } from '../testing/reportAutoTesting';
 import { createAutoTestingUpgradeHandler, issueAutoTestingTicket, publishAutoTestingRun } from '../testing/autoTestingLive';
 
 // Explicit opt-in because the default filesystem sandbox forbids loopback binds.
-it.runIf(process.env.RUN_LOCAL_WS_INTEGRATION === '1').each(['call_plan', 'trainer'] as const)('streams %s snapshots over a real local WebSocket without any provider calls', async (target) => {
+it.runIf(process.env.RUN_LOCAL_WS_INTEGRATION === '1').each(['call_plan', 'trainer', 'report'] as const)('streams %s snapshots over a real local WebSocket without any provider calls', async (target) => {
   const run = { id: 'socket-integration', ownerId: 'test-owner', planId: 'test-plan', planName: 'Тест',
-    model: 'mock', target, status: 'running', createdAt: new Date().toISOString(), cases: [], checklist: [], progress: 'Подготовка' } as RegressionRun | TrainerTestRun;
+    model: 'mock', target, status: 'running', createdAt: new Date().toISOString(), cases: [], checklist: [], progress: 'Подготовка' } as RegressionRun | TrainerTestRun | ReportTestRun;
   const upgrade = createAutoTestingUpgradeHandler(async (id, owner) => id === run.id && owner === run.ownerId ? run : null);
   const server = createServer();
   server.on('upgrade', (request, socket, head) => { if (!upgrade(request, socket, head)) socket.destroy(); });
@@ -18,10 +19,10 @@ it.runIf(process.env.RUN_LOCAL_WS_INTEGRATION === '1').each(['call_plan', 'train
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('No local port');
     const token = issueAutoTestingTicket(run.id, run.ownerId, target);
-    const snapshots: Array<RegressionRun | TrainerTestRun> = [];
+    const snapshots: Array<RegressionRun | TrainerTestRun | ReportTestRun> = [];
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('WebSocket integration timeout')), 5000);
-      client = new WebSocket(`ws://127.0.0.1:${address.port}/api/admin/auto-testing/${target === 'trainer' ? 'trainer' : 'call-plan'}/runs/${run.id}/live?ticket=${token}`);
+      client = new WebSocket(`ws://127.0.0.1:${address.port}/api/admin/auto-testing/${target === 'call_plan' ? 'call-plan' : target}/runs/${run.id}/live?ticket=${token}`);
       client.on('error', (error) => { clearTimeout(timer); reject(error); });
       client.on('message', (data) => {
         const event = JSON.parse(data.toString());

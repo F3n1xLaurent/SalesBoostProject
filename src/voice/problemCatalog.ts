@@ -9,6 +9,10 @@ export type ProblemCatalogItem = {
   sortOrder: number;
 };
 
+// A display variant of the existing code, not a new scoring criterion.
+export const UNCONFIRMED_NEXT_STEP_TITLE = 'Не закрепил детали следующего шага';
+export const FOLLOW_UP_PROBLEM_TITLE = 'Не договорился о повторном контакте';
+
 export const DEFAULT_CALL_REPORT_PROBLEMS: ProblemCatalogItem[] = [
   { code: 'NO_INTRO_COMPANY', title: 'Не представился / не назвал компанию', category: 'Контакт', sortOrder: 10 },
   { code: 'NO_CLIENT_NAME', title: 'Не уточнил / не подтвердил имя клиента', category: 'Контакт', sortOrder: 20 },
@@ -68,7 +72,21 @@ export async function getCallReportProblemCatalog(prisma: PrismaClient): Promise
 export function problemByTitle(catalog: ProblemCatalogItem[], title: unknown): ProblemCatalogItem | null {
   const normalized = String(title ?? '').trim().toLowerCase();
   if (!normalized) return null;
+  if (normalized === FOLLOW_UP_PROBLEM_TITLE.toLowerCase()) {
+    const base = catalog.find((item) => item.code === 'NO_FOLLOW_UP' || item.code === 'NO_NEXT_STEP');
+    return base ? { ...base, code: 'NO_FOLLOW_UP', title: FOLLOW_UP_PROBLEM_TITLE } : null;
+  }
+  if (normalized === UNCONFIRMED_NEXT_STEP_TITLE.toLowerCase()) {
+    const problem = catalog.find((item) => item.code === 'NO_CONCRETE_NEXT_STEP');
+    return problem ? { ...problem, title: UNCONFIRMED_NEXT_STEP_TITLE } : null;
+  }
   return catalog.find((problem) => problem.title.toLowerCase() === normalized)
     ?? catalog.find((problem) => normalized.includes(problem.title.toLowerCase()) || problem.title.toLowerCase().includes(normalized))
     ?? null;
+}
+
+/** Report-only vocabulary extension; never migrates or changes the active catalog. */
+export function withReportProblemVariants(catalog: ProblemCatalogItem[]): ProblemCatalogItem[] {
+  const followUp = problemByTitle(catalog, FOLLOW_UP_PROBLEM_TITLE);
+  return followUp && !catalog.some((item) => item.code === followUp.code) ? [...catalog, followUp] : catalog;
 }

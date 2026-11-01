@@ -44,7 +44,7 @@ function rateUnit(value: string): TariffRate['unit'] | null {
 
 function rateKey(labelValue: string): string | null {
   const label = labelValue.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
-  if (label.includes('расш') && label.includes('кэш') && label.includes('чтение')) return 'extended_cache_read_input_tokens';
+  if (/272k|расш/.test(label) && label.includes('кэш') && label.includes('чтение')) return 'extended_cache_read_input_tokens';
   if (label.includes('кэш') && label.includes('запись') && /272k|расш/.test(label)) return 'extended_cache_write_input_tokens';
   if (label.includes('кэш') && label.includes('чтение')) return 'cache_read_input_tokens';
   if (label.includes('кэш') && label.includes('запись')) return 'cache_write_input_tokens';
@@ -124,7 +124,9 @@ export async function fetchAndStoreProxyApiTariff(modelValue: string): Promise<s
   if (!response.ok) throw new Error(`ProxyAPI tariff HTTP ${response.status} for ${model}`);
   const parsed = parseProxyApiTariffPage(await response.text(), model);
   const ratesJson = JSON.stringify(Object.fromEntries(Object.entries(parsed.rates).sort(([a], [b]) => a.localeCompare(b))));
-  const rawHash = createHash('sha256').update(`${parsed.currency}:${ratesJson}`).digest('hex');
+  // A new parser version creates a fresh snapshot, rather than reusing an older
+  // correct snapshot that predates a more recent incorrectly parsed tariff.
+  const rawHash = createHash('sha256').update(`v2:${parsed.currency}:${ratesJson}`).digest('hex');
   const existing = await prisma.providerTariff.findUnique({
     where: { provider_model_rawHash: { provider: PROVIDER, model, rawHash } },
   });
@@ -165,6 +167,11 @@ export async function calculateProxyApiAmount(model: string, usage: Usage, occur
   });
   if (!tariff) return null;
   const rates = JSON.parse(tariff.ratesJson) as ProxyApiRates;
+  return { amountRub: calculateProxyApiUsageAmount(rates, usage), tariffId: tariff.id, tariffEffectiveAt: tariff.effectiveAt };
+}
+
+/** completion/output_tokens already includes reasoning, even without a separate reasoning tariff. */
+export function calculateProxyApiUsageAmount(rates: ProxyApiRates, usage: Usage): number {
   const input = units(usage.prompt_tokens ?? usage.input_tokens);
   const output = units(usage.completion_tokens ?? usage.output_tokens);
   const cached = Math.min(input, units(usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens));
@@ -173,7 +180,7 @@ export async function calculateProxyApiAmount(model: string, usage: Usage, occur
   const audioInputTokens = Math.min(input - cached - cacheWrite, units(usage.prompt_tokens_details?.audio_tokens ?? usage.input_tokens_details?.audio_tokens));
   const audioOutputTokens = Math.min(output - reasoning, units(usage.completion_tokens_details?.audio_tokens ?? usage.output_tokens_details?.audio_tokens));
   const regularInput = Math.max(0, input - cached - cacheWrite - (rates.audio_input ? audioInputTokens : 0));
-  const regularOutput = Math.max(0, output - (rates.reasoning_tokens ? reasoning : 0) - (rates.audio_output ? audioOutputTokens : 0));
+  const regularOutput = Math.max(0, output - reasoning - (rates.audio_output ? audioOutputTokens : 0));
   const seconds = units(usage.seconds ?? usage.input_seconds);
   const characters = units(usage.characters ?? usage.input_characters);
   const amount =
@@ -187,7 +194,7 @@ export async function calculateProxyApiAmount(model: string, usage: Usage, occur
     + charge(rates.input_audio, seconds)
     + charge(rates.input_characters, characters)
     + charge(rates.web_search, units(usage.web_search_requests));
-  return { amountRub: Math.round(amount * 1_000_000) / 1_000_000, tariffId: tariff.id, tariffEffectiveAt: tariff.effectiveAt };
+  return Math.round(amount * 1_000_000) / 1_000_000;
 }
 
 export async function backfillProxyApiEstimatedCosts(): Promise<number> {

@@ -171,7 +171,9 @@ describe('Comet Realtime PCM bridge', () => {
     expect(bridge).toContain('preparedSpeechSockets.set(session.callId, prepared)');
     expect(bridge).toContain('cachedPreparedComet?.isUsable()');
     expect(bridge).toContain('providerReconnectCount >= 2');
-    expect(bridge).toContain('переподключение до готовности сессии');
+    expect(bridge).toContain('provider_reconnecting');
+    expect(bridge).toContain('history_restored');
+    expect(bridge).toContain('handshake_or_history_timeout');
     expect(bridge).toContain('await prepared.waitUntilReady(5_000)');
     expect(bridge).toContain('Звонок не был инициирован');
     expect(bridge).toContain('turn_detection: null');

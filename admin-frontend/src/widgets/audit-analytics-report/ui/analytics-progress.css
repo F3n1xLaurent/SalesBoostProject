@@ -1,0 +1,52 @@
+.sa-analytics-progress {
+  padding: clamp(20px, 3vw, 32px);
+  color: var(--sa-text, #191b1e);
+  border: 1px solid rgba(22, 22, 19, .09);
+  border-radius: 20px;
+  background: linear-gradient(135deg, #fff 55%, #f5f8f5);
+}
+.sa-analytics-status-pending { color: #587145; background: #edf2e9; }
+.sa-analytics-progress-head { display: flex; align-items: center; gap: 16px; }
+.sa-analytics-progress-head > div { flex: 1; min-width: 0; }
+.sa-analytics-progress-head h2 { margin: 0 0 6px; font-size: 20px; font-weight: 650; letter-spacing: -.4px; }
+.sa-analytics-progress-head p, .sa-analytics-progress-step p { margin: 0; color: #72776f; font-size: 13px; line-height: 1.55; }
+.sa-analytics-progress-emblem { display: flex; align-items: center; justify-content: center; gap: 3px; width: 52px; height: 52px; flex-shrink: 0; border: 1px solid #e0e9df; border-radius: 16px; background: #f0f5ed; }
+.sa-analytics-progress-emblem i { width: 3px; height: 12px; background: #55764b; border-radius: 3px; transform: scaleY(.7); }
+.sa-analytics-progress-emblem i:nth-child(even) { height: 22px; }
+.sa-analytics-progress.is-processing .sa-analytics-progress-emblem i { animation: sa-analytics-wave 1.5s ease-in-out infinite; animation-delay: calc(var(--bar) * .13s); }
+.sa-analytics-progress-badge { flex-shrink: 0; border-radius: 99px; padding: 6px 10px; background: #edf2e9; color: #49663f; font-size: 11px; font-weight: 600; }
+.sa-analytics-progress-steps { margin: 28px 0 0; padding: 0; list-style: none; }
+.sa-analytics-progress-step { position: relative; display: flex; align-items: center; gap: 14px; padding: 17px 14px; border: 1px solid transparent; border-radius: 12px; }
+.sa-analytics-progress-step + .sa-analytics-progress-step { margin-top: 4px; }
+.sa-analytics-progress-step-icon { display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border: 1px solid #e4e6e0; border-radius: 50%; color: #989d94; background: #fafbf8; font-size: 12px; font-variant-numeric: tabular-nums; }
+.sa-analytics-progress-step-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sa-analytics-progress-step > div { flex: 1; min-width: 0; }
+.sa-analytics-progress-step h3 { margin: 0 0 3px; font-size: 14px; font-weight: 550; }
+.sa-analytics-progress-step-state { color: #91968c; font-size: 11px; }
+.sa-analytics-progress-step.is-pending h3 { color: #858a80; }
+.sa-analytics-progress-step.is-active { background: #f3f7ef; border-color: #e0e9d7; }
+.sa-analytics-progress-step.is-active h3 { font-weight: 650; }
+.sa-analytics-progress-step.is-active .sa-analytics-progress-step-state { color: #587145; }
+.sa-analytics-progress-step.is-done .sa-analytics-progress-step-icon { color: #4c7141; border-color: #dce7d5; background: #edf4e7; }
+.sa-analytics-progress-step.is-done .sa-analytics-progress-step-state { color: #587145; }
+.sa-analytics-progress-spinner { width: 14px; height: 14px; border: 2px solid #d2dfc8; border-top-color: #52723e; border-radius: 50%; animation: sa-analytics-spin .9s linear infinite; }
+.sa-analytics-progress-foot { display: flex; align-items: flex-start; gap: 8px; margin-top: 22px; padding-top: 18px; border-top: 1px solid #e7ebe1; color: #81867b; font-size: 12px; line-height: 1.6; }
+.sa-analytics-progress-dot { width: 6px; height: 6px; flex-shrink: 0; margin-top: 6px; border-radius: 50%; background: #95ad82; }
+.sa-analytics-progress.is-failed .sa-analytics-progress-emblem, .sa-analytics-progress.is-failed .sa-analytics-progress-badge { color: #a34d3b; background: #fbf0ec; border-color: #f0d8ce; }
+.sa-analytics-progress-step.is-failed .sa-analytics-progress-step-icon { color: #b65d48; background: #fdf0eb; border-color: #f0d8ce; }
+.sa-analytics-progress-step.is-failed .sa-analytics-progress-step-state { color: #a34d3b; }
+@keyframes sa-analytics-wave { 0%, 100% { transform: scaleY(.65); } 50% { transform: scaleY(1.2); } }
+@keyframes sa-analytics-spin { to { transform: rotate(360deg); } }
+@media (max-width: 540px) {
+  .sa-analytics-progress-head { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px 12px; align-items: start; }
+  .sa-analytics-progress-emblem { width: 44px; height: 44px; border-radius: 13px; }
+  .sa-analytics-progress-head h2 { font-size: 18px; }
+  .sa-analytics-progress-badge { grid-column: 2; justify-self: start; }
+  .sa-analytics-progress-step { padding: 14px 6px; gap: 10px; align-items: flex-start; }
+  .sa-analytics-progress-step-state { position: absolute; right: 8px; top: 8px; font-size: 9px; }
+  .sa-analytics-progress-step > div { padding-top: 3px; }
+  .sa-analytics-progress-step h3 { padding-right: 58px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sa-analytics-progress.is-processing .sa-analytics-progress-emblem i, .sa-analytics-progress-spinner { animation: none; }
+}

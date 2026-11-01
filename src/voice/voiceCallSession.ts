@@ -30,6 +30,7 @@ import * as Sentry from '@sentry/node';
 import { recordProductEvent, type ProductEventProperty } from '../analytics/productAnalytics';
 import { flushProductionRealtimeState } from './productionRealtimeState';
 import { finishProductionCallPlanTelephony } from './callPlanTelephony';
+import { withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
 
 const TRANSCRIPT_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 
@@ -232,7 +233,7 @@ function normalizePlanCriteriaEvaluation(value: unknown, definitions: PlanCriter
   };
 }
 
-async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]): Promise<unknown | null> {
+export async function evaluatePlanCriteria(callId: string, transcript: TranscriptTurn[]): Promise<unknown | null> {
   const planCall = await prisma.callPlanCall.findUnique({ where: { callId }, select: { criteriaJson: true, scriptId: true } });
   const session = planCall ? null : await prisma.voiceCallSession.findUnique({
     where: { callId },
@@ -381,7 +382,8 @@ export function finalizeVoiceCallSession(payload: VoxWebhookPayload): Promise<vo
   if (!callId) return finalizeVoiceCallSessionOnce(payload);
   const active = activeFinalizations.get(callId);
   if (active) return active;
-  const task = finalizeVoiceCallSessionOnce(payload).finally(() => activeFinalizations.delete(callId));
+  const task = withAuditAnalyticsProgress(`voice:${callId}`, 'transcription', () => finalizeVoiceCallSessionOnce(payload))
+    .finally(() => activeFinalizations.delete(callId));
   activeFinalizations.set(callId, task);
   return task;
 }

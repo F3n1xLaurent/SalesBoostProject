@@ -7,8 +7,13 @@ import { AutoTestingPage } from './AutoTestingPage';
 vi.mock('../../../shared/api/autoTesting', () => ({ fetchAutoTestingCatalog: vi.fn(), fetchCallPlanAutoTest: vi.fn() }));
 vi.mock('./RealtimeRegressionPanel', () => ({ RealtimeRegressionPanel: () => <div>Latest report placeholder</div> }));
 vi.mock('./TrainerTestingPage', () => ({ TrainerTestingPage: () => <div>Trainer tests placeholder</div> }));
+vi.mock('./ReportTestingPage', () => ({ ReportTestingPage: () => <div>Report tests panel</div> }));
 
 describe('open a saved autotest by ID', () => {
+  it('opens report links in the report target, not the phone lookup', () => {
+    const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/testing?tab=autotesting&target=report&runId=report-id']}><AutoTestingPage plans={[]} loading={false} /></MemoryRouter>);
+    expect(html).toContain('Report tests panel'); expect(html).not.toContain('Latest report placeholder'); expect(html).not.toContain('Открыть сохранённую проверку по ID');
+  });
   it('offers a lookup in the regular autotest page', () => {
     const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/testing?tab=autotesting']}><AutoTestingPage plans={[]} loading={false} /></MemoryRouter>);
     expect(html).toContain('Открыть сохранённую проверку по ID');

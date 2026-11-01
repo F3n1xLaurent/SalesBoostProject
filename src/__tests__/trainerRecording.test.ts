@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalCallRecordingStorage } from '../storage/callRecordingStorage';
+import { combineTrainerVoiceMessages } from '../trainer/trainerVoicePipeline';
 import {
   decodeTrainerRecordingTurns, renderTrainerRecording, resolveTrainerFfmpeg,
   TrainerRecordingService, trainerConcatFilter, trainerRecordingKey,
@@ -137,6 +138,17 @@ function oneSecondWav(): Buffer {
 }
 const ffmpeg = resolveTrainerFfmpeg();
 const hasFfmpeg = spawnSync(ffmpeg, ['-version'], { timeout: 5000 }).status === 0;
+it.runIf(hasFfmpeg)('preserves both separate voice corrections in the combined manager audio', async () => {
+  const directory = await temporary(); const wav = oneSecondWav(); const input = path.join(directory, 'source.wav');
+  await writeFile(input, wav);
+  const opus = execFileSync(ffmpeg, ['-v', 'error', '-i', input, '-c:a', 'libopus', '-f', 'ogg', 'pipe:1']);
+  const combined = await combineTrainerVoiceMessages([{ audioBase64: wav.toString('base64'), mimeType: 'audio/wav' }, { audioBase64: opus.toString('base64'), mimeType: 'audio/ogg' }]);
+  expect(combined.mimeType).toBe('audio/mpeg');
+  const output = path.join(directory, 'combined.mp3'); await writeFile(output, Buffer.from(combined.audioBase64, 'base64'));
+  const pcm = execFileSync(ffmpeg, ['-v', 'error', '-i', output, '-ac', '1', '-ar', '24000', '-f', 's16le', 'pipe:1']);
+  expect(pcm.length / 48000).toBeCloseTo(2.3, 1);
+  expect(decodeTrainerRecordingTurns(JSON.stringify([{ role: 'manager', audioBase64: combined.audioBase64 }]))).toHaveLength(1);
+}, 15_000);
 it.runIf(hasFfmpeg)('really concatenates WAV and OGG/Opus into a decodable MP3 without clipping either turn', async () => {
   const directory = await temporary();
   const wav = oneSecondWav();

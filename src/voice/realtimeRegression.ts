@@ -12,7 +12,7 @@ import { issueAutoTestingTicket, publishAutoTestingRun } from '../testing/autoTe
 import { fetchElevenLabs } from './elevenLabsHttp';
 import { resolveAgentTtsSettings, type ElevenLabsTtsSettings } from './yandexRealtimeTest';
 import { SimulatedVoxSocket, type SimulationEvent } from './realtimeRegressionAudio';
-import { hasOnlyFarewellSteps, managerReplyTo, REGRESSION_CHECKLIST, regressionScenarios, selectRegressionScenarios, type CheckId, type RegressionScenario } from './realtimeRegressionScenarios';
+import { hasOnlyFarewellSteps, managerReplyTo, REGRESSION_CHECKLIST, REGRESSION_FIXTURE_VERSION, regressionScenarios, selectRegressionScenarios, type CheckId, type RegressionScenario } from './realtimeRegressionScenarios';
 import { aggregateRegressionChecks, compareRegressionRuns, EVALUATOR_VERSION, listRegressionReports, loadRegressionReport, REGRESSION_ROOT, summarizeRegression } from './realtimeRegressionHistory';
 import { parseRegressionAssessment, REGRESSION_JUDGE_INSTRUCTIONS, regressionAssessmentScope } from './realtimeRegressionAssessment';
 import { farewellCount, hasClosingIntention, hasNaturalFarewell } from './hypothesis2Closing';
@@ -34,7 +34,7 @@ export type RegressionRun = {
   selectedCheckIds?: CheckId[];
   parentRunId?: string;
   configurationHash?: string;
-  configuration?: { plan: RealtimeTestPlanConfiguration; tts: ElevenLabsTtsSettings; runtime?: ReturnType<typeof callPlanAutoTestConfiguration> };
+  configuration?: { plan: RealtimeTestPlanConfiguration; tts: ElevenLabsTtsSettings; fixtureVersion?: string; runtime?: ReturnType<typeof callPlanAutoTestConfiguration> };
   executorPid?: number;
   target?: 'hypothesis2' | 'call_plan';
   executionMode?: 'simulation';
@@ -348,9 +348,10 @@ export async function startRegression(plan: RealtimeTestPlanConfiguration, owner
   void (async () => {
     try {
       const tts = await resolveAgentTtsSettings();
-      run.configuration = { plan: structuredClone(plan), tts,
+      run.configuration = { plan: structuredClone(plan), tts, fixtureVersion: REGRESSION_FIXTURE_VERSION,
         ...(run.target === 'call_plan' ? { runtime: callPlanAutoTestConfiguration() } : {}) };
       run.configurationHash = createHash('sha256').update(JSON.stringify({ plan, tts, target: run.target, model,
+        fixtureVersion: REGRESSION_FIXTURE_VERSION,
         endpointSilenceMs: config.openaiRealtimeEndpointSilenceMs,
         longTurnSilenceMs: config.openaiRealtimeLongTurnEndpointSilenceMs,
         transcriptionModel: config.openaiRealtimeTranscriptionModel,

@@ -1,12 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
-import type { AuditDetailItem } from '../../../shared/api/adminPanel';
+import { fetchAuditDetail, type AuditDetailItem } from '../../../shared/api/adminPanel';
 import { trackProductEvent } from '../../../shared/analytics/productAnalytics';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
 import { $auth, apiFetch } from '../../../entities/session';
+import { enrichDialogExamples } from '../model/dialogExamples';
+import { TranscriptionReviewNotice } from './TranscriptionReviewNotice';
+import { ExampleReviewNotice } from './ExampleReviewNotice';
+import { AnalyticsProgress } from './AnalyticsProgress';
+import { needsAnalyticsRefresh, pollAuditAnalytics } from '../model/analyticsPolling';
 
 type UnifiedReport = NonNullable<AuditDetailItem['unifiedReport']>;
-type DialogLine = UnifiedReport['dialog'][number] & { betterExample?: string | null };
 
 const STATUS_LABELS: Record<AuditDetailItem['status'], string> = {
   completed: 'Завершён',
@@ -68,32 +72,6 @@ function resolveCategoryScores(
     ...item,
     score: fromBlocks.get(item.name) ?? fallback,
   }));
-}
-
-function enrichDialogExamples(
-  dialog: UnifiedReport['dialog'],
-  findings: UnifiedReport['keyFindings'],
-): DialogLine[] {
-  return dialog.map((line) => {
-    const existing = (line as DialogLine).betterExample?.trim() || null;
-    if (line.role !== 'manager') return { ...line, betterExample: null };
-    if (line.mark !== 'negative') return { ...line, betterExample: null };
-    if (existing) return { ...line, betterExample: existing };
-
-    const text = line.text.trim().toLowerCase();
-    const matched = findings.find((finding) => {
-      const quote = finding.quote.trim().toLowerCase();
-      if (!quote || !text) return false;
-      return text.includes(quote)
-        || quote.includes(text)
-        || text.includes(quote.slice(0, Math.min(40, quote.length)));
-    });
-
-    return {
-      ...line,
-      betterExample: matched?.betterExample?.trim() || null,
-    };
-  });
 }
 
 function ScoreGauge({ score }: { score: number }) {
@@ -447,17 +425,29 @@ function AuditRecording({ detail, canDownloadCall }: { detail: AuditDetailItem; 
 }
 
 export function AuditAnalyticsReport({
-  detail,
+  detail: providedDetail,
   onOpenEmployee,
 }: {
   detail: AuditDetailItem;
   onOpenEmployee?: (id: string) => void;
 }) {
   const auth = useUnit($auth);
+  const [refreshed, setRefreshed] = useState<AuditDetailItem | null>(null);
+  const [connectionErrorId, setConnectionErrorId] = useState<string | null>(null);
+  const detail = refreshed?.id === providedDetail.id && !providedDetail.unifiedReport ? refreshed : providedDetail;
+  useEffect(() => {
+    if (auth.status !== 'authenticated' || !needsAnalyticsRefresh(providedDetail)) return;
+    return pollAuditAnalytics({
+      load: (signal) => fetchAuditDetail(providedDetail.id, signal),
+      onDetail: (next) => { setRefreshed(next); setConnectionErrorId(null); },
+      onError: () => setConnectionErrorId(providedDetail.id),
+    });
+  }, [providedDetail.id, providedDetail.unifiedReport, auth.status]);
   const isPlatformSuperadmin = auth.status === 'authenticated'
     && auth.user.memberships.some((membership) => membership.role === 'platform_superadmin');
   const canDownloadRecording = isPlatformSuperadmin;
   const report = detail.unifiedReport;
+  const analyticsPending = !report && ['waiting', 'processing'].includes(detail.analyticsProgress?.status ?? '');
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [findingsOpen, setFindingsOpen] = useState(false);
   const [recommendationsOpen, setRecommendationsOpen] = useState(false);
@@ -509,7 +499,7 @@ export function AuditAnalyticsReport({
         <div>
           <div className="sa-call-report-eyebrow-row">
             <div className="sa-call-report-eyebrow">{detail.type === 'trainer' ? 'Отчёт по тренировке' : 'Отчёт по звонку'}</div>
-            <span className={`sa-status-badge ${STATUS_CLASS[detail.status]}`}>{STATUS_LABELS[detail.status]}</span>
+            <span className={`sa-status-badge ${analyticsPending ? 'sa-analytics-status-pending' : STATUS_CLASS[detail.status]}`}>{analyticsPending ? 'Расчёт аналитики' : STATUS_LABELS[detail.status]}</span>
           </div>
           <h1 className="sa-page-title sa-call-report-title">{detail.employeeName}</h1>
           <div className="sa-call-report-meta">
@@ -630,6 +620,8 @@ export function AuditAnalyticsReport({
           </section>
 
           <AuditRecording detail={detail} canDownloadCall={canDownloadRecording} />
+          <TranscriptionReviewNotice items={report.transcriptionUncertainties} />
+          <ExampleReviewNotice items={report.exampleReviews} />
 
           <section className="sa-call-report-block">
             <h2 className="sa-section-title">Категории</h2>
@@ -838,12 +830,7 @@ export function AuditAnalyticsReport({
       ) : (
         <>
           <AuditRecording detail={detail} canDownloadCall={canDownloadRecording} />
-          <section className="sa-call-report-section">
-            <h2 className="sa-section-title">Отчёт</h2>
-            <p className="sa-call-report-section-desc">
-              Для полного отчёта нужны transcript и AI-оценка звонка. Если данные уже есть, откройте страницу позже: backend догенерирует отчёт и сохранит его.
-            </p>
-          </section>
+          <AnalyticsProgress detail={detail} connectionLost={connectionErrorId === detail.id} />
         </>
       )}
     </div>

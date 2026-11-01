@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RealtimeRegressionCheck, RealtimeRegressionComparison, RealtimeRegressionRun } from '../../../shared/api/adminPanel';
 import { REGRESSION_CHECKLIST } from '../../../../../src/voice/realtimeRegressionScenarios';
 import { TRAINER_TEST_CHECKS } from '../../../../../src/testing/trainerTestCatalog';
+import { REPORT_TEST_CHECKS, REPORT_TEST_SCENARIOS } from '../../../../../src/testing/reportTestCatalog';
 import { countChecks, groupChecks, matchesCheckFilter, timingLabel } from '../model/regressionReport';
 import { CheckRows, ComparisonResults, RegressionReport, ScenarioResults } from './RegressionReport';
 
@@ -22,6 +23,19 @@ function renderReport(run: RealtimeRegressionRun) {
 }
 
 describe('compact regression report grouping and filters', () => {
+  it('groups all 29 report checks and keeps report-specific links and limitations', () => {
+    const run = makeRun({ target: 'report', checklist: REPORT_TEST_CHECKS.map(([id, title]) => ({ id, title, status: 'review', evidence: [] })) });
+    const html = renderReport(run);
+    expect(html.match(/class="testing-report-group"/g)).toHaveLength(5); expect(html).toContain('Примеры «Как лучше»'); expect(html).toContain('target=report'); expect(html).toContain('Аудиораспознавание, диаризация'); expect(html).not.toContain('реальные буферы Voximplant');
+  });
+  it('exposes original fixtures and generated report details, without an invented live dialogue', () => {
+    const fixture = REPORT_TEST_SCENARIOS[0];
+    const run = makeRun({ target: 'report', cases: [{ id: fixture.id, title: fixture.title, status: 'completed', checks: [], fixture,
+      output: { transcript: fixture.transcript, timings: { evaluationMs: 10, reportMs: 20, totalMs: 30 }, evaluation: { overall_score_0_100: 80 }, report: { version: 'call-report-v1', source: 'call', totalScore: 80, verdict: 'Хорошо', summary: 'Уникальное резюме тестового отчёта', categories: [], strengths: ['Сильная сторона'], weaknesses: ['Пробел'], keyFindings: [], recommendations: [], dialog: [] } },
+    }] });
+    const html = renderToStaticMarkup(<ScenarioResults run={run} disabled={false} onTest={() => {}} />);
+    expect(html).toContain('Эталонный диалог и ожидаемые факты'); expect(html).toContain('Уникальное резюме тестового отчёта'); expect(html).toContain('Оценка: 10 мс'); expect(html).toContain('Полный JSON отчёта'); expect(html).not.toContain('Диалог · 0 реплик'); expect(html).not.toContain('Прослушать запись');
+  });
   it('renders the twenty trainer checks in the four agreed groups with a trainer-specific saved link', () => {
     const run = makeRun({ target: 'trainer', checklist: TRAINER_TEST_CHECKS.map(([id, title]) => ({ id, title, status: 'review', evidence: [] })) });
     const html = renderReport(run);

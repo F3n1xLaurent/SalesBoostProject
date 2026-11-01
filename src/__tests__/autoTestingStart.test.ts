@@ -48,7 +48,7 @@ describe('production-call autotest configuration (no billed providers)', () => {
   it('exposes extensible target metadata but no keys, and does not advertise unimplemented tests', () => {
     const catalog = autoTestingCatalog();
     expect(catalog.targets.map((target) => target.id)).toEqual(['call_plan', 'report', 'trainer']);
-    expect(catalog.targets.map((target) => target.available)).toEqual([true, false, Boolean(config.openaiApiKey || config.proxyApiKey)]);
+    expect(catalog.targets.map((target) => target.available)).toEqual([true, Boolean(config.openaiApiKey || config.proxyApiKey), Boolean(config.openaiApiKey || config.proxyApiKey)]);
     expect(JSON.stringify(catalog)).not.toContain('mock-key');
     expect(catalog.targets[0].configuration?.model).toBe('gpt-realtime-2.1');
   });

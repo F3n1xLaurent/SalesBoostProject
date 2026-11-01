@@ -18,6 +18,7 @@ export const REGRESSION_CHECKLIST = [
   ['ending', 'Единое естественное прощание и корректное завершение'],
 ] as const;
 export type CheckId = typeof REGRESSION_CHECKLIST[number][0];
+export const REGRESSION_FIXTURE_VERSION = '2026-10-30.1';
 export type RegressionStep = {
   text?: string;
   silenceMs?: number;
@@ -88,7 +89,7 @@ export function regressionScenarios(subject: string): RegressionScenario[] {
       { text: 'Да, у Волги пробег тридцать тысяч километров.', wait: 'response' },
       { text: `Извините, перепутал карточку, говорим про ${subject}. Но год выпуска в объявлении неверный: на самом деле две тысячи двадцать четвёртый.`, wait: 'response' },
       { text: 'И поправка: меня зовут не Никита, а Антон. Обращайтесь ко мне Антон.', wait: 'response' },
-      { text: 'Да, пробег тридцать тысяч километров, актуальный, подтверждён сервисной историей.', wait: 'response' },
+      { text: `Уточнил карточку: это именно ${subject}; названный мной две тысячи двадцать четвёртый год был ошибкой. Пробег тридцать тысяч километров актуальный и подтверждён сервисной историей.`, wait: 'response' },
     ] },
     { id: 'hold', title: 'Ожидание и перевод на другого сотрудника', checks: ['automation', 'situations', 'identity'], steps: [greeting,
       { text: 'Подождите, пожалуйста, сейчас переведу на другого сотрудника. Оставайтесь на линии.', wait: 'quiet' },
@@ -113,6 +114,7 @@ export function regressionScenarios(subject: string): RegressionScenario[] {
 export function managerReplyTo(text: string, subject: string): string {
   if (/(?:до свидания|всего доброго|хорошего дня)/iu.test(text)) return 'Спасибо, до свидания.';
   if (/как.*(?:зовут|обращаться)/iu.test(text)) return 'Меня зовут Никита.';
+  if (/(?:запас(?:н|к)|докатк|ремкомплект)/iu.test(text)) return 'В комплекте есть докатка, она исправна. Полноразмерного запасного колеса нет.';
   // Specific facts take priority over generic "актуально"/"объявление".
   if (/(?:пробег|километр)/iu.test(text)) return 'Пробег тридцать тысяч километров, он актуальный и подтверждён сервисной историей.';
   if (/(?:актуаль|в наличии|продан|не ушла)/iu.test(text)) return `Да, ${subject} в наличии, объявление актуально.`;

@@ -1,6 +1,8 @@
 import { autoTestDiagnostics, formatAutoTestDiagnostics, readLocalAutoTestReport, redactDiagnosticData } from '../src/testing/autoTestingDiagnostics';
 import { compareRegressionRuns } from '../src/voice/realtimeRegressionHistory';
 import { readLocalTrainerTestReport, trainerTestDiagnostics } from '../src/testing/trainerTestDiagnostics';
+import { readLocalReportTest, reportTestDiagnostics } from '../src/testing/reportTestDiagnostics';
+import { compareReportRuns } from '../src/testing/reportTestHistory';
 
 async function main() {
   const args = process.argv.slice(2);
@@ -18,7 +20,12 @@ async function main() {
     options[name] = args.shift()!;
   }
   const selection = { checkId: options['--check'], scenarioId: options['--scenario'] };
-  // UUIDs are unique across both archives. No provider calls or server credentials needed.
+  // UUIDs are unique across the archives. No provider calls or server credentials needed.
+  const reportRun = await readLocalReportTest(id).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
+  if (reportRun) {
+    const before = options['--compare'] ? await readLocalReportTest(options['--compare']) : undefined;
+    console.log(JSON.stringify({ report: reportTestDiagnostics(reportRun, selection), ...(before ? { comparison: redactDiagnosticData(compareReportRuns(before, reportRun)) } : {}) }, null, 2)); return;
+  }
   const trainer = await readLocalTrainerTestReport(id).catch((error) => { if (error.code === 'ENOENT') return null; throw error; });
   if (trainer) {
     const before = options['--compare'] ? trainerTestDiagnostics(await readLocalTrainerTestReport(options['--compare']), selection) : undefined;

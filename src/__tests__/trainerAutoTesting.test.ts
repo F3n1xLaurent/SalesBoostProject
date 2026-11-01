@@ -5,7 +5,8 @@ import type { Request, Response } from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TRAINER_TEST_CHECKS, TRAINER_TEST_GROUPS, TRAINER_TEST_SCENARIOS, selectTrainerTestScenarios, type TrainerTestScenario } from '../testing/trainerTestCatalog';
 import { aggregateTrainerChecks, compareTrainerRuns, createTrainerAutoTesting, parseTrainerAssessment, trainerTransportChecks, type TrainerTestDependencies, type TrainerTestRun, type TrainerTestSession, type TrainerTestTurn } from '../testing/trainerAutoTesting';
-import { claimTrainerTurn } from '../trainer/trainerVoicePipeline';
+import { TrainerVoiceTurns } from '../trainer/trainerVoiceTurns';
+import { trainerJudgeTranscript, TRAINER_JUDGE_INSTRUCTIONS } from '../testing/trainerAutoTesting';
 import { TRAINER_BUILTIN_SUITE_ID } from '../testing/trainerBuiltinFixtures';
 
 vi.mock('../trainer/trainerRecording', () => ({ renderTrainerRecording: vi.fn(async () => ({ durationSec: 1, turnCount: 2 })) }));
@@ -36,15 +37,18 @@ async function setup() {
     listSources: vi.fn(async () => []),
     synthesize: vi.fn(async (text) => ({ audioBase64: Buffer.from(text.padEnd(600, ' ')).toString('base64'), mimeType: 'audio/wav' })),
     adaptiveReply: vi.fn(async () => 'Автомобиль в наличии, цена по объявлению, подробности уточню.'),
-    assess: vi.fn(async (scenario: TrainerTestScenario) => scenario.checks.filter((id) => !['trainer-voice', 'trainer-audio', 'trainer-delivery', 'trainer-pronunciation', 'trainer-correction'].includes(id)).map((id) => ({ id, title: id, status: 'pass' as const, evidence: ['[1] AI: Проверяемый ответ'] }))),
+    assess: vi.fn(async (scenario: TrainerTestScenario) => scenario.checks.filter((id) => !['trainer-voice', 'trainer-audio', 'trainer-delivery', 'trainer-pronunciation'].includes(id)).map((id) => ({ id, title: id, status: 'pass' as const, evidence: ['[1] AI: Проверяемый ответ'] }))),
     createSession: vi.fn(async (_source, id) => {
       const transcript: TrainerTestTurn[] = [];
       const voices: ReturnType<TrainerTestSession['snapshot']>['voices'] = [];
       const tasks = new Set<string>();
+      const voicesQueue = new TrainerVoiceTurns(tasks, 0);
       function answer(text: string) { const audio = Buffer.alloc(1024).toString('base64'); transcript.push({ role: 'client', text, audioBase64: audio, audioMimeType: 'audio/wav', timings: { totalMs: 200, ttsMs: 100, textMs: 80 } }); voices.push({ provider: 'elevenlabs', voiceId: 'one-voice', spokenText: text }); }
       return { initialize: async () => { answer('Здравствуйте, какая цена?'); }, voice: async ({ audioBase64 }: { audioBase64: string; mimeType: string }) => {
-        const release = claimTrainerTurn(tasks, id);
-        try { await Promise.resolve(); transcript.push({ role: 'manager', text: Buffer.from(audioBase64, 'base64').toString().trim(), audioBase64, audioMimeType: 'audio/wav' }); answer(`Ответ номер ${voices.length}`); return { endConversation: false }; } finally { release(); }
+        return voicesQueue.submit(id, audioBase64, async (audio) => Buffer.from(audio, 'base64').toString().trim(), async (texts, control) => {
+          control.commit(); transcript.push({ role: 'manager', text: texts.join('\n'), audioBase64, audioMimeType: 'audio/wav' });
+          answer(texts.some((text) => text.includes('Поправлюсь')) ? 'Итоговая цена — 6 405 000 рублей.' : `Ответ номер ${voices.length}`); return { endConversation: false };
+        });
       }, snapshot: () => ({ transcript, voices }), close: closed };
     }),
   };
@@ -63,6 +67,9 @@ describe('trainer checklist and evidence (no billed providers)', () => {
     const turns: TrainerTestTurn[] = [{ role: 'manager', text: 'Как вас зовут?' }, { role: 'client', text: 'Меня зовут Мария.' }];
     const evaluate = (turnIndices: number[], evaluatedRole = 'ai_client') => parseTrainerAssessment(['trainer-identity'], turns, { checks: [{ id: 'trainer-identity', status: 'pass', reason: 'Имя сохранено', evaluatedRole, turnIndices }] })[0].status;
     expect(evaluate([1])).toBe('pass'); expect(evaluate([0])).toBe('review'); expect(evaluate([100])).toBe('review'); expect(evaluate([1], 'manager')).toBe('review');
+    expect(evaluate([1, 100])).toBe('review');
+    expect(trainerJudgeTranscript(turns)).toEqual([{ turnIndex: 0, speaker: 'manager_fixture', role: 'manager', text: turns[0].text }, { turnIndex: 1, speaker: 'ai_client', role: 'client', text: turns[1].text }]);
+    expect(TRAINER_JUDGE_INSTRUCTIONS).toContain('индекс с НУЛЯ'); expect(TRAINER_JUDGE_INSTRUCTIONS).toContain('Esteo → Steo');
   });
   it('detects actual voice switching, missing audio, text truncation and dropped corrections', () => {
     const scenario = TRAINER_TEST_SCENARIOS[0];
@@ -110,10 +117,12 @@ describe('isolated trainer test runner, persistence and authorization', () => {
     expect(JSON.stringify(saved)).not.toContain('audioBase64'); expect(JSON.stringify(context)).toBe(sourceBefore);
     expect(await fresh.load(run.id, 'another-owner')).toBeNull(); expect(await fresh.load('../report', 'owner')).toBeNull();
   });
-  it('sends two separate correction voice messages before the first answer is ready and records the rejected second message', async () => {
+  it('accepts two separate corrections through the shared coordinator and keeps one client reply', async () => {
     const { api } = await setup(); const run = await api.start(request({ sourceId: 'source', checkIds: ['trainer-correction'] })); await wait(run);
-    expect(run.cases[0].inputs?.slice(0, 2).map((item) => item.accepted)).toEqual([true, false]);
-    expect(run.checklist.find((point) => point.id === 'trainer-correction')?.status).toBe('fail');
+    expect(run.cases[0].inputs?.slice(0, 2).map((item) => item.accepted)).toEqual([true, true]);
+    expect(run.cases[0].correctionReplyCount).toBe(1);
+    expect(run.cases[0].session?.transcript[1].text).toContain('Поправлюсь');
+    expect(run.checklist.find((point) => point.id === 'trainer-correction')?.status).toBe('pass');
   });
   it('does not fabricate a female persona or voice when no female source was supplied', async () => {
     const { api, deps } = await setup(); const run = await api.start(request({ sourceId: 'source', scenarioIds: ['trainer-female'] })); await wait(run);

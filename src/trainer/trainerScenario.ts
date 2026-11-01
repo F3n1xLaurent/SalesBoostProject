@@ -1,4 +1,5 @@
 import { stripLeadingClientGreetings } from '../voice/customerScenarioPrompt';
+import { hasNaturalFarewell } from '../voice/hypothesis2Closing';
 
 type TrainerScenarioQuestion = {
   text?: string;
@@ -80,6 +81,27 @@ export function isNonProgressingTrainerReply(value: unknown): boolean {
     .trim();
   if (!normalized) return true;
   return /^(?:(?:да|ну)\s+)?(?:понял|поняла|понятно|хорошо|ладно|ясно|ага|угу)(?:\s+(?:понял|поняла|понятно|хорошо|ладно|ясно|ага|угу))*$/.test(normalized);
+}
+
+export function isTrainerWaitingReply(value: unknown): boolean {
+  const text = normalizeDialogText(value);
+  return /^(?:(?:да|ну|понял|поняла|хорошо|ладно|ясно|понятно)\s+)*(?:жду|ожидаю)(?:\s+(?:вашего\s+)?(?:ответа|ответ|уточнения|уточнение))?$/u.test(text);
+}
+/** A first wait acknowledgement is fine; a sequence of them is not progress. */
+export function ensureTrainerProgressingReply(reply: string, history: Array<{ role: string; text: string }>, questions: Array<{ text?: string; question?: string }>, managerText: string): string {
+  if (managerText.includes('?') || !isTrainerWaitingReply(reply)
+    || !isTrainerWaitingReply(history.filter((turn) => turn.role === 'client').at(-1)?.text)) return reply;
+  const said = history.filter((turn) => turn.role === 'client').map((turn) => normalizeDialogText(turn.text));
+  const next = questions.map((item) => cleanText(item.text || item.question)).find((text) => {
+    const words = normalizeDialogText(text).split(' ').filter((word) => word.length >= 4);
+    return text && !said.some((line) => line.includes(normalizeDialogText(text)) || (words.length > 0 && words.filter((word) => line.includes(word)).length / words.length >= .7));
+  });
+  return next ? `Тогда ещё уточню: ${next}` : 'Спасибо за информацию. Мне нужно подумать, всего доброго.';
+}
+export function ensureTrainerFarewell(reply: string, ending: boolean, atLimit = false): string {
+  if (!ending || hasNaturalFarewell(reply)) return reply;
+  const body = isTrainerWaitingReply(reply) ? '' : atLimit ? reply.replace(/[^.!?]*\?/gu, '').trim() : reply.trim();
+  return `${body ? `${body.replace(/[\s,;—-]+$/u, '')}${/[.!…]$/u.test(body) ? '' : '.'} ` : ''}Спасибо за разговор, всего доброго.`;
 }
 
 function normalizeDialogText(value: unknown): string {

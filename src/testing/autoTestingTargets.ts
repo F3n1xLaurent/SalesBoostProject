@@ -23,8 +23,8 @@ export function autoTestingCatalog() {
   return { targets: [
     { id: 'call_plan' as const, title: 'Звонки по плану', available: configuration.available,
       description: 'Диалог, сценарий, функции и голос основной телефонии — без набора номера.', configuration },
-    { id: 'report' as const, title: 'Отчёты', available: false,
-      description: 'В дальнейшем: корректность оценки, критериев и выводов отчёта.' },
+    { id: 'report' as const, title: 'Отчёты', available: Boolean(config.openaiApiKey || config.proxyApiKey),
+      description: '29 пунктов чеклиста: отчёты звонков и тренажёра на встроенных диалогах, без звонка и изменения статистики сотрудников.' },
     { id: 'trainer' as const, title: 'Тренировки', available: Boolean(config.openaiApiKey || config.proxyApiKey),
       description: '20 критериев на встроенных сценариях и профилях. Предыдущие тренировки и ручной выбор женского профиля не нужны.' },
   ] };

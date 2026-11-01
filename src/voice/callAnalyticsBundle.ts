@@ -1,16 +1,21 @@
 import { config } from '../config';
 import { prisma } from '../db';
-import { compatibleChatTemperature, openai } from '../lib/openaiClient';
+import { compatibleChatTemperature } from '../lib/openaiClient';
+import { REPORT_QUALITY_RULES } from './reportQualityRules';
+import { requestReportJson } from './reportGeneration';
 import type { CallSummary, ReplyImprovement } from './callSummary';
 import type { TranscriptTurn } from './callHistory';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
   getCallReportProblemCatalog,
+  withReportProblemVariants,
 } from './problemCatalog';
 import {
   ensureRecommendationFindingCoverage,
   normalizeUnifiedCallReport,
-  ensureFindingBetterExamples,
+  ensureReportExampleQuality,
+  ensureReportDialogCoverage,
+  finalizeGeneratedReport,
   UNIFIED_REPORT_CATEGORIES,
   unifiedVerdict,
   type UnifiedCallReport,
@@ -47,7 +52,7 @@ export async function generateCallAnalyticsBundle(input: {
   const checklist = Array.isArray(input.evaluation.checklist) ? input.evaluation.checklist : [];
   const issues = Array.isArray(input.evaluation.issues) ? input.evaluation.issues : [];
   const recommendations = Array.isArray(input.evaluation.recommendations) ? input.evaluation.recommendations : [];
-  const catalog = await getCallReportProblemCatalog(prisma);
+  const catalog = withReportProblemVariants(await getCallReportProblemCatalog(prisma));
   const problemCatalog = catalog
     .map((problem, index) => `${index + 1}. ${problem.category} — ${problem.title}`)
     .join('\n');
@@ -59,6 +64,7 @@ export async function generateCallAnalyticsBundle(input: {
     'Сформируй компактный единый отчёт по звонку тайного покупателя. Верни ТОЛЬКО валидный JSON.',
     '',
     'Общие правила:',
+    REPORT_QUALITY_RULES,
     '- Все пользовательские тексты строго на русском.',
     '- Слово «менеджер» во всех аналитических формулировках согласуй только в мужском роде: «менеджер представился», «назвал», «ответил», независимо от пола или голоса сотрудника.',
     '- Логика скоринга уже рассчитана, не переоценивай с нуля.',
@@ -100,9 +106,9 @@ export async function generateCallAnalyticsBundle(input: {
     '- Для каждой keyFinding обязательно сформируй betterExample: готовую реплику менеджера, которая устраняет именно это замечание. Если конкретных данных недостаточно, используй нейтральный уточняющий вопрос без выдуманных фактов.',
     '- dialog не должен повторять текст реплик: верни только элементы с mark/comment в том же количестве и порядке, что исходный диалог.',
     '- Для реплики клиента mark=null и comment=null.',
-    '- Для реплики менеджера mark: positive | normal | negative, comment короткий, до 90 символов.',
-    '- Для mark=normal или mark=negative comment обязателен и конкретно объясняет пометку. Без объяснения ставь mark=null.',
-    '- betterExample добавляй только для mark=negative и только если он явно устраняет указанную проблему. Используй лишь факты, известные к моменту этой реплики; не используй сведения клиента из более поздних реплик. Если безопасного улучшения нет или это простое перефразирование, верни null.',
+    '- Для реплики менеджера mark: positive | normal | negative; comment отражает выполненное и пробел, не только ошибку.',
+    '- Для КАЖДОЙ реплики менеджера, включая positive, comment обязателен: конкретно объясни выполненное действие и/или пробел.',
+    '- Для normal/negative сформируй единый полный betterExample, исправляющий замечания. Для positive — null. Не используй сведения клиента из более поздних реплик.',
     '- keyFindings: все подтверждённые существенные ошибки, обычно 2-5 пунктов, максимум 8. Перед возвратом JSON сверь их с summary, categories, weaknesses и recommendations.',
     '- strengths/weaknesses/recommendations: по 2-4 коротких пункта.',
     '',
@@ -132,7 +138,7 @@ export async function generateCallAnalyticsBundle(input: {
     }, null, 2),
   ].join('\n');
 
-  const response = await openai.chat.completions.create({
+  const parsed = await requestReportJson({
     model: config.openaiChatModel,
     messages: [
       {
@@ -143,25 +149,23 @@ export async function generateCallAnalyticsBundle(input: {
     ],
     response_format: { type: 'json_object' },
     ...compatibleChatTemperature(config.openaiChatModel, 0.25),
-    max_completion_tokens: 2200,
   });
 
-  const content = response.choices[0]?.message?.content?.trim();
-  if (!content) throw new Error('Empty call analytics bundle response');
-  const parsed = JSON.parse(content) as Record<string, unknown>;
   const unifiedCallReport = normalizeUnifiedCallReport(
     parsed,
-    { totalScore, transcript: input.transcript, source: 'call', evaluation: input.evaluation },
+    { totalScore, transcript: input.transcript, source: 'call', evaluation: input.evaluation,
+      dimensionScores: input.evaluation.dimension_scores as Record<string, number> | undefined, scenarioContext: input.scenarioContext },
     catalog,
   );
   const coveredReport = unifiedCallReport
-    ? await ensureRecommendationFindingCoverage(unifiedCallReport, input.transcript, catalog, input.evaluation)
+    ? await ensureRecommendationFindingCoverage(unifiedCallReport, input.transcript, catalog, input.evaluation, input.scenarioContext)
     : null;
+  const annotatedReport = coveredReport ? await ensureReportDialogCoverage(coveredReport, input.transcript, input.evaluation) : null;
   return {
     callSummary: null,
     replyImprovements: null,
-    unifiedCallReport: coveredReport
-      ? await ensureFindingBetterExamples(coveredReport, input.transcript, input.scenarioContext)
+    unifiedCallReport: annotatedReport
+      ? finalizeGeneratedReport(await ensureReportExampleQuality(annotatedReport, input.transcript, input.scenarioContext))
       : null,
   };
 }

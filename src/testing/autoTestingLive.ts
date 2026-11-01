@@ -4,9 +4,11 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { RegressionRun } from '../voice/realtimeRegression';
 import type { TrainerTestRun } from './trainerAutoTesting';
+import type { ReportTestRun } from './reportAutoTesting';
 
-type LiveRun = RegressionRun | TrainerTestRun;
-type LiveTarget = 'call_plan' | 'trainer';
+type LiveRun = RegressionRun | TrainerTestRun | ReportTestRun;
+type LiveTarget = 'call_plan' | 'trainer' | 'report';
+const liveTarget = (run: LiveRun): LiveTarget => run.target === 'trainer' || run.target === 'report' ? run.target : 'call_plan';
 export type AutoTestingSnapshot = { type: 'run.snapshot'; target: LiveTarget; run: LiveRun; revision: number };
 type Ticket = { runId: string; ownerId: string; expiresAt: number; target: LiveTarget };
 const listeners = new Map<string, Set<(event: AutoTestingSnapshot) => void>>();
@@ -17,7 +19,7 @@ export function publishAutoTestingRun(run: LiveRun): void {
   const revision = (revisions.get(run.id) ?? 0) + 1;
   revisions.set(run.id, revision);
   for (const listener of listeners.get(run.id) ?? []) {
-    try { listener({ type: 'run.snapshot', target: run.target === 'trainer' ? 'trainer' : 'call_plan', run, revision }); }
+    try { listener({ type: 'run.snapshot', target: liveTarget(run), run, revision }); }
     catch { console.warn('[auto-testing] disconnected live observer'); }
   }
   if (run.status !== 'running') revisions.delete(run.id);
@@ -54,7 +56,7 @@ export function attachAutoTestingSocket(ws: WebSocket, run: LiveRun): void {
   ws.on('pong', () => { alive = true; });
   const cleanup = () => { unsubscribe(); clearInterval(heartbeat); };
   ws.once('close', cleanup); ws.once('error', cleanup);
-  send({ type: 'run.snapshot', target: run.target === 'trainer' ? 'trainer' : 'call_plan', run, revision: revisions.get(run.id) ?? 0 });
+  send({ type: 'run.snapshot', target: liveTarget(run), run, revision: revisions.get(run.id) ?? 0 });
 }
 
 export function createAutoTestingUpgradeHandler(loadRun: (id: string, ownerId: string, target: LiveTarget) => Promise<LiveRun | null>) {
@@ -62,9 +64,9 @@ export function createAutoTestingUpgradeHandler(loadRun: (id: string, ownerId: s
   return (request: IncomingMessage, socket: Duplex, head: Buffer): boolean => {
     let url: URL;
     try { url = new URL(request.url || '/', 'http://localhost'); } catch { return false; }
-    const match = /^\/api\/admin\/auto-testing\/(call-plan|trainer)\/runs\/([a-z0-9-]{1,64})\/live$/i.exec(url.pathname);
+    const match = /^\/api\/admin\/auto-testing\/(call-plan|trainer|report)\/runs\/([a-z0-9-]{1,64})\/live$/i.exec(url.pathname);
     if (!match) return false;
-    const target: LiveTarget = match[1] === 'trainer' ? 'trainer' : 'call_plan';
+    const target: LiveTarget = match[1] === 'trainer' ? 'trainer' : match[1] === 'report' ? 'report' : 'call_plan';
     const ticket = consumeAutoTestingTicket(url.searchParams.get('ticket') || '', match[2], target);
     if (!ticket) { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); socket.destroy(); return true; }
     let disconnected = false;
@@ -73,7 +75,7 @@ export function createAutoTestingUpgradeHandler(loadRun: (id: string, ownerId: s
     void loadRun(match[2], ticket.ownerId, target).then((run) => {
       socket.removeListener('close', disconnectedHandler);
       if (disconnected || socket.destroyed) return;
-      if (!run || run.ownerId !== ticket.ownerId || (run.target === 'trainer') !== (target === 'trainer')) { socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
+      if (!run || run.ownerId !== ticket.ownerId || liveTarget(run) !== target) { socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
       wss.handleUpgrade(request, socket, head, (ws) => attachAutoTestingSocket(ws, run));
     }).catch(() => socket.destroy());
     return true;

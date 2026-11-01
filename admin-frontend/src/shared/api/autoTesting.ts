@@ -47,14 +47,14 @@ export type TrainerTestSource = { id: string; name: string; companyId: string | 
 export function fetchTrainerTestSources(holdingId?: string, signal?: AbortSignal): Promise<{ items: TrainerTestSource[] }> {
   return json(`${ROOT}/trainer/sources${holdingId ? `?${new URLSearchParams({ holdingId })}` : ''}`, { signal });
 }
-export function autoTestingClient(target: 'call_plan' | 'trainer' = 'call_plan') {
-  const root = target === 'trainer' ? `${ROOT}/trainer/runs` : CALL_PLAN_RUNS;
+export function autoTestingClient(target: AutoTestingTarget = 'call_plan') {
+  const root = target === 'call_plan' ? CALL_PLAN_RUNS : `${ROOT}/${target}/runs`;
   return {
     fetchRun: (id: string, signal?: AbortSignal) => json<RealtimeRegressionRun>(`${root}/${encodeURIComponent(id)}`, { signal }),
-    history: (sourceId: string, offset = 0) => json<RealtimeRegressionHistory>(`${root}?${new URLSearchParams(target === 'trainer' ? { offset: String(offset) } : { planId: sourceId, offset: String(offset) })}`),
+    history: (sourceId: string, offset = 0) => json<RealtimeRegressionHistory>(`${root}?${new URLSearchParams(target !== 'call_plan' ? { offset: String(offset) } : { planId: sourceId, offset: String(offset) })}`),
     compare: (before: string, after: string) => json<RealtimeRegressionComparison>(`${root}/${encodeURIComponent(before)}/compare?${new URLSearchParams({ against: after })}`),
     cancel: (id: string) => json(`${root}/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
-    start: (sourceId: string, selection: RealtimeRegressionSelection, femaleSourceId?: string) => json<RealtimeRegressionRun>(root, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [target === 'trainer' ? 'sourceId' : 'planId']: sourceId, ...selection, ...(target === 'trainer' && femaleSourceId ? { femaleSourceId } : {}) }) }),
+    start: (sourceId: string, selection: RealtimeRegressionSelection, femaleSourceId?: string) => json<RealtimeRegressionRun>(root, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(target === 'report' ? {} : { [target === 'trainer' ? 'sourceId' : 'planId']: sourceId }), ...selection, ...(target === 'trainer' && femaleSourceId ? { femaleSourceId } : {}) }) }),
     audio: async (id: string, caseId: string) => { const response = await apiFetch(`${root}/${encodeURIComponent(id)}/audio/${encodeURIComponent(caseId)}`); if (!response.ok) throw new Error('Не удалось загрузить запись теста.'); return response.blob(); },
   };
 }
@@ -63,8 +63,8 @@ export function watchCallPlanAutoTest(id: string, callbacks: {
   onUpdate: (run: RealtimeRegressionRun) => void;
   onConnection: (connection: AutoTestingConnection) => void;
   onError?: (error: Error) => void;
-}, target: 'call_plan' | 'trainer' = 'call_plan'): () => void {
-  const root = target === 'trainer' ? `${ROOT}/trainer/runs` : CALL_PLAN_RUNS;
+}, target: AutoTestingTarget = 'call_plan'): () => void {
+  const root = target === 'call_plan' ? CALL_PLAN_RUNS : `${ROOT}/${target}/runs`;
   const controller = new AbortController();
   let stopped = false;
   let connected = false;
@@ -83,7 +83,7 @@ export function watchCallPlanAutoTest(id: string, callbacks: {
     if (stopped || connected || polling) return;
     polling = true;
     try {
-      const run = target === 'trainer' ? await autoTestingClient(target).fetchRun(id, signal()) : await fetchCallPlanAutoTest(id, signal());
+      const run = target !== 'call_plan' ? await autoTestingClient(target).fetchRun(id, signal()) : await fetchCallPlanAutoTest(id, signal());
       if (!connected) accept(run);
     } catch (error) {
       if (!stopped) callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));

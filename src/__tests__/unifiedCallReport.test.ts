@@ -77,7 +77,7 @@ describe('unified call report normalization', () => {
       }],
     }, { totalScore: 65, transcript });
     expect(report?.keyFindings[0].betterExample).toBe(
-      'Я уточню полный перечень работ по этой проверке и перечислю его вам, чтобы не пропустить важное.',
+      'Машина прошла проверку. Я уточню полный перечень работ по этой проверке и перечислю его вам, чтобы не пропустить важное.',
     );
   });
 
@@ -281,7 +281,7 @@ describe('unified call report normalization', () => {
     expect(report?.keyFindings[0]?.quote).toBe(opening);
   });
 
-  it('does not attach a better example to a normal manager reply', () => {
+  it('does not accept a generic paraphrase as an improvement to a normal manager reply', () => {
     const managerReply = 'Алексей, я вас понимаю. Эта модель даёт больше комфорта в ежедневных поездках.';
     const report = normalizeUnifiedCallReport(
       {
@@ -303,7 +303,7 @@ describe('unified call report normalization', () => {
     expect(report?.dialog[0]?.betterExample).toBeNull();
   });
 
-  it('adds confirmed findings to weaknesses and lowers a contradictory perfect category', () => {
+  it('adds confirmed findings to weaknesses without applying a second report-layer score penalty', () => {
     const quote = 'Автомобиль комфортный и просторный.';
     const report = normalizeUnifiedCallReport(
       {
@@ -328,12 +328,12 @@ describe('unified call report normalization', () => {
     );
 
     expect(report?.weaknesses.join(' ')).toContain('Презентация не структурирована');
-    expect(report?.categories.find((item) => item.name === 'Продукт')?.score).toBeLessThan(100);
+    expect(report?.categories.find((item) => item.name === 'Продукт')?.score).toBe(100);
     expect(report?.categories.find((item) => item.name === 'Продукт')?.comment)
       .toBe('Менеджер перечислил свойства без связи с задачами клиента.');
   });
 
-  it('deduplicates two findings on one manager reply and aligns its mark with the finding', () => {
+  it('keeps distinct problems sharing one improved answer and aligns the turn with all findings', () => {
     const quote = 'Автомобиль прошёл проверку, всё хорошо.';
     const report = normalizeUnifiedCallReport({
       totalScore: 65,
@@ -360,10 +360,12 @@ describe('unified call report normalization', () => {
       { role: 'manager', text: quote },
     ] });
 
-    expect(report?.keyFindings).toHaveLength(1);
+    expect(report?.keyFindings).toHaveLength(2);
     expect(report?.dialog[1]).toMatchObject({
-      mark: 'negative', comment: 'Менеджер не объяснил, что проверяли.',
+      mark: 'negative',
     });
+    expect(report?.dialog[1].comment).toContain('Менеджер не объяснил, что проверяли.');
+    expect(report?.dialog[1].comment).toContain('Не перечислил выполненные работы.');
   });
 
   it('keeps distinct manager errors from the same reply as separate findings', () => {
@@ -664,7 +666,7 @@ describe('unified call report normalization', () => {
 
     expect(create).toHaveBeenCalledTimes(2);
     expect(repaired.keyFindings[0]?.betterExample)
-      .toBe('Подскажите, пожалуйста, что для вас особенно важно при выборе?');
+      .toBe('Да, предложение актуально. Подскажите, пожалуйста, что для вас особенно важно при выборе?');
   });
 
   it('does not replace a direct question about inspection works with a counter-question', async () => {
@@ -740,7 +742,7 @@ describe('unified call report normalization', () => {
     expect(statementOnly?.keyFindings[0]?.betterExample).toBe('');
   });
 
-  it('does not keep a perfect category score when its comment contains a concern', () => {
+  it('preserves the calculated category score even when the model comment contains a concern', () => {
     const report = normalizeUnifiedCallReport(
       {
         totalScore: 100,
@@ -753,7 +755,7 @@ describe('unified call report normalization', () => {
       { totalScore: 100, transcript: [] },
     );
 
-    expect(report?.categories.find((item) => item.name === 'Продукт')?.score).toBe(95);
+    expect(report?.categories.find((item) => item.name === 'Продукт')?.score).toBe(100);
     expect(report?.categories.find((item) => item.name === 'Контакт')?.score).toBe(100);
   });
 
@@ -811,7 +813,7 @@ describe('unified call report normalization', () => {
     expect(JSON.stringify(report?.weaknesses)).not.toContain(criterionId);
   });
 
-  it('does not build strengths from checklist evidence on a negatively marked dialog turn', () => {
+  it('credits the correct introduction separately from a negative unanswered-question mark', () => {
     const quote = 'Добрый день, меня зовут Анна, компания «Сальса».';
     const report = normalizeUnifiedCallReport(
       {
@@ -833,7 +835,7 @@ describe('unified call report normalization', () => {
     );
 
     expect(report?.dialog[0]?.mark).toBe('negative');
-    expect(report?.strengths).toEqual([]);
+    expect(report?.strengths).toEqual(['Менеджер поздоровался.', 'Менеджер назвал компанию.']);
   });
 
   it('keeps checklist strengths evidenced by a positively marked dialog turn', () => {
@@ -859,7 +861,7 @@ describe('unified call report normalization', () => {
     expect(report?.strengths).toContain('Менеджер поздоровался и представился.');
   });
 
-  it('does not let a short positive fragment validate evidence from a negative turn', () => {
+  it('credits an actual introduction in a negative turn without relying on the short positive fragment', () => {
     const negativeQuote = 'Добрый день, меня зовут Анна, я представляю компанию «Сальса».';
     const report = normalizeUnifiedCallReport(
       {
@@ -885,10 +887,10 @@ describe('unified call report normalization', () => {
       },
     );
 
-    expect(report?.strengths).not.toContain('Менеджер поздоровался и представился.');
+    expect(report?.strengths).toContain('Менеджер поздоровался и представился.');
   });
 
-  it('does not accept ambiguous evidence repeated in positive and negative turns', () => {
+  it('credits an actual repeated introduction independently of whole-turn marks', () => {
     const repeatedQuote = 'Добрый день, меня зовут Анна.';
     const report = normalizeUnifiedCallReport(
       {
@@ -917,7 +919,7 @@ describe('unified call report normalization', () => {
       },
     );
 
-    expect(report?.strengths).not.toContain('Менеджер поздоровался и представился.');
+    expect(report?.strengths).toContain('Менеджер поздоровался и представился.');
   });
 
   it('deduplicates semantically equivalent findings and checklist weaknesses', () => {
@@ -973,7 +975,7 @@ describe('unified call report normalization', () => {
     expect(report?.weaknesses).toEqual([
       'Не уточнил запрос клиента: Менеджер не уточнил, какой именно автомобиль интересует клиента.',
       'Презентация не структурирована, нет акцента на выгодах: Менеджер не связал характеристики с потребностями клиента.',
-      'Не предложил следующий шаг: Менеджер не согласовал конкретный последующий контакт.',
+      'Не договорился о повторном контакте: Менеджер не согласовал конкретный последующий контакт.',
       'Выявление потребностей: В стенограмме нет подтверждающей реплики менеджера.',
     ]);
   });

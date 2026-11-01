@@ -111,6 +111,7 @@ export interface TrainerInitialMessage {
 }
 
 export interface TrainerTurnResponse {
+  superseded?: boolean;
   clientMessage: string;
   endConversation: boolean;
   reportReady?: boolean;

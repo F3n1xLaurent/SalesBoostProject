@@ -79,6 +79,7 @@ export interface DimensionScores {
 
 export interface EvaluationResult {
   overall_score_0_100: number;
+  transcription_uncertainties?: import('./transcriptionUncertainty').TranscriptionUncertainty[];
   dimension_scores: DimensionScores;
   checklist: ChecklistItem[];
   issues: EvaluationIssue[];

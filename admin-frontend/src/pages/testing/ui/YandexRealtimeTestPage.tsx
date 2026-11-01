@@ -20,6 +20,8 @@ function statusLabel(status: string): string {
     media_connecting: 'Подключение аудио',
     ready: 'Realtime готов',
     connected: 'Разговор идёт',
+    reconnecting: 'Восстанавливаем соединение',
+    ending: 'Завершаем звонок',
     disconnected: 'Завершён',
     failed: 'Ошибка звонка',
     busy: 'Занято',
@@ -50,6 +52,10 @@ function flowEventLabel(type: RealtimeTestCall['conversationFlow']['events'][num
     speculative_response_cancelled: 'Фоновый ответ отменён: менеджер продолжил',
     handoff_started: 'Начата фоновая подготовка новой реплики',
     handoff_cutover: 'Аудио переключено на новую реплику',
+    provider_disconnected: 'Соединение Realtime прервалось',
+    provider_reconnecting: 'Переподключение Realtime',
+    provider_reconnected: 'Соединение и история восстановлены',
+    provider_recovery_failed: 'Восстановление не удалось — завершаем звонок',
   };
   return labels[type];
 }

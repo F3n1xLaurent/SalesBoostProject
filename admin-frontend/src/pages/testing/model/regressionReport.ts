@@ -1,5 +1,6 @@
 import type { RealtimeRegressionCheck } from '../../../shared/api/adminPanel';
 import { TRAINER_TEST_GROUPS } from '../../../../../src/testing/trainerTestCatalog';
+import { REPORT_TEST_GROUPS } from '../../../../../src/testing/reportTestCatalog';
 
 export const checkStatusLabels = { pass: 'Пройдено', fail: 'Ошибка', review: 'Нужно проверить', not_run: 'Не проверено' };
 export type CheckFilter = 'all' | 'attention' | RealtimeRegressionCheck['status'];
@@ -16,7 +17,7 @@ export function matchesCheckFilter(item: RealtimeRegressionCheck, filter: CheckF
   return filter === 'all' || (filter === 'attention' ? item.status === 'fail' || item.status === 'review' : item.status === filter);
 }
 export function groupChecks(items: RealtimeRegressionCheck[]) {
-  const groups = [...checkGroups, ...TRAINER_TEST_GROUPS];
+  const groups = [...checkGroups, ...TRAINER_TEST_GROUPS, ...REPORT_TEST_GROUPS];
   const known = new Set(groups.flatMap((group) => group.checks));
   return [
     ...groups.map((group) => ({ ...group, items: items.filter((item) => (group.checks as string[]).includes(item.id)) })),

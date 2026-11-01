@@ -19,6 +19,7 @@ describe('audit detail loading', () => {
     expect(await fetchAuditDetail(item.id)).toEqual(item);
     expect(apiFetch).toHaveBeenCalledWith('/api/admin/audits/call-737', {
       signal: expect.any(AbortSignal),
+      cache: 'no-store',
     });
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -44,6 +45,23 @@ describe('audit detail loading', () => {
     apiFetch.mockResolvedValue(new Response(null, { status: 404 }));
     expect(await fetchAuditDetail('call-unknown')).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels a status request when the report drawer closes, without reporting a server timeout', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    apiFetch.mockImplementation((_url, { signal }) => new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    }));
+    const pending = expect(fetchAuditDetail('call-737', controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    controller.abort(); await pending;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('returns the actual preparation stage without treating an interim zero score as a completed report', async () => {
+    const item = { id: 'call-737', totalScore: 0, unifiedReport: null, analyticsProgress: { stage: 'evaluation', status: 'processing', transcriptReady: true, evaluationReady: false } };
+    apiFetch.mockResolvedValue(new Response(JSON.stringify({ item })));
+    expect(await fetchAuditDetail(item.id)).toEqual(item);
   });
 
   it('surfaces a network error and clears the deadline', async () => {

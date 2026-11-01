@@ -12,6 +12,7 @@ import { config } from './config';
 import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import { buildScriptCriteriaEvaluationPrompt } from './llm/scriptCriteriaPrompt';
 import { withCostContext } from './economics/costContext';
+import { auditAnalyticsProgress, scheduleAuditReportBackfill, withAuditAnalyticsProgress } from './logic/auditAnalyticsProgress';
 import { getEconomicsAnalytics } from './economics/analytics';
 import { getCompanyEconomicsForecast } from './economics/companyForecast';
 import { startExchangeRateScheduler } from './economics/exchangeRates';
@@ -44,6 +45,7 @@ import { handleStartRealtimeRegression, handleGetRealtimeRegression, handleCance
   handleStartCallPlanAutoTest, handleAutoTestingCatalog, handleAutoTestingLiveTicket, loadOwnedRegressionRun } from './voice/realtimeRegression';
 import { createAutoTestingUpgradeHandler } from './testing/autoTestingLive';
 import { createTrainerAutoTesting, type TrainerTestSource, type TrainerTestTurn } from './testing/trainerAutoTesting';
+import { createReportAutoTesting } from './testing/reportAutoTesting';
 import { synthesizeTrainerFixture } from './testing/trainerTestFixtures';
 import { handleProductionRealtimeWebhook } from './voice/productionRealtimeWebhook';
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
@@ -101,7 +103,8 @@ import { resolveTrainerVoiceSelection, type TrainerVoiceSelection } from './voic
 import { createTrainerTurnTimer, trainerTranscriptWithoutAudio, type TrainerTurnTimings } from './trainer/trainerTurnPerformance';
 import { TrainerSimulationStore, createBuiltinTrainerSimulationRow } from './trainer/trainerSimulationStore';
 import { isTrainerBuiltinSource, trainerBuiltinSources } from './testing/trainerBuiltinFixtures';
-import { claimTrainerTurn, transcribeTrainerVoice } from './trainer/trainerVoicePipeline';
+import { combineTrainerVoiceMessages, transcribeTrainerVoice } from './trainer/trainerVoicePipeline';
+import { TrainerVoiceTurns, type TrainerTurnControl } from './trainer/trainerVoiceTurns';
 import { trainerRecordingService, trainerRecordingPath } from './trainer/trainerRecording';
 import { createTrainerRecordingHandler } from './trainer/trainerRecordingHttp';
 import { buildCustomerScenarioPromptCore } from './voice/customerScenarioPrompt';
@@ -152,6 +155,9 @@ import {
   ensureTrainerVisitSchedulingAnswer,
   importedItemMatchesTrainerTags,
   isNonProgressingTrainerReply,
+  isTrainerWaitingReply,
+  ensureTrainerProgressingReply,
+  ensureTrainerFarewell,
   trainerReplyMissesVisitSchedulingAnswer,
 } from './trainer/trainerScenario';
 import { getDealershipDirectory } from './super-admin/dealershipDirectory';
@@ -2112,6 +2118,8 @@ function trainerScenarioPrompt(caseContext: Record<string, unknown>, transcript:
     scenarioCore,
     '# Контекст текущей тренировки',
     'Тренировка уже является разговором с живым сотрудником: правила IVR, дозвона и ожидания здесь не применяются.',
+    'Если сотрудник задал несколько вопросов, сначала явно ответь на КАЖДЫЙ, не переходи к своему вопросу, пропустив один из них. Неизвестный факт не выдумывай: дай естественный ответ о неопределённости. Вопрос о том, смотрел ли ты автомобиль, требует отдельной реакции, а не только имени и бюджета.',
+    'Не застревай в «жду»: один раз можно принять просьбу подождать, но очередное обещание уточнить — не содержательный ответ. Сохрани факт неизвестным и переходи к следующей теме. Если достигнут лимит диалога, сначала ответь на последнее сообщение и естественно попрощайся, не завершай на «жду» или новом вопросе.',
     'Предыдущие реплики используй только как память разговора; не повторяй уже закрытые вопросы.',
     previous,
   ].join('\n\n');
@@ -2422,7 +2430,7 @@ async function finalizeTrainerSessionEvaluation(params: {
   failureReason: string | null;
   multiplier: number;
 }): Promise<void> {
-  return withCostContext({
+  return withAuditAnalyticsProgress(`trainer:${params.sessionId}`, 'evaluation', () => withCostContext({
     entityType: 'trainer_session', entityId: params.sessionId, stage: 'evaluation',
   }, async () => {
   const audit = await buildTrainerAuditEvaluation({
@@ -2463,7 +2471,7 @@ async function finalizeTrainerSessionEvaluation(params: {
     }
   }
   await finalizeTrainerSessionSideEffects(params.sessionId);
-  });
+  }));
 }
 
 export async function regenerateTrainerSessionReport(sessionId: string) {
@@ -2564,6 +2572,7 @@ async function buildTrainerAuditEvaluation(params: {
       totalScore: effectivenessScore,
       evaluation: finalEvaluation,
       scenarioName: String(scenario.name || 'Тренировка'),
+      scenarioContext: JSON.stringify(scenario),
     });
     finalEvaluation = {
       ...finalEvaluation,
@@ -2787,6 +2796,7 @@ type TrainerDialogInitialization = Awaited<ReturnType<typeof initializeTrainerDi
 
 const trainerDialogInitializationTasks = new Map<string, Promise<TrainerDialogInitialization>>();
 const trainerTurnTasks = new Set<string>();
+const trainerVoiceTurns = new TrainerVoiceTurns(trainerTurnTasks);
 // Leaving the page can mark a session completed before its last voice is
 // persisted. Do not publish a recording missing that in-flight final turn.
 trainerRecordingService.setActivityCheck((id) => trainerTurnTasks.has(id) || trainerDialogInitializationTasks.has(id));
@@ -2829,6 +2839,7 @@ async function runTrainerSessionTurn(params: {
   managerAudioMimeType?: string | null;
   timer?: ReturnType<typeof createTrainerTurnTimer>;
   simulation?: TrainerSimulationStore;
+  turnControl?: TrainerTurnControl;
 }) {
   const timer = params.timer ?? createTrainerTurnTimer();
   const session = params.simulation ? await params.simulation.load() : await prisma.trainerSession.findUnique({ where: { id: params.sessionId } });
@@ -2897,6 +2908,7 @@ async function runTrainerSessionTurn(params: {
         });
         console.log(`[trainer] ElevenLabs agent turn done session=${session.id} hasAudio=${Boolean(agentOut.audioBase64)} conversation=${agentOut.conversationId || 'n/a'}`);
         if (isNonProgressingTrainerReply(agentOut.clientMessage)
+          || (isTrainerWaitingReply(agentOut.clientMessage) && isTrainerWaitingReply(transcriptBefore.filter((turn) => turn.role === 'client').at(-1)?.text))
           || trainerReplyMissesVisitSchedulingAnswer(params.managerText, agentOut.clientMessage)) {
           elevenLabsTextAgentDisabled = true;
           closeElevenLabsAgentConversation(session.id);
@@ -2916,6 +2928,7 @@ async function runTrainerSessionTurn(params: {
         nextElevenLabsConversationId = agentOut.conversationId ?? nextElevenLabsConversationId;
       } catch (error) {
         params.simulation?.signal.throwIfAborted();
+        params.turnControl?.assertCurrent();
         console.error('[trainer] ElevenLabs agent turn error:', error);
         elevenLabsTextAgentDisabled = true;
         closeElevenLabsAgentConversation(session.id);
@@ -2964,21 +2977,39 @@ async function runTrainerSessionTurn(params: {
     }
   }
 
+  params.turnControl?.assertCurrent();
+  const rawQuestions = (caseContext.scenario as { questions?: Array<{ text?: string; question?: string }> } | undefined)?.questions;
+  const scenarioQuestions = Array.isArray(rawQuestions) ? rawQuestions : [];
+  const progressing = ensureTrainerProgressingReply(clientMessage, transcriptBefore, scenarioQuestions, params.managerText);
+  if (progressing !== clientMessage) { clientMessage = progressing; clientAudioBase64 = null; agentTurn = null; endConversation = shouldForceConversationEnd(clientMessage); result = null; closeElevenLabsAgentConversation(session.id); }
+  const atLimit = history.filter((turn) => turn.role === 'manager').length >= maxClientTurns;
+  endConversation ||= atLimit || shouldForceConversationEnd(clientMessage);
+  const finalMessage = ensureTrainerFarewell(clientMessage, endConversation, atLimit);
+  if (finalMessage !== clientMessage) { clientMessage = finalMessage; clientAudioBase64 = null; }
+  nextHistory = [...history, { role: 'client', content: clientMessage }];
+  if (endConversation) result = buildWebTrainingResult(nextState, nextHistory, behaviorSignals, Boolean(result?.reasonCode), result?.reasonCode ?? null);
   const nowIso = new Date().toISOString();
   const textMs = Math.round(performance.now() - textStartedAt);
   params.simulation?.signal.throwIfAborted();
-  const clientAudio = await timer.measure('ttsMs', () => ensureTrainerClientAudio({
+  const observedVoices: TrainerSimulationStore['voices'] = [];
+  let clientAudio = await timer.measure('ttsMs', () => ensureTrainerClientAudio({
     text: clientMessage,
     voice: trainerVoice,
     audioBase64: clientAudioBase64,
     audioMimeType: clientAudioMimeType,
-    onVoice: params.simulation?.observeVoice,
+    onVoice: params.simulation ? (event) => { observedVoices.push(event); } : undefined,
     signal: params.simulation?.signal,
   }));
   // Text-only responses no longer wait for trailing tool events. Retain an
   // end_call received during TTS, including when the socket has since closed.
   if (!endConversation && agentTurn?.endedByAgent) {
     endConversation = true;
+    const farewell = ensureTrainerFarewell(clientMessage, true);
+    if (farewell !== clientMessage) {
+      clientMessage = farewell; nextHistory = [...history, { role: 'client', content: clientMessage }]; observedVoices.length = 0;
+      params.turnControl?.assertCurrent();
+      clientAudio = await timer.measure('ttsMs', () => ensureTrainerClientAudio({ text: clientMessage, voice: trainerVoice, onVoice: params.simulation ? (event) => { observedVoices.push(event); } : undefined, signal: params.simulation?.signal }));
+    }
     result = buildWebTrainingResult(nextState, nextHistory, behaviorSignals, false, null);
   }
   clientAudioBase64 = clientAudio.audioBase64;
@@ -3022,11 +3053,13 @@ async function runTrainerSessionTurn(params: {
     updateData.completedAt = new Date();
     updateData.failureReason = result.reasonCode;
   }
+  params.turnControl?.commit();
   const updated = await timer.measure('persistenceMs', () => params.simulation ? params.simulation.update(updateData) : prisma.trainerSession.update({
     where: { id: session.id },
     data: updateData,
     include: { scenario: { select: { id: true, name: true } } },
   }));
+  observedVoices.forEach((event) => params.simulation?.observeVoice(event));
   if (endConversation && result) {
     closeElevenLabsAgentConversation(updated.id);
     if (!params.simulation) scheduleTrainerSessionFinalization(updated.id);
@@ -3045,6 +3078,32 @@ async function runTrainerSessionTurn(params: {
     timings: { ...timer.snapshot(), textMs },
   };
   });
+}
+
+/** Shared by the real voice endpoint and the isolated trainer test adapter. */
+async function processTrainerVoiceMessage(params: {
+  sessionId: string; audioBase64: string; mimeType: string; durationSec: number | null;
+  replyMode: 'text' | 'text+voice'; ttsVoice: TtsVoice; simulation?: TrainerSimulationStore;
+}) {
+  return trainerVoiceTurns.submit(params.sessionId, params, async (input) => {
+    input.simulation?.signal.throwIfAborted();
+    const timer = createTrainerTurnTimer();
+    if (!input.simulation) await timer.measure('initializationMs', () => ensureTrainerDialogInitialized({ sessionId: input.sessionId, replyMode: input.replyMode, ttsVoice: input.ttsVoice }));
+    const text = await timer.measure('sttMs', () => withCostContext({ entityType: input.simulation ? 'trainer_autotest' : 'trainer_session', entityId: input.sessionId, stage: 'manager_stt' },
+      () => withTimeout(transcribeTrainerVoice(input.audioBase64, input.mimeType), 30000, 'Trainer STT')));
+    input.simulation?.signal.throwIfAborted();
+    if (!text.trim()) throw Object.assign(new Error('Не удалось распознать речь. Запишите сообщение ещё раз.'), { status: 400 });
+    return { ...input, text, timer };
+  }, async (messages, turnControl) => {
+    const latest = messages.at(-1)!;
+    if (messages.reduce((sum, input) => sum + Buffer.byteLength(input.audioBase64, 'base64'), 0) > 20 * 1024 * 1024) throw Object.assign(new Error('Голосовые уточнения превышают лимит 20 МБ.'), { status: 413 });
+    const audio = await combineTrainerVoiceMessages(messages);
+    turnControl.assertCurrent();
+    const result = await runTrainerSessionTurn({ sessionId: latest.sessionId, managerText: messages.map((input) => input.text).join('\n'), durationSec: messages.some((input) => input.durationSec != null) ? messages.reduce((sum, input) => sum + (input.durationSec ?? 0), 0) : null,
+      replyMode: latest.replyMode, ttsVoice: latest.ttsVoice, managerAudioBase64: audio.audioBase64, managerAudioMimeType: audio.mimeType,
+      timer: messages[0].timer, simulation: latest.simulation, turnControl });
+    return { ...result, managerMessageCount: messages.length, timings: { ...result.timings, sttMs: Math.max(...messages.map((input) => input.timer.snapshot().sttMs ?? 0)) } };
+  }, () => closeElevenLabsAgentConversation(params.sessionId));
 }
 
 async function updateTrainerStreakOnCompletion(employeeId: string, sessionStartedAt: Date): Promise<void> {
@@ -4388,10 +4447,8 @@ app.get('/api/trainer/session/:id/dialog', async (req, res) => {
 });
 
 app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
-  let lockedSessionId: string | null = null;
   try {
     const requestStartedAt = Date.now();
-    const timer = createTrainerTurnTimer();
     console.log(`[trainer] voice-message received session=${String(req.params.id)}`);
     const manager = await resolveTrainerManager(req);
     if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
@@ -4412,18 +4469,6 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     if (!audioBase64 || typeof audioBase64 !== 'string') {
       return res.status(400).json({ error: 'audioBase64 обязателен' });
     }
-    try { claimTrainerTurn(trainerTurnTasks, session.id); }
-    catch { return res.status(409).json({ error: 'Предыдущая реплика ещё обрабатывается. Дождитесь ответа клиента.' }); }
-    lockedSessionId = session.id;
-
-    // The opening client turn must be persisted before the manager can reply.
-    // Otherwise both async operations can overwrite transcriptJson.
-    await timer.measure('initializationMs', () => ensureTrainerDialogInitialized({
-      sessionId: session.id,
-      replyMode,
-      ttsVoice,
-    }));
-
     const isPcm = String(mimeType || '').toLowerCase().includes('audio/pcm');
 
     // Always finish STT before asking the text agent. The browser's stop-recording
@@ -4440,37 +4485,25 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     }
     console.log(`[trainer] voice-message audio saved session=${session.id} bytes=${buf.length} mime=${sttMimeType}`);
 
-    console.log(`[trainer] STT start session=${session.id}`);
-    const managerText = await timer.measure('sttMs', () => withCostContext(
-        { entityType: 'trainer_session', entityId: session.id, stage: 'manager_stt' },
-        () => withTimeout(transcribeTrainerVoice(sttAudioBase64, sttMimeType), 30000, 'Trainer STT'),
-      ));
-    console.log(`[trainer] STT done session=${session.id} chars=${managerText.length}`);
-    if (!managerText.trim()) {
-      return res.status(400).json({ error: 'Не удалось распознать речь. Говорите чуть громче и дольше, затем попробуйте снова.' });
-    }
-
-    const out = await runTrainerSessionTurn({
+    const out = await processTrainerVoiceMessage({
       sessionId: session.id,
-      managerText,
       durationSec,
       replyMode,
       ttsVoice,
-      managerAudioBase64: sttAudioBase64,
-      managerAudioMimeType: sttMimeType,
-      timer,
+      audioBase64: sttAudioBase64,
+      mimeType: sttMimeType,
     });
     console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt} timings=${JSON.stringify(out.timings)}`);
     res.json(out);
   } catch (error) {
     console.error('trainer/session/voice-message error:', error);
     const message = error instanceof Error ? error.message : '';
+    const status = (error as { status?: number })?.status;
+    if (status && [400, 409, 413, 429].includes(status)) return res.status(status).json({ error: message });
     if (message.includes('timeout') || message.includes('TIMEOUT') || message.includes('Timeout')) {
       return res.status(504).json({ error: 'Сервис ответа клиента не успел. Отправьте сообщение ещё раз.' });
     }
     res.status(500).json({ error: 'Не удалось обработать голосовое сообщение.' });
-  } finally {
-    if (lockedSessionId) trainerTurnTasks.delete(lockedSessionId);
   }
 });
 
@@ -4893,14 +4926,8 @@ const trainerAutoTesting = createTrainerAutoTesting({
     return {
       async initialize() { await withCostContext({ entityType: 'trainer_autotest', entityId: id, stage: 'initialization' }, () => initializeTrainerDialog({ sessionId: id, replyMode: 'text+voice', ttsVoice: 'male', simulation: store })); },
       async voice(audio) {
-        const release = claimTrainerTurn(trainerTurnTasks, id);
-        try {
-          const timer = createTrainerTurnTimer();
-          const text = await timer.measure('sttMs', () => withTimeout(transcribeTrainerVoice(audio.audioBase64, audio.mimeType), 30000, 'Trainer STT'));
-          if (!text.trim()) throw new Error('Голосовое не распознано.');
-          const result = await runTrainerSessionTurn({ sessionId: id, managerText: text, durationSec: null, replyMode: 'text+voice', ttsVoice: 'male', managerAudioBase64: audio.audioBase64, managerAudioMimeType: audio.mimeType, timer, simulation: store });
-          return { endConversation: result.endConversation };
-        } finally { release(); }
+        const result = await processTrainerVoiceMessage({ sessionId: id, audioBase64: audio.audioBase64, mimeType: audio.mimeType, durationSec: null, replyMode: 'text+voice', ttsVoice: 'male', simulation: store });
+        return { endConversation: result.endConversation };
       },
       snapshot() { return { transcript: safeArray<TrainerTestTurn>(store.row.transcriptJson), voices: [...store.voices], expectedVoice: resolveTrainerVoiceSelection(source.context, config.ttsProvider) }; },
       close() { store.closed = true; signal.removeEventListener('abort', stop); closeElevenLabsAgentConversation(id); },
@@ -4908,6 +4935,13 @@ const trainerAutoTesting = createTrainerAutoTesting({
   },
   synthesize: synthesizeTrainerFixture,
 });
+const reportAutoTesting = createReportAutoTesting();
+app.post('/api/admin/auto-testing/report/runs', (req, res) => { void reportAutoTesting.handle(req, res, 'start'); });
+app.get('/api/admin/auto-testing/report/runs', (req, res) => { void reportAutoTesting.handle(req, res, 'history'); });
+app.get('/api/admin/auto-testing/report/runs/:runId', (req, res) => { void reportAutoTesting.handle(req, res, 'get'); });
+app.get('/api/admin/auto-testing/report/runs/:runId/compare', (req, res) => { void reportAutoTesting.handle(req, res, 'compare'); });
+app.post('/api/admin/auto-testing/report/runs/:runId/live-ticket', (req, res) => { void reportAutoTesting.handle(req, res, 'ticket'); });
+app.post('/api/admin/auto-testing/report/runs/:runId/cancel', (req, res) => { void reportAutoTesting.handle(req, res, 'cancel'); });
 app.get('/api/admin/auto-testing/trainer/sources', (req, res) => { void trainerAutoTesting.handle(req, res, 'sources'); });
 app.post('/api/admin/auto-testing/trainer/runs', (req, res) => { void trainerAutoTesting.handle(req, res, 'start'); });
 app.get('/api/admin/auto-testing/trainer/runs', (req, res) => { void trainerAutoTesting.handle(req, res, 'history'); });
@@ -9470,25 +9504,26 @@ async function buildTrainerAuditDetailItem(session: {
     },
     catalog,
   );
-  if (!unifiedReport && reportTranscript.length >= 2) {
-    try {
-      unifiedReport = await generateUnifiedTrainerReport({
+  if (!unifiedReport && evaluation && Object.keys(evaluation).length && reportTranscript.length >= 2 && ['completed', 'failed'].includes(session.status)) {
+    const evaluationSnapshot = evaluation;
+    scheduleAuditReportBackfill(`trainer:${session.id}`, () => withCostContext({
+      entityType: 'trainer_session', entityId: session.id, stage: 'report_backfill',
+    }, async () => {
+      const generated = await generateUnifiedTrainerReport({
         transcript: reportTranscript,
         totalScore: score,
-        evaluation: evaluation ?? {},
+        evaluation: evaluationSnapshot,
         scenarioName: session.scenario?.name ?? null,
       });
-      evaluation = {
-        ...(evaluation ?? {}),
-        unified_call_report: unifiedReport,
-      };
-      await prisma.trainerSession.update({
-        where: { id: session.id },
-        data: { evaluationJson: JSON.stringify(evaluation) },
+      const latest = await prisma.trainerSession.findUnique({ where: { id: session.id }, select: { evaluationJson: true } });
+      if (!latest) return;
+      const current = safeJsonParseLocal<Record<string, unknown> | null>(latest.evaluationJson, null);
+      if (!current || current.unified_call_report) return;
+      await prisma.trainerSession.updateMany({
+        where: { id: session.id, evaluationJson: latest.evaluationJson },
+        data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }) },
       });
-    } catch (reportError) {
-      console.warn('trainer audit detail unified report generation failed:', reportError instanceof Error ? reportError.message : reportError);
-    }
+    }));
   }
 
   return {
@@ -9523,6 +9558,11 @@ async function buildTrainerAuditDetailItem(session: {
     scenarioName: session.scenario?.name ?? null,
     assignedBy: null,
     failReason: session.failureReason ? getFailureReasonLabel(session.failureReason) : null,
+    analyticsProgress: auditAnalyticsProgress({
+      key: `trainer:${session.id}`, transcriptReady: reportTranscript.length >= 2,
+      evaluationReady: Boolean(evaluation && Object.keys(evaluation).length), reportReady: Boolean(unifiedReport),
+      unavailable: session.status === 'cancelled',
+    }),
     unifiedReport,
     ...recording,
   };
@@ -9540,6 +9580,7 @@ app.get('/api/admin/trainer-recordings/:sessionId/:action?', createTrainerRecord
 }));
 
 app.get('/api/admin/audits/:id', async (req, res) => {
+  res.setHeader('Cache-Control', 'private, no-store');
   try {
     const rawId = String(req.params.id || '').trim();
     if (rawId.startsWith('trainer-')) {
@@ -9751,25 +9792,29 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions, evaluation },
       catalog,
     );
-    if (!unifiedReport && type === 'call' && evaluation && reportTranscript.length >= 2) {
-      try {
-        unifiedReport = await generateUnifiedCallReport({
+    if (!unifiedReport && type === 'call' && evaluation && Object.keys(evaluation).length && reportTranscript.length >= 2
+      && !['no_answer', 'busy', 'cancelled'].includes(session.outcome ?? '')) {
+      // Return the snapshot immediately. Opening/polling an audit must not wait
+      // minutes for an LLM response or start another copy of the same repair.
+      const evaluationSnapshot = evaluation;
+      scheduleAuditReportBackfill(`voice:${session.callId}`, () => withCostContext({
+        entityType: 'voice_call', entityId: session.callId, stage: 'report_backfill',
+      }, async () => {
+        const generated = await generateUnifiedCallReport({
           transcript: reportTranscript,
           outcome: session.outcome,
           totalScore: score,
-          evaluation,
+          evaluation: evaluationSnapshot,
         });
-        evaluation = {
-          ...evaluation,
-          unified_call_report: unifiedReport,
-        };
-        await prisma.voiceCallSession.update({
-          where: { id: session.id },
-          data: { evaluationJson: JSON.stringify(evaluation) },
+        const latest = await prisma.voiceCallSession.findUnique({ where: { id: session.id }, select: { evaluationJson: true } });
+        if (!latest) return;
+        const current = safeJsonParseLocal<Record<string, unknown> | null>(latest.evaluationJson, null);
+        if (!current || current.unified_call_report) return;
+        await prisma.voiceCallSession.updateMany({
+          where: { id: session.id, evaluationJson: latest.evaluationJson },
+          data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }) },
         });
-      } catch (reportError) {
-        console.warn('admin/audits/:id unified report generation failed:', reportError instanceof Error ? reportError.message : reportError);
-      }
+      }));
     }
 
     res.json({
@@ -9820,6 +9865,12 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         } : {}),
         recordingStatus: session.recordingStatus,
         recordingUrl: session.recordingUrl,
+        analyticsProgress: auditAnalyticsProgress({
+          key: `voice:${session.callId}`, transcriptReady: reportTranscript.length >= 2,
+          evaluationReady: Boolean(evaluation && Object.keys(evaluation).length), reportReady: Boolean(unifiedReport),
+          failureReason: evaluation ? null : session.failureReason,
+          unavailable: ['no_answer', 'busy', 'cancelled'].includes(session.outcome ?? ''),
+        }),
         unifiedReport,
       },
     });
@@ -10102,7 +10153,7 @@ export function startServer(): Promise<void> {
     };
 
     function attachVoiceStream(server: http.Server | https.Server): void {
-      const upgradeAutoTesting = createAutoTestingUpgradeHandler((id, ownerId, target) => target === 'trainer' ? trainerAutoTesting.load(id, ownerId) : loadOwnedRegressionRun(id, ownerId));
+      const upgradeAutoTesting = createAutoTestingUpgradeHandler((id, ownerId, target) => target === 'trainer' ? trainerAutoTesting.load(id, ownerId) : target === 'report' ? reportAutoTesting.load(id, ownerId) : loadOwnedRegressionRun(id, ownerId));
       const wss = new WebSocketServer({ noServer: true });
       wss.on('connection', (ws, request) => {
         if (request.url?.startsWith('/voice/openai-realtime')) {

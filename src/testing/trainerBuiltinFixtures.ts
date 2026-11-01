@@ -1,7 +1,7 @@
 import type { TrainerTestSource } from './trainerAutoTesting';
 
 export const TRAINER_BUILTIN_SUITE_ID = 'trainer-builtin-v1';
-export const TRAINER_BUILTIN_VERSION = '2026-10-30.1';
+export const TRAINER_BUILTIN_VERSION = '2026-10-30.2';
 export type TrainerBuiltinVoice = { id: string; name: string; elevenLabsCode: string | null; openaiCode: string | null };
 export const isTrainerBuiltinSource = (id: string) => [TRAINER_BUILTIN_SUITE_ID, 'trainer-builtin-female-v1', 'trainer-builtin-talkative-v1'].includes(id);
 
@@ -20,7 +20,7 @@ export function trainerBuiltinSources(voices: TrainerBuiltinVoice[] = []) {
     const car = { id: 'builtin-gle-2023', title: 'Mercedes-Benz GLE 2023 года', brand: 'Mercedes-Benz', model: 'GLE', year: 2023, price_rub: 6405000, mileage_km: 18000,
       technical: { engine: 'бензин', transmission: 'автомат', drive: 'полный' }, description: { condition: 'По объявлению без ДТП; состояние нужно уточнить у менеджера.' },
       deal_terms: { price_rub: 6405000, extra_payments: 'Неизвестны — уточнить' }, location: { city: 'Москва' } };
-    const legend = `Тебя зовут ${name}. Ты ${female ? 'женщина, говори о себе в женском роде' : 'мужчина, говори о себе в мужском роде'}, тебе 35 лет. Живёшь в Москве. Ищешь Mercedes-Benz GLE 2023 года, бюджет до 6 500 000 рублей, покупка в течение месяца. Сейчас у тебя Toyota Camry 2018 года, автомобиль на обмен рассматриваешь, но ещё не решил${female ? 'а' : ''}. Предпочитаешь оплату собственными средствами, кредит не планируешь. Детей двое. Если спрашивают о других неизвестных фактах, не выдумывай их. В объявлении цена 6 405 000 рублей, пробег 18 000 километров; это данные объявления, сведения менеджера проверяй и уточняй, а не считай заранее доказанными.`;
+    const legend = `Тебя зовут ${name}. Ты ${female ? 'женщина, говори о себе в женском роде' : 'мужчина, говори о себе в мужском роде'}, тебе 35 лет. Живёшь в Москве. Ищешь Mercedes-Benz GLE 2023 года, бюджет до 6 500 000 рублей, покупка в течение месяца. Автомобиль видел${female ? 'а' : ''} только в объявлении, лично ещё не осматривал${female ? 'а' : ''}. Сейчас у тебя Toyota Camry 2018 года, автомобиль на обмен рассматриваешь, но ещё не решил${female ? 'а' : ''}. Предпочитаешь оплату собственными средствами, кредит не планируешь. Детей двое. Если спрашивают о других неизвестных фактах, не выдумывай их. В объявлении цена 6 405 000 рублей, пробег 18 000 километров; это данные объявления, сведения менеджера проверяй и уточняй, а не считай заранее доказанными.`;
     const context = {
       seed: `builtin-${TRAINER_BUILTIN_VERSION}-${kind}`, mode: 'free', difficulty: 'medium', clientType: profileName,
       clientProfile: { id: `builtin-${kind}`, name: profileName, age: 35, city: 'Москва', voiceId: voice?.id ?? fallbackVoice,
@@ -35,6 +35,11 @@ export function trainerBuiltinSources(voices: TrainerBuiltinVoice[] = []) {
         objections: [{ phrase: 'Сомневаюсь, что состояние соответствует объявлению. Чем это можно подтвердить?', whenAppropriate: 'После ответа о состоянии, один раз.' }, { phrase: 'Не хочу обязательных кредитов и скрытых доплат.', whenAppropriate: 'После обсуждения цены, один раз.' }],
         successCriteria: [{ expectedAnswer: 'Менеджер поясняет наличие и состояние, озвучивает итоговую цену и условия осмотра без обязательных доплат.' }] },
       importedItem: { id: car.id, title: car.title, description: 'Цена объявления 6 405 000 рублей. Пробег 18 000 километров. Комплектация и история обслуживания требуют уточнения.' },
+      // Test manager ground truth, deliberately NOT part of the client legend,
+      // imported advertisement or runtime car known by the tested AI.
+      managerFixture: { available: true, price: 6405000, mileage: 18000, history: 'Один владелец, ДТП не было. Обслуживание по регламенту, заказ-наряды и отчёт по истории доступны.',
+        inspection: 'Независимая диагностика разрешена; завтра в 18:00, Москва, Тестовая, 10.',
+        terms: 'Без обязательного кредита, услуг и скрытых доплат. Итоговая цена 6 405 000 рублей.' },
       runtime: { car },
     };
     return { id: female ? 'trainer-builtin-female-v1' : kind === 'talkative' ? 'trainer-builtin-talkative-v1' : TRAINER_BUILTIN_SUITE_ID, name: `Встроенный набор · ${profileName}`, companyId: null, context, female };

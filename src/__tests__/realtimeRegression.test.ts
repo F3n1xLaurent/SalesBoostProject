@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { evaluateTransport } from '../voice/realtimeRegression';
 import type { Hypothesis2Snapshot } from '../voice/cometRealtimeTest';
 import { decodeMuLaw, pcmWave, SimulatedVoxSocket } from '../voice/realtimeRegressionAudio';
-import { hasOnlyFarewellSteps, REGRESSION_CHECKLIST, regressionScenarios } from '../voice/realtimeRegressionScenarios';
+import { hasOnlyFarewellSteps, managerReplyTo, REGRESSION_CHECKLIST, regressionScenarios } from '../voice/realtimeRegressionScenarios';
 
 const fixture = (transcript: any[] = [], flow: any[] = []): Hypothesis2Snapshot => ({
   transcript, conversationFlow: { events: flow }, errors: [], tools: [],
@@ -10,6 +10,14 @@ const fixture = (transcript: any[] = [], flow: any[] = []): Hypothesis2Snapshot 
 afterEach(() => vi.useRealTimers());
 
 describe('hypothesis 2 regression evidence', () => {
+  it('answers the spare-wheel question instead of evading it with an oil-change fixture', () => {
+    for (const text of ['Есть ли запасное колесо в комплекте?', 'Есть ли запаска?', 'Запасное колесо или докатка, в каком состоянии?']) {
+      const reply = managerReplyTo(text, 'Porsche Cayenne 2018');
+      expect(reply).toContain('докатка'); expect(reply).not.toContain('масло'); expect(reply).not.toContain('Уточните');
+    }
+    const changes = regressionScenarios('Porsche Cayenne 2018').find((scenario) => scenario.id === 'changes')!;
+    expect(changes.steps.at(-1)?.text).toContain('две тысячи двадцать четвёртый год был ошибкой');
+  });
   it('covers every checklist requirement with an explicit scenario', () => {
     const covered = new Set(regressionScenarios('Kia Carnival').flatMap((x) => x.checks));
     expect(REGRESSION_CHECKLIST.map(([id]) => id).filter((id) => !covered.has(id))).toEqual([]);

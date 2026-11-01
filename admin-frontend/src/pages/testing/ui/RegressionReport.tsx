@@ -2,6 +2,7 @@ import React, { useId, useState, useEffect } from 'react';
 import type { RealtimeRegressionCheck, RealtimeRegressionComparison, RealtimeRegressionRun, RealtimeRegressionSelection } from '../../../shared/api/adminPanel';
 import { autoTestingClient, fetchCallPlanAutoTestAudio } from '../../../shared/api/autoTesting';
 import { TRAINER_TEST_CHECKS } from '../../../../../src/testing/trainerTestCatalog';
+import { REPORT_TEST_CHECKS } from '../../../../../src/testing/reportTestCatalog';
 import { checkGuidance } from '../model/checkGuidance';
 import { checkStatusLabels as labels, countChecks, groupChecks, matchesCheckFilter, timingLabel, type CheckFilter } from '../model/regressionReport';
 import { RunIdentity } from './RunIdentity';
@@ -21,6 +22,7 @@ export function CheckRows({ items, onTest, disabled, run }: { items: RealtimeReg
     <div className="testing-check-detail">
       <p className="sa-meta">ID пункта: <code>{item.id}</code>{run && <> · Проверка: <code>{run.id}</code></>}</p>
       {(checkGuidance[item.id] || TRAINER_TEST_CHECKS.find(([id]) => id === item.id)?.[1]) && <p className="sa-meta"><strong>Что проверяем:</strong> {checkGuidance[item.id] || TRAINER_TEST_CHECKS.find(([id]) => id === item.id)?.[1]}</p>}
+      {REPORT_TEST_CHECKS.find(([id]) => id === item.id) && <p className="sa-meta"><strong>Что проверяем:</strong> {REPORT_TEST_CHECKS.find(([id]) => id === item.id)![2]}</p>}
       <strong className="testing-detail-label">Свидетельства и вывод</strong>
       {item.evidence.length ? <ul className="testing-evidence">{item.evidence.map((text, i) => <li key={i}>{text}</li>)}</ul>
         : <p className="sa-meta">{running.has(item.id) ? 'Сценарий выполняется. Итог появится после проверки свидетельств.' : 'Свидетельств пока нет: пункт ещё не проверен.'}</p>}
@@ -47,7 +49,7 @@ function Recording({ runId, caseId, target }: { runId: string; caseId: string; t
 const phases = { preparing_audio: 'Подготовка аудио', connecting: 'Подключение', dialogue: 'Диалог', assessing: 'Оценка результатов', completed: 'Готово', failed: 'Ошибка' };
 export function ScenarioResults({ run, disabled, onTest }: { run: RealtimeRegressionRun; disabled: boolean; onTest: (selection: RealtimeRegressionSelection) => void }) {
   return <div className="testing-scenario-list">{run.cases.map((item) => <details key={item.id} className="testing-scenario">
-    <summary><span className="testing-scenario-title">{item.title}<small>{item.status === 'running' && item.phase ? phases[item.phase] : item.status === 'pending' ? 'Ожидает запуска' : item.status === 'running' ? 'Выполняется' : item.status === 'failed' ? 'Ошибка выполнения' : item.status === 'completed' ? 'Завершён' : item.status}
+    <summary><span className="testing-scenario-title">{item.title}<small>{item.status === 'running' && item.phase ? run.target === 'report' && item.phase === 'dialogue' ? 'Оценка диалога и генерация отчёта' : phases[item.phase] : item.status === 'pending' ? 'Ожидает запуска' : item.status === 'running' ? 'Выполняется' : item.status === 'failed' ? 'Ошибка выполнения' : item.status === 'completed' ? 'Завершён' : item.status}
       {item.step && item.status === 'running' ? ` · шаг ${item.step.current}/${item.step.total}` : ''}</small></span><Counts items={item.checks} /></summary>
     <div className="testing-scenario-content">
       <p className="sa-meta">ID сценария: <code>{item.id}</code></p>
@@ -55,12 +57,27 @@ export function ScenarioResults({ run, disabled, onTest }: { run: RealtimeRegres
       {item.error && <div className="sa-batch-live-error">{item.error}</div>}
       {item.audioFile && <Recording runId={run.id} caseId={item.id} target={run.target === 'trainer' ? 'trainer' : 'call_plan'} />}
       <details className="testing-nested-detail"><summary>Проверки сценария · {item.checks.length}</summary><CheckRows items={item.checks} /></details>
-      <details className="testing-nested-detail"><summary>Диалог · {item.session?.transcript.length ?? 0} реплик</summary>
+      {run.target === 'report' && <>
+        <details className="testing-nested-detail"><summary>Эталонный диалог и ожидаемые факты</summary>
+          <ul className="testing-evidence">{item.fixture?.expected.map((text, index) => <li key={index}>{text}</li>)}</ul>
+          {item.fixture?.transcript.map((turn, index) => <p key={index}><strong>[{index}] {turn.role === 'manager' ? 'Менеджер' : 'Клиент'}:</strong> {turn.text}</p>)}
+          {Boolean(item.fixture?.transcriptionAlternatives?.length) && <pre className="testing-tool-event">{JSON.stringify(item.fixture?.transcriptionAlternatives, null, 2)}</pre>}
+        </details>
+        {item.output && <details className="testing-nested-detail"><summary>Сгенерированный отчёт · {item.output.report.totalScore}/100 · {item.output.report.verdict}</summary>
+          <p className="sa-meta">Оценка: {item.output.timings.evaluationMs} мс · Отчёт: {item.output.timings.reportMs} мс · Всего: {item.output.timings.totalMs} мс</p>
+          <p>{item.output.report.summary}</p>
+          <details><summary>Сильные и слабые стороны</summary><strong>Сильные</strong><ul>{item.output.report.strengths.map((text, index) => <li key={index}>{text}</li>)}</ul><strong>Слабые</strong><ul>{item.output.report.weaknesses.map((text, index) => <li key={index}>{text}</li>)}</ul></details>
+          <details><summary>Ключевые находки · {item.output.report.keyFindings.length}</summary>{item.output.report.keyFindings.map((finding, index) => <section key={index}><strong>{finding.problemTitle}</strong><blockquote>{finding.quote}</blockquote><p>{finding.comment}</p><p><strong>Как лучше:</strong> {finding.betterExample || 'Нет примера'}</p></section>)}</details>
+          <details><summary>Разбор реплик · {item.output.report.dialog.length}</summary>{item.output.report.dialog.map((turn, index) => <section key={index}><p><strong>[{index}] {turn.role === 'manager' ? 'Менеджер' : 'Клиент'}:</strong> {turn.text}</p>{turn.role === 'manager' && <p className="sa-meta">{turn.mark || 'Без метки'} · {turn.comment || 'Без комментария'}</p>}{turn.betterExample && <p><strong>Как лучше:</strong> {turn.betterExample}</p>}</section>)}</details>
+          <details><summary>Полный JSON отчёта и исходной оценки</summary><pre className="testing-tool-event">{JSON.stringify(item.output, null, 2)}</pre></details>
+        </details>}
+      </>}
+      {run.target !== 'report' && <details className="testing-nested-detail"><summary>Диалог · {item.session?.transcript.length ?? 0} реплик</summary>
         {item.session?.transcript.length ? <div className="testing-transcript">{item.session.transcript.map((turn, index) => <div key={index} className={`testing-transcript-turn testing-transcript-turn--${turn.role}`}>
           <strong>{turn.role === 'manager' ? 'Менеджер' : 'AI-клиент'}</strong><p>{turn.text}{turn.metrics?.interrupted ? ' [прервано]' : ''}</p>
           {run.target === 'trainer' && <small>{Object.entries(turn.metrics ?? {}).filter(([key, value]) => ['sttMs', 'textMs', 'ttsMs', 'totalMs'].includes(key) && typeof value === 'number').map(([key, value]) => `${({ sttMs: 'STT', textMs: 'Текст', ttsMs: 'TTS', totalMs: 'Всего' } as Record<string, string>)[key]}: ${value} мс`).join(' · ')}</small>}
         </div>)}</div> : <p className="sa-meta">Реплик пока нет.</p>}
-      </details>
+      </details>}
       {Boolean(item.session?.tools.length) && <details className="testing-nested-detail"><summary>Вызовы функций · {item.session?.tools.length}</summary>
         {item.session?.tools.map((tool, index) => <pre key={index} className="testing-tool-event">{JSON.stringify(tool, null, 2)}</pre>)}
       </details>}
@@ -69,7 +86,7 @@ export function ScenarioResults({ run, disabled, onTest }: { run: RealtimeRegres
 }
 
 const changeLabels = { unchanged: 'Без изменений', fixed: 'Исправлено', regressed: 'Ухудшилось', changed: 'Статус изменился', not_rerun: 'Не перезапускали', new: 'Новая проверка' };
-export function ComparisonResults({ comparison }: { comparison: RealtimeRegressionComparison }) {
+export function ComparisonResults({ comparison, reportMode = false }: { comparison: RealtimeRegressionComparison; reportMode?: boolean }) {
   const [showUnchanged, setShowUnchanged] = useState(false);
   const rows = comparison.rows.filter((row) => showUnchanged || row.change !== 'unchanged');
   const fixed = comparison.rows.filter((row) => row.comparable && row.change === 'fixed').length;
@@ -79,7 +96,7 @@ export function ComparisonResults({ comparison }: { comparison: RealtimeRegressi
     <div className="testing-comparison-heading"><span className="sa-meta">Исправлено: {fixed} · ухудшилось: {regressed}</span>
       <label className="testing-checkbox"><input type="checkbox" checked={showUnchanged} onChange={(e) => setShowUnchanged(e.target.checked)} />Показать без изменений</label></div>
     {rows.length ? <div className="testing-comparison-table"><table>
-      <thead><tr><th>Проверка</th><th>Было → стало</th><th>Изменение</th><th>Пауза</th></tr></thead>
+      <thead><tr><th>Проверка</th><th>Было → стало</th><th>Изменение</th><th>{reportMode ? 'Генерация отчёта' : 'Пауза'}</th></tr></thead>
       <tbody>{rows.map((row) => <tr key={row.id}>
         <td><details><summary>{row.title}</summary>
           <p>Было: {row.before?.evidence.join(' · ') || 'Нет данных'}</p><p>Стало: {row.after?.evidence.join(' · ') || 'Нет данных'}</p>
@@ -120,7 +137,7 @@ export function RegressionReport({ run, disabled, comparison, baselineId, baseli
   return <section className="testing-report" aria-label="Отчёт автопроверки">
     <div className="testing-report-header"><div><h3>Результаты проверки</h3><p className="sa-meta">{run.planName} · {run.model}</p></div>
       <span className="testing-report-caption">{attention ? `Требуют внимания: ${attention}` : run.status === 'running' ? 'Результаты обновляются' : run.status === 'failed' ? 'Ошибка выполнения' : run.status === 'cancelled' ? 'Проверка остановлена' : counts.not_run || !run.checklist.length ? 'Есть непроверенные пункты' : 'Нет замечаний по проверенным пунктам'}</span></div>
-    <RunIdentity key={run.id} id={run.id} target={run.target === 'trainer' ? 'trainer' : 'call_plan'} />
+    <RunIdentity key={run.id} id={run.id} target={run.target === 'trainer' || run.target === 'report' ? run.target : 'call_plan'} />
     {run.error && <div className="sa-batch-live-error">{run.error}</div>}
     <div className="testing-report-metrics" aria-label="Фильтр результатов">{([
       ['pass', 'Пройдено', counts.pass], ['fail', 'Ошибки', counts.fail], ['review', 'Нужна проверка', counts.review], ['not_run', 'Не проверено', counts.not_run],
@@ -148,10 +165,10 @@ export function RegressionReport({ run, disabled, comparison, baselineId, baseli
       <label className="testing-baseline">Сравнить с запуском<select className="sa-input" value={baselineId} onChange={(e) => onBaselineChange(e.target.value)}>
         <option value="">Без сравнения</option>{baselineId && !baselines.some((item) => item.id === baselineId) && <option value={baselineId}>Архивный запуск · {baselineId}</option>}{baselines.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
       </select></label>
-      {comparison ? <ComparisonResults key={`${comparison.beforeId}-${comparison.afterId}`} comparison={comparison} /> : <p className="testing-report-empty">{run.status === 'running' ? 'Сравнение появится после завершения проверки.' : baselineId ? 'Загружаем сравнение…' : 'Выберите предыдущий запуск для сравнения результатов.'}</p>}
+      {comparison ? <ComparisonResults key={`${comparison.beforeId}-${comparison.afterId}`} comparison={comparison} reportMode={run.target === 'report'} /> : <p className="testing-report-empty">{run.status === 'running' ? 'Сравнение появится после завершения проверки.' : baselineId ? 'Загружаем сравнение…' : 'Выберите предыдущий запуск для сравнения результатов.'}</p>}
     </div>
-    <details className="testing-report-limitations"><summary>Что учитывает автопроверка и что нужно проверить звонком</summary>
-      <p className="sa-meta">{run.target === 'trainer' ? 'Это реальные функции тренажёра с изолированным сохранением. Профили и сценарии встроены, женский профиль выбирается автоматически. Фиксируются фактические TTS-голоса, STT, текст и TTS-тайминги. Воспроизведение в браузере и качество сети не проверяются; пол голоса, ударения и интонация требуют прослушивания.' : 'Тайминги относятся к эмуляции воспроизведения. Телефонную сеть и реальные буферы Voximplant проверяет контрольный звонок. Ударения и естественность голоса оценивайте по записи; женская легенда проверяет текст, голос остаётся из выбранного плана.'}</p>
+    <details className="testing-report-limitations"><summary>Границы автопроверки</summary>
+      <p className="sa-meta">{run.target === 'report' ? 'Это текстовые эталоны и реальные генераторы отчётов. Аудиораспознавание, диаризация и подсказка интерфейса проверяются отдельно; эти пункты не становятся зелёными по одному тексту. Семантические выводы — оценка модели, а не доказательство: проверяйте приведённые поля и цитаты. Выполнение условий сценария, интеграция отчёта с БД и загрузка записи не входят в этот прогон. Частичный набор не подтверждает полный чеклист.' : run.target === 'trainer' ? 'Это реальные функции тренажёра с изолированным сохранением. Профили и сценарии встроены, женский профиль выбирается автоматически. Фиксируются фактические TTS-голоса, STT, текст и TTS-тайминги. Воспроизведение в браузере и качество сети не проверяются; пол голоса, ударения и интонация требуют прослушивания.' : 'Тайминги относятся к эмуляции воспроизведения. Телефонную сеть и реальные буферы Voximplant проверяет контрольный звонок. Ударения и естественность голоса оценивайте по записи; женская легенда проверяет текст, голос остаётся из выбранного плана.'}</p>
     </details>
   </section>;
 }

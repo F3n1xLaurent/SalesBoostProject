@@ -22,7 +22,8 @@ describe('testing tabs and extensible checks', () => {
     expect(hypotheses).not.toContain('RealtimeRegressionPanel');
     expect(page).toContain('Гипотезы'); expect(page).toContain('Автотестирование');
     expect(page).toContain("hidden={tab !== 'hypotheses'}"); expect(page).toContain("hidden={tab !== 'autotesting'}");
-    expect(auto).toContain('RealtimeRegressionPanel'); expect(auto).toContain('Сами проверки ещё не реализованы');
+    expect(auto).toContain('RealtimeRegressionPanel'); expect(auto).toContain('<ReportTestingPage');
+    expect(auto).not.toContain('Сами проверки ещё не реализованы');
   });
   it('proxies WebSockets in development and documents the production upgrade without ticket access logs', () => {
     const vite = readFileSync('admin-frontend/vite.config.ts', 'utf8');

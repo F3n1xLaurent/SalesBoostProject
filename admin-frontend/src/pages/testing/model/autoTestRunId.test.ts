@@ -3,6 +3,11 @@ import { autoTestRunPath, autoTestRunSearch, validAutoTestRunId } from './autoTe
 import { testingTabSearch } from './testingTabs';
 
 describe('persistent autotest links', () => {
+  it('keeps report IDs and clears them without changing the report target', () => {
+    const url = new URL(autoTestRunPath('report-run', 'report'), 'https://test.local');
+    expect(url.searchParams.get('target')).toBe('report'); expect(url.searchParams.get('runId')).toBe('report-run');
+    expect(autoTestRunSearch(url.search, null, 'report')).toBe('?tab=autotesting&target=report');
+  });
   it('links to an exact saved run instead of whichever report happens to be latest', () => {
     expect(autoTestRunPath('a-b-c')).toBe('/testing?tab=autotesting&runId=a-b-c');
     expect(autoTestRunSearch('?callId=call&tab=hypotheses', 'old-run')).toBe('?callId=call&tab=autotesting&runId=old-run');

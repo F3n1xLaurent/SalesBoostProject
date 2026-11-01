@@ -1,8 +1,43 @@
 import { describe, expect, it } from 'vitest';
-import { adaptHypothesis2Prompt, callbackFarewell, pinSelfIntroduction, profileIdentity } from '../voice/hypothesis2Dialogue';
+import { adaptHypothesis2Prompt, callbackFarewell, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd } from '../voice/hypothesis2Dialogue';
+import { buildCustomerScenarioPromptCore } from '../voice/customerScenarioPrompt';
 import { parseRegressionAssessment, REGRESSION_JUDGE_INSTRUCTIONS, regressionAssessmentScope } from '../voice/realtimeRegressionAssessment';
 
 describe('hypothesis 2 dialogue guards', () => {
+  it('remembers the clarification limit across paraphrases from 8cfa445a', () => {
+    const turns = [
+      { role: 'client', text: 'Есть ли запасное колесо в комплекте?' },
+      { role: 'manager', text: 'Уточните, что интересует.' },
+      { role: 'client', text: 'Интересует комплектность: запасное колесо, докатка или ремкомплект.' },
+      { role: 'manager', text: 'Масло и фильтры заменены.' },
+    ];
+    const instructions = dialogueProgressInstructions(turns, '');
+    expect(instructions).toContain('Не задавай её в третий раз'); expect(instructions).toContain('оставь факт неизвестным');
+    expect(dialogueProgressInstructions(turns.slice(0, 2), '')).not.toContain('в третий раз');
+    expect(dialogueProgressInstructions(turns.map((turn) => turn.role === 'client' ? { ...turn, metrics: { interrupted: true } } : turn), '')).not.toContain('в третий раз');
+  });
+  it('counts an overlapping mandatory discount question as the single optional topic', () => {
+    const prompt = buildCustomerScenarioPromptCore({ questions: [{ text: 'Можете сделать скидку?', required: true }], objections: [{ phrase: 'Цена высокая, можно ли сделать скидку' }, { phrase: 'Есть ли запаска?' }] });
+    expect(prompt).not.toContain('уклончивый ответ принимай как ответ');
+    expect(dialogueProgressInstructions([{ role: 'client', text: 'Можете сделать скидку, если приеду?' }], prompt)).toContain('Не добавляй второе возражение');
+    expect(dialogueProgressInstructions([{ role: 'client', text: 'Какой пробег?' }], prompt)).not.toContain('Не добавляй второе возражение');
+  });
+  it('keeps the unresolved car/year question after a name-only correction', () => {
+    const instructions = dialogueProgressInstructions([{ role: 'client', text: 'Если там 2024 год, это другой автомобиль?' }, { role: 'manager', text: 'И поправка: меня зовут не Никита, а Антон. Обращайтесь ко мне Антон.' }], '');
+    expect(instructions).toContain('не ответил на вопрос'); expect(instructions).toContain('2024');
+    expect(dialogueProgressInstructions([{ role: 'client', text: 'Какой год?' }, { role: 'manager', text: 'Меня зовут Антон. Год 2018.' }], '')).not.toContain('не ответил на вопрос');
+  });
+  it('requires an audible visit decision, never an end_call.reason claim', () => {
+    const offer = explicitVisitOffer('Да, приезжайте сегодня к семнадцати часам, менеджер будет на месте. Адрес: улица Пушкина, дом один.')!;
+    expect(offer.time).toBe('сегодня к семнадцати часам');
+    expect(explicitVisitOffer('Приезжайте завтра в пять тридцать вечера.')?.time).toBe('завтра в пять тридцать вечера');
+    expect(explicitVisitOffer('Приезжайте послезавтра в 17:30.')?.time).toBe('послезавтра в 17:30');
+    expect(hasVisitDecision('Спасибо за ответы, всего доброго.')).toBe(false);
+    expect(visitResponseCanEnd('Приеду сегодня к пяти. До свидания.', offer)).toBe(true);
+    expect(visitResponseCanEnd('Приеду завтра к пяти. До свидания.', offer)).toBe(false);
+    expect(visitResponseCanEnd('Сегодня не смогу. Можно завтра?', offer)).toBe(false);
+    for (const text of ['Не приезжайте сегодня к пяти.', 'Можете перезвонить завтра в 17:30?', 'Приезжайте сегодня или завтра к пяти.', 'Наш адрес: улица Пушкина, дом один.']) expect(explicitVisitOffer(text)).toBeNull();
+  });
   it('adapts legacy tools without modifying business questions or the original plan', () => {
     const plan = 'Уточни пробег. Когда всё согласовано, используй существующую процедуру Finish call. При voicemail используй отдельную процедуру. Не вызывай end_call напрямую и не создавай обычную финальную реплику перед процедурой.';
     const adapted = adaptHypothesis2Prompt(plan);

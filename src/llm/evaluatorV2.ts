@@ -1,4 +1,6 @@
-import { compatibleChatTemperature, openai } from '../lib/openaiClient';
+import { compatibleChatMaxTokens, compatibleChatTemperature, openai } from '../lib/openaiClient';
+import { compatibleReportReasoning } from '../lib/chatReasoning';
+import { updateAuditAnalyticsStage } from '../logic/auditAnalyticsProgress';
 import { config } from '../config';
 import type { Car } from '../data/carLoader';
 import type { DialogState } from '../state/defaultState';
@@ -18,6 +20,7 @@ import {
 import type { BehaviorSignal } from '../logic/behaviorClassifier';
 import type { EvaluationChecklistItemDefinition } from '../checklists/checklistManagement';
 import { findManagerClientNameRequest, isClientNameCriterion } from '../logic/conversationFacts';
+import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logic/transcriptionUncertainty';
 
 // ── Types ──
 
@@ -54,6 +57,7 @@ interface LLMClassification {
   extra_signals: {
     profanity: boolean;
     misinformation: boolean;
+    misinformation_evidence?: string[];
     passive_style: boolean;
     passive_severity: 'mild' | 'strong';
     low_engagement: boolean;
@@ -94,6 +98,7 @@ function customEvaluatorPrompt(checklist: NonNullable<EvaluatorInput['evaluation
 Во всех комментариях и рекомендациях слово «менеджер» согласуй только в мужском роде: «менеджер представился», «назвал», «ответил», независимо от пола или голоса сотрудника.
 Оценивай выполнение по смыслу, а не по длине или буквальному совпадению формулировок. Развёрнутая реплика полностью выполняет пункт, если содержит весь требуемый смысл, даже когда критерий сформулирован коротко. Смысл можно собирать из нескольких последовательных реплик сотрудника.
 Не понижай статус за дополнительные уместные детали. Понижай его только при отсутствии обязательной части, противоречии, фактической ошибке или уходе от вопроса.
+Спорные фрагменты распознавания не доказывают ошибку сотрудника. Для extra_signals.misinformation=true обязательно верни misinformation_evidence — точные цитаты именно менеджера, подтверждающие отдельную фактическую ошибку, а не спорное распознавание.
 
 ЧЕК-ЛИСТ «${checklist.name}»:
 ${items}
@@ -239,11 +244,32 @@ COMMUNICATION_TONE (вес: 5) — Был ли тон общения профе�
 - Если цитату найти невозможно, поставь evidence: [] и объясни в comment.
 - ВСЕ тексты (evidence, comment, recommendations) СТРОГО НА РУССКОМ ЯЗЫКЕ.
 - НЕ угадывай — оценивай только то, что есть в стенограмме.
+- Спорный год обслуживания до выпуска автомобиля может быть ошибкой ASR. Если он отмечен как неопределённость, не считай его дезинформацией и не снижай на этом основании статус всей реплики; не исправляй год самостоятельно.
+- Для misinformation=true верни extra_signals.misinformation_evidence: точные цитаты менеджера, подтверждающие конкретное ложное утверждение. Уклончивый ответ «всё нормально» сам по себе не доказывает фактическую ошибку.
+- Предложенный слот «завтра в 18:00» содержит дату и время. Отличай отсутствие подтверждения записи от отсутствия слота; не требуй календарную дату вместо понятного относительного дня.
+- Прямой технический вопрос не является возражением сам по себе. Если возражений не было, OBJECTION_HANDLING=NA. Не требуй повторно выяснять уже названные бюджет, время и условия использования.
+- PRODUCT_PRESENTATION: если менеджер корректно назвал наличие, цену и содержательные условия (отсутствие обязательных доплат, возможную выгоду, независимую диагностику), это как минимум частичная презентация. Недостаток структуры или привязки к приоритетам — PARTIAL, не NO. В evidence сохрани выполненные действия. NO допустим при реальном отсутствии содержательного описания или недостоверном ответе.
+- На конкретный вопрос о датчиках не требуй выдуманных преимуществ: отсутствие ответа классифицируй как отсутствие ответа. Не требуй ещё раз выяснять условия, которые клиент уже подробно назвал.
 - НИКАКОГО английского текста в выводе.`;
+
+/** A narrowly grounded contradiction warrants reclassification, never a silent score bump. */
+export function productPresentationContradiction(input: EvaluatorInput, classification: Pick<LLMClassification, 'checklist' | 'extra_signals'>): boolean {
+  if (input.evaluationChecklist?.items?.length || input.state.fact_context?.misinformation_detected || classification.extra_signals?.misinformation) return false;
+  if (classification.checklist.find((item) => item.code === 'PRODUCT_PRESENTATION')?.status !== 'NO') return false;
+  if (!input.car.price_rub || !input.car.model) return false;
+  const price = String(input.car.price_rub);
+  return input.dialogHistory.some((turn) => turn.role === 'manager'
+    && turn.content.toLocaleLowerCase('ru-RU').includes(input.car.model.toLocaleLowerCase('ru-RU'))
+    && turn.content.replace(/[ \u00a0\u202f]/gu, '').includes(price)
+    && /(?:в\s+наличии|есть\s+в\s+наличии)/iu.test(turn.content) && !/нет\s+(?:в\s+)?налич/iu.test(turn.content)
+    && /обязательных\s+доплат\s+нет|независим[а-яё]*\s+диагностик[а-яё]*\s+разрешен|выгод[а-яё]*\s+до\s+\d/iu.test(turn.content));
+}
 
 // ── Main evaluator function ──
 
 export async function evaluateSessionV2(input: EvaluatorInput): Promise<EvaluatorOutput> {
+  updateAuditAnalyticsStage('evaluation');
+  const transcriptionUncertainties = collectTranscriptionUncertainties(input.dialogHistory, input.car.year, input.transcriptionAlternatives);
   const customChecklist = input.evaluationChecklist?.items?.length ? input.evaluationChecklist : null;
   const expectedCodes = customChecklist ? customChecklist.items.map((item) => item.id) : CHECKLIST_CODE;
   const historyStr = input.dialogHistory
@@ -298,11 +324,13 @@ ${scenarioContext}
 ${historyStr}
 ${behaviorEvidence}
 ${transcriptionContext}
+${transcriptionUncertainties.length ? `\n=== НЕОПРЕДЕЛЁННОСТЬ РАСПОЗНАВАНИЯ (НЕ ДОКАЗАННАЯ ОШИБКА МЕНЕДЖЕРА) ===\n${JSON.stringify(transcriptionUncertainties)}\nСохрани исходный текст. Не выдумывай исправленный год. Оцени остальные действия независимо от спорного слова.` : ''}
 
 === ЗАДАНИЕ ===
 Оцени каждый пункт чеклиста. Верни JSON.`;
 
   let classification: LLMClassification | null = null;
+  let validationIssue = '';
 
   for (let attempt = 1; attempt <= 2 && !classification; attempt += 1) {
     try {
@@ -314,22 +342,38 @@ ${transcriptionContext}
             role: 'user',
             content: attempt === 1
               ? userPrompt
-              : `${userPrompt}\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ был неполным или невалидным. Обязательно верни все ${expectedCodes.length} уникальных пунктов checklist.`,
+              : `${userPrompt}\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ был неполным или невалидным. Причина: ${validationIssue}. Обязательно верни все ${expectedCodes.length} уникальных пунктов checklist.`,
           },
         ],
         response_format: { type: 'json_object' },
         ...compatibleChatTemperature(config.openaiChatModel, attempt === 1 ? 0.2 : 0.1),
-        max_completion_tokens: 3500,
+        ...compatibleChatMaxTokens(config.openaiChatModel, attempt === 1 ? 8000 : 12000),
+        ...compatibleReportReasoning(config.openaiChatModel, 'evaluation'),
       });
 
       const text = response.choices[0]?.message?.content?.trim();
+      if (response.choices[0]?.finish_reason === 'length') throw new Error('Evaluator token limit reached');
       if (!text) throw new Error('Empty evaluator response');
       const parsed = JSON.parse(text) as unknown;
       if (!hasCompleteChecklist(parsed, expectedCodes)) {
         throw new Error(`Incomplete evaluator checklist: expected ${expectedCodes.length} unique valid items`);
       }
+      if (parsed.checklist.some((item) => isUncertainFactClaim(String(item.comment ?? ''), transcriptionUncertainties))) {
+        throw new Error('Uncertain ASR was classified as a confirmed manager error');
+      }
+      if (parsed.extra_signals?.misinformation && !input.state.fact_context?.misinformation_detected
+        && !(parsed.extra_signals.misinformation_evidence ?? []).some((quote) => typeof quote === 'string' && quote.trim().length >= 8
+          && input.dialogHistory.some((turn) => turn.role === 'manager' && turn.content.includes(quote.trim())))) {
+        throw new Error('Misinformation classification has no grounded manager quote');
+      }
+      if (productPresentationContradiction(input, parsed)) throw new Error('PRODUCT_PRESENTATION=NO противоречит выполненным действиям: менеджер назвал известную модель, её цену, наличие и содержательные условия. Перепроверь PARTIAL со свидетельствами; не обнуляй презентацию только за структуру или отсутствие привязки к потребностям.');
       classification = parsed;
     } catch (err) {
+      // Retrying invalid credentials or exhausted billing cannot repair a
+      // checklist. Preserve the actual provider error for the caller/UI.
+      const status = Number((err as { status?: unknown })?.status);
+      if ([400, 401, 402, 403, 404].includes(status)) throw err;
+      validationIssue = err instanceof Error ? err.message : String(err);
       console.warn(`[evaluatorV2] attempt=${attempt} failed:`, err instanceof Error ? err.message : err);
     }
   }
@@ -365,9 +409,21 @@ ${transcriptionContext}
   if (input.state.communication?.profanity_detected) {
     extra.profanity = true;
   }
+  let misinformationEvidence: string[] = [];
   if (input.state.fact_context?.misinformation_detected) {
     extra.misinformation = true;
+  } else if (extra.misinformation) {
+    const quotes = Array.isArray(extra.misinformation_evidence) ? extra.misinformation_evidence : [];
+    const confirmed = quotes.filter((quote) => typeof quote === 'string' && quote.trim().length >= 8
+      && input.dialogHistory.some((turn) => turn.role === 'manager' && turn.content.includes(quote.trim()))
+      && !/^(?:да\s+)?(?:нормально\s+вс[её]|вс[её]\s+(?:нормально|хорошо|отлично|ок)|нормально)[.!\s]*$/iu.test(quote.trim())
+      && !transcriptionUncertainties.some((hint) => quote.includes(hint.token)));
+    // A bare model boolean (or an uncertain ASR span) is not proof of a lie.
+    extra.misinformation = confirmed.length > 0;
+    misinformationEvidence = confirmed;
   }
+  classification.recommendations = Array.isArray(classification.recommendations)
+    ? classification.recommendations.filter((text) => typeof text === 'string' && !isUncertainFactClaim(text, transcriptionUncertainties)) : [];
   if (input.behaviorSignals && input.behaviorSignals.length > 0) {
     if (input.behaviorSignals.some((s) => s.profanity === true)) extra.profanity = true;
     const prohibHits = input.behaviorSignals.flatMap((s) => s.prohibited_phrase_hits);
@@ -402,6 +458,8 @@ ${transcriptionContext}
     redirectToWebsite: extra.redirect_to_website,
     badTone: extra.bad_tone,
   });
+  const factualIssue = issues.find((issue) => issue.issue_type === 'MISINFORMATION');
+  if (factualIssue && misinformationEvidence.length) factualIssue.evidence = misinformationEvidence.join(' | ');
 
   const recommendations = Array.isArray(classification.recommendations)
     ? classification.recommendations.filter(Boolean)
@@ -409,6 +467,7 @@ ${transcriptionContext}
 
   const evaluation: EvaluationResult = {
     overall_score_0_100: score,
+    ...(transcriptionUncertainties.length ? { transcription_uncertainties: transcriptionUncertainties } : {}),
     dimension_scores: dimensions,
     checklist,
     issues,

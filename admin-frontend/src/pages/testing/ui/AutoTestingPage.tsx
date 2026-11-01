@@ -4,13 +4,14 @@ import type { CallPlanItem, RealtimeRegressionRun } from '../../../shared/api/ad
 import { fetchAutoTestingCatalog, fetchCallPlanAutoTest, type AutoTestingCatalog, type AutoTestingTarget } from '../../../shared/api/autoTesting';
 import { RealtimeRegressionPanel } from './RealtimeRegressionPanel';
 import { TrainerTestingPage } from './TrainerTestingPage';
+import { ReportTestingPage } from './ReportTestingPage';
 import { autoTestRunSearch, validAutoTestRunId } from '../model/autoTestRunId';
 
 export function AutoTestingPage({ plans, loading, holdingId }: { plans: CallPlanItem[]; loading: boolean; holdingId?: string }) {
   const location = useLocation();
   const navigate = useNavigate();
   const queryTarget = new URLSearchParams(location.search).get('target');
-  const requestedId = queryTarget === 'trainer' ? '' : new URLSearchParams(location.search).get('runId') || '';
+  const requestedId = queryTarget === 'trainer' || queryTarget === 'report' ? '' : new URLSearchParams(location.search).get('runId') || '';
   const [lookupId, setLookupId] = useState(requestedId);
   const [lookupAttempt, setLookupAttempt] = useState(0);
   const [lookup, setLookup] = useState<{ id: string; run?: RealtimeRegressionRun; error?: string } | null>(null);
@@ -59,7 +60,7 @@ export function AutoTestingPage({ plans, loading, holdingId }: { plans: CallPlan
     <div className="testing-targets" aria-label="Направление автотестирования">
       {catalog?.targets.map((item) => <button key={item.id} type="button" aria-pressed={target === item.id}
         className={`testing-target ${target === item.id ? 'is-selected' : ''}`} onClick={() => { setTarget(item.id); const params = new URLSearchParams(location.search); params.delete('runId'); if (item.id === 'call_plan') params.delete('target'); else params.set('target', item.id); navigate({ pathname: location.pathname, search: `?${params}` }); }}>
-        <span className="testing-target-top"><strong>{item.title}</strong><span className="sa-meta">{item.id !== 'report' ? item.available ? 'Доступно' : 'Нужна настройка' : 'Скоро'}</span></span>
+        <span className="testing-target-top"><strong>{item.title}</strong><span className="sa-meta">{item.available ? 'Доступно' : 'Нужна настройка'}</span></span>
         <span className="sa-meta">{item.description}</span>
       </button>)}
     </div>
@@ -103,11 +104,6 @@ export function AutoTestingPage({ plans, loading, holdingId }: { plans: CallPlan
       {openedRun && !validPlan && !loading && <p className="sa-meta">План этого запуска не выбран в текущем фильтре компании или больше недоступен. Отчёт можно просмотреть; для нового теста выберите доступный план.</p>}
       {(!requestedId || openedRun) && <RealtimeRegressionPanel key={`${openedRun?.id || 'latest'}:${effectivePlanId}`} planId={openedRun ? openedRun.planId : validPlan ? planId : ''} model={selected?.configuration?.model || ''}
         initialRun={openedRun} onSelectRun={selectRun} disabled={loading || !validPlan || !selected?.available} />}
-    </> : target === 'trainer' ? <TrainerTestingPage available={Boolean(selected?.available)} /> : <section className="testing-placeholder sa-companies-table-wrap">
-      <h3>{selected?.title || 'Новое направление'}</h3>
-      <p>{selected?.description}</p>
-      <p className="sa-meta">Место для отдельного набора сценариев, истории запусков и результатов подготовлено. Сами проверки ещё не реализованы, запуск недоступен.</p>
-      <button className="sa-btn" type="button" disabled>Скоро</button>
-    </section>}
+    </> : target === 'trainer' ? <TrainerTestingPage available={Boolean(selected?.available)} /> : <ReportTestingPage available={Boolean(selected?.available)} />}
   </div>;
 }
