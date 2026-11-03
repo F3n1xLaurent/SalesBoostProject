@@ -1,13 +1,22 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, afterEach } from 'vitest';
 import { AnalyticsProgress } from './AnalyticsProgress';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 
 const detail = (overrides: Partial<NonNullable<AuditDetailItem['analyticsProgress']>> = {}) => ({
   transcript: [], analyticsProgress: { stage: 'evaluation' as const, status: 'processing' as const, transcriptReady: true, evaluationReady: false, message: 'Анализируем разговор.', ...overrides },
 });
+afterEach(() => vi.useRealTimers());
 describe('animated analytics stages', () => {
+  it.each(['waiting', 'processing'] as const)('shows retry for %s after two minutes even when reopening the report', (status) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-03T12:02:00Z'));
+    const render = (startedAt: string) => renderToStaticMarkup(<AnalyticsProgress detail={detail({ status, startedAt })} onRetry={() => {}} />);
+    expect(render('2026-11-03T12:00:00.001Z')).not.toContain('Переполучить отчёт');
+    expect(render('2026-11-03T12:00:00.000Z')).toContain('Переполучить отчёт');
+    expect(render('2026-11-03T12:02:00.000Z')).not.toContain('Переполучить отчёт');
+  });
   it('shows confirmed completed/current/pending steps, not a fake percentage', () => {
     const html = renderToStaticMarkup(<AnalyticsProgress detail={detail()} />);
     expect(html).toContain('Расшифровка диалога'); expect(html).toContain('Первоначальная аналитика'); expect(html).toContain('Подготовка отчёта');
@@ -33,5 +42,22 @@ describe('animated analytics stages', () => {
   it('distinguishes a temporary connection problem from a failed analysis', () => {
     const html = renderToStaticMarkup(<AnalyticsProgress detail={detail()} connectionLost />);
     expect(html).toContain('проверку соединения автоматически'); expect(html).not.toContain('Не удалось подготовить аналитику');
+  });
+  it.each(['transcription', 'evaluation', 'report'] as const)('offers manual recovery after a %s failure', (stage) => {
+    const html = renderToStaticMarkup(<AnalyticsProgress detail={detail({ stage, status: 'failed' })} onRetry={() => {}} />);
+    expect(html).toContain('Переполучить отчёт');
+    expect(html).toContain('<button type="button"');
+  });
+  it('disables repeated requests and shows a friendly launch error', () => {
+    const html = renderToStaticMarkup(<AnalyticsProgress detail={detail({ status: 'failed' })} onRetry={() => {}} retrying retryError="Не удалось запустить подготовку отчёта." />);
+    expect(html).toContain('disabled=""');
+    expect(html).toContain('Запускаем…');
+    expect(html).toContain('role="alert"');
+  });
+  it('does not offer regeneration for processing, waiting or unavailable analytics, or without access', () => {
+    for (const status of ['processing', 'waiting', 'unavailable', 'ready'] as const) {
+      expect(renderToStaticMarkup(<AnalyticsProgress detail={detail({ status })} onRetry={() => {}} />)).not.toContain('Переполучить отчёт');
+    }
+    expect(renderToStaticMarkup(<AnalyticsProgress detail={detail({ status: 'failed' })} />)).not.toContain('Переполучить отчёт');
   });
 });

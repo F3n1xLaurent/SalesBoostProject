@@ -14,7 +14,8 @@ import { config } from './config';
 import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import { buildScriptCriteriaEvaluationPrompt } from './llm/scriptCriteriaPrompt';
 import { withCostContext } from './economics/costContext';
-import { auditAnalyticsProgress, scheduleAuditReportBackfill, withAuditAnalyticsProgress } from './logic/auditAnalyticsProgress';
+import { assertAuditAnalyticsCurrent, auditAnalyticsProgress, scheduleAuditReportBackfill, updateAuditAnalyticsStage, withAuditAnalyticsProgress } from './logic/auditAnalyticsProgress';
+import { createRetryAuditReportHandler } from './audits/retryAuditReport';
 import { getEconomicsAnalytics } from './economics/analytics';
 import { getCompanyEconomicsForecast } from './economics/companyForecast';
 import { startExchangeRateScheduler } from './economics/exchangeRates';
@@ -2446,6 +2447,7 @@ async function finalizeTrainerSessionEvaluation(params: {
     failureReason: params.failureReason,
   });
   const title = await generateTrainerDialogTitle(params.transcript);
+  assertAuditAnalyticsCurrent();
   const finalPoints = params.forcedFail ? 0 : Math.round(audit.score * params.multiplier);
   const nextCaseContext = {
     ...params.caseContext,
@@ -9482,10 +9484,12 @@ async function buildTrainerAuditDetailItem(session: {
         evaluation: evaluationSnapshot,
         scenarioName: session.scenario?.name ?? null,
       });
+      assertAuditAnalyticsCurrent();
       const latest = await prisma.trainerSession.findUnique({ where: { id: session.id }, select: { evaluationJson: true } });
       if (!latest) return;
       const current = safeJsonParseLocal<Record<string, unknown> | null>(latest.evaluationJson, null);
       if (!current || current.unified_call_report) return;
+      assertAuditAnalyticsCurrent();
       await prisma.trainerSession.updateMany({
         where: { id: session.id, evaluationJson: latest.evaluationJson },
         data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }) },
@@ -9527,6 +9531,7 @@ async function buildTrainerAuditDetailItem(session: {
     failReason: session.failureReason ? getFailureReasonLabel(session.failureReason) : null,
     analyticsProgress: auditAnalyticsProgress({
       key: `trainer:${session.id}`, transcriptReady: reportTranscript.length >= 2,
+      startedAt: session.completedAt ?? session.startedAt,
       evaluationReady: Boolean(evaluation && Object.keys(evaluation).length), reportReady: Boolean(unifiedReport),
       unavailable: session.status === 'cancelled',
     }),
@@ -9553,6 +9558,88 @@ app.delete('/api/admin/audits/:id', createDeleteAuditHandler({
     teamSummaryCache = { data: null, expiresAt: 0 };
     voiceDashboardCache = { data: null, expiresAt: 0 };
   },
+}));
+
+app.post('/api/admin/audits/:id/retry-report', createRetryAuditReportHandler(async (req, id) => {
+  if (id.startsWith('trainer-')) {
+    const session = await prisma.trainerSession.findFirst({
+      where: { AND: [{ id: id.slice('trainer-'.length) }, buildTrainerSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] },
+      include: { scenario: true },
+    });
+    if (!session) return null;
+    const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+    return {
+      key: `trainer:${session.id}`, stage: evaluation ? 'report' as const : 'evaluation' as const,
+      finished: ['completed', 'failed'].includes(session.status), unavailable: session.status === 'cancelled',
+      reportReady: Boolean(evaluation?.unified_call_report),
+      run: () => withCostContext({ entityType: 'trainer_session', entityId: session.id, stage: 'report_retry' }, async () => {
+        if (!evaluation) {
+          await regenerateTrainerSessionReport(session.id);
+          const latest = await prisma.trainerSession.findUnique({ where: { id: session.id }, select: { evaluationJson: true } });
+          if (latest && !safeJsonParseLocal<Record<string, unknown> | null>(latest.evaluationJson, null)?.unified_call_report) {
+            throw new Error('Trainer report could not be recovered');
+          }
+          return;
+        }
+        const transcript = safeArray<TrainerTranscriptTurn>(session.transcriptJson);
+        const generated = await generateUnifiedTrainerReport({
+          transcript, totalScore: scoreFromTrainerEvaluation(evaluation, session.score), evaluation,
+          scenarioName: session.scenario?.name ?? null,
+        });
+        assertAuditAnalyticsCurrent();
+        await prisma.trainerSession.updateMany({
+          where: { id: session.id, evaluationJson: session.evaluationJson },
+          data: { evaluationJson: JSON.stringify({ ...evaluation, unified_call_report: generated }) },
+        });
+      }),
+    };
+  }
+  const session = await prisma.voiceCallSession.findFirst({
+    where: { AND: [{ id: Number(id.replace(/^call-/, '')) }, buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] },
+  });
+  if (!session) return null;
+  const evaluation = safeJsonParseLocal<Record<string, unknown> | null>(session.evaluationJson, null);
+  const transcript = safeArray<{ role: 'manager' | 'client'; text: string }>(session.transcriptJson);
+  return {
+    key: `voice:${session.callId}`,
+    stage: evaluation ? 'report' as const : transcript.length >= 2 ? 'evaluation' as const : 'transcription' as const,
+    finished: Boolean(session.endedAt),
+    unavailable: ['no_answer', 'busy', 'failed', 'cancelled'].includes(session.outcome ?? '')
+      || (transcript.length >= 2 && !assessCallReportEligibility(transcript, { ivrDetected: session.ivrDetected }).eligible),
+    reportReady: Boolean(evaluation?.unified_call_report),
+    run: () => withCostContext({ entityType: 'voice_call', entityId: session.callId, stage: 'report_retry' }, async () => {
+      if (!evaluation) {
+        // Reuse transcript recovery and the original checklist/scenario. Preserve the
+        // actual end time so a manual retry never extends the recorded call duration.
+        await finalizeVoiceCallSession({
+          call_id: session.callId, event: 'disconnected', to: session.to,
+          ts: session.endedAt!.toISOString(), transcript,
+          vox_session_id: session.voxSessionId ?? undefined,
+          recording_started: ['ready', 'pending', 'processing', 'failed'].includes(session.recordingStatus ?? ''),
+          ivr: session.ivrDetected,
+        }, { restart: true });
+      }
+      const latest = await prisma.voiceCallSession.findUnique({ where: { id: session.id } });
+      assertAuditAnalyticsCurrent();
+      if (!latest) return;
+      const current = safeJsonParseLocal<Record<string, unknown> | null>(latest.evaluationJson, null);
+      if (!current) throw new Error('Call evaluation could not be recovered');
+      if (current.unified_call_report) return;
+      // The full pipeline already attempted this stage. If it failed, expose
+      // that failure rather than immediately paying for another hidden retry.
+      if (!evaluation) throw new Error('Call report could not be recovered');
+      updateAuditAnalyticsStage('report');
+      const generated = await generateUnifiedCallReport({
+        transcript: safeArray<{ role: 'manager' | 'client'; text: string }>(latest.transcriptJson),
+        outcome: latest.outcome, totalScore: scoreFromEvaluation(current, latest.totalScore), evaluation: current,
+      });
+      assertAuditAnalyticsCurrent();
+      await prisma.voiceCallSession.updateMany({
+        where: { id: session.id, evaluationJson: latest.evaluationJson },
+        data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }), failureReason: null },
+      });
+    }),
+  };
 }));
 
 app.get('/api/admin/audits/:id', async (req, res) => {
@@ -9783,10 +9870,12 @@ app.get('/api/admin/audits/:id', async (req, res) => {
           totalScore: score,
           evaluation: evaluationSnapshot,
         });
+        assertAuditAnalyticsCurrent();
         const latest = await prisma.voiceCallSession.findUnique({ where: { id: session.id }, select: { evaluationJson: true } });
         if (!latest) return;
         const current = safeJsonParseLocal<Record<string, unknown> | null>(latest.evaluationJson, null);
         if (!current || current.unified_call_report) return;
+        assertAuditAnalyticsCurrent();
         await prisma.voiceCallSession.updateMany({
           where: { id: session.id, evaluationJson: latest.evaluationJson },
           data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }) },
@@ -9844,6 +9933,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         recordingUrl: session.recordingUrl,
         analyticsProgress: auditAnalyticsProgress({
           key: `voice:${session.callId}`, transcriptReady: reportTranscript.length >= 2,
+          startedAt: session.endedAt ?? session.startedAt,
           evaluationReady: Boolean(evaluation && Object.keys(evaluation).length), reportReady: Boolean(unifiedReport),
           failureReason: evaluation ? null : session.failureReason,
           unavailable: ['no_answer', 'busy', 'cancelled'].includes(session.outcome ?? ''),

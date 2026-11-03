@@ -1,9 +1,52 @@
 import { describe, expect, it } from 'vitest';
-import { canEndDialogue, dialogueAgreementInstruction, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, visitSlot } from '../voice/realtimeDialoguePolicy';
+import { canEndDialogue, currentManagerVisitTime, dialogueAgreementInstruction, dialogueRecoveryResponse, repeatedVisitQuestionIssue, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, unansweredManagerResponseIssue, visitSlot } from '../voice/realtimeDialoguePolicy';
 const manager = (text: string) => ({role:'manager',text});
 const client = (text: string) => ({role:'client',text});
 
 describe('production dialogue agreement regressions', () => {
+  it('916: a payment alternative containing «сейчас» never clears the agreed visit hour', () => {
+    const turns = [manager('Удобно будет приехать на тест-драйв?'),
+      client('Завтра в первой половине дня удобнее. Если есть окно ближе к одиннадцати, я подстроюсь.'),
+      manager('Предлагаю нам завтра встретиться в одиннадцать ноль-ноль.'),
+      manager('Вы планируете покупку за наличные или за кредит? Спрашиваю, потому что сейчас действует выгода по кредиту.')];
+    expect(currentManagerVisitTime(turns)).toContain('одиннадцать');
+    expect(canEndDialogue(turns, 'Хорошо, приеду завтра в одиннадцать. До свидания.')).toBe(false);
+    expect(unansweredManagerResponseIssue(turns, 'Хорошо, приеду завтра в одиннадцать.')).toContain('способе оплаты');
+    expect(dialogueRecoveryResponse(turns)).toContain('Способ оплаты пока выбираю');
+    expect(dialogueRecoveryResponse(turns)).not.toContain('?');
+    expect(repeatedVisitQuestionIssue(turns, 'На какой день и время договоримся?')).toContain('Не спрашивай');
+    expect(repeatedVisitQuestionIssue([...turns, manager('Повторите вопрос, пожалуйста.')], 'На какой день и время договоримся?')).toBeNull();
+    expect(dialogueAgreementInstruction(turns)).toContain('Не спрашивай заново день и время');
+    expect(canEndDialogue(turns, 'Способ оплаты пока выбираю. Приеду завтра в одиннадцать, до свидания.')).toBe(true);
+  });
+  it.each(['Пока не определилась.', 'Буду покупать за собственные средства.', 'За свои.', 'Пока думаю.'])(
+    'accepts a substantive payment answer without demanding a fixed choice: %s', (answer) => {
+      expect(unansweredManagerResponseIssue([manager('Покупку планируете за наличные или в кредит?')], answer)).toBeNull();
+    });
+  it('916: after the manager repeats eleven and asks «Удобно?» recovery confirms it', () => {
+    const turns = [manager('Предлагаю записаться на тест-драйв.'), client('Мне удобно завтра ближе к одиннадцати.'),
+      manager('Давайте договоримся завтра в одиннадцать ноль ноль.'), manager('Удобно?')];
+    expect(dialogueRecoveryResponse(turns)).toBe('Хорошо, приеду завтра в одиннадцать.');
+    expect(canEndDialogue(turns, dialogueRecoveryResponse(turns))).toBe(true);
+    expect(dialogueRecoveryResponse(turns)).not.toContain('?');
+  });
+  it('retains an unresolved conflict and asks only for missing parts of the appointment', () => {
+    const turns = [manager('Запишем вас на тест-драйв.'), client('Завтра в 12:00 удобно.'), manager('Можем завтра в 15:00.')];
+    expect(dialogueRecoveryResponse(turns)).toContain('12:00');
+    expect(dialogueRecoveryResponse(turns)).not.toContain('приеду');
+    expect(dialogueRecoveryResponse([manager('Предлагаю приехать завтра.')])).toBe('Во сколько завтра можно приехать?');
+    const noReply = [manager('Предлагаю приехать.'), client('На какой день и время можно записаться?'), manager('Потом решим.'),
+      client('Подскажите время визита?'), manager('Пока не могу сказать.')];
+    expect(dialogueRecoveryResponse(noReply)).not.toContain('?');
+    expect(dialogueRecoveryResponse(noReply)).toContain('не удалось согласовать');
+    expect(canEndDialogue(noReply, dialogueRecoveryResponse(noReply))).toBe(false);
+  });
+  it('never turns a spoken afternoon shorthand into a conflicting explicit night appointment', () => {
+    const turns = [manager('Приезжайте завтра к трём.')];
+    expect(dialogueRecoveryResponse(turns)).toBe('Хорошо, приеду завтра в три.');
+    expect(sameVisitTime(dialogueRecoveryResponse(turns), 'Завтра в 15:00.')).toBe(true);
+    expect(dialogueRecoveryResponse([client('Приехать завтра в 15:00 на визит удобно.'), ...turns])).toContain('15:00');
+  });
   it('does not reuse an old slot after the manager replaces it with alternatives', () => {
     const turns = [manager('Приезжайте завтра в 12:00.'), client('Уточню возможность визита.'), manager('В двенадцать уже занято. Можно сегодня в 17:00 или завтра в 15:00.')];
     expect(canEndDialogue(turns, 'Хорошо, договорились, до свидания.')).toBe(false);

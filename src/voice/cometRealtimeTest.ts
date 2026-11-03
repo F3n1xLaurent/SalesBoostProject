@@ -18,7 +18,7 @@ import { appendSpeechAlignment, audibleTextAt, type SpeechAlignmentPoint } from 
 import { hypothesis2SpokenSubject, hypothesis2SpokenText } from './hypothesis2Speech';
 import { adaptHypothesis2Prompt, callbackFarewell, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd, visitDecisionInstructions, type VisitOffer } from './hypothesis2Dialogue';
 import { extractNaturalFarewell, hasClosingIntention, hasNaturalFarewell, throughFirstFarewell } from './hypothesis2Closing';
-import { canEndDialogue, currentManagerVisitTime, dialogueAgreementInstruction, dialogueNeedsValidation, hasVisitNegotiation, previousClientVisitTime, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, unansweredManagerResponseIssue } from './realtimeDialoguePolicy';
+import { canEndDialogue, currentManagerVisitTime, dialogueAgreementInstruction, dialogueNeedsValidation, dialogueRecoveryResponse, previousClientVisitTime, repeatedVisitQuestionIssue, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, unansweredManagerResponseIssue } from './realtimeDialoguePolicy';
 export { hasNaturalFarewell } from './hypothesis2Closing';
 
 type TurnMetrics = {
@@ -483,6 +483,7 @@ export function sanitizeRealtimeSpokenText(text: string): string {
 
 export function containsTechnicalRealtimeSpeech(text: string): boolean {
   return TECHNICAL_SPEECH_PATTERN.test(text) || hasClosingIntention(text)
+    || /отвечу\s+по\s+(?:оплат|способ|вопрос)|(?:потом|заодно)\s+(?:закрепим|зафиксируем)\s+(?:наш[уи]\s+)?(?:встреч|визит|время)|(?:завершим\s+на\s+этом|коротко\s+попрощаюсь)/iu.test(text)
     || /(?:сейчас\s+(?:я\s+)?(?:отвечу|скажу|выберу|зафиксирую)|(?:^|[,.!?]\s*|хорошо,?\s+)(?:отвечу\s+(?:на\s+вопрос|прямо|коротко)|выбираю\s+из)|отвечу\s+и\s+(?:уточню|подтвержу|закроем|зафиксирую)|сразу\s+скажу,?\s+как\s+мне\s+удобнее|давайте\s+сразу\s+определимся\s+со\s+временем)/iu.test(text)
     || (!text.includes('?') && /(?:сейчас|тогда)\s+(?:я\s+)?(?:быстро|коротко)\s+уточню(?:.|\s)*(?:по\s+делу|дальше|поедем|понятно)/iu.test(text));
 }
@@ -2400,13 +2401,14 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       const timeConflict = !!lastVisitClient && !safeDraft.includes('?') && !sameVisitTime(lastVisitClient, safeDraft);
       const factIssue = unansweredFactResponseIssue(policyHistory, safeDraft);
       const managerAnswerIssue = unansweredManagerResponseIssue(policyHistory, safeDraft);
+      const visitQuestionIssue = repeatedVisitQuestionIssue(policyHistory, safeDraft);
       const invalidClosing = (hasNaturalFarewell(safeDraft) || hasClosingIntention(assistantText) || visitEndAttempted || endCallRequested)
         && !canEndDialogue(policyHistory, safeDraft);
       const metaOnly = !canEndDialogue(policyHistory, safeDraft) && containsTechnicalRealtimeSpeech(assistantText)
         && (!safeDraft || /^(?:спасибо[,! .]*)?(?:до\s+свидания|до\s+встречи|всего\s+доброго)[.! ]*$/iu.test(safeDraft));
       // The existing explicit-slot guard below has its own bounded recovery.
-      if (!guardedResponseText && (!pendingVisitOffer || timeConflict || metaOnly || managerAnswerIssue) && (invalidClosing || metaOnly || timeConflict || factIssue || managerAnswerIssue)) {
-        flowEvent('dialogue_response_rejected', timeConflict ? 'visit_time_changed' : metaOnly ? 'meta_comment_without_answer' : managerAnswerIssue ? 'manager_question_unanswered' : factIssue ? 'substantive_answer_missing' : 'next_step_not_confirmed');
+      if (!guardedResponseText && (!pendingVisitOffer || timeConflict || metaOnly || managerAnswerIssue || visitQuestionIssue) && (invalidClosing || metaOnly || timeConflict || factIssue || managerAnswerIssue || visitQuestionIssue)) {
+        flowEvent('dialogue_response_rejected', timeConflict ? 'visit_time_changed' : metaOnly ? 'meta_comment_without_answer' : managerAnswerIssue ? 'manager_question_unanswered' : visitQuestionIssue ? 'repeated_visit_question' : factIssue ? 'substantive_answer_missing' : 'next_step_not_confirmed');
         endCallRequested = false;
         queuedServerFarewell = false;
         queuedResponseAfterPlayback = false;
@@ -2424,18 +2426,12 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
         assistantText = '';
         if (dialogueRepairCount++ < 1) {
           createResponseNow(managerTurnInstructions(policyHistory.filter(t=>t.role==='manager').at(-1)?.text ?? '') +
-            ' Предыдущая реплика отклонена: обещание ответить, неподтверждённое прощание, пропущенный ответ или подмена времени. Сразу дай полноценный ответ, учитывай последнее выбранное время. Если визит ещё не согласован, уточни конкретное время без прощания. ' + (managerAnswerIssue ?? '') + ' ' + (factIssue ?? ''));
+            ' Предыдущая реплика отклонена: обещание ответить, неподтверждённое прощание, пропущенный ответ, повторный вопрос или подмена времени. Сразу дай полноценный ответ, учитывай последнее выбранное время. Если менеджер уже назвал день и час, не спрашивай их заново: подтверди или уточни конкретное расхождение. Если время ещё не названо, уточни только недостающие данные без прощания. ' + (managerAnswerIssue ?? visitQuestionIssue ?? '') + ' ' + (factIssue ?? ''));
           return;
         }
-        guardedResponseText = managerAnswerIssue
-          ? 'Пока не могу уточнить ответ на ваш вопрос. Подскажите, что именно вам важно знать?'
-          : factIssue
+        guardedResponseText = factIssue && !managerAnswerIssue
           ? policyHistory.filter(t=>t.role==='client').at(-1)?.text ?? 'Подскажите, пожалуйста, ответ на мой предыдущий вопрос?'
-          : lastVisitClient && timeConflict
-          ? 'По времени давайте уточним: мне подходит ранее названное время. Сможете подтвердить его?'
-          : hasVisitNegotiation(policyHistory)
-            ? 'Подскажите, на какой конкретный день и время договоримся?'
-            : 'Давайте уточним следующий шаг: о чём договоримся?';
+          : dialogueRecoveryResponse(policyHistory, { answerRequired: Boolean(managerAnswerIssue) });
         pendingVisitOffer = null;
       } else if (!guardedResponseText && !pendingVisitOffer && dialogueNeedsValidation(policyHistory) && safeDraft) {
         guardedResponseText = safeDraft;

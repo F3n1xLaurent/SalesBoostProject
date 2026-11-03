@@ -261,6 +261,36 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
       expect(spokenInputs(pair)).toContain('Какая цена автомобиля?');
       expect(pair.vox.sent.some((event: any) => event.action === 'hangup')).toBe(false);
     });
+    it(`${mode}: 916 answers payment without reopening the already named appointment`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'visit-916', transcript: 'Предлагаю приехать на тест-драйв завтра.' });
+      await playReply(pair, 'chosen-916', 'Завтра ближе к одиннадцати мне удобно.');
+      pair.tts.sent.length = 0;
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'slot-916', transcript: 'Предлагаю встретиться завтра в одиннадцать ноль-ноль.' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'payment-916', transcript: 'Вы планируете покупку за наличные или за кредит? Спрашиваю, потому что сейчас действует выгода по кредиту.' });
+      for (const id of ['meta-payment-916', 'bad-payment-retry-916']) {
+        pair.provider.server({ type: 'response.created', response: { id } });
+        pair.provider.server({ type: 'response.output_text.delta', delta: 'Хорошо, отвечу по способу оплаты, а потом закрепим нашу встречу.' });
+        pair.provider.server({ type: 'response.done', response: { id } });
+      }
+      expect(spokenInputs(pair)).toBe('Способ оплаты пока выбираю. Окончательно решу после осмотра.');
+      expect(pair.vox.sent.some((event: any) => event.action === 'hangup')).toBe(false);
+    });
+    it(`${mode}: 916 a repeated day/time question is replaced by confirmation of eleven`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'invite-916', transcript: 'Предлагаю записаться на тест-драйв завтра.' });
+      await playReply(pair, 'preference-916', 'Мне удобно завтра ближе к одиннадцати.');
+      pair.tts.sent.length = 0;
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'confirmed-slot-916', transcript: 'Давайте договоримся завтра в одиннадцать ноль ноль.' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'convenient-916', transcript: 'Удобно?' });
+      for (const id of ['repeat-916', 'repeat-again-916']) {
+        pair.provider.server({ type: 'response.created', response: { id } });
+        pair.provider.server({ type: 'response.output_text.delta', delta: 'Подскажите, на какой конкретный день и время договоримся?' });
+        pair.provider.server({ type: 'response.done', response: { id } });
+      }
+      expect(spokenInputs(pair)).toBe('Хорошо, приеду завтра в одиннадцать.');
+      expect(pair.snapshot().conversationFlow.events.some((event: any) => event.reason === 'repeated_visit_question')).toBe(true);
+    });
     it(`${mode}: repeatedly invalid visit responses produce one clarification, not a loop`, async () => {
       const pair = await launch(mode);
       pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'visit', transcript: 'Планируете подъехать сегодня или завтра?' });

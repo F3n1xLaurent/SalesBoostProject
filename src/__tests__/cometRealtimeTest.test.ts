@@ -36,6 +36,9 @@ describe('Comet Realtime PCM bridge', () => {
   });
 
   it('never sends technical completion instructions to TTS', () => {
+    expect(sanitizeRealtimeSpokenText('Хорошо, отвечу по способу оплаты, а потом закрепим нашу встречу.')).toBe('');
+    expect(sanitizeRealtimeSpokenText('Хорошо, отвечу по оплате и заодно закрепим нашу встречу.')).toBe('');
+    expect(sanitizeRealtimeSpokenText('Хорошо, завершим на этом и я коротко попрощаюсь. До свидания.')).toBe('До свидания.');
     expect(sanitizeRealtimeSpokenText('Спасибо, до свидания. Краткое завершение разговора.'))
       .toBe('Спасибо, до свидания.');
     expect(sanitizeRealtimeSpokenText('Вызови функцию end_call.')).toBe('');

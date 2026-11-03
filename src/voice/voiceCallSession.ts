@@ -32,7 +32,7 @@ import * as Sentry from '@sentry/node';
 import { recordProductEvent, type ProductEventProperty } from '../analytics/productAnalytics';
 import { flushProductionRealtimeState } from './productionRealtimeState';
 import { finishProductionCallPlanTelephony } from './callPlanTelephony';
-import { withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
+import { assertAuditAnalyticsCurrent, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
 
 const TRANSCRIPT_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 
@@ -381,13 +381,13 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
 const activeFinalizations = new Map<string, Promise<void>>();
 export const isVoiceCallFinalizing = (callId: string) => activeFinalizations.has(callId);
 
-export function finalizeVoiceCallSession(payload: VoxWebhookPayload): Promise<void> {
+export function finalizeVoiceCallSession(payload: VoxWebhookPayload, options: { restart?: boolean } = {}): Promise<void> {
   const callId = payload.call_id;
   if (!callId) return finalizeVoiceCallSessionOnce(payload);
   const active = activeFinalizations.get(callId);
-  if (active) return active;
+  if (active && !options.restart) return active;
   const task = withAuditAnalyticsProgress(`voice:${callId}`, 'transcription', () => finalizeVoiceCallSessionOnce(payload))
-    .finally(() => activeFinalizations.delete(callId));
+    .finally(() => { if (activeFinalizations.get(callId) === task) activeFinalizations.delete(callId); });
   activeFinalizations.set(callId, task);
   return task;
 }
@@ -642,6 +642,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
       });
       try {
         const { transcript: rawLogTranscript, error: voxLogError } = await getTranscriptFromVoxLog(resolvedVoxSessionId);
+        assertAuditAnalyticsCurrent();
         const logTranscript = sanitizeTranscriptTurns(rawLogTranscript);
         if (logTranscript.length > transcript.length) {
           transcript = logTranscript;
@@ -660,6 +661,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
           error: voxLogError ?? null,
         });
       } catch (err) {
+        assertAuditAnalyticsCurrent();
         console.warn('[voice/session] getTranscriptFromVoxLog attempt failed', {
           callId,
           sessionId: resolvedVoxSessionId,
@@ -680,6 +682,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
     if (recording?.recordingStatus === 'ready') {
       try {
         const reviewed = await retranscribeCallRecording(getCallRecordingFilePath(callId), transcript);
+        assertAuditAnalyticsCurrent();
         if (reviewed) {
           originalTranscriptForReview = transcript;
           await prisma.voiceCallSession.update({
@@ -699,6 +702,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
           });
         }
       } catch (error) {
+        assertAuditAnalyticsCurrent();
         console.warn('[voice/session] recording retranscription failed; original ASR retained', {
           callId, error: error instanceof Error ? error.message : String(error),
         });
@@ -712,6 +716,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
 
   console.log('[voice/session] transcript', { callId, source: transcriptSource, turns: transcript.length });
 
+  assertAuditAnalyticsCurrent();
   const eligibility = assessCallReportEligibility(transcript, { ivrDetected });
   if (!eligibility.eligible) {
     const skippedOutcome = eligibility.outcome ?? outcome;
@@ -800,6 +805,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
         : undefined,
       evaluationChecklist,
     });
+    assertAuditAnalyticsCurrent();
     console.log('[voice/session] evaluation base done', { callId, ms: elapsedMs(evaluationStartedAt) });
 
     // ---- Extended call summary (team-summary style) + per-answer improvements ----
@@ -835,6 +841,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
       planCriteria = criteria;
       console.log('[voice/session] analytics bundle done', { callId, ms: elapsedMs(analyticsStartedAt) });
     } catch (err) {
+      assertAuditAnalyticsCurrent();
       console.warn('[voice/session] analytics bundle generation failed:', err instanceof Error ? err.message : err);
       const criteriaStartedAt = performance.now();
       planCriteria = await evaluatePlanCriteria(callId, analysisTranscript);
@@ -852,6 +859,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
     const analyticsFields = extractAnalyticsEvaluationFields(evaluationForPlan);
     const totalScore = evaluation.overall_score_0_100 ?? null;
 
+    assertAuditAnalyticsCurrent();
     await prisma.voiceCallSession.update({
       where: { callId },
       data: {
@@ -876,6 +884,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload): Promise
       score: totalScore,
     }, endedAt);
   } catch (err) {
+    try { assertAuditAnalyticsCurrent(); } catch { return; }
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[voice/session] evaluateSessionV2 error:', msg);
     recordCallProductEvent(callId, 'call_processing_failed', { failure_stage: 'evaluation', outcome }, endedAt);

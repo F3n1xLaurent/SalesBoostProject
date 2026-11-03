@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 import './analytics-progress.css';
 
@@ -8,9 +8,12 @@ const STEPS = [
   { id: 'report', title: 'Подготовка отчёта', description: 'Формируем выводы, примеры и рекомендации' },
 ] as const;
 
-export function AnalyticsProgress({ detail, connectionLost = false }: {
+export function AnalyticsProgress({ detail, connectionLost = false, onRetry, retrying = false, retryError }: {
   detail: Pick<AuditDetailItem, 'analyticsProgress' | 'transcript'>;
   connectionLost?: boolean;
+  onRetry?: () => void;
+  retrying?: boolean;
+  retryError?: string | null;
 }) {
   const progress = detail.analyticsProgress ?? {
     stage: detail.transcript.length >= 2 ? 'evaluation' : 'transcription', status: 'waiting',
@@ -20,6 +23,20 @@ export function AnalyticsProgress({ detail, connectionLost = false }: {
   const failed = progress.status === 'failed';
   const unavailable = progress.status === 'unavailable';
   const processing = progress.status === 'processing';
+  const pending = processing || progress.status === 'waiting';
+  const [observedAt, setObservedAt] = useState(Date.now);
+  const [now, setNow] = useState(Date.now);
+  const startedAt = progress.startedAt ? Date.parse(progress.startedAt) : observedAt;
+  useEffect(() => {
+    setObservedAt(Date.now());
+    setNow(Date.now());
+  }, [progress.startedAt, pending]);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [pending]);
+  const delayed = pending && Number.isFinite(startedAt) && now - startedAt >= 2 * 60_000;
   const title = failed ? 'Не удалось подготовить аналитику' : unavailable ? 'Нет разговора для анализа' : 'Готовим аналитику';
   return <section className={`sa-analytics-progress${failed ? ' is-failed' : ''}${processing ? ' is-processing' : ''}`} role="status" aria-live="polite" aria-atomic="true">
     <header className="sa-analytics-progress-head">
@@ -41,6 +58,20 @@ export function AnalyticsProgress({ detail, connectionLost = false }: {
         </li>;
       })}
     </ol>}
+    {(failed || delayed) && onRetry && <div className="sa-analytics-progress-retry">
+      <span className="sa-analytics-progress-retry-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M12 8v4l2.5 1.5" /></svg>
+      </span>
+      <div className="sa-analytics-progress-retry-copy">
+        <strong>{delayed ? 'Отчёт готовится дольше обычного' : 'Повторная подготовка отчёта'}</strong>
+        <p>{delayed ? 'Можно подождать или запустить подготовку ещё раз.' : 'Запустите подготовку ещё раз, чтобы получить отчёт.'}</p>
+      </div>
+      <button type="button" className="sa-analytics-progress-retry-button" disabled={retrying} onClick={onRetry}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17" /></svg>
+        {retrying ? 'Запускаем…' : 'Переполучить отчёт'}
+      </button>
+      {retryError && <p className="sa-analytics-progress-retry-error" role="alert">{retryError}</p>}
+    </div>}
     {!failed && !unavailable && <footer className="sa-analytics-progress-foot">
       <span className="sa-analytics-progress-dot" aria-hidden="true" />
       {connectionLost ? 'Не удалось обновить статус. Повторим проверку соединения автоматически.' : 'Можно оставить страницу открытой — готовый отчёт появится автоматически. Обработка может занять несколько минут.'}

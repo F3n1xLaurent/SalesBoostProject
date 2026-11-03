@@ -27,6 +27,7 @@ vi.mock('../analytics/productAnalytics', () => ({ recordProductEvent: vi.fn() })
 vi.mock('../voice/productionRealtimeState', () => ({ flushProductionRealtimeState: mocks.durable }));
 vi.mock('../voice/callPlanTelephony', () => ({ finishProductionCallPlanTelephony: mocks.finish }));
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from '../voice/voiceCallSession';
+import { scheduleAuditReportBackfill } from '../logic/auditAnalyticsProgress';
 
 const transcript = [
   { role: 'manager', text: 'Здравствуйте, менеджер Анна, слушаю вас.' },
@@ -72,6 +73,26 @@ beforeEach(() => {
 });
 const finalEvent = { call_id: 'call-production', event: 'disconnected', ts: '2026-10-29T10:02:00Z' };
 describe('production hypothesis 2 through the existing recording and report pipeline', () => {
+  it('restarts a stalled report after two minutes and ignores the old late result', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    let releaseOld!: (value: unknown) => void;
+    mocks.bundle.mockImplementationOnce(() => new Promise((resolve) => { releaseOld = resolve; }));
+    const old = finalizeVoiceCallSession(finalEvent);
+    try {
+      await vi.waitFor(() => expect(mocks.bundle).toHaveBeenCalledOnce());
+      clock.mockReturnValue(1_800_000_120_000);
+      expect(scheduleAuditReportBackfill('voice:call-production',
+        () => finalizeVoiceCallSession(finalEvent, { restart: true }), { retry: true, stage: 'report' })).toBe(true);
+      await vi.waitFor(() => expect(session.evaluationJson).toBeTruthy());
+      expect(JSON.parse(session.evaluationJson).unified_call_report.verdict).toBe('success');
+      releaseOld({ callSummary: {}, replyImprovements: [], unifiedCallReport: { verdict: 'obsolete' } });
+      await old;
+      expect(JSON.parse(session.evaluationJson).unified_call_report.verdict).toBe('success');
+      expect(JSON.parse(planCall.evaluationJson).unified_call_report.verdict).toBe('success');
+    } finally {
+      clock.mockRestore();
+    }
+  });
   it('does not recreate a deleted call when delayed lifecycle events arrive', async () => {
     mocks.voiceFind.mockResolvedValue(null);
     mocks.deleted.mockResolvedValue({ id: 'audit-deleted:voice:call-production' });

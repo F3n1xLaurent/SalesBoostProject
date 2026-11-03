@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
-import { fetchAuditDetail, type AuditDetailItem } from '../../../shared/api/adminPanel';
+import { fetchAuditDetail, retryAuditReport, type AuditDetailItem } from '../../../shared/api/adminPanel';
 import { trackProductEvent } from '../../../shared/analytics/productAnalytics';
 import { ratingClass } from '../../../shared/lib/admin-panel/utils';
 import { $auth, apiFetch } from '../../../entities/session';
@@ -434,15 +434,40 @@ export function AuditAnalyticsReport({
   const auth = useUnit($auth);
   const [refreshed, setRefreshed] = useState<AuditDetailItem | null>(null);
   const [connectionErrorId, setConnectionErrorId] = useState<string | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryError, setRetryError] = useState<{ id: string; message: string } | null>(null);
+  const retryLock = useRef(false);
+  const currentId = useRef(providedDetail.id);
+  currentId.current = providedDetail.id;
   const detail = refreshed?.id === providedDetail.id && !providedDetail.unifiedReport ? refreshed : providedDetail;
   useEffect(() => {
-    if (auth.status !== 'authenticated' || !needsAnalyticsRefresh(providedDetail)) return;
+    if (auth.status !== 'authenticated' || !needsAnalyticsRefresh(detail)) return;
     return pollAuditAnalytics({
       load: (signal) => fetchAuditDetail(providedDetail.id, signal),
       onDetail: (next) => { setRefreshed(next); setConnectionErrorId(null); },
       onError: () => setConnectionErrorId(providedDetail.id),
     });
-  }, [providedDetail.id, providedDetail.unifiedReport, auth.status]);
+  }, [providedDetail.id, providedDetail.unifiedReport, auth.status, retryVersion]);
+  const retryReport = async () => {
+    if (retryLock.current) return;
+    const id = detail.id;
+    retryLock.current = true;
+    setRetryingId(id);
+    setRetryError(null);
+    try {
+      const analyticsProgress = await retryAuditReport(id);
+      if (currentId.current !== id) return;
+      setRefreshed({ ...detail, analyticsProgress });
+      setConnectionErrorId(null);
+      setRetryVersion((value) => value + 1);
+    } catch (error) {
+      if (currentId.current === id) setRetryError({ id, message: error instanceof Error ? error.message : 'Не удалось запустить подготовку отчёта.' });
+    } finally {
+      retryLock.current = false;
+      setRetryingId(null);
+    }
+  };
   const isPlatformSuperadmin = auth.status === 'authenticated'
     && auth.user.memberships.some((membership) => membership.role === 'platform_superadmin');
   const canDownloadRecording = isPlatformSuperadmin;
@@ -830,7 +855,9 @@ export function AuditAnalyticsReport({
       ) : (
         <>
           <AuditRecording detail={detail} canDownloadCall={canDownloadRecording} />
-          <AnalyticsProgress detail={detail} connectionLost={connectionErrorId === detail.id} />
+          <AnalyticsProgress key={detail.id} detail={detail} connectionLost={connectionErrorId === detail.id}
+            onRetry={auth.status === 'authenticated' ? retryReport : undefined}
+            retrying={retryingId === detail.id} retryError={retryError?.id === detail.id ? retryError.message : null} />
         </>
       )}
     </div>

@@ -183,6 +183,7 @@ export interface AuditDetailItem {
   recordingError?: string | null;
   recordingDurationSec?: number;
   analyticsProgress?: {
+    startedAt?: string;
     stage: 'transcription' | 'evaluation' | 'report';
     status: 'waiting' | 'processing' | 'ready' | 'failed' | 'unavailable';
     transcriptReady: boolean;
@@ -2253,6 +2254,13 @@ export async function deleteAudit(id: string): Promise<void> {
     throw new Error(data?.error || 'Не удалось удалить проверку.');
   }
   window.dispatchEvent(new Event(AUDITS_CHANGED_EVENT));
+}
+
+export async function retryAuditReport(id: string): Promise<NonNullable<AuditDetailItem['analyticsProgress']>> {
+  const res = await apiFetch(`${API_BASE}/api/admin/audits/${encodeURIComponent(id)}/retry-report`, { method: 'POST' });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(data?.error || 'Не удалось запустить подготовку отчёта. Попробуйте ещё раз.');
+  return data.analyticsProgress;
 }
 
 export async function fetchAuditDetail(id: string, signal?: AbortSignal): Promise<AuditDetailItem | null> {

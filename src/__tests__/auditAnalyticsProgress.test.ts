@@ -1,11 +1,41 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { auditAnalyticsProgress, scheduleAuditReportBackfill, updateAuditAnalyticsStage, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
+import { assertAuditAnalyticsCurrent, auditAnalyticsProgress, scheduleAuditReportBackfill, updateAuditAnalyticsStage, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
 
 let counter = 0;
 const input = () => ({ key: `progress-test-${++counter}`, transcriptReady: false, evaluationReady: false, reportReady: false });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('real audit analytics progress', () => {
+  it('allows manual replacement after two minutes and prevents the old worker publishing or clearing the new one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-03T12:00:00Z'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const data = input();
+    let releaseOld!: () => void, releaseNew!: () => void;
+    const publishOld = vi.fn();
+    const old = withAuditAnalyticsProgress(data.key, 'report', async () => {
+      await new Promise<void>((resolve) => { releaseOld = resolve; });
+      assertAuditAnalyticsCurrent();
+      publishOld();
+    });
+    const oldResult = expect(old).rejects.toThrow('AUDIT_ANALYTICS_SUPERSEDED');
+    const retry = vi.fn(() => new Promise<void>((resolve) => { releaseNew = resolve; }));
+    expect(auditAnalyticsProgress(data).startedAt).toBe('2026-11-03T12:00:00.000Z');
+    vi.setSystemTime(new Date('2026-11-03T12:01:59.999Z'));
+    expect(scheduleAuditReportBackfill(data.key, retry, { retry: true })).toBe(false);
+    vi.setSystemTime(new Date('2026-11-03T12:02:00Z'));
+    expect(scheduleAuditReportBackfill(data.key, retry)).toBe(false);
+    expect(scheduleAuditReportBackfill(data.key, retry, { retry: true })).toBe(true);
+    expect(scheduleAuditReportBackfill(data.key, retry, { retry: true })).toBe(false);
+    expect(auditAnalyticsProgress(data).startedAt).toBe('2026-11-03T12:02:00.000Z');
+    releaseOld();
+    await oldResult;
+    expect(publishOld).not.toHaveBeenCalled();
+    expect(auditAnalyticsProgress(data).status).toBe('processing');
+    expect(retry).toHaveBeenCalledOnce();
+    releaseNew();
+    await Promise.resolve();
+  });
   it('tracks actual stages without persisting an intermediate evaluation as a final report', async () => {
     const data = input();
     expect(auditAnalyticsProgress(data)).toMatchObject({ status: 'waiting', stage: 'transcription' });
@@ -79,6 +109,19 @@ describe('real audit analytics progress', () => {
     ]);
     updateAuditAnalyticsStage('report');
     expect(auditAnalyticsProgress(a).stage).toBe('transcription');
+  });
+
+  it('keeps the retry job active when it calls a nested original pipeline', async () => {
+    const data = input();
+    await expect(withAuditAnalyticsProgress(data.key, 'transcription', async () => {
+      await withAuditAnalyticsProgress(data.key, 'evaluation', async () => {
+        updateAuditAnalyticsStage('report');
+      });
+      expect(auditAnalyticsProgress(data)).toMatchObject({ status: 'processing', stage: 'report' });
+      expect(scheduleAuditReportBackfill(data.key, async () => {}, { retry: true })).toBe(false);
+      throw new Error('nested report failed');
+    })).rejects.toThrow('nested report failed');
+    expect(auditAnalyticsProgress(data)).toMatchObject({ status: 'failed', stage: 'report' });
   });
 
   it('does not let an older task clear or advance a newer task for the same call', async () => {

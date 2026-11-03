@@ -32,12 +32,26 @@
 .sa-analytics-progress-spinner { width: 14px; height: 14px; border: 2px solid #d2dfc8; border-top-color: #52723e; border-radius: 50%; animation: sa-analytics-spin .9s linear infinite; }
 .sa-analytics-progress-foot { display: flex; align-items: flex-start; gap: 8px; margin-top: 22px; padding-top: 18px; border-top: 1px solid #e7ebe1; color: #81867b; font-size: 12px; line-height: 1.6; }
 .sa-analytics-progress-dot { width: 6px; height: 6px; flex-shrink: 0; margin-top: 6px; border-radius: 50%; background: #95ad82; }
+.sa-analytics-progress-retry { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 24px; padding: 18px 20px; border: 1px solid #e4e7df; border-radius: 14px; background: #f8f9f6; }
+.sa-analytics-progress-retry-icon { display: grid; place-items: center; flex-shrink: 0; width: 38px; height: 38px; border: 1px solid #e3e8dc; border-radius: 12px; color: #6b7d5f; background: #eef2e8; }
+.sa-analytics-progress-retry svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.sa-analytics-progress-retry-copy { flex: 1; min-width: 200px; }
+.sa-analytics-progress-retry-copy strong { display: block; color: #343a30; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.sa-analytics-progress-retry-copy p { margin: 3px 0 0; color: #787e72; font-size: 12px; line-height: 1.6; }
+.sa-analytics-progress-retry-button { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; gap: 8px; min-height: 40px; padding: 10px 14px; border: 1px solid #dedfd8; border-radius: 10px; background: #fff; color: #30352c; font: inherit; font-size: 13px; font-weight: 600; line-height: 1.4; cursor: pointer; transition: background .15s, border-color .15s; }
+.sa-analytics-progress-retry-button:hover:not(:disabled) { border-color: #aebba4; background: #f0f4eb; }
+.sa-analytics-progress-retry-button:focus-visible { outline: 2px solid #718563; outline-offset: 3px; }
+.sa-analytics-progress-retry-button:disabled { opacity: .6; cursor: wait; }
+.sa-analytics-progress-retry .sa-analytics-progress-retry-error { flex-basis: 100%; margin: 0; color: #a34d3b; font-size: 12px; line-height: 1.6; }
 .sa-analytics-progress.is-failed .sa-analytics-progress-emblem, .sa-analytics-progress.is-failed .sa-analytics-progress-badge { color: #a34d3b; background: #fbf0ec; border-color: #f0d8ce; }
 .sa-analytics-progress-step.is-failed .sa-analytics-progress-step-icon { color: #b65d48; background: #fdf0eb; border-color: #f0d8ce; }
 .sa-analytics-progress-step.is-failed .sa-analytics-progress-step-state { color: #a34d3b; }
 @keyframes sa-analytics-wave { 0%, 100% { transform: scaleY(.65); } 50% { transform: scaleY(1.2); } }
 @keyframes sa-analytics-spin { to { transform: rotate(360deg); } }
 @media (max-width: 540px) {
+  .sa-analytics-progress-retry { gap: 12px; padding: 16px; }
+  .sa-analytics-progress-retry-copy { min-width: 0; }
+  .sa-analytics-progress-retry-button { width: 100%; }
   .sa-analytics-progress-head { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px 12px; align-items: start; }
   .sa-analytics-progress-emblem { width: 44px; height: 44px; border-radius: 13px; }
   .sa-analytics-progress-head h2 { font-size: 18px; }

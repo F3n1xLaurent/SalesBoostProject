@@ -10,6 +10,11 @@ Object.assign(HOURS, { 'двадцать один': 21, 'двадцати одн
 const AVAILABILITY_RANGE = /(?:с|от)\s+(?:\d|[а-яё]+)\S*\s+до\s|\b\d{1,2}\s*[-–]\s*\d{1,2}\b/iu;
 const OPTIONS_QUESTION = /(?:каки[емх]|чем)[^.!?]*(?:опци|функци)|(?:опци|функци)[^.!?]*(?:пользуетесь|важн)/iu;
 const REJECTED_SLOT = /(?:слот|время)[^.!?]*занят|(?:приехать|подъехать|записать(?:ся)?)[^.!?]*не\s+(?:получится|смож)|(?:не\s+(?:подходит|получится|смогу)|занят[оы]?)(?=[\s,.!?]|$)/iu;
+const CLOCK_MENTION = /\d{1,2}:\d{2}|(?:^|[\s,.!?])час(?:а|ов|у|ам)?(?=[\s,.!?]|$)/iu;
+function paymentQuestion(text: string): boolean {
+  return /наличн/iu.test(text) && /кредит/iu.test(text)
+    && /\?|планируете|рассматриваете|уточни|уточня|покупк|оплат/iu.test(text);
+}
 type Slot = { hour: number; minute: number; day: string | null; text: string; ambiguousHour: boolean };
 export function visitSlot(text: string): Slot | null {
   // Ranges and alternatives are availability, not an appointment.
@@ -48,7 +53,7 @@ function visitState(turns: readonly PolicyTurn[]) {
   let managerSlot: string | undefined;
   for (const turn of relevant.filter(t => t.role === 'manager')) {
     if (REJECTED_SLOT.test(turn.text) || AVAILABILITY_RANGE.test(turn.text)
-      || (/(?:^|\s)(?:или|либо)(?=\s|[,.]|$)/iu.test(turn.text) && (DAY.test(turn.text) || /\d{1,2}:\d{2}|час/iu.test(turn.text)))) {
+      || (/(?:^|\s)(?:или|либо)(?=\s|[,.]|$)/iu.test(turn.text) && (DAY.test(turn.text) || CLOCK_MENTION.test(turn.text)))) {
       managerSlot = undefined;
     } else if (visitSlot(turn.text)) managerSlot = turn.text;
   }
@@ -59,12 +64,15 @@ export function dialogueNeedsValidation(turns: readonly PolicyTurn[]): boolean {
   if (/(?:до\s+свидания|всего\s+доброго|до\s+встречи|не\s+звоните|разговор\s+окончен)/iu.test(state.manager)) return false;
   const visitDecision = state.active && (state.clientSlot || VISIT.test(state.manager) || DAY.test(state.manager)
     || visitSlot(state.manager) || /удобн|врем|час/iu.test(state.manager));
-  return !!visitDecision || OPTIONS_QUESTION.test(state.manager) || unansweredFactInstruction(turns).length > 0;
+  return !!visitDecision || !!state.managerSlot || paymentQuestion(state.manager) || OPTIONS_QUESTION.test(state.manager) || unansweredFactInstruction(turns).length > 0;
 }
 /** Reject clear non-answers, without claiming to semantically grade every reply. */
 export function unansweredManagerResponseIssue(turns: readonly PolicyTurn[], response: string): string | null {
   const manager = audible(turns).filter(t => t.role === 'manager').at(-1)?.text ?? '';
   const lastQuestion = manager.match(/[^.!?]*\?/gu)?.at(-1) ?? manager;
+  if (paymentQuestion(manager) && !/наличн|кредит|оплат|способ.*расч[её]т|собственн[^.!?]*средств|за\s+свои|(?:пока|ещ[её])\s+(?:выбираю|думаю)|не\s+(?:решил[аи]?|определил[а-яё]*|выбрал[аи]?)/iu.test(response)) {
+    return 'Менеджер спросил о способе оплаты: наличные или кредит. Ответь по легенде; если способ ещё не выбран, прямо скажи это. Не подменяй ответ вопросом о времени визита.';
+  }
   const question = /\?|^(?:а\s+)?(?:какой|какая|какие|какими|для\s+кого|сколько|подскажите)/iu.test(manager);
   if (!question) return null;
   const substantive = response.replace(/до\s+(?:свидания|встречи|связи)[^.!?]*[.!?]?|всего\s+(?:доброго|хорошего)[.!]?/giu, '')
@@ -87,6 +95,54 @@ export function previousClientVisitTime(turns: readonly PolicyTurn[]): string | 
 }
 export function currentManagerVisitTime(turns: readonly PolicyTurn[]): string | null {
   return visitState(turns).managerSlot ?? null;
+}
+export function repeatedVisitQuestionIssue(turns: readonly PolicyTurn[], response: string): string | null {
+  const asksSlot = (text: string) => /\?/u.test(text)
+    && /како[йе][^.!?]*(?:день|врем)|во\s+сколько|когда[^.!?]*(?:приехать|подъехать)|уточните[^.!?]*врем/iu.test(text);
+  if (!asksSlot(response)) return null;
+  const state = visitState(turns);
+  if (/повторите|не\s+расслышал[аи]?|не\s+услышал[аи]?/iu.test(state.manager)) return null;
+  if (state.managerSlot) return `Менеджер уже назвал время: «${state.managerSlot}». Не спрашивай его заново; подтверди предложение или уточни конкретное расхождение с ранее выбранным временем.`;
+  if (audible(turns).filter(t => t.role === 'client' && asksSlot(t.text)).length >= 2) {
+    return 'Время визита уже дважды уточняли. Не задавай тот же вопрос снова и не утверждай, что запись подтверждена; предложи вернуться к согласованию позже.';
+  }
+  return null;
+}
+
+/** Safe spoken recovery after the one model retry; never discard an already known slot. */
+export function dialogueRecoveryResponse(turns: readonly PolicyTurn[], options: { answerRequired?: boolean } = {}): string {
+  const history = audible(turns);
+  const state = visitState(history);
+  if (paymentQuestion(state.manager)) return 'Способ оплаты пока выбираю. Окончательно решу после осмотра.';
+  if (options.answerRequired) return 'Пока не могу уточнить ответ на ваш вопрос. Подскажите, что именно вам важно знать?';
+  const knownDay = history.filter(t => !/(?:^|\s)(?:или|либо)(?=\s|[,.]|$)/iu.test(t.text))
+    .map(t => t.text.match(DAY)?.[0]?.toLowerCase()).filter(Boolean).at(-1);
+  const formatDay = (day: string) => /сегодня|завтра/iu.test(day) ? day
+    : `в ${({ среда: 'среду', пятница: 'пятницу', суббота: 'субботу' } as Record<string, string>)[day] ?? day}`;
+  const format = (text: string) => {
+    const slot = visitSlot(text)!;
+    const day = slot.day ?? knownDay;
+    // Do not turn the spoken shorthand «к трём» into the explicit clock 03:00.
+    const time = slot.ambiguousHour
+      ? `${Object.keys(HOURS).find(word => HOURS[word] === slot.hour)}${slot.minute ? ` часов ${slot.minute} минут` : ''}`
+      : `${String(slot.hour).padStart(2, '0')}:${String(slot.minute).padStart(2, '0')}`;
+    return `${day ? `${formatDay(day)} ` : ''}в ${time}`;
+  };
+  if (state.managerSlot && (!state.clientSlot || sameVisitTime(state.managerSlot, state.clientSlot))) {
+    const slot = visitSlot(state.managerSlot)!;
+    const confirmed = slot.ambiguousHour && state.clientSlot && !visitSlot(state.clientSlot)?.ambiguousHour
+      ? state.clientSlot : state.managerSlot;
+    return `Хорошо, приеду ${format(confirmed)}.`;
+  }
+  const visitQuestions = history.filter(t => t.role === 'client' && /\?/u.test(t.text)
+    && /время|во\s+сколько|какой\s+день|записать|сможете\s+подтвердить/iu.test(t.text));
+  if (state.active && visitQuestions.length >= 2) return 'Пока не удалось согласовать время. Давайте вернёмся к записи позже.';
+  if (state.clientSlot) return `Мне удобно ${format(state.clientSlot)}. Сможете подтвердить это время?`;
+  if (state.active) {
+    return knownDay ? `Во сколько ${formatDay(knownDay)} можно приехать?`
+      : 'Подскажите, на какой конкретный день и время договоримся?';
+  }
+  return 'Давайте уточним следующий шаг: о чём договоримся?';
 }
 export function unansweredFactResponseIssue(turns: readonly PolicyTurn[], response: string): string | null {
   const instruction = unansweredFactInstruction(turns);
@@ -132,6 +188,7 @@ export function dialogueAgreementInstruction(turns: readonly PolicyTurn[]): stri
     'Не озвучивай «сейчас отвечу», «выбираю из вариантов», «зафиксирую время»: сразу дай сам ответ или выбранный вариант. Обещание ответить не является ответом.'];
   if (state.active) rules.push('Согласуется визит: выбери конкретный день и время. «Будни», «завтра», «до обеда», диапазон часов и часы работы не являются согласованным временем. Если ты сам предложил новый час, дождись подтверждения менеджера; пока не прощайся.');
   if (state.clientSlot) rules.push(`Твоё последнее названное время визита: «${state.clientSlot}». Сохраняй его. Если менеджер называет другой час/день, сначала явно уточни расхождение; не соглашайся молча и не прощайся.`);
+  if (state.managerSlot) rules.push(`Менеджер уже назвал время визита: «${state.managerSlot}». Не спрашивай заново день и время. Если оно подходит, подтверди его; на новый вопрос об оплате или автомобиле отвечай отдельно, сохраняя это время.`);
   return rules.join('\n');
 }
 const FACTS: Array<{topic: RegExp; answer: RegExp; name: string}> = [
