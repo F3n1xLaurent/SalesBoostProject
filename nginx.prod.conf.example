@@ -293,6 +293,23 @@ server {
         proxy_send_timeout 300s;
     }
 
+    # Primary call-plan audio: forward the WebSocket handshake, not an HTTP
+    # request that would fall through to the SPA. Query contains call tokens.
+    location = /voice/openai-realtime {
+        access_log off;
+        proxy_pass http://salesboost_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
     location = /voice/stream {
         proxy_pass http://salesboost_backend;
         proxy_http_version 1.1;

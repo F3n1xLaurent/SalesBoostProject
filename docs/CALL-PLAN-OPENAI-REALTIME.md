@@ -19,6 +19,12 @@ OpenAI выдаёт текст, ElevenLabs озвучивает голосом �
 
 В `compose.prod.yaml` состояние Realtime хранится в постоянном volume `salesboost_voice_realtime`, смонтированном в `/app/storage/voice-realtime`. Каталог создаётся в образе с владельцем `node` и правами `0700`; новая Docker volume наследует эти права. Это необходимо при `read_only: true`: создания каталога только в образе недостаточно для записи. После обновления Dockerfile/Compose примените `docker compose -f compose.prod.yaml up -d --build app` между звонками — пересоздание приложения прерывает активные соединения. Существующие volumes БД и записей удалять не нужно.
 
+### Внешний nginx: аудиоканал основной телефонии
+
+Обновления Docker недостаточно для внешнего reverse proxy. В активном HTTPS server-блоке `app.salsa-sales.ru` нужен точный `location = /voice/openai-realtime` из `nginx.prod.conf.example`: HTTP/1.1, заголовки Upgrade/Connection, отключённая буферизация и длительные таймауты. Общий `location /voice/` предназначен для HTTP и без этих настроек возвращает HTML вместо WebSocket. `access_log off` в отдельном location не даёт query-токенам звонка попасть в обычный access log.
+
+На сервере определите активный конфиг через `sudo nginx -T` (по шаблону это `/etc/nginx/conf.d/salesboost.conf`), сохраните его резервную копию и перенесите **только новый location** в HTTPS-блок приложения. Не заменяйте весь конфиг без сверки сертификатов и действующих настроек. Шаблон уже определяет `map $http_upgrade $connection_upgrade` на уровне `http`; если существующий конфиг был собран иначе, проверьте наличие этого map. Затем `sudo nginx -t` и только при успехе `sudo systemctl reload nginx`. Не перезапускайте приложение для изменения одного nginx-location. Для проверки используйте WebSocket-клиент с недействительным call_id/token: ожидается HTTP 101 и закрытие 1008 `invalid session`, а не HTTP 200 с HTML. Это не инициирует звонок.
+
 ## Обработка
 
 - Провайдер и профиль фиксируются до набора; записи `VoiceCallSession` и `CallPlanCall` создаются до `StartScenarios`, чтобы быстрый webhook не создал непривязанный звонок.

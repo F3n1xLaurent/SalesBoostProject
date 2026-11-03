@@ -3,6 +3,7 @@ import { prisma } from '../db';
 import { compatibleChatMaxTokens, compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { compatibleReportReasoning } from '../lib/chatReasoning';
 import { REPORT_EXAMPLE_ACCEPTANCE_RULES, REPORT_QUALITY_RULES } from './reportQualityRules';
+import { checklistCategoryScores, clientAction, deduplicateReportStrengths, isInapplicableReportText, repeatedNameRequest, reportCriterionCode, reportStrengthActions } from './reportAssessment';
 import { reportGenerationIssues, requestReportJson } from './reportGeneration';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
@@ -41,6 +42,7 @@ export type UnifiedCallReport = {
   weaknesses: string[];
   transcriptionUncertainties?: TranscriptionUncertainty[];
   exampleReviews?: ReportExampleReview[];
+  assessmentVersion?: string;
   keyFindings: Array<{
     problemCode?: string;
     problemTitle: string;
@@ -108,8 +110,8 @@ const DIMENSION_TO_CATEGORY: Record<string, UnifiedReportCategory> = {
   product_presentation: 'Продукт',
   closing: 'Закрытие',
   closing_commitment: 'Закрытие',
-  objections: 'Закрытие',
-  objection_handling: 'Закрытие',
+  objections: 'Продукт',
+  objection_handling: 'Продукт',
   next_step: 'Закрытие',
   communication: 'Коммуникация',
   comm: 'Коммуникация',
@@ -157,6 +159,11 @@ function meaningfulText(value: unknown): string {
   const text = asText(value);
   return text && !isPlaceholderText(text) ? text : '';
 }
+function reportComment(value: unknown): string {
+  // An old/generated comment can contain an unvalidated "Можно лучше" quote.
+  // It isn't evidence or scenario data and must not seed later repair passes.
+  return meaningfulText(value).split(/(?:можно\s+лучше|как\s+лучше|лучше\s+сказать|улучшенный\s+пример)\s*:/iu)[0].trim();
+}
 
 export function normalizeCompanyWording(value: string): string {
   return value
@@ -174,7 +181,7 @@ function arrayOfText(value: unknown, limit: number): string[] {
     const raw = item && typeof item === 'object' ? item as Record<string, unknown> : null;
     const text = meaningfulText(raw ? raw.text || raw.title || raw.comment : item);
     const key = text.toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
-    if (text && !result.some((existing) => existing.toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ') === key)) {
+    if (text && !isInapplicableReportText(text) && !result.some((existing) => existing.toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ') === key)) {
       result.push(text);
     }
     if (result.length >= limit) break;
@@ -243,10 +250,15 @@ const GENERIC_EXAMPLE_WORDS = new Set([
   // Names, brands, numbers and substantive needs remain protected below.
   'адрес', 'контакт', 'отправ', 'отправить', 'направ', 'сообщ', 'подтверд', 'провер',
   'бюджет',
+  'чтоб', 'повседневн', 'ежедневн', 'удобн', 'комфортн', 'приятн', 'именно',
+  'сначал', 'затем', 'после', 'перед', 'если', 'когда', 'потому',
 ]);
 
 function wordStem(value: string): string {
   const normalized = value.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/[^а-яa-z0-9]/g, '');
+  // Irregular forms otherwise bypass the temporal-context guard (детьми vs
+  // детям); these are actual customer facts, unlike connective words.
+  if (/^(?:дети|детей|детям|детьми|детях|ребенок|ребенка|ребенку|ребенком|ребенке)$/u.test(normalized)) return 'дети';
   if (normalized.length < 5) return normalized;
   return normalized.replace(/(?:иями|ями|ами|ого|ему|ому|ыми|ими|иях|ах|ях|ов|ев|ом|ем|ам|ям|ой|ей|ую|юю|ая|яя|ое|ее|ые|ие|ый|ий|ым|им|а|я|ы|и|у|ю|е|о)$/u, '');
 }
@@ -262,7 +274,7 @@ function matchingManagerTurnIndexes(quote: string, transcript: TranscriptTurn[])
   if (!target) return [];
   return transcript.flatMap((turn, index) => {
     const text = asText(turn.text).toLocaleLowerCase('ru-RU').replace(/\s+/g, ' ');
-    return turn.role === 'manager' && (text === target || text.includes(target) || target.includes(text))
+    return turn.role === 'manager' && text && (text === target || text.includes(target))
       ? [index] : [];
   });
 }
@@ -291,7 +303,7 @@ function deduplicateFindings(
         : findingTextKey(existing.quote) === key)
       // Several different problems intentionally share one full improved
       // reply. Equal advice must not collapse name/model/answer findings.
-      && existing.problemTitle === item.problemTitle);
+      && (existing.problemCode ?? existing.problemTitle) === (item.problemCode ?? item.problemTitle));
     if (existingIndex < 0) {
       result.push(item);
     } else if (importance[item.importance] > importance[result[existingIndex].importance]
@@ -517,7 +529,7 @@ export function finalizeGeneratedReport(report: UnifiedCallReport): UnifiedCallR
   const main = [...report.keyFindings].sort((a, b) => priority(a) - priority(b)).slice(0, 2)
     .map((finding) => `${finding.problemTitle}: ${finding.comment}`);
   const prose = (value: string) => value.replace(/[.;\s]+$/u, '');
-  return { ...report, summary: [
+  return { ...report, assessmentVersion: 'call-report-calibration-v2', summary: [
     `Итог: ${report.totalScore}/100 — ${report.verdict.toLocaleLowerCase('ru-RU')}.`,
     report.strengths.length ? `Выполнено: ${report.strengths.slice(0, 2).map(prose).join('; ')}.` : '',
     (main.length || report.weaknesses.length) ? `Зоны роста: ${(main.length ? main : report.weaknesses.slice(0, 2)).map(prose).join('; ')}.` : '',
@@ -552,7 +564,7 @@ export function normalizeUnifiedCallReport(
   const uncertainties: TranscriptionUncertainty[] = Array.isArray(uncertaintyValue)
     ? uncertaintyValue.filter((item) => item && Number.isInteger(item.turnIndex) && typeof item.token === 'string' && typeof item.quote === 'string' && typeof item.reason === 'string') : [];
   const dimensionInput = fallback.dimensionScores ?? (fallback.evaluation as EvaluationInput | undefined)?.dimension_scores as Record<string, number> | undefined;
-  const fromDimensions = categoryScoresFromDimensions(dimensionInput);
+  const fromDimensions = { ...categoryScoresFromDimensions(dimensionInput), ...checklistCategoryScores(fallback.evaluation) };
   let categories = UNIFIED_REPORT_CATEGORIES.map((name) => {
     const raw = categoriesSource.find((item) => item && typeof item === 'object' && asText((item as Record<string, unknown>).name) === name) as Record<string, unknown> | undefined;
     const score = fromDimensions[name] ?? totalScore;
@@ -574,11 +586,26 @@ export function normalizeUnifiedCallReport(
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {};
       let problem = resolveFindingProblem(catalog, raw, fallback.transcript);
       if (!problem) return null;
+      if (problem.code === 'NO_INTRO_COMPANY' && /фамили/iu.test(asText(raw.comment))
+        && !/фамили/iu.test(JSON.stringify((fallback.evaluation as any)?.checklist_definition ?? {}))
+        && fallback.transcript.some(turn => turn.role === 'manager' && /меня\s+зовут|мо[её]\s+имя/iu.test(turn.text))
+        && !/не\s+(?:назвал|сообщил|представил)[^.!?]{0,30}(?:компани|автосалон)/iu.test(asText(raw.comment))) return null;
       if (problem.code === 'PRODUCT_MISINFORMATION' && isUncertainFactClaim(`${asText(raw.comment)} ${asText(raw.quote)}`, uncertainties)) return null;
       const quote = resolveFindingQuote(problem, raw.quote, fallback.transcript);
       const quoteIndex = findTranscriptQuoteIndex(quote, fallback.transcript);
       if (fallback.transcript.length > 0
         && (quoteIndex < 0 || isUnreliableManagerUtterance(fallback.transcript[quoteIndex].text))) return null;
+      if (problem.code === 'WRONG_CLIENT_NAME' && !repeatedNameRequest(fallback.transcript, quoteIndex)) return null;
+      if (problem.code === 'WEAK_OBJECTION_HANDLING') {
+        const client = [...fallback.transcript.slice(0, quoteIndex)].reverse().find(turn => turn.role === 'client');
+        const groundedObjection = raw.clientActionType === 'objection' && typeof raw.clientQuote === 'string'
+          && raw.clientQuote.trim().length >= 8 && client?.text.includes(raw.clientQuote.trim());
+        if (client && !groundedObjection && ['question', 'request'].includes(clientAction(client.text))) {
+          problem = catalog.find(item => item.code === 'NO_DIRECT_ANSWER') ?? problem;
+        } else if (client && !groundedObjection && clientAction(client.text) === 'statement') return null;
+      }
+      // Objections are scored in product/argumentation, not appointment closing.
+      if (problem.code === 'WEAK_OBJECTION_HANDLING') problem = { ...problem, category: 'Продукт' };
       if (problem.code === 'NO_CONCRETE_NEXT_STEP' && /(?:завтра|сегодня|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресенье|\d{1,2}[./]\d{1,2})/iu.test(fallback.transcript[quoteIndex]?.text ?? '')
         && /(?:\d{1,2}:\d{2}|в\s+(?:\d{1,2}|шесть|семь|восемь|девять|десять|одиннадцать|двенадцать))/iu.test(fallback.transcript[quoteIndex]?.text ?? '')) problem = { ...problem, title: UNCONFIRMED_NEXT_STEP_TITLE };
       return {
@@ -587,12 +614,11 @@ export function normalizeUnifiedCallReport(
         importance: normalizeImportance(raw.importance),
         category: problem.category,
         quote,
-        comment: normalizeManagerNarrationGender(normalizeCompanyWording(meaningfulText(raw.comment))),
+        comment: normalizeManagerNarrationGender(normalizeCompanyWording(reportComment(raw.comment))),
         betterExample: sanitizeBetterExample(raw.betterExample, quote, fallback.transcript, quoteIndex, fallback.scenarioContext),
       };
     })
-    .filter((item): item is UnifiedCallReport['keyFindings'][number] => Boolean(item))
-    .slice(0, 8), fallback.transcript);
+    .filter((item): item is UnifiedCallReport['keyFindings'][number] => Boolean(item)), fallback.transcript).slice(0, 8);
 
   categories = categories.map((category) => {
     const categoryFindings = findings.filter((finding) => finding.category === category.name);
@@ -634,7 +660,7 @@ export function normalizeUnifiedCallReport(
     if (role === 'manager' && isUnreliableManagerUtterance(turn.text)) {
       return { role, text: turn.text, mark: null, comment: null, betterExample: null };
     }
-    if (role === 'manager' && isClientNameRequest(turn.text)) {
+    if (role === 'manager' && isClientNameRequest(turn.text) && !repeatedNameRequest(fallback.transcript, index)) {
       return {
         role,
         text: turn.text,
@@ -643,13 +669,17 @@ export function normalizeUnifiedCallReport(
         betterExample: null,
       };
     }
+    if (role === 'manager' && isClientNameRequest(turn.text) && repeatedNameRequest(fallback.transcript, index)) {
+      return { role, text: turn.text, mark: 'normal' as const,
+        comment: 'Имя клиента уже прозвучало; повторное уточнение не добавляет новой информации.', betterExample: null };
+    }
     const uncertainRawClaim = isUncertainFactClaim(asText(raw.comment), uncertainties);
     const rawMark = role === 'manager' && !uncertainRawClaim ? normalizeMark(raw.mark) : null;
     const betterExample = role === 'manager' && (rawMark === 'negative' || rawMark === 'normal')
       ? sanitizeBetterExample(raw.betterExample, turn.text, fallback.transcript, index, fallback.scenarioContext) || null
       : null;
     const comment = role === 'manager' && !uncertainRawClaim
-      ? normalizeManagerNarrationGender(meaningfulText(raw.comment)) || null
+      ? normalizeManagerNarrationGender(reportComment(raw.comment)) || null
       : null;
     return {
       role,
@@ -677,7 +707,7 @@ export function normalizeUnifiedCallReport(
       const turnStrengths = buildEvaluationHighlights(fallback.evaluation, 8, fallback.transcript, { positiveManagerTurnIndexes: new Set([index]) }).strengths;
       const severe = matchedFindings.some((finding) => finding.importance === 'Критично'
         || ['PRODUCT_MISINFORMATION', 'WRONG_CLIENT_NAME', 'BAD_TONE', 'CRITICAL_VIOLATION', 'NO_DIRECT_ANSWER'].includes(problemByTitle(catalog, finding.problemTitle)?.code ?? ''));
-      const mixed = !severe && turnStrengths.length >= 2;
+      const mixed = !severe && turnStrengths.length >= 1;
       return {
         ...line,
         mark: mixed ? 'normal' as const : 'negative' as const,
@@ -753,14 +783,19 @@ export function normalizeUnifiedCallReport(
     evidence: (Array.isArray(item.evidence) ? item.evidence : []).filter((evidence: unknown) => {
       if (typeof evidence !== 'string') return false;
       const indices = matchingManagerTurnIndexes(evidence.replace(/^Менеджер:\s*/iu, ''), fallback.transcript);
-      return !findings.some((finding) => (conflicts[String(item.code)] ?? []).includes(problemByTitle(catalog, finding.problemTitle)?.code ?? '')
+      if (indices.every(index => isClientNameRequest(fallback.transcript[index].text) && repeatedNameRequest(fallback.transcript, index))) return false;
+      const criterion = reportCriterionCode(fallback.evaluation, String(item.code));
+      const conflictCodes = [...(conflicts[criterion] ?? []), CHECKLIST_REPORT_PROBLEM[criterion]].filter(Boolean);
+      return !findings.some((finding) => conflictCodes.includes(problemByTitle(catalog, finding.problemTitle)?.code ?? '')
         && matchingManagerTurnIndexes(finding.quote, fallback.transcript).some((index) => indices.includes(index)));
     }),
   })) : [];
   const scoredStrengths = buildEvaluationHighlights({ ...fallback.evaluation, checklist: strengthChecklist }, 8, fallback.transcript).strengths;
   const demonstratedStrengths = dialog
     .filter((line) => line.role === 'manager' && line.mark === 'positive'
-      && /^(?:менеджер|сотрудник|консультант|продавец)\s+/iu.test(line.comment ?? ''))
+      && /^(?:менеджер|сотрудник|консультант|продавец)\s+/iu.test(line.comment ?? '')
+      && !findings.some(finding => reportStrengthActions(line.comment ?? '').some(code => CHECKLIST_REPORT_PROBLEM[code] === finding.problemCode)
+        && matchingManagerTurnIndexes(finding.quote, fallback.transcript).some(index => fallback.transcript[index]?.text === line.text)))
     .map((line) => line.comment as string);
   const factualStrengths = dialog.flatMap((line) => {
     if (line.role !== 'manager' || isUnreliableManagerUtterance(line.text)) return [];
@@ -784,7 +819,7 @@ export function normalizeUnifiedCallReport(
   }));
   const checklistWeaknesses: ReportWeaknessEntry[] = Array.isArray(scoredChecklist) ? scoredChecklist.flatMap((item) => {
     const text = buildEvaluationHighlights({ ...fallback.evaluation, plan_criteria: undefined, checklist: [item] }, 1, fallback.transcript).weaknesses[0];
-    return text ? [{ key: CHECKLIST_REPORT_PROBLEM[String(item.code).toUpperCase()] ?? `checklist:${item.code}`, text }] : [];
+    return text ? [{ key: CHECKLIST_REPORT_PROBLEM[reportCriterionCode(fallback.evaluation, String(item.code))] ?? `checklist:${item.code}`, text }] : [];
   }) : [];
   const planWeaknesses = buildEvaluationHighlights({ ...fallback.evaluation, checklist: [] }, 8, fallback.transcript).weaknesses
     .map((text, index) => ({ key: `plan:${index}`, text }));
@@ -807,7 +842,7 @@ export function normalizeUnifiedCallReport(
     verdict: unifiedVerdict(totalScore),
     categories,
     strengths: fallback.transcript.length > 0
-      ? mergeUniqueText([...scoredStrengths, ...factualStrengths, ...demonstratedStrengths], 8)
+      ? deduplicateReportStrengths(mergeUniqueText([...scoredStrengths, ...factualStrengths, ...demonstratedStrengths], 24), 8)
       : evaluatedHighlights.hasClassification ? evaluatedHighlights.strengths : aiStrengths,
     weaknesses,
     ...(uncertainties.length ? { transcriptionUncertainties: uncertainties } : {}),
@@ -966,6 +1001,7 @@ export async function ensureRecommendationFindingCoverage(
       catalog,
     ) ?? report;
   } catch (error) {
+    if ([401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
     console.warn('[unified-report] finding coverage repair failed:', error instanceof Error ? error.message : error);
     return report;
   }
@@ -989,7 +1025,10 @@ export async function ensureReportDialogCoverage(report: UnifiedCallReport, tran
         if (!mark || !comment || (dialog[item.index].mark && dialog[item.index].mark !== mark) || isUncertainFactClaim(comment, report.transcriptionUncertainties ?? [])) continue;
         dialog[item.index] = { ...dialog[item.index], mark: dialog[item.index].mark ?? mark, comment };
       }
-    } catch (error) { console.warn('[unified-report] dialog annotation repair failed:', error instanceof Error ? error.message : error); break; }
+    } catch (error) {
+      if ([401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
+      console.warn('[unified-report] dialog annotation repair failed:', error instanceof Error ? error.message : error); break;
+    }
   }
   return { ...report, dialog };
 }
@@ -1093,11 +1132,13 @@ export async function ensureFindingBetterExamples(
         } else {
           if (typeof candidate?.betterExample === 'string' && candidate.betterExample.trim()) onRejected?.(item.quoteIndex, candidate.betterExample,
             structuralIssues);
-          stillMissing.push(item);
+          stillMissing.push({ ...item, previousReviewIssues: [...item.previousReviewIssues, ...structuralIssues],
+            ...({ previousRejectedExample: typeof candidate?.betterExample === 'string' ? candidate.betterExample : '' }) });
         }
       }
       pending = stillMissing;
     } catch (error) {
+      if ([401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
       console.warn('[unified-report] better examples repair failed:', error instanceof Error ? error.message : error);
       break;
     }
@@ -1118,7 +1159,7 @@ export async function ensureReportExampleQuality(
   };
   let candidate = await ensureFindingBetterExamples(report, transcript, scenarioContext, {}, rememberRejected);
   let reviews: ReportExampleReview[] = [];
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     const groups = reportFindingGroups(candidate, transcript);
     const tasks: ReportExampleTask[] = candidate.dialog.flatMap((line, turnIndex) => {
       const indices = groups.get(turnIndex) ?? [];
@@ -1145,11 +1186,27 @@ export async function ensureReportExampleQuality(
       for (const index of groups.get(review.turnIndex) ?? []) keyFindings[index].betterExample = '';
     }
     candidate = { ...candidate, keyFindings, dialog };
-    if (attempt === 0) candidate = await ensureFindingBetterExamples(candidate, transcript, scenarioContext, feedback, rememberRejected);
+    if (attempt < 2) {
+      const repaired = await ensureFindingBetterExamples(candidate, transcript, scenarioContext, feedback, rememberRejected);
+      // A repeated rejected candidate is not progress. Do not regrade the
+      // same text until the judge happens to accept it.
+      if (failed.every(review => reportExampleHash(repaired.dialog[review.turnIndex].betterExample ?? '') === review.exampleHash)) break;
+      candidate = repaired;
+    }
   }
   return { ...candidate, exampleReviews: reviews.map((review) => ({ ...review,
     rejectedCandidates: rejected.get(review.turnIndex) ?? [],
   })) };
+}
+
+/** Publication boundary: a finished coaching report must not silently lack replacements. */
+export function requireCompleteReportExamples(report: UnifiedCallReport): UnifiedCallReport {
+  const missing = report.dialog.flatMap((line, index) => line.role === 'manager' && ['normal', 'negative'].includes(line.mark ?? '')
+    && !line.betterExample?.trim() ? [index + 1] : []);
+  if (missing.length || report.keyFindings.some(finding => !finding.betterExample.trim())) {
+    throw new Error(`Не удалось подготовить полный улучшенный пример для каждой отмеченной реплики (${missing.join(', ') || 'находки'}). Отчёт требует повторной генерации.`);
+  }
+  return report;
 }
 
 export async function generateUnifiedCallReport(input: {
@@ -1257,7 +1314,7 @@ export async function generateUnifiedCallReport(input: {
   const parsed = await requestReportJson({
     model: config.openaiChatModel,
     messages: [
-      { role: 'system', content: 'Ты строгий аналитик качества продаж. Отвечай только валидным JSON по заданной схеме.' },
+      { role: 'system', content: 'Ты последовательный аналитик качества продаж, применяющий единую шкалу по смыслу и контексту. Отвечай только валидным JSON по заданной схеме.' },
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_object' },
@@ -1275,7 +1332,7 @@ export async function generateUnifiedCallReport(input: {
   if (!normalized) throw new Error('Invalid unified report JSON');
   const covered = await ensureRecommendationFindingCoverage(normalized, input.transcript, catalog, input.evaluation, input.scenarioContext);
   const annotated = await ensureReportDialogCoverage(covered, input.transcript, input.evaluation);
-  return finalizeGeneratedReport(await ensureReportExampleQuality(annotated, input.transcript, input.scenarioContext));
+  return finalizeGeneratedReport(requireCompleteReportExamples(await ensureReportExampleQuality(annotated, input.transcript, input.scenarioContext)));
 }
 
 export async function generateUnifiedTrainerReport(input: {

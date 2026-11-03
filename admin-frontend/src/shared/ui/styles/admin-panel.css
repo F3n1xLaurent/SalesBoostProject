@@ -4816,6 +4816,45 @@
   flex-shrink: 0;
 }
 
+.sa-sidebar-dev-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--sa-divider);
+}
+.sa-sidebar-dev-toggle {
+  justify-content: space-between;
+}
+.sa-sidebar-dev-switch {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  padding: 3px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--sa-divider);
+  transition: background 0.16s ease;
+}
+.sa-sidebar-dev-switch > span {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.16);
+  transition: transform 0.16s ease;
+}
+.sa-sidebar-dev-toggle[aria-checked="true"] .sa-sidebar-dev-switch {
+  background: var(--sa-text);
+}
+.sa-sidebar-dev-toggle[aria-checked="true"] .sa-sidebar-dev-switch > span {
+  transform: translateX(14px);
+}
+.sa-sidebar-dev-toggle:focus-visible {
+  outline: 2px solid var(--sa-text);
+  outline-offset: 2px;
+}
+
 /* ─── Floating Call Batch Tray ─── */
 .sa-batch-tray-root {
   position: fixed;

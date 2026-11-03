@@ -234,6 +234,12 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
     );
   }
 
+  function isTerminalAutomatedAnswer(text) {
+    var normalized = String(text || "").toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ");
+    if (/нажмите|наберите|выберите.{0,25}(?:пункт|цифру|клавишу|отдел)|соедин(?:ю|яем|им).{0,40}(?:оператор|менеджер|сотрудник)|дождитесь|оставайтесь на линии/.test(normalized)) return false;
+    return /(?:я|это)\s+(?:голосов(?:ой|ая)|виртуальн(?:ый|ая)|автоматическ(?:ий|ая))\s+(?:ассистент|помощни(?:к|ца))|(?:абонент|линия|номер).{0,40}(?:занят|недоступен|не может ответить)|(?:оставьте|запишите).{0,30}сообщение|запишу.{0,25}(?:слово в слово|сообщение)|после\s+(?:звукового\s+)?сигнала/.test(normalized);
+  }
+
   function isExplicitBackgroundNoise(text) {
     return /^(?:\.{2,}|шум(?:\s|$)|музык(?:а|и|у|ой)(?:\s|$)|фонов(?:ый|ая|ое)\s+(?:шум|музыка)|звук\s+(?:дороги|мотора|радио)|\[(?:music|noise)\])/.test(
       text
@@ -355,7 +361,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
         call_id: callId,
         turn_id: String(detectionRevision),
         candidate_text: text,
-        transcript: transcript.slice(-2),
+        transcript: transcript.slice(-6),
       },
       function (decision) {
         if (
@@ -392,6 +398,12 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
             ", ms=" +
             elapsedMs
         );
+
+        if (decision && decision.end_call === true && speakerType === "ivr_or_recording" && confidence >= 0.85) {
+          muteAgentOutput("terminal_automated_answer");
+          finishWithEvent("no_answer", { reason: "voicemail", detected_by: "live_speaker_classifier" });
+          return;
+        }
 
         if (speakerType === "live_human" && confidence >= 0.85) {
           lastInputKind = "live_human_ai";
@@ -440,6 +452,12 @@ VoxEngine.addEventListener(AppEvents.Started, function (e) {
     }
 
     pushTranscript("manager", text);
+
+    if (isTerminalAutomatedAnswer(normalized)) {
+      muteAgentOutput("terminal_automated_answer");
+      finishWithEvent("no_answer", { reason: "voicemail", detected_by: "local_line_guard" });
+      return;
+    }
 
     if (/нажмите|наберите|выберите (?:пункт|цифру|клавишу)|клавиш[ауи]|кнопк[ауи]/i.test(normalized)) {
       lastExplicitDtmfInstructionAt = Date.now();

@@ -7,6 +7,8 @@ import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import '../../../shared/ui/styles/admin-responsive.css';
 import { AdminSidebar } from '../../admin-sidebar/ui/AdminSidebar';
+import { AUDITS_CHANGED_EVENT } from '../../../shared/api/adminPanel';
+import { DevModeRoleContext, useDevMode } from '../../../entities/session/model/useDevMode';
 import type { AdminTab, AdminRole } from '../../admin-sidebar/ui/AdminSidebar';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
 import type { DealerTab } from '../../../pages/dealer/ui/DealerContent';
@@ -52,6 +54,7 @@ function lazyNamed<T extends React.ComponentType<any>>(
 }
 
 const Dashboard = lazyNamed(() => import('../../../pages/dashboard/ui/DashboardPage'), 'Dashboard');
+const BillingPage = lazyNamed(() => import('../../../pages/billing/ui/BillingPage'), 'BillingPage');
 const HoldingsPage = lazyNamed(() => import('../../../pages/holdings/ui/HoldingsPage'), 'HoldingsPage');
 const Companies = lazyNamed(() => import('../../../pages/companies/ui/CompaniesPage'), 'Companies');
 const DealershipDirectionsPage = lazyNamed(() => import('../../../pages/dealership-directions/ui/DealershipDirectionsPage'), 'DealershipDirectionsPage');
@@ -88,6 +91,7 @@ export type SystemLayoutProps = {
 };
 
 export function SystemLayout({ summary, voice, loadingSummary, role, dealerDealershipId = null, accountId = null, profileName, onRoleChange, onLogout, allowedRoles }: SystemLayoutProps) {
+  const { devMode } = useDevMode(role);
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -96,7 +100,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   const selectedDealershipId = route.dealershipId || null;
   const activeTab = role === 'dealer' && route.tab === 'companies' && selectedDealershipId
     ? 'dealer-companies'
-    : normalizeTabForRole(route.tab, role);
+    : normalizeTabForRole(route.tab, role, devMode);
   const selectedEmployeeId = route.employeeId || null;
   const selectedAuditId = route.auditId || null;
   const selectedBatchDetailId = route.batchId || null;
@@ -157,6 +161,12 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   };
 
   const [audits, setAudits] = useState<AuditItem[]>([]);
+  const [auditRevision, setAuditRevision] = useState(0);
+  useEffect(() => {
+    const refresh = () => setAuditRevision((value) => value + 1);
+    window.addEventListener(AUDITS_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(AUDITS_CHANGED_EVENT, refresh);
+  }, []);
   const [auditsLoading, setAuditsLoading] = useState(true);
   const [timeSeries, setTimeSeries] = useState<TimeSeriesPoint[]>([]);
   const [callBatches, setCallBatches] = useState<CallBatchListItem[]>([]);
@@ -273,7 +283,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
     return () => {
       cancelled = true;
     };
-  }, [role, activeTab, shouldLoadAuditData, isDealerAudits]);
+  }, [role, activeTab, shouldLoadAuditData, isDealerAudits, auditRevision]);
 
   useEffect(() => {
     if (!isSuperOrCompany) return;
@@ -295,9 +305,10 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   }, [isSuperOrCompany]);
 
   useEffect(() => {
-    if (isTabAllowedForRole(activeTab, role)) return;
+    if (isTabAllowedForRole(route.tab, role, devMode)
+      || (role === 'dealer' && route.tab === 'companies' && selectedDealershipId)) return;
     navigate(tabToPath(getDefaultTab(role)), { replace: true });
-  }, [activeTab, navigate, role]);
+  }, [route.tab, selectedDealershipId, devMode, navigate, role]);
 
   useEffect(() => {
     if (role === 'dealer' && selectedBatchDetailId) {
@@ -409,6 +420,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   };
 
   return (
+    <DevModeRoleContext.Provider value={role}>
     <div className={`super-admin-app theme-brutal${trainerSessionActive ? ' super-admin-app--trainer-focus' : ''}${hasActiveBatch ? ' super-admin-app--active-batch' : ''}`}>
       {!trainerSessionActive && !isMobileAdminNav && (
         <AdminSidebar {...sidebarProps} onTab={handleTabChange} />
@@ -470,6 +482,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                   loading={loadingSummary}
                 />
               )}
+              {activeTab === 'billing' && role === 'super' && <BillingPage />}
               {activeTab === 'holdings' && role === 'super' && (
                 <HoldingsPage
                   holdingId={selectedHoldingId}
@@ -560,6 +573,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
                 <Audits
                   audits={audits}
                   loading={auditsLoading}
+                  onDeleted={(id) => setAudits((items) => items.filter((item) => item.id !== id))}
                 />
               )}
               {activeTab === 'audits' && !selectedAuditId && selectedBatchDetailId && (
@@ -600,7 +614,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
               {activeTab === 'callSettings' && (
                 <CallSettingsPage />
               )}
-              {activeTab === 'testing' && (
+              {activeTab === 'testing' && role === 'super' && devMode && (
                 <TestingPage />
               )}
               {activeTab === 'internalAnalytics' && role === 'super' && (
@@ -685,5 +699,6 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
       </main>
       <SupportWidget />
     </div>
+    </DevModeRoleContext.Provider>
   );
 }

@@ -81,6 +81,10 @@ model Holding {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  billingEnabled Boolean @default(false)
+  billingPayments BillingPayment[]
+  billingChanges BillingChange[]
+
   dealerships Dealership[]
   memberships AccountMembership[]
   dealershipDirections DealershipDirection[]
@@ -1248,4 +1252,44 @@ model SupportBitrixInstallation {
 
   @@index([status, updatedAt])
   @@map("support_bitrix_installations")
+}
+
+/// Manual payments grant modules for a company. Amounts are stored in kopecks.
+model BillingPayment {
+  id            String          @id @default(cuid())
+  holdingId     String
+  amountKopecks Int
+  paidAt        DateTime
+  startsAt      DateTime
+  endsAt        DateTime?
+  calls         Boolean         @default(false)
+  trainer       Boolean         @default(false)
+  comment       String
+  status        String          @default("active")
+  version       Int             @default(1)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  holding       Holding         @relation(fields: [holdingId], references: [id], onDelete: Restrict)
+  changes       BillingChange[]
+
+  @@index([holdingId, status, startsAt, endsAt])
+  @@map("billing_payments")
+}
+
+/// Immutable snapshots preserve payment and billing-setting edits and their authors.
+model BillingChange {
+  id         String          @id @default(cuid())
+  holdingId  String
+  paymentId  String?
+  actorId    String
+  actorName  String
+  action     String
+  beforeJson String?
+  afterJson  String
+  createdAt  DateTime        @default(now())
+  holding    Holding         @relation(fields: [holdingId], references: [id], onDelete: Restrict)
+  payment    BillingPayment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@index([holdingId, createdAt])
+  @@map("billing_changes")
 }

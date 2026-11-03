@@ -16,6 +16,7 @@ import {
   ensureReportExampleQuality,
   ensureReportDialogCoverage,
   finalizeGeneratedReport,
+  requireCompleteReportExamples,
   UNIFIED_REPORT_CATEGORIES,
   unifiedVerdict,
   type UnifiedCallReport,
@@ -143,7 +144,7 @@ export async function generateCallAnalyticsBundle(input: {
     messages: [
       {
         role: 'system',
-        content: 'Ты строгий аналитик качества продаж. Отвечай только валидным JSON по заданной схеме.',
+        content: 'Ты последовательный аналитик качества продаж, применяющий единую шкалу по смыслу и контексту. Отвечай только валидным JSON по заданной схеме.',
       },
       { role: 'user', content: prompt },
     ],
@@ -165,7 +166,7 @@ export async function generateCallAnalyticsBundle(input: {
     callSummary: null,
     replyImprovements: null,
     unifiedCallReport: annotatedReport
-      ? finalizeGeneratedReport(await ensureReportExampleQuality(annotatedReport, input.transcript, input.scenarioContext))
+      ? finalizeGeneratedReport(requireCompleteReportExamples(await ensureReportExampleQuality(annotatedReport, input.transcript, input.scenarioContext)))
       : null,
   };
 }

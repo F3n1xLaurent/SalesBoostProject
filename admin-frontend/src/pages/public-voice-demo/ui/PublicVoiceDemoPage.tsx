@@ -1,8 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
-import { CallInsightCard, type CallInsightDetail } from '../../../widgets/call-insight-card';
+import type { CallInsightDetail } from '../../../widgets/call-insight-card';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
-import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
 import { FlowButton } from '../../landing/ui/FlowButton';
 import { FinalDemoBlock } from '../../landing/ui/FinalDemoBlock';
 import { LandingHeader } from '../../landing/ui/LandingHeader';
@@ -14,6 +13,8 @@ import '../../../shared/ui/styles/admin-panel.css';
 import '../../../shared/ui/styles/theme-brutal.css';
 import '../../landing/ui/landing.css';
 import './public-voice-demo.css';
+import { getUnavailableCall } from '../model/unavailableCall';
+import { DemoCallResult } from './DemoCallResult';
 
 function GridEnds() {
   return (
@@ -106,7 +107,9 @@ function stripDemoCallParams(params: URLSearchParams): URLSearchParams {
 }
 
 function isCallFinal(detail: DemoCallState | null): boolean {
-  if (!detail || !detail.endedAt) return false;
+  if (!detail) return false;
+  if (getUnavailableCall(detail)) return true;
+  if (!detail.endedAt) return false;
   if (detail.isProcessing) return false;
   return detail.hasEvaluation || !!detail.processingError || detail.transcriptTurns > 0;
 }
@@ -282,13 +285,15 @@ export function PublicVoiceDemoPage() {
     };
   }, [callId, callIsFinal]);
 
-  const screenState = useMemo<'form' | 'waiting' | 'result'>(() => {
+  const unavailableCall = getUnavailableCall(detail);
+  const screenState = useMemo<'form' | 'waiting' | 'result' | 'unavailable'>(() => {
     if (!callId) {
       if (autoStartActive && !error) return 'waiting';
       return 'form';
     }
+    if (unavailableCall) return 'unavailable';
     return isCallFinal(detail) ? 'result' : 'waiting';
-  }, [callId, detail, autoStartActive, error]);
+  }, [callId, detail, autoStartActive, error, unavailableCall]);
 
   const waitingPhase = useMemo(() => getWaitingPhase(detail), [detail]);
 
@@ -307,7 +312,7 @@ export function PublicVoiceDemoPage() {
   const [processingStep, setProcessingStep] = useState(0);
 
   useEffect(() => {
-    if (waitingPhase !== 'processing') {
+    if (screenState !== 'waiting' || waitingPhase !== 'processing') {
       setProcessingStep(0);
       return;
     }
@@ -315,7 +320,7 @@ export function PublicVoiceDemoPage() {
       setProcessingStep((s) => (s + 1) % processingSteps.length);
     }, 2400);
     return () => window.clearInterval(id);
-  }, [waitingPhase, processingSteps.length]);
+  }, [screenState, waitingPhase, processingSteps.length]);
 
   const handleStartCall = useCallback(async () => {
     if (nationalDigits.length !== NATIONAL_LEN) {
@@ -332,7 +337,7 @@ export function PublicVoiceDemoPage() {
       const response = await fetch(`${API_BASE}/api/public/demo-call/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, client: demoClientId, scenario: 'realtime_pure' }),
+        body: JSON.stringify({ to, client: demoClientId }),
       });
       const data = await readJsonResponse<{ callId: string }>(response, 'Не удалось запустить звонок');
       setCallId(data.callId);
@@ -372,8 +377,8 @@ export function PublicVoiceDemoPage() {
   }
 
   const resultAuditDetail = useMemo(
-    () => (detail ? demoCallToAuditDetail(detail) : null),
-    [detail]
+    () => (detail && !unavailableCall ? demoCallToAuditDetail(detail) : null),
+    [detail, unavailableCall]
   );
 
   const displayPhone = formatPhoneFieldValue(nationalDigits, phoneFocused);
@@ -386,7 +391,7 @@ export function PublicVoiceDemoPage() {
     ? 'wide'
     : screenState === 'form'
       ? 'form'
-      : screenState === 'waiting'
+      : screenState === 'waiting' || screenState === 'unavailable'
         ? 'wait'
         : '';
 
@@ -524,25 +529,12 @@ export function PublicVoiceDemoPage() {
               </div>
             )}
 
-            {screenState === 'result' && detail && (
-              <div className="demo-stand-stack">
-                <div className="demo-stand-report">
-                  {resultAuditDetail ? (
-                    <AuditAnalyticsReport detail={resultAuditDetail} />
-                  ) : (
-                    <div className="demo-brutal-insight-wrap">
-                      <CallInsightCard detail={detail} />
-                    </div>
-                  )}
-                </div>
-                <FlowButton
-                  text="Запустить новый звонок"
-                  type="button"
-                  variant="solid"
-                  onClick={handleReset}
-                  className="demo-stand-action"
-                />
-              </div>
+            {(screenState === 'result' || screenState === 'unavailable') && detail && (
+              <>
+                <DemoCallResult detail={detail} auditDetail={resultAuditDetail} phone={waitingNumber} loading={loading}
+                  onRetry={() => { void handleStartCall(); }} onReset={handleReset} />
+                {error && <div className="demo-call-brutal__error" role="alert">{error}</div>}
+              </>
             )}
           </div>
 

@@ -9,6 +9,7 @@ type Props = {
   confirmLabel?: string;
   onCancel: () => void;
   onConfirm: () => void;
+  children?: React.ReactNode;
 };
 
 export function DeleteConfirmModal({
@@ -19,6 +20,7 @@ export function DeleteConfirmModal({
   confirmLabel = 'Удалить',
   onCancel,
   onConfirm,
+  children,
 }: Props) {
   return (
     <BrutalModal
@@ -39,7 +41,7 @@ export function DeleteConfirmModal({
         </div>
       )}
     >
-      {null}
+      {children ?? null}
     </BrutalModal>
   );
 }

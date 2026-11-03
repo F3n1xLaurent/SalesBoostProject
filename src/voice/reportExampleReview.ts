@@ -87,7 +87,7 @@ export async function reviewReportExamples(tasks: ReportExampleTask[]): Promise<
       { role: 'system', content: REPORT_EXAMPLE_ACCEPTANCE_RULES },
       { role: 'system', content: 'Для КАЖДОГО pass обязателен короткий дословный evidence именно из example, даже для no-invention и preserves-facts: процитируй соответствующую часть ответа и поясни отсутствие противоречий в reason. Не используй evidence из knownDialog, не пиши «весь ответ», не меняй кавычки/числа/пунктуацию цитаты. reason максимум 300 символов. Не просчитывай exampleHash, скопируй его из входа.' },
       ...(attempt ? [{ role: 'system' as const, content: 'Предыдущий ответ нарушил формат или точность цитат. Повтори только проверку переданных элементов; это восстановление невалидного заключения, не повод менять содержательную оценку. Для pass скопируй буквальный фрагмент example. Если не можешь подтвердить вывод, поставь review с объяснением и пустым evidence.' }] : []),
-      { role: 'user', content: JSON.stringify({ items: remaining.map((task) => ({ ...task, exampleHash: reportExampleHash(task.example), requiredCheckIds: [...task.problems.map((problem) => problem.id), ...COMMON_CHECKS] })) }) },
+      { role: 'user', content: JSON.stringify({ items: remaining.map((task) => ({ ...task, originalReply: task.knownDialog.at(-1)?.text ?? '', exampleHash: reportExampleHash(task.example), requiredCheckIds: [...task.problems.map((problem) => problem.id), ...COMMON_CHECKS] })) }) },
     ] }, { timeout: 90000, maxRetries: 0 });
     if (response.choices[0]?.finish_reason === 'length') throw new SyntaxError('Заключение о примерах обрезано лимитом токенов.');
     const parsed = parseExampleReviews(remaining, JSON.parse(response.choices[0]?.message.content ?? '{}'));

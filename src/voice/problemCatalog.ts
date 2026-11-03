@@ -24,7 +24,7 @@ export const DEFAULT_CALL_REPORT_PROBLEMS: ProblemCatalogItem[] = [
   { code: 'PRODUCT_MISINFORMATION', title: 'Слабое знание характеристик / фактическая ошибка (дезинформация)', category: 'Продукт', sortOrder: 60 },
   { code: 'WEAK_BENEFIT_PRESENTATION', title: 'Презентация не структурирована, нет акцента на выгодах', category: 'Продукт', sortOrder: 70 },
   { code: 'NO_DIRECT_ANSWER', title: 'Ушёл от вопроса клиента / не дал прямого ответа', category: 'Продукт', sortOrder: 80 },
-  { code: 'WEAK_OBJECTION_HANDLING', title: 'Не отработал возражение / отработал слабо', category: 'Закрытие', sortOrder: 90 },
+  { code: 'WEAK_OBJECTION_HANDLING', title: 'Не отработал возражение / отработал слабо', category: 'Продукт', sortOrder: 90 },
   { code: 'NO_NEXT_STEP', title: 'Не предложил следующий шаг', category: 'Закрытие', sortOrder: 100 },
   { code: 'NO_CONCRETE_NEXT_STEP', title: 'Следующий шаг без конкретики (нет даты/времени)', category: 'Закрытие', sortOrder: 110 },
   { code: 'PASSIVE_STYLE', title: 'Пассивный стиль, низкая вовлечённость', category: 'Коммуникация', sortOrder: 120 },
@@ -64,7 +64,7 @@ export async function getCallReportProblemCatalog(prisma: PrismaClient): Promise
   return rows.map((row) => ({
     code: row.code,
     title: row.title,
-    category: row.category as ProblemCatalogCategory,
+    category: row.code === 'WEAK_OBJECTION_HANDLING' ? 'Продукт' : row.category as ProblemCatalogCategory,
     sortOrder: row.sortOrder,
   }));
 }

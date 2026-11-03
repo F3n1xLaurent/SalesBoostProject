@@ -434,6 +434,22 @@
   gap: 56px;
 }
 
+.demo-call-brutal .demo-call-unavailable .demo-wait-pulse__ring {
+  animation: none;
+  opacity: 0.3;
+  transform: scale(0.9);
+}
+
+.demo-call-brutal .demo-call-unavailable .demo-wait-pulse__ring:nth-child(2) {
+  transform: scale(0.65);
+}
+
+.demo-call-brutal .demo-call-unavailable__actions {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+
 .demo-call-brutal .demo-wait-scene .demo-stand-action {
   width: auto;
   justify-self: center;

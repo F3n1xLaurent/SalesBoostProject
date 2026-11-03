@@ -35,6 +35,13 @@ describe('Vox call outcome normalization', () => {
     expect(isUnavailableCallOutcome('disconnected')).toBe(false);
   });
 
+  it('classifies busy, rejected and unanswered Failed events by their details', () => {
+    expect(resolveVoxCallOutcome('failed', { code: 486 })).toBe('busy');
+    expect(resolveVoxCallOutcome('failed', { code: 600 })).toBe('busy');
+    for (const code of [408, 480, 603, 487]) expect(resolveVoxCallOutcome('failed', { code })).toBe('no_answer');
+    expect(resolveVoxCallOutcome('failed', { code: 500 })).toBe('failed');
+  });
+
   it('normalizes Vox aliases', () => {
     expect(normalizeVoxWebhookEvent('answer')).toBe('connected');
     expect(normalizeVoxWebhookEvent('completed')).toBe('disconnected');

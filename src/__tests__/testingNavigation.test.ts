@@ -11,12 +11,29 @@ describe('standalone realtime testing navigation', () => {
     expect(parseAdminPath('/call-settings/realtime-test')).toEqual({ tab: 'testing' });
     expect(parseAdminPath('/call-settings/realtime-test/')).toEqual({ tab: 'testing' });
   });
-  it('retains the same roles as the old call-settings tab', () => {
-    for (const role of ['super', 'company', 'dealer', 'staff'] as const) {
-      expect(isTabAllowedForRole('testing', role)).toBe(isTabAllowedForRole('callSettings', role));
+  it('allows only superadmins, including when opening the legacy URL', () => {
+    expect(isTabAllowedForRole('testing', 'super', true)).toBe(true);
+    expect(normalizeTabForRole('testing', 'super', true)).toBe('testing');
+    for (const role of ['company', 'dealer', 'staff'] as const) {
+      expect(isTabAllowedForRole('testing', role)).toBe(false);
+      expect(isTabAllowedForRole('testing', role, true)).toBe(false);
+      for (const path of ['/testing', '/testing/', '/call-settings/realtime-test', '/call-settings/realtime-test/']) {
+        expect(normalizeTabForRole(parseAdminPath(path).tab, role)).not.toBe('testing');
+      }
     }
+    expect(normalizeTabForRole('testing', 'company')).toBe('dashboard');
+    expect(isTabAllowedForRole('callSettings', 'company')).toBe(true);
     expect(normalizeTabForRole('testing', 'dealer')).toBe('dealer-companies');
     expect(normalizeTabForRole('testing', 'staff')).toBe('staff-profile');
+  });
+  it('requires dev mode for the testing route and its legacy alias', () => {
+    expect(isTabAllowedForRole('testing', 'super')).toBe(false);
+    for (const path of ['/testing', '/testing/', '/call-settings/realtime-test', '/call-settings/realtime-test/']) {
+      const { tab } = parseAdminPath(path);
+      expect(normalizeTabForRole(tab, 'super', false)).toBe('dashboard');
+      expect(normalizeTabForRole(tab, 'super', true)).toBe('testing');
+    }
+    expect(isTabAllowedForRole('callSettings', 'super')).toBe(true);
   });
   it('does not change the existing call-settings routes', () => {
     for (const path of ['/call-settings', '/call-settings/profiles', '/call-settings/scripts/new', '/call-settings/plans/plan-id/edit']) {

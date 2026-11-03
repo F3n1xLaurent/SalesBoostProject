@@ -1,9 +1,12 @@
+import { assertDealershipModule, BillingAccessError } from '../billing/access';
 import { prisma } from '../db';
-import { addCall, getRecordByCallId, setVoxSessionId } from './callHistory';
+import { addCall, getRecordByCallId, setVoxSessionId, type TranscriptTurn } from './callHistory';
 import { startVoiceCall, type VoiceCallScenario } from './startVoiceCall';
 import type { VoxWebhookPayload } from './voiceCallSession';
 import { listDealershipCallTargets } from './dealershipCallSource';
 import { isUnavailableCallOutcome, resolveVoxCallOutcome } from './voxCallOutcome';
+import { assessCallReportEligibility } from './callReportEligibility';
+import { sanitizeTranscriptTurns } from './transcriptSanitizer';
 
 type BatchStatus = 'running' | 'paused' | 'cancelled' | 'completed';
 type JobStatus = 'queued' | 'dialing' | 'in_progress' | 'retry_wait' | 'completed' | 'failed' | 'cancelled';
@@ -250,6 +253,15 @@ async function dispatchOneJob(batchId: string, scenario: VoiceCallScenario): Pro
 
   const fresh = await prisma.callBatchJob.findUnique({ where: { id: job.id } });
   if (!fresh) return false;
+
+  try {
+    await assertDealershipModule(fresh.dealershipId, 'calls');
+  } catch (error) {
+    if (!(error instanceof BillingAccessError)) throw error;
+    await prisma.callBatchJob.update({ where: { id: fresh.id }, data: { status: 'failed', lastError: error.message, endedAt: now() } });
+    await recomputeBatchCounters(batchId);
+    return true;
+  }
 
   nextDispatchAtByBatch.set(batchId, Date.now() + Math.max(100, batch.startIntervalMs));
 
@@ -742,12 +754,30 @@ export async function onVoxBatchWebhook(payload: VoxWebhookPayload): Promise<voi
         }
       })()
     : 0;
-  const outcome = resolveVoxCallOutcome(payload.event, {
+  let outcome = resolveVoxCallOutcome(payload.event, {
     connected: session?.connectedAt != null || memoryRecord?.connectedAt != null,
     transcriptTurns: Math.max(payloadTranscriptTurns, storedTranscriptTurns, memoryRecord?.transcript.length ?? 0),
     reason: payload.details?.reason,
     code: payload.details?.code,
   });
+  if (!isUnavailableCallOutcome(outcome)) {
+    let storedTranscript: unknown[] = [];
+    try {
+      const parsed = JSON.parse(session?.transcriptJson ?? '[]');
+      if (Array.isArray(parsed)) storedTranscript = parsed;
+    } catch { /* A missing transcript does not prove a missed call. */ }
+    const transcript = [payload.transcript, memoryRecord?.transcript, storedTranscript]
+      .filter(Array.isArray)
+      .map((turns) => sanitizeTranscriptTurns(turns.flatMap((turn: unknown): TranscriptTurn[] => {
+        if (!turn || typeof turn !== 'object') return [];
+        const { role, text } = turn as { role?: unknown; text?: unknown };
+        return (role === 'manager' || role === 'client') && typeof text === 'string'
+          ? [{ role, text }] : [];
+      })))
+      .sort((a, b) => b.length - a.length)[0] ?? [];
+    const eligibility = assessCallReportEligibility(transcript);
+    if (!eligibility.eligible && eligibility.outcome) outcome = eligibility.outcome;
+  }
   await prisma.callBatchAttempt.update({
     where: { id: attempt.id },
     data: {

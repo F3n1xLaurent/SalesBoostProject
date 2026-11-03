@@ -40,7 +40,11 @@ export function resolveVoxCallOutcome(
   evidence: VoxCallOutcomeEvidence = {},
 ): string {
   const event = normalizeVoxWebhookEvent(rawEvent);
-  if (event === 'no_answer' || event === 'busy' || event === 'failed' || event === 'cancelled') {
+  if (event === 'failed') {
+    if (Number(evidence.code) === 603 || Number(evidence.code) === 487) return 'no_answer';
+    return outcomeFromDisconnectDetails(evidence) ?? 'failed';
+  }
+  if (event === 'no_answer' || event === 'busy' || event === 'cancelled') {
     return event;
   }
 

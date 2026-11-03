@@ -1,3 +1,4 @@
+import { assertCompanyModule } from '../billing/access';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../db';
 import { config } from '../config';
@@ -21,7 +22,18 @@ const active = new Map<string, { stop: () => void }>();
 /** Freeze provider/profile before dialing. The caller MUST persist its rows
  * using this id before invoking start(), so even immediate webhooks are linked. */
 export async function prepareCallPlanTelephony(phone: string, plan: RealtimeTestPlanConfiguration) {
-  const provider = resolveCallPlanTelephonyProvider();
+  const billingPlan = await prisma.callPlan.findUnique({ where: { id: plan.planId }, select: { holdingId: true } });
+  return prepareTelephony(phone, plan, resolveCallPlanTelephonyProvider(), () => assertCompanyModule(billingPlan?.holdingId, 'calls'));
+}
+
+/** Public demos share the production bridge but do not belong to a paid company plan. */
+export function prepareDemoCallTelephony(phone: string, plan: RealtimeTestPlanConfiguration) {
+  return prepareTelephony(phone, plan, 'openai_realtime', async () => {});
+}
+
+async function prepareTelephony(phone: string, plan: RealtimeTestPlanConfiguration,
+  provider: CallPlanTelephonyProvider, authorize: () => Promise<void>) {
+  await authorize();
   const callId = randomUUID();
   const realtime = provider === 'openai_realtime'
     ? await prepareProductionOpenAiRealtimeCall({ callId, phone, plan }) : null;
@@ -60,6 +72,12 @@ export async function prepareCallPlanTelephony(phone: string, plan: RealtimeTest
       if (disposed) throw new Error('Подготовка звонка уже закрыта.');
       if (started) throw new Error('Этот звонок уже был запущен.');
       started = true;
+      try {
+        await authorize();
+      } catch (error) {
+        await dispose();
+        throw error;
+      }
       addCall(callId, phone, startedAt);
       realtime?.markDialing(startedAt);
       if (realtime) {

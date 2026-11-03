@@ -1,9 +1,19 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExampleReviewNotice } from './ExampleReviewNotice';
 
+const mode = vi.hoisted(() => ({ enabled: true }));
+vi.mock('../../../entities/session/model/useDevMode', () => ({ useDevMode: () => ({ devMode: mode.enabled }) }));
+beforeEach(() => { mode.enabled = true; });
+
 describe('example review notice', () => {
+  it('hides diagnostics entirely when dev mode is off', () => {
+    mode.enabled = false;
+    expect(renderToStaticMarkup(<ExampleReviewNotice items={[
+      { turnIndex: 1, exampleHash: 'a', status: 'fail', issues: ['direct-answer: technical diagnostic'] },
+    ]} />)).toBe('');
+  });
   it('keeps reasons compact and distinguishes a rejected example from a provider outage', () => {
     const html = renderToStaticMarkup(<ExampleReviewNotice items={[
       { turnIndex: 1, exampleHash: 'a', status: 'fail', issues: ['Нет ответа про дождь.'] },

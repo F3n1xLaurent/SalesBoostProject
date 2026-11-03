@@ -1,3 +1,4 @@
+import { assertCompanyModule, BillingAccessError } from '../billing/access';
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../db';
@@ -1826,6 +1827,7 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
     await assertCanAccessPlan(req, id);
     const plan = await prisma.callPlan.findUnique({ where: { id } });
     if (!plan) throw new Error('План прозвона не найден.');
+    await assertCompanyModule(plan.holdingId, 'calls');
     const rawTargets = await buildCallPlanTargets(plan);
     const targets = [...new Map(rawTargets.map((target) => [String(target.phoneNumber.phone).replace(/\D/g, ''), target])).values()];
     if (targets.length === 0) throw new Error('Нет активных номеров выбранных типов для этой аудитории.');
@@ -1863,7 +1865,7 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось инициировать прозвон.';
-    res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
+    res.status(error instanceof BillingAccessError ? 403 : message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
   } finally {
     if (initiationClaimed) manualPlanInitiations.delete(id);
   }

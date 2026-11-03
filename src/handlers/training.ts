@@ -1,3 +1,4 @@
+import { assertDealershipModule, BillingAccessError } from '../billing/access';
 import { Context } from 'telegraf';
 import { Markup } from 'telegraf';
 import { prisma } from '../db';
@@ -111,6 +112,17 @@ export async function handleStartTraining(
   const user = await prisma.user.findUnique({ where: { telegramId } });
   if (!user || user.fullName === `User ${telegramId}`) {
     await ctx.reply('Сначала укажите ваше имя: отправьте /start');
+    return;
+  }
+
+  const manager = await prisma.managerProfile.findFirst({
+    where: { OR: [{ telegramUserId: user.id }, ...(user.accountId ? [{ accountId: user.accountId }] : [])], status: 'active' },
+    select: { dealershipId: true },
+  });
+  try { await assertDealershipModule(manager?.dealershipId, 'trainer'); }
+  catch (error) {
+    if (!(error instanceof BillingAccessError)) throw error;
+    await ctx.reply(error.message);
     return;
   }
 

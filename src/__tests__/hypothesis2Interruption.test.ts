@@ -211,6 +211,7 @@ describe('hypothesis 2 real bridge interruptions', () => {
   it('hangs up exactly once immediately after Vox confirms final playback, never at generation completion', async () => {
     const { vox, provider } = await setup();
     await finishOpening(vox, provider);
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'manager-end', transcript: 'Спасибо за звонок, до свидания.' });
     provider.server({ type: 'response.created', response: { id: 'rbye' } });
     provider.server({ type: 'response.output_text.delta', response_id: 'rbye', delta: 'Всего доброго.' });
     provider.server({ type: 'response.function_call_arguments.done', name: 'end_call', arguments: '{}', call_id: 'bye' });
@@ -232,6 +233,7 @@ describe('hypothesis 2 real bridge interruptions', () => {
   it('does not wait again when final playback ended before end_call arrived', async () => {
     const { vox, provider } = await setup();
     await finishOpening(vox, provider);
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'manager-end', transcript: 'Спасибо за звонок, до свидания.' });
     provider.server({ type: 'response.created', response: { id: 'rbye_late_tool' } });
     provider.server({ type: 'response.output_text.delta', delta: 'Всего доброго.' });
     sockets.find((s) => s.url.includes('elevenlabs')).server({ audio: Buffer.alloc(800, 0xff).toString('base64'), is_final_audio_for_turn: true });
@@ -321,6 +323,7 @@ describe('hypothesis 2 real bridge interruptions', () => {
   it('appends a missing goodbye to useful final text rather than replacing or chopping it', async () => {
     const { vox, provider, simulation } = await setup();
     await finishOpening(vox, provider);
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'manager-end', transcript: 'Спасибо за звонок, до свидания.' });
     provider.server({ type: 'response.created', response: { id: 'rfinish' } });
     provider.server({ type: 'response.output_text.delta', delta: 'Спасибо, условия мне подходят.' });
     provider.server({ type: 'response.output_text.done', text: 'Спасибо, условия мне подходят.' });
@@ -393,6 +396,7 @@ describe('hypothesis 2 real bridge interruptions', () => {
   it('filters a split technical closing and sends exactly one farewell through TTS', async () => {
     const { vox, provider, simulation } = await setup();
     await finishOpening(vox, provider);
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'manager-end', transcript: 'Спасибо за звонок, до свидания.' });
     const voiceInputs = () => sockets.filter((s) => s.url.includes('elevenlabs')).flatMap((s) => s.sent).flatMap((m: any) => m.inputs ?? []);
     const before = voiceInputs().length;
     provider.server({ type: 'response.created', response: { id: 'rclosing' } });
@@ -416,6 +420,7 @@ describe('hypothesis 2 real bridge interruptions', () => {
   it('sends a natural fallback once for a technical-only closing, without generating another model answer', async () => {
     const { vox, provider, simulation } = await setup();
     await finishOpening(vox, provider);
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'manager-end', transcript: 'Спасибо за звонок, до свидания.' });
     const before = provider.sent.filter((m: any) => m.type === 'response.create').length;
     provider.server({ type: 'response.created', response: { id: 'ronlyclosing' } });
     provider.server({ type: 'response.output_text.delta', delta: 'Зафиксирую договорённость и закроем разговор.' });
@@ -430,6 +435,7 @@ describe('hypothesis 2 real bridge interruptions', () => {
   it('keeps a useful agreement and appends the goodbye to the same turn after filtering a closing intention', async () => {
     const { vox, provider, simulation } = await setup();
     await finishOpening(vox, provider);
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'manager-end', transcript: 'Спасибо за звонок, до свидания.' });
     provider.server({ type: 'response.created', response: { id: 'rconfirmclosing' } });
     const text = 'Договорились, завтра к пяти. Зафиксирую договорённость и закроем разговор.';
     provider.server({ type: 'response.output_text.delta', delta: text });
@@ -444,6 +450,7 @@ describe('hypothesis 2 real bridge interruptions', () => {
   it('finishes after a spoken goodbye even if the model omitted end_call, without a second goodbye', async () => {
     const { vox, provider, simulation } = await setup();
     await finishOpening(vox, provider);
+    provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'confirmed-visit', transcript: 'Договорились, ждем вас завтра к пяти.' });
     const before = provider.sent.filter((m: any) => m.type === 'response.create').length;
     provider.server({ type: 'response.created', response: { id: 'rbye_no_tool' } });
     provider.server({ type: 'response.output_text.delta', delta: 'Договорились, завтра к пяти. До свидания.' });

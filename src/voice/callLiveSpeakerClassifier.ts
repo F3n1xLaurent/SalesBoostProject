@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { proxyApiLogHeaders, recordProxyApiResponse } from '../economics/proxyApiCosts';
 import { compatibleChatTemperature, openai } from '../lib/openaiClient';
+import { isTerminalAutomatedAnswer } from './terminalAutomatedAnswer';
 
 export type LiveSpeakerTranscriptTurn = {
   role: 'manager' | 'client' | string;
@@ -13,6 +14,7 @@ export type LiveSpeakerDecision = {
   speakerType: LiveSpeakerType;
   confidence: number;
   reason: string;
+  endCall?: boolean;
 };
 
 function classifierModel(): string {
@@ -34,9 +36,15 @@ function normalizeTranscript(value: unknown): string {
  * intentionally checked before live greetings because recordings often start
  * with the same polite words as a real employee.
  */
-export function classifyLiveSpeakerLocally(candidate: unknown): LiveSpeakerDecision | null {
+export function classifyLiveSpeakerLocally(candidate: unknown, recentTranscript: LiveSpeakerTranscriptTurn[] = []): LiveSpeakerDecision | null {
   const text = normalizeTranscript(candidate);
   if (!text) return { speakerType: 'uncertain', confidence: 0, reason: 'empty_transcript' };
+
+  if (isTerminalAutomatedAnswer(text)
+    || (recentTranscript.length > 0 && recentTranscript.every((turn) => turn.role === 'manager')
+      && recentTranscript.some((turn) => isTerminalAutomatedAnswer(turn.text)))) {
+    return { speakerType: 'ivr_or_recording', confidence: 1, reason: 'terminal_automated_answer', endCall: true };
+  }
 
   if (/^(?:\.{2,}|шум(?:\s|$)|музык(?:а|и|у|ой)(?:\s|$)|фонов(?:ый|ая|ое)\s+(?:шум|музыка)|звук\s+(?:дороги|мотора|радио)|\[(?:music|noise)\])/.test(text)) {
     return { speakerType: 'background_noise', confidence: 1, reason: 'local_noise_pattern' };
@@ -153,7 +161,7 @@ export async function classifyLiveSpeaker(input: {
     return { speakerType: 'uncertain', confidence: 0, reason: 'Пустая транскрибация.' };
   }
 
-  const localDecision = classifyLiveSpeakerLocally(candidateText);
+  const localDecision = classifyLiveSpeakerLocally(candidateText, input.recentTranscript);
   if (localDecision) return localDecision;
 
   const model = classifierModel();

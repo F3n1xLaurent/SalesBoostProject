@@ -47,4 +47,29 @@ describe('fast local live speaker classifier', () => {
     expect(classifyLiveSpeakerLocally('Автогарант.')).toBeNull();
     expect(classifyLiveSpeakerLocally('Минуточку.')).toBeNull();
   });
+
+  it.each([
+    'Приветствую! Линия абонента сейчас занята. Что важного ему передать?',
+    'Я голосовой ассистент Мия. Запишу всё слово в слово. Попробуем?',
+    'Здравствуйте! Это виртуальная помощница.',
+    'Абонент недоступен. Оставьте сообщение после сигнала.',
+  ])('ends an answering service immediately: %s', (text) => {
+    expect(classifyLiveSpeakerLocally(text)).toMatchObject({ speakerType: 'ivr_or_recording', endCall: true });
+  });
+
+  it('remembers the assistant identity when it starts chatting to fill silence', () => {
+    const decision = classifyLiveSpeakerLocally('Ох, эта тишина! А пока что я тут, жду ответа.', [
+      { role: 'manager', text: 'Я голосовой ассистент Мия. Запишу всё слово в слово. Попробуем?' },
+      { role: 'manager', text: 'Ох, эта тишина! А пока что я тут, жду ответа.' },
+    ]);
+    expect(decision).toMatchObject({ speakerType: 'ivr_or_recording', endCall: true });
+  });
+
+  it.each([
+    'Я голосовой ассистент. Для соединения с отделом продаж нажмите 1.',
+    'Все операторы заняты. Дождитесь ответа, оставайтесь на линии.',
+    'Я занят, перезвоните завтра.',
+  ])('does not terminate a routable IVR, queue or human: %s', (text) => {
+    expect(classifyLiveSpeakerLocally(text)?.endCall).not.toBe(true);
+  });
 });

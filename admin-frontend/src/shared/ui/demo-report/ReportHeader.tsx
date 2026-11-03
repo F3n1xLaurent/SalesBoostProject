@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { CallInsightDetail } from '../../model/call-insight/types';
-import { buildIndicators, clamp, formatDurationSec, getCallQualityTag, scoreToColor, type UiIndicator } from '../../lib/demo-report/utils';
+import { buildIndicators, clamp, formatCallOutcome, formatDurationSec, getCallQualityTag, scoreToColor, type UiIndicator } from '../../lib/demo-report/utils';
 import { ScoreRing } from './ScoreRing';
 
 const BAR_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
@@ -99,7 +99,7 @@ export function ReportHeader(props: {
           <div className="demo-first-block__tech-row">
             <div className="demo-first-block__tech-k">Статус звонка</div>
             <div className="demo-first-block__tech-v">
-              {detail.outcome === 'completed' | detail.outcome === 'disconnected' ? 'Завершён' : detail.outcome === 'failed' ? 'Неуспешно' : detail.outcome ?? '—'}
+              {formatCallOutcome(detail.outcome)}
             </div>
           </div>
           <div className="demo-first-block__tech-row">

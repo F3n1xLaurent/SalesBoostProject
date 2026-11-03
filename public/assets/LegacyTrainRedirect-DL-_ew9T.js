@@ -1,0 +1,1 @@
+import{c as r,j as s,N as n}from"./index-BCvFZ67G.js";function c(){const t=r(),a=t.pathname.replace(/^\/train\/?/,""),e=a?`/staff/trainer/${a}`:"/staff/trainer";return s.jsx(n,{to:`${e}${t.search}${t.hash}`,replace:!0})}export{c as LegacyTrainRedirect};

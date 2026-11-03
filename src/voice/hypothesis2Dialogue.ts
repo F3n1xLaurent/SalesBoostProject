@@ -1,3 +1,5 @@
+import { sameVisitTime } from './realtimeDialoguePolicy';
+
 /** Adapt transport instructions, not business questions, in the isolated bridge. */
 export function adaptHypothesis2Prompt(prompt: string): string {
   return prompt
@@ -89,6 +91,7 @@ export function hasVisitDecision(text: string): boolean {
 }
 export function visitResponseCanEnd(text: string, offer: VisitOffer): boolean {
   if (!hasVisitDecision(text) || text.includes('?')) return false;
+  if (!sameVisitTime(text, offer.time)) return false;
   const days = (value: string): string[] => value.toLowerCase().match(/послезавтра|завтра|сегодня|понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье/gu) ?? [];
   const offeredDay = days(offer.time)[0], replyDays = days(text);
   // A different proposed day is a counteroffer, not a confirmed appointment.

@@ -2,6 +2,7 @@ export type AdminRole = 'super' | 'company' | 'dealer' | 'staff';
 
 export type AdminTab =
   | 'dashboard'
+  | 'billing'
   | 'holdings'
   | 'companies'
   | 'dealershipDirections'

@@ -111,6 +111,15 @@ async function commitManagerFragment(pair: Awaited<ReturnType<typeof launch>>, i
 const spokenInputs = (pair: Awaited<ReturnType<typeof launch>>) => pair.tts.sent
   .flatMap((event: any) => (event.inputs ?? []).map((input: any) => input.text)).join('').trim();
 const voicedOutput = (pair: Awaited<ReturnType<typeof launch>>) => pair.vox.sent.some((event: any) => event.event === 'media');
+async function playReply(pair: Awaited<ReturnType<typeof launch>>, id: string, text: string) {
+  pair.provider.server({ type: 'response.created', response: { id } });
+  pair.provider.server({ type: 'response.output_text.delta', delta: text });
+  pair.provider.server({ type: 'response.done', response: { id } });
+  pair.tts.server({ audio: Buffer.alloc(800, 0xff).toString('base64'), is_final_audio_for_turn: true });
+  pair.vox.input({ customEvent: 'media_status', status: 'started' });
+  await vi.advanceTimersByTimeAsync(1000);
+  pair.vox.input({ customEvent: 'media_status', status: 'ended' });
+}
 async function askManagerQuestion(pair: Awaited<ReturnType<typeof launch>>) {
   pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
   pair.provider.server({ type: 'response.created', response: { id: 'opening-question' } });
@@ -154,7 +163,7 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
     expect(production.tts.url).toBe(test.tts.url);
     expect(production.tts.sent).toEqual(test.tts.sent);
     for (const pair of [test, production]) {
-      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Спасибо за звонок, до свидания.' });
       pair.provider.server({ type: 'response.created', response: { id: 'r1' } });
       pair.provider.server({ type: 'response.output_text.delta', response_id: 'r1', delta: 'Спасибо, до свидания.' });
       pair.provider.server({ type: 'response.function_call_arguments.done', name: 'end_call', arguments: '{}', call_id: 'end' });
@@ -185,6 +194,132 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
   ];
   for (const mode of ['test', 'production'] as const) {
     const replacementProvider = () => mocks.sockets.filter(socket => socket.url.includes('/realtime')).at(-1);
+    it(`${mode}: a new options question is answered before closing a confirmed appointment`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'slot', transcript: 'Приезжайте завтра в 12:00.' });
+      await playReply(pair, 'confirmation', 'Хорошо, завтра в двенадцать приеду.');
+      pair.tts.sent.length = 0;
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'options', transcript: 'А какими опциями вы сейчас пользуетесь?' });
+      pair.provider.server({ type: 'response.created', response: { id: 'missed-options' } });
+      pair.provider.server({ type: 'response.output_text.delta', delta: 'Хорошо, договорились. До свидания.' });
+      pair.provider.server({ type: 'response.done', response: { id: 'missed-options' } });
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.provider.sent.filter((e: any) => e.type === 'response.create').at(-1)?.response.instructions).toContain('опциями');
+      await playReply(pair, 'options-answer', 'Пользуюсь подогревом сидений и камерой заднего вида. Спасибо, до свидания.');
+      expect(spokenInputs(pair)).toContain('подогревом сидений');
+      expect(pair.vox.sent.filter((e: any) => e.action === 'hangup')).toHaveLength(1);
+    });
+    it(`${mode}: replacing an unaccepted slot invalidates the old explicit-offer guard`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'old-slot', transcript: 'Приезжайте завтра в 12:00.' });
+      await playReply(pair, 'clarification', 'А можно выбрать другое время?');
+      pair.tts.sent.length = 0;
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'new-options', transcript: 'В двенадцать уже занято. Можно сегодня в 17:00 или завтра в 15:00.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'stale-confirmation' } });
+      pair.provider.server({ type: 'response.output_text.delta', delta: 'Хорошо, договорились. До свидания.' });
+      pair.provider.server({ type: 'response.done', response: { id: 'stale-confirmation' } });
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.provider.sent.filter((e: any) => e.type === 'response.create').at(-1)?.response.instructions).toContain('Предыдущая реплика отклонена');
+      expect(pair.vox.sent.some((e: any) => e.action === 'hangup')).toBe(false);
+    });
+    it.each([
+      'Сейчас отвечу и зафиксирую время, чтобы мы не растягивали разговор.',
+      'Хорошо, сейчас отвечу и уточню детали визита, чтобы у нас всё было согласовано. До свидания.',
+      'Хорошо, отвечу на вопрос и заодно подтвержу визит.',
+      'Хорошо, выбираю из этих двух вариантов и сразу скажу, как мне удобнее.',
+      'Хорошо, давайте сразу определимся со временем, чтобы вам было удобно. До свидания.',
+      'Завтра удобнее. Спасибо, до свидания.',
+    ])(`${mode}: rejects a production non-answer before TTS and recovers once: %s`, async (text) => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'visit-options', transcript: 'Планируете подъехать сегодня или завтра?' });
+      pair.provider.server({ type: 'response.created', response: { id: 'invalid' } });
+      for (const delta of Array.from(text)) pair.provider.server({ type: 'response.output_text.delta', delta });
+      pair.provider.server({ type: 'response.output_text.done', text });
+      pair.provider.server({ type: 'response.function_call_arguments.done', name: 'end_call', call_id: 'invalid-end', arguments: '{}' });
+      pair.provider.server({ type: 'response.done', response: { id: 'invalid' } });
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'client')).toHaveLength(0);
+      expect(pair.provider.sent.filter((event: any) => event.type === 'response.create').at(-1)?.response.instructions).toContain('Предыдущая реплика отклонена');
+      pair.provider.server({ type: 'response.created', response: { id: 'repair' } });
+      pair.provider.server({ type: 'response.output_text.delta', delta: 'Завтра удобнее. Можно приехать в двенадцать?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'repair' } });
+      expect(spokenInputs(pair)).toBe('Завтра удобнее. Можно приехать в двенадцать?');
+      expect(pair.vox.sent.some((event: any) => event.action === 'hangup')).toBe(false);
+    });
+    it(`${mode}: a premature goodbye on the opening cannot deadlock the next answer`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'hello', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'early' } });
+      pair.provider.server({ type: 'response.output_text.delta', delta: 'Спасибо, до свидания.' });
+      pair.provider.server({ type: 'response.output_text.done', text: 'Спасибо, до свидания.' });
+      pair.provider.server({ type: 'response.done', response: { id: 'early' } });
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.provider.sent.filter((event: any) => event.type === 'response.create')).toHaveLength(1);
+      pair.provider.server({ type: 'response.created', response: { id: 'opening-repair' } });
+      pair.provider.server({ type: 'response.output_text.delta', delta: 'Добрый день, меня зовут Анна. Какая цена автомобиля?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'opening-repair' } });
+      expect(spokenInputs(pair)).toContain('Какая цена автомобиля?');
+      expect(pair.vox.sent.some((event: any) => event.action === 'hangup')).toBe(false);
+    });
+    it(`${mode}: repeatedly invalid visit responses produce one clarification, not a loop`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'visit', transcript: 'Планируете подъехать сегодня или завтра?' });
+      for (const id of ['invalid-one', 'invalid-two']) {
+        pair.provider.server({ type: 'response.created', response: { id } });
+        pair.provider.server({ type: 'response.output_text.delta', delta: 'Сейчас отвечу и зафиксирую время. До свидания.' });
+        pair.provider.server({ type: 'response.done', response: { id } });
+      }
+      expect(spokenInputs(pair)).toBe('Подскажите, на какой конкретный день и время договоримся?');
+      expect(pair.provider.sent.filter((event: any) => event.type === 'response.create')).toHaveLength(1);
+      expect(pair.vox.sent.some((event: any) => event.action === 'hangup')).toBe(false);
+    });
+    it(`${mode}: 874 preserves the chosen hour and answers the latest SMS question`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'slots', transcript: 'На завтра для визита свободно с девяти до пятнадцати.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'choose' } });
+      pair.provider.server({ type: 'response.output_text.delta', delta: 'Завтра ближе к двенадцати мне подходит. Сможете записать?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'choose' } });
+      pair.tts.server({ audio: Buffer.alloc(800,0xff).toString('base64'), is_final_audio_for_turn: true });
+      pair.vox.input({ customEvent:'media_status',status:'started' });
+      await vi.advanceTimersByTimeAsync(1000);
+      pair.vox.input({ customEvent:'media_status',status:'ended' });
+      pair.tts.sent.length=0;
+      pair.provider.server({ type:'conversation.item.input_audio_transcription.completed',item_id:'changed-time',transcript:'Ждём вас завтра. Пятнадцать часов. Удобно получить СМС на этот номер?' });
+      pair.provider.server({ type:'response.created',response:{id:'wrong-time'} });
+      pair.provider.server({ type:'response.output_text.delta',delta:'Да, удобно. Завтра в пятнадцать подъеду.' });
+      pair.provider.server({ type:'response.done',response:{id:'wrong-time'} });
+      expect(spokenInputs(pair)).toBe('');
+      const repair=pair.provider.sent.filter((e:any)=>e.type==='response.create').at(-1)?.response.instructions;
+      expect(repair).toContain('двенадцати');
+      expect(repair).toContain('Удобно получить СМС');
+      pair.provider.server({ type:'response.created',response:{id:'clarify-time'} });
+      pair.provider.server({ type:'response.output_text.delta',delta:'Да, СМС на этот номер удобно. Но я предлагала завтра в двенадцать: можно сохранить это время?' });
+      pair.provider.server({ type:'response.done',response:{id:'clarify-time'} });
+      expect(spokenInputs(pair)).toContain('можно сохранить это время?');
+      expect(pair.vox.sent.some((e:any)=>e.action==='hangup')).toBe(false);
+    });
+    it(`${mode}: 877 asks once for a missing price instead of silently moving to the visit`, async () => {
+      const pair=await launch(mode);
+      pair.provider.server({type:'conversation.item.input_audio_transcription.completed',item_id:'hello',transcript:'Алло, слушаю.'});
+      pair.provider.server({type:'response.created',response:{id:'price'}});
+      pair.provider.server({type:'response.output_text.delta',delta:'Сколько стоит автомобиль?'});
+      pair.provider.server({type:'response.done',response:{id:'price'}});
+      pair.tts.server({audio:Buffer.alloc(800,0xff).toString('base64'),is_final_audio_for_turn:true});
+      pair.vox.input({customEvent:'media_status',status:'started'});
+      await vi.advanceTimersByTimeAsync(1000);
+      pair.vox.input({customEvent:'media_status',status:'ended'});
+      pair.tts.sent.length=0;
+      pair.provider.server({type:'conversation.item.input_audio_transcription.completed',item_id:'evasion',transcript:'Цена зависит от комплектации. Приезжайте в салон.'});
+      pair.provider.server({type:'response.created',response:{id:'skip-price'}});
+      pair.provider.server({type:'response.output_text.delta',delta:'Хорошо, тогда какой день удобнее для тест-драйва?'});
+      pair.provider.server({type:'response.done',response:{id:'skip-price'}});
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.provider.sent.filter((e:any)=>e.type==='response.create').at(-1)?.response.instructions).toContain('ответ по существу пока не получен');
+      pair.provider.server({type:'response.created',response:{id:'clarify-price'}});
+      pair.provider.server({type:'response.output_text.delta',delta:'Подскажите хотя бы стартовую цену автомобиля?'});
+      pair.provider.server({type:'response.done',response:{id:'clarify-price'}});
+      expect(spokenInputs(pair)).toContain('стартовую цену');
+    });
     it(`${mode}: restores a live session's heard history after 1006 without dialing or repeating tools`, async () => {
       const pair = await launch(mode);
       await askManagerQuestion(pair);
@@ -417,7 +552,7 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
     });
     it(`${mode}: an accepted end_call finishes its audio without reconnecting, even without response.done`, async () => {
       const pair = await launch(mode);
-      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Спасибо за звонок, до свидания.' });
       pair.provider.server({ type: 'response.created', response: { id: 'final' } });
       pair.provider.server({ type: 'response.output_text.delta', response_id: 'final', delta: 'Спасибо, до свидания.' });
       pair.provider.server({ type: 'response.function_call_arguments.done', name: 'end_call', arguments: '{}', call_id: 'end' });
@@ -741,6 +876,16 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
       expect(pair.provider.sent.some((event: any) => event.type === 'response.cancel')).toBe(false);
       expect(spokenInputs(pair)).toBe('Хорошо. Возможна скидка?');
     });
+    it(`${mode}: hangs up on Mia immediately without waiting for an end_call tool`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'mia',
+        transcript: 'Я голосовой ассистент Мия. Запишу всё слово в слово. Попробуем?' });
+      expect(pair.vox.sent.filter((event: any) => event.action === 'hangup')).toHaveLength(1);
+      expect(pair.vox.sent).toContainEqual({ customEvent: 'control', action: 'set_output_enabled', enabled: false });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(pair.vox.sent.filter((event: any) => event.action === 'hangup')).toHaveLength(1);
+      expect(pair.tts.sent.some((event: any) => event.inputs?.length)).toBe(false);
+    });
     it(`${mode}: hangs up silently on the c271ecf4 voicemail end_call without waiting for playback`, async () => {
       const pair = await launch(mode);
       pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'voicemail',
@@ -848,7 +993,7 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
       it.each(closingRegressions)(`${mode}: filters the recorded 2.1 ending BEFORE TTS (${chunks}): %s`, async (text) => {
         config.openaiRealtimeModel = 'gpt-realtime-2.1';
         const pair = await launch(mode);
-        pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
+        pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Спасибо за звонок, до свидания.' });
         pair.provider.server({ type: 'response.created', response: { id: 'closing' } });
         const deltas = chunks === 'characters' ? Array.from(text) : [text];
         for (const delta of deltas) pair.provider.server({ type: 'response.output_text.delta', response_id: 'closing', delta });
@@ -874,7 +1019,7 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
     it(`${mode}: substitutes one natural farewell when the entire closing was technical`, async () => {
       config.openaiRealtimeModel = 'gpt-realtime-2.1';
       const pair = await launch(mode);
-      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Спасибо за звонок, до свидания.' });
       pair.provider.server({ type: 'response.created', response: { id: 'closing' } });
       pair.provider.server({ type: 'response.output_text.delta', response_id: 'closing', delta: 'Аккуратно подведём разговор к завершению.' });
       expect(pair.tts.sent.some((event: any) => event.inputs?.length)).toBe(false);

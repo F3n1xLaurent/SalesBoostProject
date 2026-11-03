@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import type { AdminRole, AdminTab } from '../../../entities/session/model/types';
-import { getDefaultTab } from '../../../shared/routing/adminRoutes';
+import { getDefaultTab, isTabAllowedForRole } from '../../../shared/routing/adminRoutes';
+import { useDevMode } from '../../../entities/session/model/useDevMode';
 import { LetsIcon } from '../../../shared/ui/icons/LetsIcon';
 import { SalsaLogo } from '../../../shared/ui/logo/SalsaLogo';
+import { DevModeSwitch } from './DevModeSwitch';
 
 export type { AdminRole };
 
@@ -50,6 +52,7 @@ function buildNav(main: NavItem[], secondary: NavItem[]): NavEntry[] {
 const SUPER_NAV: NavEntry[] = [
   ...buildNav(SUPER_NAV_MAIN, SUPER_NAV_SECONDARY),
   { type: 'separator' },
+  { id: 'billing', label: 'Биллинг', icon: 'wallet' },
   { id: 'internalAnalytics', label: 'Внутренняя аналитика', icon: 'chart' },
   { id: 'testing', label: 'Тестирование', icon: 'flask-light' },
   { id: 'dictionaries', label: 'Справочники', icon: 'book-open' },
@@ -60,8 +63,6 @@ const COMPANY_NAV: NavEntry[] = [
     SUPER_NAV_MAIN.filter((item) => item.id !== 'holdings'),
     SUPER_NAV_SECONDARY.filter((item) => item.id !== 'typesNumbers'),
   ),
-  { type: 'separator' },
-  { id: 'testing', label: 'Тестирование', icon: 'flask-light' },
 ];
 
 const DEALER_NAV: NavItem[] = [
@@ -101,6 +102,7 @@ export function AdminSidebar({
   isDrawer = false,
 }: Props) {
   const [profileOpen, setProfileOpen] = useState(false);
+  const { devMode } = useDevMode(role);
   const profileRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -118,8 +120,8 @@ export function AdminSidebar({
     if (role === 'dealer') return DEALER_NAV;
     if (role === 'staff') return STAFF_NAV;
     if (role === 'company') return COMPANY_NAV;
-    return SUPER_NAV;
-  }, [role]);
+    return SUPER_NAV.filter((item) => 'type' in item || isTabAllowedForRole(item.id, role, devMode));
+  }, [role, devMode]);
 
   const profileInitials = useMemo(() => getProfileInitials(profileName), [profileName]);
 
@@ -212,6 +214,8 @@ export function AdminSidebar({
                 </button>
               ))}
             </div>
+
+            <DevModeSwitch role={role} />
 
             <button
               type="button"

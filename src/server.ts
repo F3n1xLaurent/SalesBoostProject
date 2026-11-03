@@ -1,3 +1,5 @@
+import { billingRouter } from './billing/http';
+import { assertCompanyModule, assertDealershipModule, BillingAccessError } from './billing/access';
 import express from 'express';
 import https from 'https';
 import http from 'http';
@@ -44,14 +46,18 @@ import {
 import { handleStartRealtimeRegression, handleGetRealtimeRegression, handleCancelRealtimeRegression, handleRegressionAudio, handleListRealtimeRegressions, handleCompareRealtimeRegressions,
   handleStartCallPlanAutoTest, handleAutoTestingCatalog, handleAutoTestingLiveTicket, loadOwnedRegressionRun } from './voice/realtimeRegression';
 import { createAutoTestingUpgradeHandler } from './testing/autoTestingLive';
+import { requireTestingSuperadmin } from './testing/access';
 import { createTrainerAutoTesting, type TrainerTestSource, type TrainerTestTurn } from './testing/trainerAutoTesting';
 import { createReportAutoTesting } from './testing/reportAutoTesting';
 import { synthesizeTrainerFixture } from './testing/trainerTestFixtures';
 import { handleProductionRealtimeWebhook } from './voice/productionRealtimeWebhook';
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
-import { finalizeVoiceCallSession, recordVoiceCallConnected } from './voice/voiceCallSession';
+import { finalizeVoiceCallSession, recordVoiceCallConnected, isVoiceCallFinalizing } from './voice/voiceCallSession';
+import { createDeleteAuditHandler } from './audits/deleteAudit';
+import { createDemoCallStartHandler } from './voice/demoCallLaunch';
 import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
+import { assessCallReportEligibility } from './voice/callReportEligibility';
 import { filterUnreliableManagerTurns } from './voice/transcriptReliability';
 import { classifyCallCompletion, type CompletionTranscriptTurn } from './voice/callCompletionClassifier';
 import { classifyLiveSpeaker, classifyLiveSpeakerLocally, type LiveSpeakerTranscriptTurn } from './voice/callLiveSpeakerClassifier';
@@ -64,7 +70,6 @@ import {
   handleUpdateDemoCallProfile,
   handleUpdateDemoCallScript,
   handleUpdateDemoCallVoice,
-  resolveDemoCallRuntime,
 } from './voice/demoCallConfiguration';
 import { normalizeCallPhone } from './voice/phoneNumberStats';
 import { extractIvrPath, parseStoredIvrPath } from './voice/ivrWebhook';
@@ -3466,6 +3471,11 @@ app.post('/voice/dialog', (req, res) => {
 // ── Web training API: start session ──
 app.post('/api/training/web/start', async (req, res) => {
   try {
+    await adminApiAuthMiddleware(req, res, () => {});
+    if (!req.authAccount) return;
+    const manager = await resolveTrainerManager(req);
+    if (!manager) return res.status(403).json({ error: 'Для тренировки требуется профиль сотрудника компании.' });
+    await assertCompanyModule(manager.dealership.holdingId, 'trainer');
     const body = req.body || {};
     const strictness = (body.strictness ?? 'medium') as Strictness;
     const profile = (body.profile ?? 'normal') as WebTrainingProfile;
@@ -3532,6 +3542,7 @@ app.post('/api/training/web/start', async (req, res) => {
       audioBase64,
     });
   } catch (error) {
+    if (error instanceof BillingAccessError) return res.status(403).json({ error: error.message });
     console.error('[web-training] start error:', error);
     const msg = error instanceof Error ? error.message : String(error);
 
@@ -3827,6 +3838,10 @@ app.use('/api/admin', (req, res, next) => {
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
   });
 });
+
+app.use('/api/admin/billing', billingRouter);
+
+app.use(['/api/admin/auto-testing', '/api/admin/realtime-test'], requireTestingSuperadmin);
 
 app.use('/api/imports', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
@@ -4274,6 +4289,8 @@ app.post('/api/trainer/session/start', async (req, res) => {
     const manager = await resolveTrainerManager(req);
     if (!manager) return res.status(404).json({ error: 'Профиль менеджера не найден.' });
 
+    await assertCompanyModule(manager.dealership.holdingId, 'trainer');
+
     const body = req.body || {};
     const sessionType = body.sessionType === 'plan' ? 'plan' as const : 'free' as const;
     const difficulty = ['easy', 'medium', 'hard'].includes(String(body.difficulty)) ? String(body.difficulty) : 'medium';
@@ -4411,6 +4428,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
       initialMessage: null,
     });
   } catch (error) {
+    if (error instanceof BillingAccessError) return res.status(403).json({ error: error.message });
     console.error('trainer/session/start error:', error);
     res.status(500).json({ error: 'Не удалось запустить тренировку.' });
   }
@@ -6667,6 +6685,14 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
         error: 'Укажите номер (to) или задайте VOX_TEST_TO / VOX_TEST_NUMBERS в .env.',
       });
     }
+    const manager = await resolveTrainerManager(req);
+    if (manager) await assertDealershipModule(manager.dealershipId, 'calls');
+    else {
+      for (const membership of req.authAccount!.memberships) {
+        if (membership.holdingId) await assertCompanyModule(membership.holdingId, 'calls');
+        else await assertDealershipModule(membership.dealershipId, 'calls');
+      }
+    }
     const scenario = (body.scenario === 'realtime' || body.scenario === 'realtime_pure' || body.scenario === 'dialog') ? body.scenario : 'realtime_pure';
     const result = await startVoiceCall(to, { scenario });
     if ('error' in result) {
@@ -6677,7 +6703,6 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
       setVoxSessionId(result.callId, result.callSessionHistoryId);
     }
     const toNormalized = '+' + String(to).replace(/\D/g, '');
-    const manager = await resolveTrainerManager(req);
     try {
       await prisma.voiceCallSession.create({
         data: {
@@ -6695,6 +6720,7 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
     }
     res.json({ callId: result.callId, startedAt: result.startedAt, to, scenario: result.scenario });
   } catch (err) {
+    if (err instanceof BillingAccessError) return res.status(403).json({ error: err.message });
     console.error('start-voice-call error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -6707,76 +6733,7 @@ app.get('/api/public/demo-call/config', (req, res) => {
   });
 });
 
-app.post('/api/public/demo-call/start', async (req, res) => {
-  try {
-    const body = req.body && typeof req.body === 'object' ? req.body : {};
-    const toRaw = body.to != null ? String(body.to).trim() : '';
-    if (!toRaw) {
-      return res.status(400).json({ error: 'Введите номер телефона.' });
-    }
-    const scenario = body.scenario === 'dialog' || body.scenario === 'realtime'
-      ? body.scenario
-      : 'realtime_pure';
-    const toNormalized = normalizeCallPhone(toRaw);
-    const demoRuntime = await resolveDemoCallRuntime(body.client, toNormalized);
-    const demoClientId = demoRuntime.voice.id;
-    const demoElevenLabsVoiceId = demoRuntime.voice.elevenLabsVoiceId;
-    const demoPrompt = demoRuntime.prompt;
-    const result = await startVoiceCall(toNormalized, {
-      scenario,
-      instructions: demoPrompt,
-      elevenLabsVoiceId: demoElevenLabsVoiceId,
-    });
-    if ('error' in result) {
-      return res.status(400).json({ error: result.error });
-    }
-    addCall(result.callId, toRaw);
-    if (result.callSessionHistoryId) {
-      setVoxSessionId(result.callId, result.callSessionHistoryId);
-    }
-    // nginx.prod.conf overwrites X-Real-IP with $remote_addr, so prefer it over a client-supplied X-Forwarded-For chain.
-    const realIp = String(req.headers['x-real-ip'] || '').trim();
-    const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',').at(-1)?.trim();
-    const ipAddress = (realIp || forwardedFor || req.socket.remoteAddress || '').replace(/^::ffff:/, '').slice(0, 64) || null;
-    try {
-      await prisma.voiceCallSession.create({
-        data: {
-          callId: result.callId,
-          to: toNormalized,
-          scenario: result.scenario ?? 'realtime_pure',
-          source: 'demo',
-          ipAddress,
-          caseContextJson: JSON.stringify({
-            kind: 'fixed_demo_call',
-            demoClientId,
-            elevenLabsVoiceId: demoElevenLabsVoiceId,
-            demoVoiceUpdatedAt: demoRuntime.voice.updatedAt,
-            demoProfileId: demoRuntime.profile.id,
-            demoProfileUpdatedAt: demoRuntime.profile.updatedAt,
-            demoScriptId: demoRuntime.script.id,
-            demoScriptUpdatedAt: demoRuntime.script.updatedAt,
-            prompt: demoPrompt,
-            criteria: demoRuntime.criteria,
-          }),
-          startedAt: new Date(result.startedAt),
-        },
-      });
-    } catch (e) {
-      console.warn('[demo-call] VoiceCallSession create (may already exist):', e instanceof Error ? e.message : e);
-    }
-    notifyBitrix24AboutDemoCall({ callId: result.callId, phone: toNormalized });
-    res.json({
-      callId: result.callId,
-      startedAt: result.startedAt,
-      to: toNormalized,
-      client: demoClientId,
-      scenario: result.scenario,
-    });
-  } catch (err) {
-    console.error('public demo-call/start error:', err);
-    res.status(500).json({ error: 'Не удалось запустить звонок.' });
-  }
-});
+app.post('/api/public/demo-call/start', createDemoCallStartHandler({ notify: notifyBitrix24AboutDemoCall }));
 
 /** Пример отчёта на странице /demo-call: полная оценка стенограммы (evaluatorV2 + LLM-сводка и улучшения ответов). */
 app.post('/api/public/demo-call/evaluate-example', async (req, res) => {
@@ -7422,12 +7379,21 @@ app.post('/webhooks/vox/classify-live-speaker', async (req, res) => {
   // Most real greetings and IVR phrases are deterministic. Reply before the
   // database and model round-trips so Voximplant can open (or keep closed) the
   // audio channel before ElevenLabs starts speaking.
-  const localDecision = classifyLiveSpeakerLocally(candidateText);
+  const classificationTranscript = (Array.isArray(payload.transcript) ? payload.transcript : [])
+    .slice(-6)
+    .flatMap((raw): LiveSpeakerTranscriptTurn[] => {
+      if (!raw || typeof raw !== 'object') return [];
+      const turn = raw as Record<string, unknown>;
+      if ((turn.role !== 'manager' && turn.role !== 'client') || typeof turn.text !== 'string') return [];
+      return [{ role: turn.role, text: turn.text.slice(0, 1200) }];
+    });
+  const localDecision = classifyLiveSpeakerLocally(candidateText, classificationTranscript);
   if (localDecision) {
     res.status(200).json({
       speaker_type: localDecision.speakerType,
       confidence: localDecision.confidence,
       reason: localDecision.reason,
+      end_call: localDecision.endCall === true,
       turn_id: turnId,
     });
     return;
@@ -7476,6 +7442,7 @@ app.post('/webhooks/vox/classify-live-speaker', async (req, res) => {
       speaker_type: decision.speakerType,
       confidence: decision.confidence,
       reason: decision.reason,
+      end_call: decision.endCall === true,
       turn_id: turnId,
     });
   } catch (error) {
@@ -9579,6 +9546,15 @@ app.get('/api/admin/trainer-recordings/:sessionId/:action?', createTrainerRecord
   recordingPath: trainerRecordingPath,
 }));
 
+app.delete('/api/admin/audits/:id', createDeleteAuditHandler({
+  db: prisma,
+  isCallProcessing: isVoiceCallFinalizing,
+  invalidateAnalytics: () => {
+    teamSummaryCache = { data: null, expiresAt: 0 };
+    voiceDashboardCache = { data: null, expiresAt: 0 };
+  },
+}));
+
 app.get('/api/admin/audits/:id', async (req, res) => {
   res.setHeader('Cache-Control', 'private, no-store');
   try {
@@ -9793,7 +9769,8 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       catalog,
     );
     if (!unifiedReport && type === 'call' && evaluation && Object.keys(evaluation).length && reportTranscript.length >= 2
-      && !['no_answer', 'busy', 'cancelled'].includes(session.outcome ?? '')) {
+      && !['no_answer', 'busy', 'failed', 'cancelled'].includes(session.outcome ?? '')
+      && assessCallReportEligibility(reportTranscript, { ivrDetected: session.ivrDetected }).eligible) {
       // Return the snapshot immediately. Opening/polling an audit must not wait
       // minutes for an LLM response or start another copy of the same repair.
       const evaluationSnapshot = evaluation;

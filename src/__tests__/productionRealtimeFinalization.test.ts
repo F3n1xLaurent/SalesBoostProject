@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   voiceFind: vi.fn(), voiceUpdate: vi.fn(), voiceUpsert: vi.fn(), planFind: vi.fn(), planUpdate: vi.fn(),
   scriptFind: vi.fn(), evaluate: vi.fn(), bundle: vi.fn(), criteria: vi.fn(), recording: vi.fn(), retranscribe: vi.fn(),
-  durable: vi.fn(), finish: vi.fn(), attribution: vi.fn(),
+  durable: vi.fn(), finish: vi.fn(), attribution: vi.fn(), deleted: vi.fn(),
 }));
 vi.mock('../db', () => ({ prisma: {
   voiceCallSession: { findUnique: mocks.voiceFind, update: mocks.voiceUpdate, upsert: mocks.voiceUpsert },
   callPlanCall: { findUnique: mocks.planFind, update: mocks.planUpdate },
   callPlan: { findUnique: async () => ({ scriptId: 'script' }) }, callScript: { findUnique: mocks.scriptFind },
+  productAnalyticsEvent: { findUnique: mocks.deleted },
 } }));
 vi.mock('../lib/openaiClient', () => ({ openai: { chat: { completions: { create: mocks.criteria } } }, compatibleChatTemperature: () => ({}) }));
 vi.mock('../config', () => ({ config: { openaiChatModel: 'test' } }));
@@ -25,7 +26,7 @@ vi.mock('@sentry/node', () => ({ captureMessage: vi.fn(), captureException: vi.f
 vi.mock('../analytics/productAnalytics', () => ({ recordProductEvent: vi.fn() }));
 vi.mock('../voice/productionRealtimeState', () => ({ flushProductionRealtimeState: mocks.durable }));
 vi.mock('../voice/callPlanTelephony', () => ({ finishProductionCallPlanTelephony: mocks.finish }));
-import { finalizeVoiceCallSession } from '../voice/voiceCallSession';
+import { finalizeVoiceCallSession, recordVoiceCallConnected } from '../voice/voiceCallSession';
 
 const transcript = [
   { role: 'manager', text: 'Здравствуйте, менеджер Анна, слушаю вас.' },
@@ -43,6 +44,7 @@ function patch(target: Record<string, any>, data: Record<string, any>) {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.deleted.mockResolvedValue(null);
   session = { callId: 'call-production', to: '+79507503215', scenario: 'openai_realtime', source: 'scheduled',
     startedAt: new Date('2026-10-29T10:00:00Z'), connectedAt: new Date('2026-10-29T10:00:05Z'),
     endedAt: null, voxSessionId: '789', recordingStatus: 'pending', transcriptJson: '[]', originalTranscriptJson: null,
@@ -70,6 +72,15 @@ beforeEach(() => {
 });
 const finalEvent = { call_id: 'call-production', event: 'disconnected', ts: '2026-10-29T10:02:00Z' };
 describe('production hypothesis 2 through the existing recording and report pipeline', () => {
+  it('does not recreate a deleted call when delayed lifecycle events arrive', async () => {
+    mocks.voiceFind.mockResolvedValue(null);
+    mocks.deleted.mockResolvedValue({ id: 'audit-deleted:voice:call-production' });
+    await finalizeVoiceCallSession(finalEvent);
+    await recordVoiceCallConnected({ ...finalEvent, event: 'connected', to: '+79507503215' });
+    expect(mocks.voiceUpsert).not.toHaveBeenCalled();
+    expect(mocks.evaluate).not.toHaveBeenCalled();
+    expect(mocks.bundle).not.toHaveBeenCalled();
+  });
   it('saves recording, reviews ASR, evaluates checklist and scenario, and mirrors the report into the plan', async () => {
     await finalizeVoiceCallSession(finalEvent);
     expect(mocks.recording).toHaveBeenCalledWith('call-production', '789');
@@ -111,6 +122,71 @@ describe('production hypothesis 2 through the existing recording and report pipe
     await finalizeVoiceCallSession({ ...finalEvent, event: 'no_answer' });
     expect(mocks.evaluate).not.toHaveBeenCalled(); expect(mocks.retranscribe).not.toHaveBeenCalled();
     expect(planCall.outcome).toBe('no_answer'); expect(planCall.evaluationJson).toBeNull();
+  });
+  it.each([[486, 'busy'], [603, 'no_answer'], [408, 'no_answer'], [500, 'failed']])(
+    'skips failed calls with telephony code %s', async (code, outcome) => {
+      session.connectedAt = null; session.recordingStatus = null;
+      await finalizeVoiceCallSession({ ...finalEvent, event: 'failed', details: { code: Number(code) } });
+      expect(session.outcome).toBe(outcome);
+      expect(session.failureReason).toContain('Недозвон');
+      expect(planCall.outcome).toBe(outcome);
+      expect(mocks.evaluate).not.toHaveBeenCalled();
+      expect(mocks.bundle).not.toHaveBeenCalled();
+      expect(mocks.retranscribe).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retains a connected call with an empty transcript as insufficient data', async () => {
+    session.voxSessionId = null; session.recordingStatus = null;
+    mocks.durable.mockResolvedValue({ snapshot: { transcript: [], tools: [], errors: [], ivrDetected: false, ivrPath: [] } });
+    await finalizeVoiceCallSession(finalEvent);
+    expect(session.outcome).toBe('disconnected');
+    expect(session.failureReason).toContain('недостаточно данных');
+    expect(mocks.evaluate).not.toHaveBeenCalled();
+    expect(mocks.bundle).not.toHaveBeenCalled();
+    expect(planCall.evaluationJson).toBeNull();
+  });
+  it.each([
+    ['Абонент занят. Перезвоните позднее.', 'busy'],
+    ['Телефон абонента недоступен.', 'no_answer'],
+    ['Оставьте сообщение после сигнала.', 'no_answer'],
+    ['Алло, здравствуйте.', 'no_answer'],
+  ])('persists %s without any report generation, including duplicate webhooks', async (text, outcome) => {
+    const turns = [{ role: 'client', text: 'Здравствуйте, хочу узнать цену.' }, { role: 'manager', text }];
+    mocks.durable.mockResolvedValue({ snapshot: { transcript: turns, tools: [], errors: [], ivrDetected: false, ivrPath: [] } });
+    mocks.retranscribe.mockResolvedValue(turns);
+    await finalizeVoiceCallSession(finalEvent);
+    await finalizeVoiceCallSession(finalEvent);
+    expect(mocks.evaluate).not.toHaveBeenCalled();
+    expect(mocks.bundle).not.toHaveBeenCalled();
+    expect(mocks.criteria).not.toHaveBeenCalled();
+    expect(mocks.attribution).not.toHaveBeenCalled();
+    expect(session).toMatchObject({ outcome, evaluationJson: null, totalScore: null });
+    expect(session.failureReason).toContain('Недозвон');
+    expect(planCall).toMatchObject({ outcome, status: 'failed', evaluationJson: null, totalScore: null });
+    expect(JSON.parse(session.transcriptJson)).toEqual(turns);
+    expect(planCall.failureReason).toBe(session.failureReason);
+  });
+
+  it('does not score bot-only transcripts or claim that missing speech proves a missed call', async () => {
+    const turns = [{ role: 'client', text: 'Здравствуйте!' }, { role: 'client', text: 'Алло, вы меня слышите?' }];
+    mocks.durable.mockResolvedValue({ snapshot: { transcript: turns, tools: [], errors: [], ivrDetected: false, ivrPath: [] } });
+    mocks.retranscribe.mockResolvedValue(turns);
+    await finalizeVoiceCallSession(finalEvent);
+    expect(session.outcome).toBe('disconnected');
+    expect(session.failureReason).toContain('недостаточно данных');
+    expect(mocks.evaluate).not.toHaveBeenCalled();
+    expect(mocks.bundle).not.toHaveBeenCalled();
+    expect(planCall.evaluationJson).toBeNull();
+  });
+
+  it('scores a short substantive answer even after a remote hangup', async () => {
+    const turns = [{ role: 'client', text: 'Есть в наличии?' }, { role: 'manager', text: 'Нет в наличии.' }];
+    mocks.durable.mockResolvedValue({ snapshot: { transcript: turns, tools: [], errors: [], ivrDetected: false, ivrPath: [] } });
+    mocks.retranscribe.mockResolvedValue(turns);
+    await finalizeVoiceCallSession(finalEvent);
+    expect(mocks.evaluate).toHaveBeenCalledOnce();
+    expect(planCall.status).toBe('completed');
   });
   it('retains the old Agent payload path without loading production realtime state', async () => {
     session.scenario = 'realtime_pure'; session.recordingStatus = null;

@@ -13,6 +13,7 @@ export type AdminRouteMatch = {
 
 const SUPER_COMPANY_TABS: AdminTab[] = [
   'dashboard',
+  'billing',
   'holdings',
   'companies',
   'dealershipDirections',
@@ -32,7 +33,7 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
 
 const TABS_BY_ROLE: Record<AdminRole, AdminTab[]> = {
   super: SUPER_COMPANY_TABS,
-  company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'holdings' && tab !== 'typesNumbers' && tab !== 'internalAnalytics' && tab !== 'dictionaries'),
+  company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'billing' && tab !== 'holdings' && tab !== 'typesNumbers' && tab !== 'internalAnalytics' && tab !== 'testing' && tab !== 'dictionaries'),
   dealer: ['dealer-companies', 'audits', 'users', 'dealer-team', 'settings'],
   staff: ['staff-profile', 'users', 'staff-trainer', 'settings'],
 };
@@ -43,12 +44,12 @@ export function getDefaultTab(role: AdminRole): AdminTab {
   return 'dashboard';
 }
 
-export function isTabAllowedForRole(tab: AdminTab, role: AdminRole): boolean {
-  return TABS_BY_ROLE[role].includes(tab);
+export function isTabAllowedForRole(tab: AdminTab, role: AdminRole, devMode = false): boolean {
+  return TABS_BY_ROLE[role].includes(tab) && (tab !== 'testing' || devMode);
 }
 
-export function normalizeTabForRole(tab: AdminTab | undefined, role: AdminRole): AdminTab {
-  if (tab && isTabAllowedForRole(tab, role)) return tab;
+export function normalizeTabForRole(tab: AdminTab | undefined, role: AdminRole, devMode = false): AdminTab {
+  if (tab && isTabAllowedForRole(tab, role, devMode)) return tab;
   return getDefaultTab(role);
 }
 
@@ -56,6 +57,8 @@ export function tabToPath(tab: AdminTab): string {
   switch (tab) {
     case 'dashboard':
       return '/dashboard';
+    case 'billing':
+      return '/billing';
     case 'holdings':
       return '/holdings';
     case 'companies':
@@ -117,6 +120,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
 
   if (!section) return { tab: 'dashboard' };
   if (section === 'dashboard') return { tab: 'dashboard' };
+  if (section === 'billing') return { tab: 'billing' };
   if (section === 'holdings') return { tab: 'holdings', holdingId: resource };
   if (section === 'companies') return { tab: 'companies', dealershipId: resource };
   if (section === 'dealership-directions') return { tab: 'dealershipDirections' };

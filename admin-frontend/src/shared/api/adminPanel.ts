@@ -2244,6 +2244,17 @@ export async function fetchAudits(limit = 100): Promise<AuditItem[]> {
   return data.audits ?? [];
 }
 
+export const AUDITS_CHANGED_EVENT = 'salesboost:audits-changed';
+
+export async function deleteAudit(id: string): Promise<void> {
+  const res = await apiFetch(`${API_BASE}/api/admin/audits/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new Error(data?.error || 'Не удалось удалить проверку.');
+  }
+  window.dispatchEvent(new Event(AUDITS_CHANGED_EVENT));
+}
+
 export async function fetchAuditDetail(id: string, signal?: AbortSignal): Promise<AuditDetailItem | null> {
   const controller = new AbortController();
   const abort = () => controller.abort();

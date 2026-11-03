@@ -21,6 +21,7 @@ import type { BehaviorSignal } from '../logic/behaviorClassifier';
 import type { EvaluationChecklistItemDefinition } from '../checklists/checklistManagement';
 import { findManagerClientNameRequest, isClientNameCriterion } from '../logic/conversationFacts';
 import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logic/transcriptionUncertainty';
+import { clientAction, confirmedTimeInDialog, criterionAllowsNa, reportCriterionCode, REPORT_MARK_RUBRIC } from '../voice/reportAssessment';
 
 // ── Types ──
 
@@ -53,6 +54,7 @@ interface LLMClassification {
     status: 'YES' | 'PARTIAL' | 'NO' | 'NA';
     evidence: string[];
     comment: string;
+    trigger_evidence?: string[];
   }>;
   extra_signals: {
     profanity: boolean;
@@ -70,7 +72,7 @@ interface LLMClassification {
 function hasCompleteChecklist(value: unknown, expectedCodes: readonly string[] = CHECKLIST_CODE): value is LLMClassification {
   if (!value || typeof value !== 'object') return false;
   const checklist = (value as { checklist?: unknown }).checklist;
-  if (!Array.isArray(checklist)) return false;
+  if (!Array.isArray(checklist) || checklist.length !== expectedCodes.length) return false;
 
   const validCodes = new Set<string>();
   const normalizedExpectedCodes = expectedCodes.map((code) => code.trim().toUpperCase());
@@ -80,6 +82,7 @@ function hasCompleteChecklist(value: unknown, expectedCodes: readonly string[] =
     const code = String(item.code ?? '').trim().toUpperCase();
     const status = String(item.status ?? '').trim().toUpperCase();
     if (normalizedExpectedCodes.includes(code) && ['YES', 'PARTIAL', 'NO', 'NA'].includes(status)) {
+      if (validCodes.has(code)) return false;
       validCodes.add(code);
     }
   }
@@ -90,11 +93,12 @@ function customEvaluatorPrompt(checklist: NonNullable<EvaluatorInput['evaluation
   const items = checklist.items.map((item) => [
     `${item.id} (вес: ${item.points}) — ${item.title}`,
     `Как оценивать: ${item.instruction}`,
-    `Категория: ${item.category}. NA: ${item.allowNa ? 'разрешён, если пункт объективно неприменим' : 'запрещён'}.`,
+    `Категория: ${item.category}. NA: ${criterionAllowsNa(item) ? 'разрешён, если пункт объективно неприменим или указанное в инструкции условие не наступило' : 'запрещён'}.`,
   ].join('\n')).join('\n\n');
   return `Ты — строгий профессиональный оценщик деловых разговоров с клиентами.
 Оценивай только действия сотрудника, перечисленные в переданном чек-листе. Не добавляй требования из автомобильных продаж или других отраслей.
-Для каждого пункта верни YES, PARTIAL, NO или NA. YES и PARTIAL должны подтверждаться точной цитатой сотрудника. NA допустим только там, где он явно разрешён.
+Для каждого пункта верни YES, PARTIAL, NO или NA. YES и PARTIAL должны подтверждаться точной цитатой сотрудника. NA допустим только там, где он явно разрешён или в инструкции задано условие применимости, которое не наступило.
+Для условного пункта добавь trigger_evidence — точные цитаты клиента, из-за которых пункт применим. Для возражений процитируй конкретное препятствие/сомнение/несогласие, а не просто вопрос или сообщение. Без наступления условия ставь NA.
 Во всех комментариях и рекомендациях слово «менеджер» согласуй только в мужском роде: «менеджер представился», «назвал», «ответил», независимо от пола или голоса сотрудника.
 Оценивай выполнение по смыслу, а не по длине или буквальному совпадению формулировок. Развёрнутая реплика полностью выполняет пункт, если содержит весь требуемый смысл, даже когда критерий сформулирован коротко. Смысл можно собирать из нескольких последовательных реплик сотрудника.
 Не понижай статус за дополнительные уместные детали. Понижай его только при отсутствии обязательной части, противоречии, фактической ошибке или уходе от вопроса.
@@ -105,7 +109,7 @@ ${items}
 
 Дай 3–5 конкретных рекомендаций на русском языке.
 Верни только JSON вида:
-{"checklist":[{"code":"ID пункта","status":"YES|PARTIAL|NO|NA","evidence":["цитата"],"comment":"комментарий"}],"extra_signals":{"profanity":false,"misinformation":false,"passive_style":false,"passive_severity":"mild","low_engagement":false,"redirect_to_website":false,"bad_tone":false},"recommendations":["рекомендация"]}`;
+{"checklist":[{"code":"ID пункта","status":"YES|PARTIAL|NO|NA","evidence":["цитата"],"comment":"комментарий","trigger_evidence":[]}],"extra_signals":{"profanity":false,"misinformation":false,"passive_style":false,"passive_severity":"mild","low_engagement":false,"redirect_to_website":false,"bad_tone":false},"recommendations":["рекомендация"]}`;
 }
 
 export function computeCustomChecklistResult(
@@ -117,7 +121,7 @@ export function computeCustomChecklistResult(
   const built = definitions.map((definition) => {
     const raw = rawByCode.get(definition.id.toLowerCase());
     let status = raw?.status || 'NO';
-    if (status === 'NA' && !definition.allowNa) status = 'NO';
+    if (status === 'NA' && !criterionAllowsNa(definition)) status = 'NO';
     return {
       code: definition.id as ChecklistItem['code'],
       weight: definition.points,
@@ -168,14 +172,14 @@ export function computeCustomChecklistResult(
 
 // ── System prompt for the Evaluator Agent ──
 
-const EVALUATOR_SYSTEM_PROMPT = `Ты — СТРОГИЙ профессиональный оценщик разговоров менеджеров автосалона с клиентами.
+const EVALUATOR_SYSTEM_PROMPT = `Ты — последовательный профессиональный оценщик разговоров менеджеров автосалона с клиентами.
 Ты анализируешь диалог между менеджером и виртуальным клиентом и формируешь детальную оценку качества.
 
 ВАЖНО: ВЕСЬ твой вывод — evidence, comment, recommendations — ТОЛЬКО НА РУССКОМ ЯЗЫКЕ. Никакого английского текста.
 
 === ТВОЯ РОЛЬ ===
 - Ты — EvaluatorAgent. Ты ТОЛЬКО анализируешь — никогда не участвуешь в диалоге.
-- Будь СТРОГИМ. НЕ завышай оценки. Если что-то не было сделано — ставь NO.
+- Не завышай и не занижай оценки. Применяй единую шкалу по смыслу и обязательным условиям: полностью выполнено — YES, полезное частичное выполнение — PARTIAL, не выполнено — NO.
 - Всегда указывай ДОКАЗАТЕЛЬСТВА: прямые цитаты из диалога НА РУССКОМ.
 - Если пункт чеклиста был неприменим (например, trade-in не обсуждался) — ставь NA.
 - Во всех комментариях и рекомендациях слово «менеджер» согласуй только в мужском роде: «менеджер представился», «назвал», «ответил», независимо от пола или голоса сотрудника.
@@ -338,6 +342,7 @@ ${transcriptionUncertainties.length ? `\n=== НЕОПРЕДЕЛЁННОСТЬ Р
         model: config.openaiChatModel,
         messages: [
           { role: 'system', content: customChecklist ? customEvaluatorPrompt(customChecklist) : EVALUATOR_SYSTEM_PROMPT },
+          { role: 'system', content: REPORT_MARK_RUBRIC },
           {
             role: 'user',
             content: attempt === 1
@@ -367,6 +372,19 @@ ${transcriptionUncertainties.length ? `\n=== НЕОПРЕДЕЛЁННОСТЬ Р
         throw new Error('Misinformation classification has no grounded manager quote');
       }
       if (productPresentationContradiction(input, parsed)) throw new Error('PRODUCT_PRESENTATION=NO противоречит выполненным действиям: менеджер назвал известную модель, её цену, наличие и содержательные условия. Перепроверь PARTIAL со свидетельствами; не обнуляй презентацию только за структуру или отсутствие привязки к потребностям.');
+      if (!input.dialogHistory.some(turn => turn.role === 'client' && clientAction(turn.content) === 'objection')
+        && parsed.checklist.some(item => {
+          const definition = customChecklist?.items.find(def => def.id.toLowerCase() === item.code.toLowerCase());
+          return item.status !== 'NA' && reportCriterionCode({ checklist_definition: customChecklist }, item.code) === 'OBJECTION_HANDLING'
+            && (!definition || criterionAllowsNa(definition))
+            && !(item.trigger_evidence ?? []).some(quote => typeof quote === 'string' && quote.trim().length >= 8
+              && input.dialogHistory.some(turn => turn.role === 'client' && turn.content.includes(quote.trim())));
+        })) throw new Error('Работа с возражениями неприменима: в диалоге есть информационные вопросы или сообщения, но нет выраженного препятствия, сомнения или несогласия. Для условного пункта верни NA; не считай вопрос или сообщение возражением.');
+      if (input.dialogHistory.some(turn => /визит|встреч|прие[хд]|подъе[хд]|тест.?драйв/iu.test(turn.content))
+        && parsed.checklist.some(item => item.status === 'YES' && reportCriterionCode({ checklist_definition: customChecklist }, item.code) === 'DATE_FIXATION')
+        && !confirmedTimeInDialog(input.dialogHistory)) {
+        throw new Error('DATE_FIXATION=YES не подтверждён диалогом: предложение дня, диапазона или часа без принятия другой стороной не является согласованной датой и временем. Перепроверь PARTIAL/NO с учётом полной истории; не считай часы работы подтверждением записи.');
+      }
       classification = parsed;
     } catch (err) {
       // Retrying invalid credentials or exhausted billing cannot repair a

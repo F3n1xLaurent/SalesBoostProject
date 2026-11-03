@@ -1,3 +1,4 @@
+import { apiFetch } from '../../../entities/session';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchTrainerHistory,
@@ -613,7 +614,7 @@ function StaffTestScreen(props: { onBack: () => void; onSessionClosed?: (item: W
     setFinalResult(null);
     setMessages([{ id: 1, role: 'client', audioUrl: null, textFallback: '...' }]);
     try {
-      const res = await fetch(`${API_BASE}/api/training/web/start`, {
+      const res = await apiFetch(`${API_BASE}/api/training/web/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ strictness: 'medium', profile: 'normal', replyMode: 'text+voice', voice: 'male' }),

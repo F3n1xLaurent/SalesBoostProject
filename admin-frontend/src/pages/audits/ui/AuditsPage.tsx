@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
+import { useUnit } from 'effector-react';
+import { $auth } from '../../../entities/session';
+import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
+import { TrashIcon } from '../../../shared/ui/icons/ActionIcons';
 import {
   fetchAuditDetail,
+  deleteAudit,
   fetchDealerships,
   fetchDealershipDirections,
   fetchCallReportProblems,
@@ -77,6 +82,7 @@ const AUDIT_STATUS_CLASS: Record<AuditStatus, string> = {
 type Props = {
   audits: AuditItem[];
   loading?: boolean;
+  onDeleted?: (id: string) => void;
 };
 
 /* ────────────────────── Sort config ────────────────────── */
@@ -205,7 +211,14 @@ function auditItemToRow(item: AuditItem): AuditListRow {
 export function Audits({
   audits,
   loading = false,
+  onDeleted,
 }: Props) {
+  const auth = useUnit($auth);
+  const canDelete = auth.status === 'authenticated' && auth.user.memberships.some((membership) => membership.role === 'platform_superadmin');
+  const [deleteTarget, setDeleteTarget] = useState<AuditListRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
   const location = useLocation();
   const navigate = useNavigate();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
@@ -226,13 +239,13 @@ export function Audits({
     [selectedDealerships],
   );
   const rows = useMemo(() => {
-    const mapped = audits.map(auditItemToRow);
+    const mapped = audits.filter((item) => !deletedIds.has(item.id)).map(auditItemToRow);
     if (holdingsLoading || dealershipsLoading || !selectedHoldingId) return [];
     return mapped.filter((row) => (
       (row.dealershipId && selectedDealershipIds.has(row.dealershipId))
       || row.holdingId === selectedHoldingId
     ));
-  }, [audits, dealershipsLoading, holdingsLoading, selectedDealershipIds, selectedHoldingId]);
+  }, [audits, deletedIds, dealershipsLoading, holdingsLoading, selectedDealershipIds, selectedHoldingId]);
   const allCities = useMemo(() => [...new Set(rows.map((row) => row.city).filter((city) => city && city !== '—'))].sort((a, b) => a.localeCompare(b, 'ru')), [rows]);
   const allDealerships = useMemo(
     () => selectedDealerships
@@ -556,6 +569,33 @@ export function Audits({
     return () => { cancelled = true; };
   }, [reportAuditId]);
 
+  async function confirmDelete() {
+    if (!deleteTarget || deleting || !canDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAudit(deleteTarget.id);
+      setDeletedIds((current) => new Set([...current, deleteTarget.id]));
+      if (reportAuditId === deleteTarget.id) closeReportDrawer();
+      onDeleted?.(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'Не удалось удалить проверку.');
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  function deleteButton(row: AuditListRow) {
+    if (!canDelete) return null;
+    return <button type="button" className="sa-btn-danger sa-btn-icon"
+      title={row.type === 'trainer' ? 'Удалить тренировку' : 'Удалить звонок'}
+      aria-label={row.type === 'trainer' ? 'Удалить тренировку' : 'Удалить звонок'}
+      onClick={(event) => { event.stopPropagation(); setDeleteError(null); setDeleteTarget(row); }}>
+      <TrashIcon />
+    </button>;
+  }
+
   function formatDateTime(iso: string) {
     const d = new Date(iso);
     return d.toLocaleDateString('ru-RU') + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -768,15 +808,16 @@ export function Audits({
                 </th>
               ))}
               <th>Вердикт</th>
+              {canDelete && <th style={{ width: 48 }} aria-label="Удаление" />}
               <th style={{ width: 32 }} />
             </tr>
           </thead>
           <tbody>
             {loading || holdingsLoading || dealershipsLoading ? (
-              <tr><td colSpan={9} className="sa-meta" style={{ padding: 24 }}>Загрузка…</td></tr>
+              <tr><td colSpan={canDelete ? 10 : 9} className="sa-meta" style={{ padding: 24 }}>Загрузка…</td></tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={9} className="sa-empty-state">
+                <td colSpan={canDelete ? 10 : 9} className="sa-empty-state">
                   Нет проверок по выбранным фильтрам<br />
                   <span className="sa-meta">Сбросьте фильтры или измените период</span>
                 </td>
@@ -824,6 +865,7 @@ export function Audits({
                   <td>
                     <span className="sa-audit-verdict">{r.verdict.length > 40 ? r.verdict.slice(0, 38) + '…' : r.verdict}</span>
                   </td>
+                  {canDelete && <td>{deleteButton(r)}</td>}
                   <td className="sa-row-chevron-cell">→</td>
                 </tr>
               ))
@@ -846,6 +888,7 @@ export function Audits({
                 : <span className={`sa-mobile-rating ${ratingClass(r.totalScore)}`}>{r.totalScore}</span>}
             </div>
             <div className="sa-mobile-chips">
+              {deleteButton(r)}
               <span className="sa-metric-chip">{formatDateTime(r.dateTime)}</span>
               <span className={`sa-metric-chip sa-audit-type-badge sa-audit-type-${r.type}`}>{AUDIT_TYPE_LABELS[r.type]}</span>
               <span className={`sa-metric-chip sa-status-badge ${AUDIT_STATUS_CLASS[r.status]}`}>{AUDIT_STATUS_LABELS[r.status]}</span>
@@ -870,6 +913,14 @@ export function Audits({
           </div>
         </div>
       )}
+
+      <DeleteConfirmModal open={Boolean(deleteTarget)} saving={deleting} nested={false}
+        title={`Удалить ${deleteTarget?.type === 'trainer' ? 'тренировку' : 'звонок'}?`}
+        onCancel={() => { if (!deleting) setDeleteTarget(null); }} onConfirm={() => { void confirmDelete(); }}>
+        <p>Запись и отчёт будут удалены из системы, статистика пересчитана. Это действие нельзя отменить.</p>
+        {deleteTarget && <p className="sa-meta">{deleteTarget.employeeName} · {formatDateTime(deleteTarget.dateTime)}</p>}
+        {deleteError && <div className="sa-audit-fail-reason" role="alert">{deleteError}</div>}
+      </DeleteConfirmModal>
 
       <SlideOver
         open={reportDrawerOpen}

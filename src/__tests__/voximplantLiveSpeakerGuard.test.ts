@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { isTerminalAutomatedAnswer as isTerminalAnswerOnServer } from '../voice/terminalAutomatedAnswer';
 
 const scenarioSource = readFileSync(resolve(process.cwd(), 'voximplant/last_actual_realtime.js'), 'utf8');
 
@@ -14,8 +15,40 @@ function scenarioFunction(name: string): (text: string) => boolean {
 
 const isAutomatedOrWaitingMessage = scenarioFunction('isAutomatedOrWaitingMessage');
 const isClearlyLiveHuman = scenarioFunction('isClearlyLiveHuman');
+const isTerminalAutomatedAnswer = scenarioFunction('isTerminalAutomatedAnswer');
 
 describe('Voximplant live speaker gate', () => {
+  it.each([
+    ['Приветствую! Линия абонента сейчас занята. Что важного ему передать?', true],
+    ['Я голосовой ассистент Мия. Запишу всё слово в слово. Попробуем?', true],
+    ['Здравствуйте! Это виртуальная помощница.', true],
+    ['Абонент недоступен. Оставьте сообщение после сигнала.', true],
+    ['Для соединения с отделом продаж нажмите 1.', false],
+    ['Я голосовой ассистент. Выберите отдел, нажмите 1.', false],
+    ['Все операторы заняты. Дождитесь ответа, оставайтесь на линии.', false],
+    ['Я занят, перезвоните завтра.', false],
+  ])('agrees with the server on terminal automation: %s', (text, terminal) => {
+    expect(isTerminalAutomatedAnswer(String(text))).toBe(terminal);
+    expect(isTerminalAnswerOnServer(text)).toBe(terminal);
+  });
+
+  it('hangs up on the first Mia greeting without waiting for the model or classifier', () => {
+    const finish = vi.fn();
+    const mute = vi.fn();
+    const stored: unknown[] = [];
+    const match = scenarioSource.match(/  function handleUserTranscript\([^)]*\) \{[\s\S]*?\n  \}/);
+    expect(match).not.toBeNull();
+    const handle = Function('isTerminalAutomatedAnswer', 'finishWithEvent', 'muteAgentOutput', 'pushTranscript', `
+      var conversationRevision = 0, liveDetectionRevision = 0, pendingLiveClassification = null, agentMediaActive = false;
+      function normalizeInputTranscript(text) { return text.toLowerCase(); }
+      function cancelPendingNaturalEnd() {}
+      return (${match![0].trim()});
+    `)(isTerminalAutomatedAnswer, finish, mute, (role: string, text: string) => stored.push({ role, text }));
+    handle('Приветствую! Линия абонента сейчас занята. Что важного ему передать?');
+    expect(finish).toHaveBeenCalledWith('no_answer', { reason: 'voicemail', detected_by: 'local_line_guard' });
+    expect(mute).toHaveBeenCalledWith('terminal_automated_answer');
+    expect(stored).toHaveLength(1);
+  });
   it('keeps the recorded greeting from call 786 muted', () => {
     const greeting = 'Салон «Автомобильная группа» приветствует вас!';
     expect(isAutomatedOrWaitingMessage(greeting)).toBe(true);

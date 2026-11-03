@@ -4,6 +4,7 @@ import { Navigate, useLocation } from 'react-router';
 import { $auth, apiFetch, logout, type FrontendRole } from '../../../entities/session';
 import { SystemLayout } from '../../../widgets/system-layout/ui/SystemLayout';
 import { readStoredRole, writeStoredRole } from '../../../entities/session/lib/roleStorage';
+import { AUDITS_CHANGED_EVENT } from '../../../shared/api/adminPanel';
 import { getRoleFromPath } from '../../../shared/routing/adminRoutes';
 
 type TeamSummary = {
@@ -73,6 +74,13 @@ export function SystemPage() {
     setTeamSummary(null);
     setVoiceDashboard(null);
     setTeamLoading(false);
+  }, [role, auth.status]);
+
+  useEffect(() => {
+    if (auth.status !== 'authenticated' || (role !== 'super' && role !== 'company')) return;
+    const refresh = () => { void loadTeamSummary(); };
+    window.addEventListener(AUDITS_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(AUDITS_CHANGED_EVENT, refresh);
   }, [role, auth.status]);
 
   useEffect(() => {

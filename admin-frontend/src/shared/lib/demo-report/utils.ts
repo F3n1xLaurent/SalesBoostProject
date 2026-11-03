@@ -1,5 +1,23 @@
 import type { CallInsightDetail } from '../../model/call-insight/types';
 
+export function formatCallOutcome(outcome: string | null | undefined): string {
+  switch (String(outcome ?? '').trim().toLowerCase()) {
+    case 'completed':
+    case 'disconnected': return 'Завершён';
+    case 'no_answer': return 'Нет ответа';
+    case 'busy': return 'Абонент занят';
+    case 'failed': return 'Не удалось соединиться';
+    case 'cancelled': return 'Вызов отменён';
+    case 'connected':
+    case 'in_progress': return 'Идёт разговор';
+    case 'progress':
+    case 'ringing':
+    case 'dialing': return 'Звоним';
+    case 'queued': return 'Ожидает звонка';
+    default: return 'Статус не определён';
+  }
+}
+
 export function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
@@ -25,6 +43,8 @@ export function formatDurationSec(detail: CallInsightDetail): string {
 export function getCallQualityTag(
   detail: CallInsightDetail
 ): { text: string; tone: 'good' | 'mid' | 'bad' | 'neutral' } {
+  if (detail.outcome === 'no_answer' || detail.outcome === 'busy') return { text: 'Не удалось дозвониться', tone: 'neutral' };
+  if (detail.outcome === 'cancelled') return { text: 'Вызов отменён', tone: 'neutral' };
   if (detail.outcome === 'failed') return { text: 'Звонок не состоялся', tone: 'bad' };
   if (detail.processingError) return { text: 'Ошибка обработки', tone: 'bad' };
   if (detail.qualityTag && detail.qualityTag.trim()) {

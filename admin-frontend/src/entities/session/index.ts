@@ -10,3 +10,4 @@ export {
 } from './model/model';
 export { apiFetch, apiJson } from './api/api';
 export { LoginPage } from './ui/LoginPage';
+export { useDevMode } from './model/useDevMode';
