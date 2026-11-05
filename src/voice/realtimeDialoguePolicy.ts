@@ -3,7 +3,7 @@ export type PolicyTurn = { role: string; text: string; metrics?: { interrupted?:
 // Interrupted turns already contain the conservative heard prefix. Keep that
 // prefix (including a chosen hour), but exclude wholly inaudible generations.
 const audible = (turns: readonly PolicyTurn[]) => turns.filter(t => !t.text.startsWith('[') && t.text.trim());
-const VISIT = /визит|встреч|прие[хдз]|подъе[хдз]|тест.?драйв|записа|жд[её]м\s+вас/iu;
+const VISIT = /визит|встреч|прие[хдз]|подъе[хдз]|тест.?драйв|запис(?:аться|ать|ыва|али|ан[аы]?\s+на)|запиш|жд[её]м\s+вас/iu;
 const DAY = /послезавтра|завтра|сегодня|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресенье/iu;
 const HOURS: Record<string, number> = { один: 1,одному: 1,час: 1,два: 2,двум: 2,двух: 2,три: 3,трём: 3,трех: 3,трёх: 3,четыре: 4,четырём: 4,четырех: 4,пять: 5,пяти: 5,шесть: 6,шести: 6,семь: 7,семи: 7,восемь: 8,восьми: 8,девять: 9,девяти: 9,десять: 10,десяти: 10,одиннадцать: 11,одиннадцати: 11,двенадцать: 12,двенадцати: 12,тринадцать: 13,тринадцати: 13,четырнадцать: 14,четырнадцати: 14,пятнадцать: 15,пятнадцати: 15,шестнадцать: 16,шестнадцати: 16,семнадцать: 17,семнадцати: 17,восемнадцать: 18,восемнадцати: 18,девятнадцать: 19,девятнадцати: 19,двадцать: 20,двадцати: 20 };
 Object.assign(HOURS, { 'двадцать один': 21, 'двадцати одному': 21, 'двадцать два': 22, 'двадцати двум': 22, 'двадцать три': 23, 'двадцати трём': 23 });
@@ -20,11 +20,19 @@ export function visitSlot(text: string): Slot | null {
   // Ranges and alternatives are availability, not an appointment.
   if (AVAILABILITY_RANGE.test(text) || /(?:^|\s)(?:или|либо)(?=\s|[,.]|$)/iu.test(text)) return null;
   const number = Object.keys(HOURS).sort((a,b)=>b.length-a.length).join('|');
-  const match = text.match(new RegExp(`(?:^|[\\s,.!?])(?:в|к|около|ближе\\s+к)\\s+(\\d{1,2})(?::(\\d{2}))?(?=[\\s,.!?]|$)|(?:^|[\\s,.!?])(?:в|к|около|ближе\\s+к)\\s+(${number})(?=[\\s,.!?]|$)`, 'iu'))
-    ?? text.match(/(?:^|[\s,.!?])(\d{1,2}):(\d{2})(?=[\s,.!?]|$)/u)
-    ?? text.match(new RegExp(`(?:^|[\\s,.!?])()()(${number})\\s+(?:час(?:а|ов)?|ноль\\s+ноль)(?=[\\s,.!?]|$)`, 'iu'));
+  const candidates = [
+    ...text.matchAll(new RegExp(`(?:^|[\\s,.!?])(?:в|к|около|ближе\\s+к)\\s+(\\d{1,2})(?::(\\d{2}))?(?=[\\s,.!?]|$)|(?:^|[\\s,.!?])(?:в|к|около|ближе\\s+к)\\s+(${number})(?=[\\s,.!?]|$)`, 'giu')),
+    ...text.matchAll(/(?:^|[\s,.!?])(\d{1,2}):(\d{2})(?=[\s,.!?]|$)/gu),
+    ...text.matchAll(new RegExp(`(?:^|[\\s,.!?])()()(${number})\\s+(?:час(?:а|ов)?|ноль\\s+ноль)(?=[\\s,.!?]|$)`, 'giu')),
+  ];
+  // «Пробег около пятнадцати тысяч километров» and «в два миллиона»
+  // describe the product, not an appointment at 15:00 or 02:00.
+  const match = candidates.find(candidate => {
+    const afterNumber = text.slice(candidate.index + candidate[0].length);
+    return !/^\s*(?:тысяч|миллион|миллиард|километр|км|рубл|доллар|евро|лет|год|месяц|процент)/iu.test(afterNumber)
+      && !/(?:до|после)\s*$/iu.test(text.slice(0, candidate.index));
+  });
   if (!match) return null;
-  if (/(?:до|после)\s*$/iu.test(text.slice(0, match.index))) return null;
   let hour = match[1] ? Number(match[1]) : HOURS[match[3].toLowerCase()];
   if (hour < 1 || hour > 23) return null;
   if (hour < 12 && /вечера|после\s+обеда|второй\s+половине/iu.test(text)) hour += 12;
@@ -47,7 +55,7 @@ export function sameVisitTime(a: string, b: string): boolean {
 function visitState(turns: readonly PolicyTurn[]) {
   const history = audible(turns);
   const start = history.findIndex(t => VISIT.test(t.text));
-  const relevant = start < 0 ? [] : history.slice(start);
+  const relevant = start < 0 || productUnavailable(history) ? [] : history.slice(start);
   const manager = history.filter(t=>t.role==='manager').at(-1)?.text ?? '';
   const clientSlot = relevant.filter(t=>t.role==='client' && visitSlot(t.text)).at(-1)?.text;
   let managerSlot: string | undefined;
@@ -58,6 +66,17 @@ function visitState(turns: readonly PolicyTurn[]) {
     } else if (visitSlot(turn.text)) managerSlot = turn.text;
   }
   return { active: relevant.length>0, manager, clientSlot, managerSlot, dayKnown: relevant.some(t => DAY.test(t.text)) };
+}
+
+/** An explicit lack of a suitable product makes a visit unnecessary. A later
+ * confirmed alternative can reopen negotiation; a tool reason cannot. */
+function productUnavailable(turns: readonly PolicyTurn[]): boolean {
+  let unavailable = false;
+  for (const turn of audible(turns).filter(t => t.role === 'manager')) {
+    if (/(?:нет(?:у)?|не\s+было|отсутствует)\s+(?:(?:у\s+нас|сейчас|пока|вообще|такого|такой|подходящего|подходящей|этого|этой|ни\s+одного|ни\s+одной)\s+){0,5}(?:автомобил[ья]|машин[аы]|модел[ьи])|(?:автомобил[ья]|машин[аы]|модел[ьи])\s+(?:(?:у\s+нас|сейчас|пока|вообще)\s+){0,5}(?:нет(?:у)?|не\s+было|отсутствует)/iu.test(turn.text)) unavailable = true;
+    else if (/(?:автомобил[ья]|машина|модель)[^.!?]{0,30}(?:есть|в\s+наличии)|(?:есть|в\s+наличии)[^.!?]{0,30}(?:автомобил|машин|модел)/iu.test(turn.text)) unavailable = false;
+  }
+  return unavailable;
 }
 export function dialogueNeedsValidation(turns: readonly PolicyTurn[]): boolean {
   const state = visitState(turns);
@@ -98,9 +117,10 @@ export function currentManagerVisitTime(turns: readonly PolicyTurn[]): string | 
 }
 export function repeatedVisitQuestionIssue(turns: readonly PolicyTurn[], response: string): string | null {
   const asksSlot = (text: string) => /\?/u.test(text)
-    && /како[йе][^.!?]*(?:день|врем)|во\s+сколько|когда[^.!?]*(?:приехать|подъехать)|уточните[^.!?]*врем/iu.test(text);
+    && /како[йе][^.!?]*(?:день|врем)|во\s+сколько|когда[^.!?]*(?:приехать|подъехать)|уточните[^.!?]*врем|подтвердить[^.!?]*(?:время|час)/iu.test(text);
   if (!asksSlot(response)) return null;
   const state = visitState(turns);
+  if (productUnavailable(turns)) return 'Подходящего автомобиля нет: не согласовывай визит и не проси подтверждать время. Ответь на вопрос сотрудника и при необходимости попрощайся.';
   if (/повторите|не\s+расслышал[аи]?|не\s+услышал[аи]?/iu.test(state.manager)) return null;
   if (state.managerSlot) return `Менеджер уже назвал время: «${state.managerSlot}». Не спрашивай его заново; подтверди предложение или уточни конкретное расхождение с ранее выбранным временем.`;
   if (audible(turns).filter(t => t.role === 'client' && asksSlot(t.text)).length >= 2) {
@@ -114,6 +134,10 @@ export function dialogueRecoveryResponse(turns: readonly PolicyTurn[], options: 
   const history = audible(turns);
   const state = visitState(history);
   if (paymentQuestion(state.manager)) return 'Способ оплаты пока выбираю. Окончательно решу после осмотра.';
+  if (productUnavailable(history)) {
+    if (/(?:где|откуда)[^.!?]*(?:видел|увиде|объявлен|информац)/iu.test(state.manager)) return 'Точный источник объявления сейчас не могу назвать. Спасибо, до свидания.';
+    if (!options.answerRequired) return 'Понятно, спасибо за информацию. До свидания.';
+  }
   if (options.answerRequired) return 'Пока не могу уточнить ответ на ваш вопрос. Подскажите, что именно вам важно знать?';
   const knownDay = history.filter(t => !/(?:^|\s)(?:или|либо)(?=\s|[,.]|$)/iu.test(t.text))
     .map(t => t.text.match(DAY)?.[0]?.toLowerCase()).filter(Boolean).at(-1);
@@ -163,6 +187,7 @@ export function canEndDialogue(turns: readonly PolicyTurn[], response: string): 
   // when a visit could not be agreed. A quoted earlier goodbye isn't.
   if (/(?:до\s+свидания|всего\s+доброго|до\s+встречи|не\s+звоните|не\s+перезванивайте|разговор\s+окончен)/iu.test(state.manager)) return true;
   if (/(?:перезвоните|можете\s+перезвонить)/iu.test(state.manager)) return true;
+  if (productUnavailable(turns)) return true;
   const rejectedStep = /не\s+(?:приеду|подъеду|буду|подходит|подтверждаю|соглас|смогу|получится|надо|нужно)|отказываюсь/iu.test(response);
   if (rejectedStep) return false;
   const offeredFollowUp = !/(?:не\s+(?:отправлю|пришлю|вышлю|перезвоню|свяжусь))/iu.test(state.manager)
@@ -186,6 +211,7 @@ export function dialogueAgreementInstruction(turns: readonly PolicyTurn[]): stri
   const state=visitState(turns);
   const rules = ['Завершай звонок только после подтверждения конкретного следующего шага обеими сторонами, либо явного отказа/просьбы закончить или перезвонить. Одного «спасибо», закрытых вопросов или собственного прощания недостаточно.',
     'Не озвучивай «сейчас отвечу», «выбираю из вариантов», «зафиксирую время»: сразу дай сам ответ или выбранный вариант. Обещание ответить не является ответом.'];
+  if (productUnavailable(turns)) rules.push('Сотрудник явно сообщил, что подходящего автомобиля нет. Визит согласовывать не нужно: не возвращайся к ранее названному часу и не требуй следующего шага ради завершения. Сначала ответь на последний вопрос сотрудника, затем можно естественно попрощаться.');
   if (state.active) rules.push('Согласуется визит: выбери конкретный день и время. «Будни», «завтра», «до обеда», диапазон часов и часы работы не являются согласованным временем. Если ты сам предложил новый час, дождись подтверждения менеджера; пока не прощайся.');
   if (state.clientSlot) rules.push(`Твоё последнее названное время визита: «${state.clientSlot}». Сохраняй его. Если менеджер называет другой час/день, сначала явно уточни расхождение; не соглашайся молча и не прощайся.`);
   if (state.managerSlot) rules.push(`Менеджер уже назвал время визита: «${state.managerSlot}». Не спрашивай заново день и время. Если оно подходит, подтверди его; на новый вопрос об оплате или автомобиле отвечай отдельно, сохраняя это время.`);

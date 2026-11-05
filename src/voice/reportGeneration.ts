@@ -23,7 +23,7 @@ export async function requestReportJson(params: OpenAI.Chat.Completions.ChatComp
       messages: attempt && lastError ? [...params.messages, { role: 'user' as const, content: `Исправь предыдущий результат и верни полный JSON. Причина отклонения: ${lastError instanceof Error ? lastError.message : String(lastError)}` }] : params.messages,
       ...compatibleChatMaxTokens(params.model, attempt === 0 ? 10000 : 16000),
       ...compatibleReportReasoning(params.model, 'generation'),
-    }, { maxRetries: 0 });
+    }, { timeout: 120_000, maxRetries: 0 });
     const choice = response.choices[0];
     if (choice?.finish_reason === 'content_filter' || choice?.message?.refusal) throw new Error('Report generation refused by provider');
     try {

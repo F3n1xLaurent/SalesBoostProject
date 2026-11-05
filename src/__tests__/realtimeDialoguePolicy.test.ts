@@ -1,9 +1,60 @@
 import { describe, expect, it } from 'vitest';
-import { canEndDialogue, currentManagerVisitTime, dialogueAgreementInstruction, dialogueRecoveryResponse, repeatedVisitQuestionIssue, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, unansweredManagerResponseIssue, visitSlot } from '../voice/realtimeDialoguePolicy';
+import { canEndDialogue, currentManagerVisitTime, dialogueAgreementInstruction, dialogueRecoveryResponse, hasVisitNegotiation, previousClientVisitTime, repeatedVisitQuestionIssue, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, unansweredManagerResponseIssue, visitSlot } from '../voice/realtimeDialoguePolicy';
 const manager = (text: string) => ({role:'manager',text});
 const client = (text: string) => ({role:'client',text});
 
 describe('production dialogue agreement regressions', () => {
+  it('949: recording notice and mileage never create a visit at 15:00', () => {
+    const turns = [manager('Для контроля качества обслуживания разговор будет записан.'),
+      manager('Добрый день, чем могу помочь?'),
+      client('Омода С5 2024 года, пробег около пятнадцати тысяч километров. Она ещё в продаже?'),
+      manager('У нас не было такого автомобиля.')];
+    expect(visitSlot(turns[2].text)).toBeNull();
+    expect(hasVisitNegotiation(turns.slice(0, 3))).toBe(false);
+    expect(previousClientVisitTime(turns)).toBeNull();
+    expect(canEndDialogue(turns, 'Понятно, спасибо. До свидания.')).toBe(true);
+    expect(dialogueRecoveryResponse(turns)).not.toContain('15:00');
+    expect(dialogueRecoveryResponse(turns)).not.toContain('?');
+  });
+
+  it.each(['Пробег около пятнадцати тысяч километров.', 'Цена в два миллиона рублей.',
+    'Скидка около пяти процентов.', 'Автомобилю около пяти лет.'])(
+    'does not parse product quantities as hours: %s', (text) => expect(visitSlot(text)).toBeNull(),
+  );
+
+  it('949: cancels a stale visit when no product is available and answers the source question', () => {
+    const turns = [client('Могу приехать завтра в 15:00.'), manager('У нас не было такого автомобиля.'),
+      manager('А вы подскажите, где видели?')];
+    expect(previousClientVisitTime(turns)).toBeNull();
+    expect(hasVisitNegotiation(turns)).toBe(false);
+    const recovery = dialogueRecoveryResponse(turns, { answerRequired: true });
+    expect(recovery).toContain('источник объявления');
+    expect(recovery).not.toContain('15:00');
+    expect(canEndDialogue(turns, recovery)).toBe(true);
+    expect(canEndDialogue(turns, 'А похожая машина есть?')).toBe(false);
+    expect(dialogueAgreementInstruction(turns)).toContain('Визит согласовывать не нужно');
+    expect(repeatedVisitQuestionIssue(turns, 'Сможете подтвердить это время?')).toContain('не согласовывай визит');
+  });
+
+  it('still finds a real visit hour after a mileage quantity in the same turn', () => {
+    expect(visitSlot('Пробег около пятнадцати тысяч километров. Приеду завтра в 17:00.')?.hour).toBe(17);
+  });
+
+  it('bounds repeated confirmation requests as well as repeated slot questions', () => {
+    const turns = [client('Могу приехать завтра в 15:00. Сможете подтвердить это время?'), manager('Пока не могу.'),
+      client('Сможете подтвердить это время?'), manager('Пока неизвестно.')];
+    expect(repeatedVisitQuestionIssue(turns, 'Сможете подтвердить это время?')).toContain('Не задавай тот же вопрос');
+    expect(dialogueRecoveryResponse(turns)).not.toContain('?');
+  });
+
+  it('does not mistake lack of problems for an unavailable product or skip a new manager question', () => {
+    expect(canEndDialogue([manager('Нет проблем с автомобилем.')], 'Спасибо, до свидания.')).toBe(false);
+    const turns = [manager('Такого автомобиля нет.'), manager('Покупку за наличные или в кредит планируете?')];
+    expect(canEndDialogue(turns, 'Спасибо, до свидания.')).toBe(false);
+    expect(canEndDialogue(turns, 'Пока выбираю способ оплаты. Спасибо, до свидания.')).toBe(true);
+    expect(canEndDialogue([manager('Автомобиля нет.'), manager('Есть подходящая машина. Приезжайте завтра.')], 'До свидания.')).toBe(false);
+  });
+
   it('916: a payment alternative containing «сейчас» never clears the agreed visit hour', () => {
     const turns = [manager('Удобно будет приехать на тест-драйв?'),
       client('Завтра в первой половине дня удобнее. Если есть окно ближе к одиннадцати, я подстроюсь.'),

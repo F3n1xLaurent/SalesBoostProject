@@ -120,6 +120,13 @@ describe('report regression 3bc8ef34: provider failures are not manager mistakes
     await expect(requestReportJson(params)).rejects.toThrow('complete JSON');
     expect(create).toHaveBeenCalledTimes(2);
   });
+  it('limits a stalled provider request to two minutes and propagates the timeout without retrying', async () => {
+    const timeout = Object.assign(new Error('Request timed out'), { name: 'APIConnectionTimeoutError' });
+    const create = vi.spyOn(openai.chat.completions, 'create').mockRejectedValue(timeout);
+    await expect(requestReportJson(params)).rejects.toBe(timeout);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][1]).toMatchObject({ timeout: 120_000, maxRetries: 0 });
+  });
   it('preserves HTTP 402 without retrying or fabricating a report', async () => {
     const error = Object.assign(new Error('402 status code (no body)'), { status: 402 });
     const create = vi.spyOn(openai.chat.completions, 'create').mockRejectedValue(error);

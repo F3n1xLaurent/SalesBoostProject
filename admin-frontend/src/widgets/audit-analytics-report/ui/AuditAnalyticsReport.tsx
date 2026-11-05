@@ -855,7 +855,7 @@ export function AuditAnalyticsReport({
       ) : (
         <>
           <AuditRecording detail={detail} canDownloadCall={canDownloadRecording} />
-          <AnalyticsProgress key={detail.id} detail={detail} connectionLost={connectionErrorId === detail.id}
+          <AnalyticsProgress key={`${detail.id}:${retryVersion}`} detail={detail} connectionLost={connectionErrorId === detail.id}
             onRetry={auth.status === 'authenticated' ? retryReport : undefined}
             retrying={retryingId === detail.id} retryError={retryError?.id === detail.id ? retryError.message : null} />
         </>

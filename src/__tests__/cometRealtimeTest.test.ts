@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   areRussianNamesEquivalent,
   classifyHypothesis2LineLocally,
+  containsTechnicalRealtimeSpeech,
   extractAssistantPreferredName,
   extractManagerAddressedClientName,
   extractManagerPreferredName,
@@ -55,6 +56,37 @@ describe('Comet Realtime PCM bridge', () => {
     expect(sanitizeRealtimeSpokenText('Сейчас быстро уточню это по делу, чтобы дальше было понятно, как смотреть машину.')).toBe('');
     expect(sanitizeRealtimeSpokenText('Сейчас коротко уточню один момент и дальше уже поедем к визиту.')).toBe('');
     expect(sanitizeRealtimeSpokenText('Тогда уточню: какой пробег?')).toBe('Тогда уточню: какой пробег?');
+  });
+
+  it.each([
+    'Сейчас договоримся по времени и я коротко подтвержу.',
+    'Хорошо, сейчас договоримся по времени, и я подтвержу.',
+    'Теперь согласуем время и я кратко подтвержу.',
+    'Я коротко подтвержу.',
+    'Хорошо, сейчас коротко поясню, откуда информация, и дальше уже не буду вас отвлекать.',
+    'Хорошо, поясню коротко, чтобы не было путаницы.',
+    'Хорошо, отвечу по срокам и коротко скажу, как удобнее поступить дальше.',
+  ])('blocks narrated scheduling before TTS: %s', (text) => {
+    expect(containsTechnicalRealtimeSpeech(text)).toBe(true);
+    expect(sanitizeRealtimeSpokenText(text)).toBe('');
+    expect(sanitizeRealtimeSpokenText(`${text} Да, завтра в пять мне удобно.`))
+      .toBe('Да, завтра в пять мне удобно.');
+  });
+
+  it.each([
+    'Во сколько можно приехать?',
+    'Давайте договоримся по времени: можно завтра в пять?',
+    'Да, завтра в пять мне удобно.',
+    'Подтверждаю, приеду завтра в пять.',
+    'Подтвержу время после работы.',
+  ])('preserves concrete scheduling replies: %s', (text) => {
+    expect(containsTechnicalRealtimeSpeech(text)).toBe(false);
+    expect(sanitizeRealtimeSpokenText(text)).toBe(text);
+  });
+
+  it('949: removes the technical preface even without a space after the sentence boundary', () => {
+    expect(sanitizeRealtimeSpokenText('Хорошо, отвечу по срокам и коротко скажу, как удобнее поступить дальше.Планировал в ближайший месяц, плюс-минус.'))
+      .toBe('Планировал в ближайший месяц, плюс-минус.');
   });
 
   it('detects an explicitly corrected manager name', () => {

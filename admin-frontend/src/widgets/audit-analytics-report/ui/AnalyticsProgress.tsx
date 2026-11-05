@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
+import { analyticsRetryDelayed } from '../model/analyticsRetry';
 import './analytics-progress.css';
 
 const STEPS = [
@@ -26,17 +27,16 @@ export function AnalyticsProgress({ detail, connectionLost = false, onRetry, ret
   const pending = processing || progress.status === 'waiting';
   const [observedAt, setObservedAt] = useState(Date.now);
   const [now, setNow] = useState(Date.now);
-  const startedAt = progress.startedAt ? Date.parse(progress.startedAt) : observedAt;
   useEffect(() => {
     setObservedAt(Date.now());
     setNow(Date.now());
-  }, [progress.startedAt, pending]);
+  }, [pending]);
   useEffect(() => {
     if (!pending) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [pending]);
-  const delayed = pending && Number.isFinite(startedAt) && now - startedAt >= 2 * 60_000;
+  const delayed = pending && analyticsRetryDelayed(now, observedAt, progress.startedAt);
   const title = failed ? 'Не удалось подготовить аналитику' : unavailable ? 'Нет разговора для анализа' : 'Готовим аналитику';
   return <section className={`sa-analytics-progress${failed ? ' is-failed' : ''}${processing ? ' is-processing' : ''}`} role="status" aria-live="polite" aria-atomic="true">
     <header className="sa-analytics-progress-head">
