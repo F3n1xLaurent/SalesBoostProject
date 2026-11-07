@@ -3,6 +3,7 @@ import { prisma } from '../db';
 import { compatibleChatTemperature } from '../lib/openaiClient';
 import { REPORT_QUALITY_RULES } from './reportQualityRules';
 import { requestReportJson } from './reportGeneration';
+import { withReportGenerationBudget } from './reportExecution';
 import type { CallSummary, ReplyImprovement } from './callSummary';
 import type { TranscriptTurn } from './callHistory';
 import {
@@ -40,7 +41,11 @@ function asText(value: unknown): string {
   return String(value ?? '').trim();
 }
 
-export async function generateCallAnalyticsBundle(input: {
+export async function generateCallAnalyticsBundle(input: Parameters<typeof generateCallAnalyticsBundleWithinBudget>[0]): Promise<AnalyticsBundle> {
+  return withReportGenerationBudget(() => generateCallAnalyticsBundleWithinBudget(input));
+}
+
+async function generateCallAnalyticsBundleWithinBudget(input: {
   transcript: TranscriptTurn[];
   outcome: string | null;
   totalScore: number | null;
@@ -104,8 +109,8 @@ export async function generateCallAnalyticsBundle(input: {
     '- Заголовок, comment, quote и betterExample одной keyFinding должны описывать одну и ту же проблему. Не объединяй имя клиента и уточнение его запроса в одной находке.',
     '- Не добавляй проблему «Не уточнил / не подтвердил имя клиента», если менеджер спросил «Как вас зовут?» или «Как я могу к вам обращаться?».',
     '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
-    '- Для каждой keyFinding обязательно сформируй betterExample: готовую реплику менеджера, которая устраняет именно это замечание. Если конкретных данных недостаточно, используй нейтральный уточняющий вопрос без выдуманных фактов.',
-    '- dialog не должен повторять текст реплик: верни только элементы с mark/comment в том же количестве и порядке, что исходный диалог.',
+    '- Для каждой normal/negative реплики сформируй ОДИН полный betterExample в dialog, устраняющий ВСЕ относящиеся к ней замечания. В keyFindings оставь betterExample пустой строкой: при сборке отчёта туда копируется проверенный пример из dialog. Не повторяй одинаковый текст примера в JSON несколько раз. Не выдумывай неизвестные факты.',
+    '- dialog не должен повторять текст реплик: верни только элементы с mark/comment/betterExample в том же количестве и порядке, что исходный диалог.',
     '- Для реплики клиента mark=null и comment=null.',
     '- Для содержательной реплики менеджера mark: positive | normal | negative; comment отражает выполненное и пробел, не только ошибку. Для отдельной проверки связи mark=null и нейтральный comment.',
     '- Для КАЖДОЙ реплики менеджера, включая positive, comment обязателен: конкретно объясни выполненное действие и/или пробел.',
@@ -129,11 +134,12 @@ export async function generateCallAnalyticsBundle(input: {
         category: catalog[0]?.category ?? 'Контакт',
         quote: '...',
         comment: '...',
-        betterExample: '...',
+        betterExample: '',
       }],
       dialog: input.transcript.map((turn) => ({
         mark: turn.role === 'manager' ? 'normal' : null,
         comment: turn.role === 'manager' ? '...' : null,
+        betterExample: turn.role === 'manager' ? 'полный улучшенный ответ для normal/negative; для positive null' : null,
       })),
       recommendations: [{ text: '...', category: 'Контакт', problemTitle: catalog[0]?.title ?? DEFAULT_CALL_REPORT_PROBLEMS[0].title }],
     }, null, 2),

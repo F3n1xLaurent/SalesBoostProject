@@ -1,8 +1,9 @@
 import type OpenAI from 'openai';
-import { compatibleChatMaxTokens, openai } from '../lib/openaiClient';
+import { compatibleChatMaxTokens } from '../lib/openaiClient';
 import { compatibleReportReasoning } from '../lib/chatReasoning';
 import { updateAuditAnalyticsStage } from '../logic/auditAnalyticsProgress';
 import { DEFAULT_CALL_REPORT_PROBLEMS, problemByTitle } from './problemCatalog';
+import { createReportCompletion } from './reportExecution';
 
 /** Do not publish a factual-error label whose own explanation explicitly denies that error. */
 export function reportGenerationIssues(report: Record<string, unknown>): string[] {
@@ -18,12 +19,12 @@ export async function requestReportJson(params: OpenAI.Chat.Completions.ChatComp
   updateAuditAnalyticsStage('report');
   let lastError: unknown;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await openai.chat.completions.create({
+    const response = await createReportCompletion({
       ...params,
       messages: attempt && lastError ? [...params.messages, { role: 'user' as const, content: `Исправь предыдущий результат и верни полный JSON. Причина отклонения: ${lastError instanceof Error ? lastError.message : String(lastError)}` }] : params.messages,
       ...compatibleChatMaxTokens(params.model, attempt === 0 ? 10000 : 16000),
       ...compatibleReportReasoning(params.model, 'generation'),
-    }, { timeout: 120_000, maxRetries: 0 });
+    }, 'generation');
     const choice = response.choices[0];
     if (choice?.finish_reason === 'content_filter' || choice?.message?.refusal) throw new Error('Report generation refused by provider');
     try {

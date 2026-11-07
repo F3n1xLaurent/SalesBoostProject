@@ -22,21 +22,21 @@ describe('report reasoning configuration', () => {
     config.openaiReasoningEffort = undefined;
     expect(compatibleChatReasoning('openai/gpt-5.6-luna')).toEqual({});
   });
-  it('sends configured high reasoning in report generation and its incomplete-JSON retry', async () => {
+  it('uses medium for assembly and its incomplete-JSON retry while retaining the configured model', async () => {
     config.openaiReasoningEffort = 'high';
     const create = vi.spyOn(openai.chat.completions, 'create')
       .mockResolvedValueOnce({ choices: [{ finish_reason: 'length', message: { content: '{' } }] } as any)
       .mockResolvedValueOnce({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ dialog: [], keyFindings: [], summary: 'Итог' }) } }] } as any);
     await requestReportJson({ model: 'openai/gpt-5.6-luna', messages: [{ role: 'user', content: 'Отчёт' }] });
     expect(create).toHaveBeenCalledTimes(2);
-    for (const [request] of create.mock.calls) expect(request).toMatchObject({ model: 'openai/gpt-5.6-luna', reasoning_effort: 'high' });
+    for (const [request] of create.mock.calls) expect(request).toMatchObject({ model: 'openai/gpt-5.6-luna', reasoning_effort: 'medium' });
   });
 
   it('keeps high only in primary stages and snapshots the same effective profile used by requests', () => {
     config.openaiReasoningEffort = 'high';
     const snapshot = reportReasoningProfile();
-    expect(snapshot).toEqual({ reasoningProfileVersion: 'report-staged-v1', reasoningByStage: {
-      evaluation: 'high', generation: 'high', findingCoverage: 'medium', dialogCoverage: 'medium',
+    expect(snapshot).toEqual({ reasoningProfileVersion: 'report-staged-v2', reasoningByStage: {
+      evaluation: 'high', generation: 'medium', findingCoverage: 'medium', dialogCoverage: 'medium',
       exampleRepair: 'medium', exampleReview: 'medium', testAssessment: 'medium',
     } });
     for (const [stage, expected] of Object.entries(snapshot.reasoningByStage)) {

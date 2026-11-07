@@ -11,11 +11,12 @@ export function compatibleChatReasoning(
     : {};
 }
 
-// Main analysis keeps the configured budget. Mechanical edits and graders must
+// Main analysis keeps the configured budget. Report assembly uses the already
+// calculated evaluation. Mechanical edits, report assembly and graders must
 // leave enough of their smaller completion budget for the visible JSON answer.
 const REPORT_REASONING_STAGES = {
   evaluation: 'primary',
-  generation: 'primary',
+  generation: 'auxiliary',
   findingCoverage: 'auxiliary',
   dialogCoverage: 'auxiliary',
   exampleRepair: 'auxiliary',
@@ -33,7 +34,7 @@ export function compatibleReportReasoning(model: string, stage: ReportReasoningS
 /** Use the same resolver as the requests so archived settings cannot drift from execution. */
 export function reportReasoningProfile(model = config.openaiChatModel) {
   return {
-    reasoningProfileVersion: 'report-staged-v1',
+    reasoningProfileVersion: 'report-staged-v2',
     reasoningByStage: Object.fromEntries(
       (Object.keys(REPORT_REASONING_STAGES) as ReportReasoningStage[]).map((stage) =>
         [stage, compatibleReportReasoning(model, stage).reasoning_effort ?? 'provider_default']),

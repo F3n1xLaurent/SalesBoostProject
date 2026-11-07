@@ -700,7 +700,7 @@ describe('unified call report normalization', () => {
       messages: expect.arrayContaining([expect.objectContaining({
         content: expect.stringContaining('диагностика двигателя и ходовой части'),
       })]),
-    }));
+    }), expect.objectContaining({ timeout: 120_000, maxRetries: 0 }));
   });
 
   it('rejects a multi-sentence deflection instead of an answer about inspection works', async () => {

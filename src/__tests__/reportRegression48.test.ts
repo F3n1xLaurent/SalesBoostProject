@@ -161,6 +161,31 @@ describe('48dc0cca: generation repair loop and persisted review metadata', () =>
     expect(stored.exampleReviews?.[0].rejectedCandidates?.[0].text).toBe(initialExample);
     expect(create).toHaveBeenCalledTimes(2); // reading does not make provider requests
   });
+  it('carries all rejected candidates and their feedback into subsequent repairs instead of oscillating', async () => {
+    const intermediate = 'Проверю наличие автомобиля и сообщу ответ до визита.';
+    let repairs = 0;
+    vi.spyOn(openai.chat.completions, 'create').mockImplementation((params: any) => {
+      const content = params.messages.at(-1).content;
+      if (content.startsWith('{')) {
+        const item = JSON.parse(content).items[0], review = passedReview(item);
+        const reason = item.example === initialExample ? 'Не ответил о наличии.' : item.example === intermediate ? 'Нужен подтверждённый ответ.' : null;
+        if (reason) review.checks[0] = { ...review.checks[0], status: 'fail', evidence: '', reason };
+        return completion({ items: [review] });
+      }
+      repairs++;
+      if (repairs === 2) {
+        expect(content).toContain(initialExample);
+        expect(content).toContain(intermediate);
+        expect(content).toContain('Не ответил о наличии.');
+        expect(content).toContain('Нужен подтверждённый ответ.');
+      }
+      return completion({ items: [{ index: 0, betterExample: repairs === 1 ? intermediate : task.example }] });
+    });
+    const result = await ensureReportExampleQuality(report(), transcript);
+    expect(repairs).toBe(2);
+    expect(result.exampleReviews?.[0].status).toBe('pass');
+    expect(result.exampleReviews?.[0].rejectedCandidates).toHaveLength(2);
+  });
   it('does not trust model-provided review metadata and invalidates a stored pass for edited text', () => {
     const raw = report(); raw.exampleReviews = [{ turnIndex: 1, status: 'pass', exampleHash: reportExampleHash('other candidate'), issues: [] }];
     expect(normalizeUnifiedCallReport(raw, { totalScore: 50, transcript })!.exampleReviews).toBeUndefined();
