@@ -170,6 +170,19 @@ export function resolveChecklistItemLabel(evaluation: unknown, rawItem: unknown)
     || null;
 }
 
+/** A ready-made employee reply is evidence/benchmark, never a criterion title. */
+export function resolvePlanCriterionLabel(item: Record<string, unknown>): string {
+  const named = cleanText(item.title || item.name || item.question || item.sourcePrompt);
+  if (named && named.length <= 180) return named;
+  const expected = cleanText(item.expectedAnswer);
+  if (!named && !expected) return '';
+  const replyTemplate = /^(?:здравствуйте|добрый\s+(?:день|вечер)|привет|меня\s+зовут|да[,.!\s]|нет[,.!\s])/iu.test(expected)
+    || /\[[^\]]+\]/u.test(expected) || expected.length > 180;
+  if (expected && !replyTemplate) return expected;
+  if (/здравствуйте|меня\s+зовут/iu.test(expected)) return 'Приветствие и представление';
+  return item.sourceType === 'objection' ? 'Работа с возражением по сценарию' : 'Ответ на вопрос сценария';
+}
+
 function checklistHighlight(item: Record<string, unknown>, status: 'YES' | 'PARTIAL' | 'NO'): string {
   const label = cleanText(item.label) || 'Пункт чек-листа';
   const comment = normalizeManagerNarrationGender(cleanText(item.comment));
@@ -266,7 +279,7 @@ export function buildEvaluationHighlights(
     if (!item) continue;
     const status = cleanText(item.status).toUpperCase();
     if (status === 'NA') continue;
-    const label = cleanText(item.expectedAnswer || item.title || item.name || item.question);
+    const label = resolvePlanCriterionLabel(item);
     const maxScore = numeric(item.maxScore);
     const score = numeric(item.score);
     if (!label || maxScore === null || maxScore <= 0 || score === null) continue;

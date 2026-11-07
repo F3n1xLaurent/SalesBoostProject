@@ -22,6 +22,7 @@ import type { EvaluationChecklistItemDefinition } from '../checklists/checklistM
 import { findManagerClientNameRequest, isClientNameCriterion } from '../logic/conversationFacts';
 import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logic/transcriptionUncertainty';
 import { clientAction, confirmedTimeInDialog, criterionAllowsNa, reportCriterionCode, REPORT_MARK_RUBRIC } from '../voice/reportAssessment';
+import { creditConsultationRequested, isCreditExplanationCriterion } from '../logic/creditApplicability';
 
 // ── Types ──
 
@@ -118,10 +119,15 @@ export function computeCustomChecklistResult(
   transcript: EvaluatorInput['dialogHistory'],
 ): { checklist: ChecklistItem[]; score: number; dimensions: DimensionScores } {
   const rawByCode = new Map(classification.checklist.map((item) => [String(item.code || '').trim().toLowerCase(), item]));
+  const creditRequested = creditConsultationRequested(transcript);
   const built = definitions.map((definition) => {
     const raw = rawByCode.get(definition.id.toLowerCase());
     let status = raw?.status || 'NO';
     if (status === 'NA' && !criterionAllowsNa(definition)) status = 'NO';
+    if (!creditRequested && isCreditExplanationCriterion(definition) && criterionAllowsNa(definition)) {
+      return { code: definition.id as ChecklistItem['code'], weight: definition.points, status: 'NA' as const,
+        evidence: [], comment: 'Клиент не запрашивал и не принимал кредитную консультацию; вопрос о способе оплаты не делает пункт применимым.' };
+    }
     return {
       code: definition.id as ChecklistItem['code'],
       weight: definition.points,
@@ -194,7 +200,7 @@ CAR_IDENTIFICATION (вес: 7) — Уточнил ли менеджер, как�
 NEEDS_DISCOVERY (вес: 8) — Задавал ли менеджер вопросы о потребностях клиента?
 INITIATIVE (вес: 7) — Проявлял ли менеджер инициативу (предлагал варианты, вёл диалог)?
 PRODUCT_PRESENTATION (вес: 10) — Провёл ли менеджер структурированную презентацию автомобиля с привязкой к потребностям клиента?
-CREDIT_EXPLANATION (вес: 8) — Объяснил ли менеджер кредитные условия? (NA если тема не поднималась)
+CREDIT_EXPLANATION (вес: 8) — Объяснил ли менеджер кредитные условия? Применим, если клиент запросил условия, выбрал кредит или явно принял предложение кредитной консультации. Вопрос менеджера «наличные или кредит?» и ответ клиента «пока выбираю» не делают пункт применимым: ставь NA.
 TRADEIN_OFFER (вес: 8) — Предложил ли менеджер trade-in? (NA если тема не поднималась)
 OBJECTION_HANDLING (вес: 10) — Обработал ли менеджер возражения профессионально? (NA если возражений не было)
 NEXT_STEP_PROPOSAL (вес: 10) — Предложил ли менеджер конкретный следующий шаг (визит, тест-драйв, звонок)?
@@ -407,10 +413,13 @@ ${transcriptionUncertainties.length ? `\n=== НЕОПРЕДЕЛЁННОСТЬ Р
   const customResult = customChecklist
     ? computeCustomChecklistResult(customChecklist.items, classification, input.dialogHistory)
     : null;
+  const creditRequested = creditConsultationRequested(input.dialogHistory);
   const checklist = customResult?.checklist ?? enforceManagerChecklistEvidence(
     buildChecklistFromLLMClassification(Array.isArray(classification.checklist) ? classification.checklist : []),
     input.dialogHistory,
-  );
+  ).map(item => item.code === 'CREDIT_EXPLANATION' && !creditRequested
+    ? { ...item, status: 'NA' as const, evidence: [], comment: 'Клиент не запрашивал и не принимал кредитную консультацию.' }
+    : item);
 
   const extra = classification.extra_signals ?? {
     profanity: false,
@@ -480,7 +489,9 @@ ${transcriptionUncertainties.length ? `\n=== НЕОПРЕДЕЛЁННОСТЬ Р
   if (factualIssue && misinformationEvidence.length) factualIssue.evidence = misinformationEvidence.join(' | ');
 
   const recommendations = Array.isArray(classification.recommendations)
-    ? classification.recommendations.filter(Boolean)
+    ? classification.recommendations.filter(text => Boolean(text) && (creditRequested
+      || customChecklist?.items.some(definition => isCreditExplanationCriterion(definition) && !criterionAllowsNa(definition))
+      || !(/кредит|рассроч/iu.test(text) && /объясн|рассказ|услови|взнос|плат[её]ж/iu.test(text))))
     : [];
 
   const evaluation: EvaluationResult = {

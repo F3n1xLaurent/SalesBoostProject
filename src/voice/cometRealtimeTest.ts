@@ -16,7 +16,7 @@ import { assessUserTurnCompletion, classifyInterruption, mergeLogicalTurnText } 
 import { detectVehicleEntityMismatch, vehicleMismatchInstruction } from './realtimeEntityConsistency';
 import { appendSpeechAlignment, audibleTextAt, type SpeechAlignmentPoint } from './realtimeBargeIn';
 import { hypothesis2SpokenSubject, hypothesis2SpokenText } from './hypothesis2Speech';
-import { adaptHypothesis2Prompt, callbackFarewell, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd, visitDecisionInstructions, type VisitOffer } from './hypothesis2Dialogue';
+import { adaptHypothesis2Prompt, callbackFarewell, connectionCheckResponse, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd, visitDecisionInstructions, type VisitOffer } from './hypothesis2Dialogue';
 import { extractNaturalFarewell, hasClosingIntention, hasNaturalFarewell, throughFirstFarewell } from './hypothesis2Closing';
 import { canEndDialogue, currentManagerVisitTime, dialogueAgreementInstruction, dialogueNeedsValidation, dialogueRecoveryResponse, previousClientVisitTime, repeatedVisitQuestionIssue, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, unansweredManagerResponseIssue } from './realtimeDialoguePolicy';
 export { hasNaturalFarewell } from './hypothesis2Closing';
@@ -43,6 +43,7 @@ type TurnMetrics = {
   contextCorrected?: boolean;
   cancelRaceCount?: number;
   responseOutputGuardMs?: number;
+  ttsFailed?: boolean;
 };
 
 type TranscriptTurn = {
@@ -487,6 +488,7 @@ export function containsTechnicalRealtimeSpeech(text: string): boolean {
     // concrete replies such as «Подтверждаю, завтра в пять» available.
     || /(?:коротко|кратко)\s+подтвержу|(?:сейчас|теперь)\s+(?:мы\s+)?(?:коротко\s+)?(?:договоримся|согласуем)[^.!?…]*(?:подтвержу|подытожу|зафиксирую)/iu.test(text)
     || /(?:сейчас\s+)?(?:коротко\s+|кратко\s+)?поясню[,\s:]+(?:коротко|кратко|откуда\s+информация|чтобы\s+не\s+было\s+путаницы)|отвечу\s+по\s+срокам|(?:коротко|кратко)\s+скажу,?\s+как\s+(?:удобнее|лучше)\s+поступить/iu.test(text)
+    || /(?:коротко|кратко)\s+продолжу\s+по\s+делу|сейчас\s+(?:я\s+)?(?:коротко|кратко)\s+(?:уточню|отвечу)[^.!?…]*(?:договоримся|продолжу|подтвержу)/iu.test(text)
     || /отвечу\s+по\s+(?:оплат|способ|вопрос)|(?:потом|заодно)\s+(?:закрепим|зафиксируем)\s+(?:наш[уи]\s+)?(?:встреч|визит|время)|(?:завершим\s+на\s+этом|коротко\s+попрощаюсь)/iu.test(text)
     || /(?:сейчас\s+(?:я\s+)?(?:отвечу|скажу|выберу|зафиксирую)|(?:^|[,.!?]\s*|хорошо,?\s+)(?:отвечу\s+(?:на\s+вопрос|прямо|коротко)|выбираю\s+из)|отвечу\s+и\s+(?:уточню|подтвержу|закроем|зафиксирую)|сразу\s+скажу,?\s+как\s+мне\s+удобнее|давайте\s+сразу\s+определимся\s+со\s+временем)/iu.test(text)
     || (!text.includes('?') && /(?:сейчас|тогда)\s+(?:я\s+)?(?:быстро|коротко)\s+уточню(?:.|\s)*(?:по\s+делу|дальше|поедем|понятно)/iu.test(text));
@@ -621,6 +623,8 @@ class CometElevenLabsTurn {
   private initialBurstPacketsRemaining = 8;
   private socketStartedAt: string | null = null;
   private ttsRequestedAt: string | null = null;
+  private firstAudioTimer: NodeJS.Timeout | null = null;
+  private audioRecoveryCount = 0;
   private readonly dialogueProtocol: boolean;
 
   constructor(
@@ -664,6 +668,7 @@ class CometElevenLabsTurn {
   cancel(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.clearFirstAudioTimer();
     if (this.audioTimer) clearTimeout(this.audioTimer);
     this.audioTimer = null;
     this.audioQueue = [];
@@ -764,6 +769,7 @@ class CometElevenLabsTurn {
       if (!this.ttsRequestedAt) {
         this.ttsRequestedAt = isoNow();
         this.metrics.ttsRequestDelayMs = elapsed(this.firstTextAt, this.ttsRequestedAt);
+        this.watchFirstAudio();
       }
       if (this.dialogueSocket) this.dialogueSocket.sendText(this, text, !this.textSent);
       else if (this.dialogueProtocol && this.ws) {
@@ -792,6 +798,32 @@ class CometElevenLabsTurn {
     return this.audioBytes > 0;
   }
 
+  private clearFirstAudioTimer(): void {
+    if (this.firstAudioTimer) clearTimeout(this.firstAudioTimer);
+    this.firstAudioTimer = null;
+  }
+
+  private watchFirstAudio(): void {
+    this.clearFirstAudioTimer();
+    this.firstAudioTimer = setTimeout(() => {
+      this.firstAudioTimer = null;
+      if (this.stopped || this.audioBytes) return;
+      // Replay the already generated reply, never ask the LLM to invent a
+      // replacement or replay speech that the employee has already heard.
+      if (this.dialogueSocket && this.audioRecoveryCount++ < 1) {
+        this.session.errors.push('ElevenLabs: first audio timeout; reconnecting and replaying unheard reply');
+        this.dialogueSocket.reconnectUnheardTurn(this);
+        this.watchFirstAudio();
+      } else {
+        this.session.errors.push('ElevenLabs: no audio after bounded recovery');
+        this.metrics.ttsFailed = true;
+        this.metrics.audioDurationMs = 0;
+        this.cancel();
+      }
+    }, 5_000);
+    this.firstAudioTimer.unref();
+  }
+
   markDialogueSocketReady(connectStartedAt: string | null, openedAt: string): void {
     if (this.metrics.ttsSocketWaitMs != null) return;
     this.metrics.ttsSocketWaitMs = elapsed(connectStartedAt, openedAt) ?? 0;
@@ -800,6 +832,7 @@ class CometElevenLabsTurn {
   private queueAudio(payload: string): void {
     const audio = Buffer.from(payload, 'base64');
     if (!audio.length) return;
+    this.clearFirstAudioTimer();
     if (this.audioBytes === 0) {
       const at = isoNow();
       this.metrics.ttsFirstAudioMs = elapsed(this.ttsRequestedAt ?? this.firstTextAt, at);
@@ -869,12 +902,22 @@ class CometElevenLabsTurn {
     this.generationFinished = true;
     this.metrics.ttsGenerationMs = elapsed(this.ttsRequestedAt ?? this.firstTextAt, isoNow());
     this.metrics.audioDurationMs = Math.round(this.audioBytes / 8);
+    // A final/closed stream with zero audio must not leave the bridge marked
+    // as speaking forever. The watchdog can still replay a silent v4 turn.
+    if (!this.audioBytes) {
+      if (this.dialogueSocket && this.firstAudioTimer) return;
+      this.session.errors.push('ElevenLabs: synthesis finished without audio');
+      this.metrics.ttsFailed = true;
+      this.stopMedia();
+      return;
+    }
     this.pumpAudio();
   }
 
   private stopMedia(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.clearFirstAudioTimer();
     if (this.audioTimer) clearTimeout(this.audioTimer);
     if (this.mediaStarted) {
       sendJson(this.vox, {
@@ -910,6 +953,7 @@ class CometElevenLabsV4Socket {
     const url = `wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input?model_id=${encodeURIComponent(tts.modelId)}&output_format=ulaw_8000&language_code=ru&sync_alignment=true&apply_text_normalization=on`;
     const ws = new WebSocket(url, {
       ...elevenLabsWebSocketOptions(),
+      handshakeTimeout: 5_000,
       headers: { 'xi-api-key': config.elevenLabsApiKey },
     });
     this.ws = ws;
@@ -940,16 +984,18 @@ class CometElevenLabsV4Socket {
       if (!message) return;
       const turn = this.activeTurn;
       if (message.audio) turn?.receiveDialogueAudio(String(message.audio), message.normalizedAlignment ?? message.alignment ?? message.normalized_alignment);
-      if (message.is_final_audio_for_turn || message.is_final) {
-        turn?.completeDialogueTurn();
+      if ((message.is_final_audio_for_turn || message.is_final) && turn?.hasReceivedDialogueAudio()) {
+        turn.completeDialogueTurn();
         this.activeTurn = null;
         this.activeFrames = [];
       }
       if (message.error || message.detail) {
         this.session.errors.push(`ElevenLabs: ${String(message.error?.message ?? message.detail?.message ?? message.error ?? message.detail)}`);
-        turn?.completeDialogueTurn();
-        this.activeTurn = null;
-        this.activeFrames = [];
+        if (turn?.hasReceivedDialogueAudio()) {
+          turn.completeDialogueTurn();
+          this.activeTurn = null;
+          this.activeFrames = [];
+        }
         try { ws.close(); } catch { /* noop */ }
       }
     });
@@ -967,7 +1013,8 @@ class CometElevenLabsV4Socket {
       const turn = this.activeTurn;
       if (!this.closed && turn && !turn.hasReceivedDialogueAudio()) {
         this.pending = [...this.activeFrames];
-        this.connect();
+        // Its first-audio deadline owns the one retry. Immediate reconnects
+        // here can otherwise loop indefinitely on provider errors.
       } else if (turn) {
         turn.completeDialogueTurn();
         this.activeTurn = null;
@@ -1002,6 +1049,20 @@ class CometElevenLabsV4Socket {
     this.clearKeepAlive();
     try { ws?.close(); } catch { /* noop */ }
     if (!this.closed) this.connect();
+  }
+
+  reconnectUnheardTurn(turn: CometElevenLabsTurn): void {
+    if (this.closed || turn.hasReceivedDialogueAudio()) return;
+    const frames = this.activeTurn === turn ? [...this.activeFrames] : [];
+    const ws = this.ws;
+    this.ws = null;
+    this.opened = false;
+    this.clearKeepAlive();
+    this.activeTurn = turn;
+    this.activeFrames = frames;
+    this.pending = [...frames];
+    try { ws?.close(); } catch { /* noop */ }
+    this.connect();
   }
 
   close(): void {
@@ -1388,6 +1449,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   let awaitingAssistantMediaEnd = false;
   let finishAfterPlayback = false;
   let responseRequestPending = false;
+  let responseWatchdog: NodeJS.Timeout | null = null;
   let queuedServerFarewell = false;
   let queuedResponseAfterPlayback = false;
   let queuedResponseInstructions: string | null = null;
@@ -1458,6 +1520,29 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     unheardContinuationCandidate = null;
   };
 
+  const clearResponseWatchdog = () => {
+    if (responseWatchdog) clearTimeout(responseWatchdog);
+    responseWatchdog = null;
+  };
+
+  const watchProviderResponse = () => {
+    clearResponseWatchdog();
+    responseWatchdog = setTimeout(() => {
+      responseWatchdog = null;
+      if (mediaClosed || hangupSent || finishAfterPlayback || providerRecovering
+        || ttsTurn || awaitingAssistantMediaEnd
+        || (!responseActive && !responseRequestPending)
+        || (!localTurnCommitted && localSpeechVoicedMs >= 100)) return;
+      session.errors.push(`${providerLabel(session)}: response timeout before speech; restoring dialogue`);
+      providerRecovering = true;
+      providerSessionReady = false;
+      recoveryStartedAt = isoNow();
+      suspendDisconnectedTurn();
+      retryProviderRecovery('response_timeout');
+    }, 8_000);
+    responseWatchdog.unref();
+  };
+
   const sendHangupOnce = () => {
     if (hangupSent) return;
     hangupSent = true;
@@ -1517,7 +1602,10 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   const managerResponseGuard = () => {
     if (pendingManagerTimings.length || committedManagerTimings.size) return null;
     const text = [...session.transcript].reverse().find((turn) => turn.role === 'manager')?.text ?? '';
-    return isGarbledManagerText(text) ? 'Не совсем слышно. Повторите, пожалуйста.' : callbackFarewell(text);
+    const previousClient = [...dialogueHistory()].reverse().find(turn => turn.role === 'client')?.text ?? '';
+    return isGarbledManagerText(text) || assessUserTurnCompletion(text, previousClient).incomplete
+      ? 'Повторите, пожалуйста, конец фразы.'
+      : connectionCheckResponse(dialogueHistory(), assistantPreferredName) ?? callbackFarewell(text);
   };
 
   const flushPendingResponseEvents = () => {
@@ -1549,6 +1637,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   };
 
   const holdUnheardResponseForContinuation = () => {
+    clearResponseWatchdog();
     // Output is still behind the ASR gate: nothing has reached TTS/playback.
     // Cancel inference and remove its unheard question from model context,
     // but preserve incoming manager audio and committed transcript timings.
@@ -1586,6 +1675,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       return;
     }
     flowEvent('barge_in_confirmed', reason, startedAt);
+    clearResponseWatchdog();
     finishAfterPlayback = false;
     queuedServerFarewell = false;
     endCallRequested = false;
@@ -1669,9 +1759,13 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     if (responseActive || responseRequestPending || assistantSpeaking || awaitingAssistantMediaEnd) {
       queuedResponseAfterPlayback = true;
       queuedResponseInstructions = turnInstructions ?? queuedResponseInstructions;
+      // A lost cancellation acknowledgement must not strand the new manager
+      // question behind an old, suppressed response forever.
+      if ((responseActive || responseRequestPending) && !responseWatchdog) watchProviderResponse();
       return;
     }
     responseRequestPending = true;
+    watchProviderResponse();
     if (!session.transcript.some(turn => turn.role === 'client')) flowEvent('opening_response_requested', 'inference_requested', lastCompletedManagerVoiceAt ?? undefined);
     managerHasFloor = false;
     suppressInterruptedOutput = false;
@@ -2241,6 +2335,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       if (dialogueNeedsValidation(dialogueHistory()) && !message.visitGuardResolved) return;
       if (!ttsTurn) {
         assistantSpeaking = true;
+        const turnMetrics = currentMetrics;
         ttsTurn = new CometElevenLabsTurn(
           session,
           vox,
@@ -2256,6 +2351,15 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
             session.firstAudioAfterSpeechAt ??= isoNow();
           },
           () => {
+            if (turnMetrics.ttsFailed) {
+              const recorded = session.transcript.find(turn => turn.role === 'client' && turn.metrics === turnMetrics);
+              if (recorded) recorded.text = '[реплика не прозвучала]';
+              if (currentMetrics === turnMetrics) {
+                repairAssistantText('');
+                assistantText = '';
+                assistantTurnRecorded = true;
+              }
+            }
             ttsTurn = null;
             if (!awaitingAssistantMediaEnd) releaseInputAfterPlayback();
           },
@@ -2306,7 +2410,10 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
           .find((turn) => turn.role === 'manager')?.text ?? '';
         const hasHoldInstruction = hasExplicitHoldInstruction(recentManagerText);
         const hasIvrInstruction = /(?:нажмите|наберите|выберите\s+(?:пункт|цифру|клавишу)|голосов(?:ое|ого)\s+меню)/iu.test(recentManagerText);
-        const canSilenceLine = hasHoldInstruction || (kind === 'ivr' && hasIvrInstruction);
+        const localLine = classifyHypothesis2LineLocally(recentManagerText);
+        const confirmedRecording = session.connectionState !== 'live_conversation'
+          && localLine?.speakerType === 'ivr_or_recording';
+        const canSilenceLine = hasHoldInstruction || (kind === 'ivr' && hasIvrInstruction) || confirmedRecording;
         if (!canSilenceLine) {
           sendToolResult(String(message.call_id ?? ''), {
             ok: false,
@@ -2358,6 +2465,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     }
     if (eventType === 'response.done') {
       if (message.response?.id && activeResponseId && message.response.id !== activeResponseId) return;
+      clearResponseWatchdog();
       if (session.production && message.response?.usage && !session.usage?.some((entry) => entry.responseId === message.response.id)) {
         session.usage ??= [];
         session.usage.push({ responseId: String(message.response.id), usage: message.response.usage });
@@ -2513,6 +2621,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       if (responseWasEmpty && (lastCompletedManagerCommitAt || lastSpeechStoppedAt) && silentResponseRetryCount < 1) {
         silentResponseRetryCount += 1;
         responseRequestPending = true;
+        watchProviderResponse();
         sendJson(comet, {
           type: 'response.create',
           response: {
@@ -2590,6 +2699,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     && !session.endedAt && !hangupSent && !finishAfterPlayback && !endCallRequested;
 
   const suspendDisconnectedTurn = () => {
+    clearResponseWatchdog();
     const replayAudio = (pendingManagerTimings.length || committedManagerTimings.size
       || (!localTurnCommitted && localSpeechVoicedMs >= 100)) ? retainedManagerAudio.map(frame => frame.audio) : [];
     const replayStartedAt = lastSpeechStartedAt;
@@ -3001,6 +3111,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   vox.on('error', (error) => session.errors.push(`Vox media socket: ${error.message}`));
   vox.on('close', () => {
     mediaClosed = true;
+    clearResponseWatchdog();
     if (providerRecoveryTimer) clearTimeout(providerRecoveryTimer);
     if (recoveryHangupTimer) clearTimeout(recoveryHangupTimer);
     recoveryHistoryPending.clear();

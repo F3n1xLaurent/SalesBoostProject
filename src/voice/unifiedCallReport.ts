@@ -7,7 +7,8 @@ import { checklistCategoryScores, clientAction, deduplicateReportStrengths, isIn
 import { reportGenerationIssues, requestReportJson } from './reportGeneration';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
-import { isUnreliableManagerUtterance } from './transcriptReliability';
+import { isConnectionCheckTurn, isUnreliableManagerUtterance } from './transcriptReliability';
+import { groundReportTurnComment } from './reportTurnGrounding';
 import { buildEvaluationHighlights, normalizeManagerNarrationGender } from '../logic/evaluationHighlights';
 import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
 import { isUncertainFactClaim, type TranscriptionUncertainty } from '../logic/transcriptionUncertainty';
@@ -162,7 +163,8 @@ function meaningfulText(value: unknown): string {
 function reportComment(value: unknown): string {
   // An old/generated comment can contain an unvalidated "Можно лучше" quote.
   // It isn't evidence or scenario data and must not seed later repair passes.
-  return meaningfulText(value).split(/(?:можно\s+лучше|как\s+лучше|лучше\s+сказать|улучшенный\s+пример)\s*:/iu)[0].trim();
+  return meaningfulText(value).split(/(?:можно\s+лучше|как\s+лучше|лучше\s+сказать|улучшенный\s+пример)\s*:/iu)[0]
+    .replace(/(?<!\.)\.{2}(?!\.)/gu, '.').trim();
 }
 
 export function normalizeCompanyWording(value: string): string {
@@ -421,6 +423,18 @@ function resolveFindingQuote(
   rawQuote: unknown,
   transcript: TranscriptTurn[],
 ): string {
+  const provided = meaningfulText(rawQuote);
+  // Preserve an explicit quote, including an invalid one which the caller
+  // will reject. Never move a defect to a different, successful greeting.
+  if (provided) {
+    if (problem.code === 'NO_INTRO_COMPANY' || problem.code === 'WEAK_DIALOG_OPENING') {
+      const opening = prepareTranscriptForAnalysis(transcript).transcript.find(turn => turn.role === 'manager');
+      const matches = matchingManagerTurnIndexes(provided, transcript);
+      const introduction = /меня\s+зовут|мо[её]\s+имя|здравствуйте|добрый\s+(?:день|вечер)|компани|автосалон|отдел\s+продаж/iu;
+      if (matches.length && matches.every(index => transcript[index].text !== opening?.text && !introduction.test(transcript[index].text))) return '';
+    }
+    return provided;
+  }
   if (problem.code === 'NO_INTRO_COMPANY' || problem.code === 'WEAK_DIALOG_OPENING') {
     const liveTranscript = prepareTranscriptForAnalysis(transcript).transcript;
     const openingManagerTurn = liveTranscript.find((turn) => turn.role === 'manager' && meaningfulText(turn.text));
@@ -594,7 +608,8 @@ export function normalizeUnifiedCallReport(
       const quote = resolveFindingQuote(problem, raw.quote, fallback.transcript);
       const quoteIndex = findTranscriptQuoteIndex(quote, fallback.transcript);
       if (fallback.transcript.length > 0
-        && (quoteIndex < 0 || isUnreliableManagerUtterance(fallback.transcript[quoteIndex].text))) return null;
+        && (quoteIndex < 0 || isUnreliableManagerUtterance(fallback.transcript[quoteIndex].text)
+          || isConnectionCheckTurn(fallback.transcript, quoteIndex))) return null;
       if (problem.code === 'WRONG_CLIENT_NAME' && !repeatedNameRequest(fallback.transcript, quoteIndex)) return null;
       if (problem.code === 'WEAK_OBJECTION_HANDLING') {
         const client = [...fallback.transcript.slice(0, quoteIndex)].reverse().find(turn => turn.role === 'client');
@@ -614,7 +629,7 @@ export function normalizeUnifiedCallReport(
         importance: normalizeImportance(raw.importance),
         category: problem.category,
         quote,
-        comment: normalizeManagerNarrationGender(normalizeCompanyWording(reportComment(raw.comment))),
+        comment: groundReportTurnComment(normalizeManagerNarrationGender(normalizeCompanyWording(reportComment(raw.comment))), quoteIndex, fallback.transcript),
         betterExample: sanitizeBetterExample(raw.betterExample, quote, fallback.transcript, quoteIndex, fallback.scenarioContext),
       };
     })
@@ -657,6 +672,10 @@ export function normalizeUnifiedCallReport(
       }
     }
     const role = turn.role;
+    if (role === 'manager' && isConnectionCheckTurn(fallback.transcript, index)) {
+      return { role, text: turn.text, mark: null,
+        comment: 'Менеджер проверяет слышимость. Эта реплика сама по себе не свидетельствует об ошибке в работе с клиентом.', betterExample: null };
+    }
     if (role === 'manager' && isUnreliableManagerUtterance(turn.text)) {
       return { role, text: turn.text, mark: null, comment: null, betterExample: null };
     }
@@ -679,7 +698,7 @@ export function normalizeUnifiedCallReport(
       ? sanitizeBetterExample(raw.betterExample, turn.text, fallback.transcript, index, fallback.scenarioContext) || null
       : null;
     const comment = role === 'manager' && !uncertainRawClaim
-      ? normalizeManagerNarrationGender(reportComment(raw.comment)) || null
+      ? groundReportTurnComment(normalizeManagerNarrationGender(reportComment(raw.comment)), index, fallback.transcript) || null
       : null;
     return {
       role,
@@ -689,7 +708,7 @@ export function normalizeUnifiedCallReport(
       betterExample,
     };
   }).map((line, index) => {
-    if (line.role !== 'manager' || isUnreliableManagerUtterance(line.text)) return line;
+    if (line.role !== 'manager' || isUnreliableManagerUtterance(line.text) || isConnectionCheckTurn(fallback.transcript, index)) return line;
     const matchedFindings = findings.filter((finding) => {
       const matches = matchingManagerTurnIndexes(finding.quote, fallback.transcript);
       if (matches.length === 0) return false;
@@ -1010,7 +1029,7 @@ export async function ensureRecommendationFindingCoverage(
 /** Repair missing annotations only. Never infer a negative score from an API failure. */
 export async function ensureReportDialogCoverage(report: UnifiedCallReport, transcript: TranscriptTurn[], evaluation?: EvaluationInput | Record<string, unknown> | null): Promise<UnifiedCallReport> {
   const dialog = report.dialog.map((line) => ({ ...line }));
-  let missing = () => dialog.flatMap((line, index) => line.role === 'manager' && !isUnreliableManagerUtterance(line.text) && (!line.mark || !line.comment?.trim()) ? [{ index, text: line.text, mark: line.mark }] : []);
+  let missing = () => dialog.flatMap((line, index) => line.role === 'manager' && !isUnreliableManagerUtterance(line.text) && !isConnectionCheckTurn(transcript, index) && (!line.mark || !line.comment?.trim()) ? [{ index, text: line.text, mark: line.mark }] : []);
   for (let attempt = 0; attempt < 2 && missing().length; attempt += 1) {
     try {
       const response = await openai.chat.completions.create({ model: config.openaiChatModel, response_format: { type: 'json_object' },
@@ -1259,7 +1278,7 @@ export async function generateUnifiedCallReport(input: {
     '- Для проблем приветствия, представления или названия компании keyFindings.quote должна быть первой живой репликой менеджера, а не случайной репликой из середины разговора.',
     '- В keyFindings.comment и keyFindings.betterExample используй универсальную формулировку «название компании», а не «название автосалона».',
     '- dialog должен содержать ВСЕ реплики исходного диалога в том же порядке.',
-    '- Для каждой реплики менеджера mark: positive | normal | negative. Для клиента mark=null, comment=null, betterExample=null.',
+    '- Для содержательной реплики менеджера mark: positive | normal | negative. Для отдельной проверки связи mark=null и нейтральный comment. Для клиента mark=null, comment=null, betterExample=null.',
     '- Для normal/negative обязателен единый полный betterExample, устраняющий замечания; для positive — null.',
     '- Для КАЖДОЙ реплики менеджера, включая positive, comment обязателен и должен конкретно объяснять выполненное действие и/или пробел.',
     '- betterExample должен отвечать на тот же вопрос, сохранять все корректные факты исходной реплики и не добавлять новые цены, сроки, характеристики или обещания. Используй только сведения, известные ДО анализируемой реплики включительно. Запрещено опираться на потребности и факты, которые клиент сообщил позднее. Если пример не устраняет замечание, лишь перефразирует исходную реплику или требует будущего контекста, верни null.',

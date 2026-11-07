@@ -6,7 +6,7 @@ import { getDefaultState } from '../state/defaultState';
 import { generateCallAnalyticsBundle } from '../voice/callAnalyticsBundle';
 import { generateUnifiedTrainerReport, UNIFIED_REPORT_CATEGORIES, unifiedVerdict, type UnifiedCallReport } from '../voice/unifiedCallReport';
 import { prepareTranscriptForAnalysis } from '../voice/analysisTranscript';
-import { filterUnreliableManagerTurns } from '../voice/transcriptReliability';
+import { filterUnreliableManagerTurns, isConnectionCheckTurn } from '../voice/transcriptReliability';
 import { REPORT_TEST_CHECKS, type ReportCheckId, type ReportFixture } from './reportTestCatalog';
 import { reportExampleHash } from '../voice/reportExampleReview';
 import { REPORT_EXAMPLE_ACCEPTANCE_RULES } from '../voice/reportQualityRules';
@@ -41,7 +41,7 @@ export function reportCodeChecks(fixture: ReportFixture, output: ReportOutput): 
   const { report } = output, result: ReportCheck[] = [];
   const emit = (id: ReportCheckId, issues: string[], success: string) => result.push(reportCheck(id, issues.length ? 'fail' : 'pass', ...(issues.length ? issues : [success])));
   const manager = report.dialog.flatMap((turn, index) => turn.role === 'manager' ? [{ ...turn, index }] : []);
-  emit('report-all-turns', !manager.length ? ['В отчёте нет реплик менеджера.'] : manager.filter((turn) => !turn.mark || !turn.comment?.trim()).map((turn) => `dialog[${turn.index}]: нет метки или комментария к «${turn.text}».`), 'У всех реплик менеджера есть метка и комментарий.');
+  emit('report-all-turns', !manager.length ? ['В отчёте нет реплик менеджера.'] : manager.filter((turn) => (!turn.mark && !isConnectionCheckTurn(report.dialog, turn.index)) || !turn.comment?.trim()).map((turn) => `dialog[${turn.index}]: нет метки или комментария к «${turn.text}».`), 'У содержательных реплик менеджера есть метка и комментарий; у проверки связи — нейтральный комментарий.');
   emit('report-roles', report.dialog.length !== fixture.transcript.length || report.dialog.some((turn, index) => turn.role !== fixture.transcript[index]?.role || turn.text !== fixture.transcript[index]?.text) ? ['dialog изменил текст, порядок или роль встроенного эталона.'] : [], 'Порядок, текст и роли сохранены относительно встроенного транскрипта (не проверка диаризации аудио).');
   emit('report-example-present', manager.filter((turn) => ['normal', 'negative'].includes(turn.mark ?? '') && !turn.betterExample?.trim()).map((turn) => `dialog[${turn.index}] ${turn.mark}: отсутствует пример ответа.`), 'У всех normal/negative есть пример.');
   const requiredExamples = manager.filter((turn) => ['normal', 'negative'].includes(turn.mark ?? ''));

@@ -1,12 +1,15 @@
 import type { TranscriptTurn } from './callHistory';
 import type { UnifiedReportCategory } from './unifiedCallReport';
 import { sameVisitTime, visitSlot } from './realtimeDialoguePolicy';
+import { conditionalCreditCriterion } from '../logic/creditApplicability';
 
 export const REPORT_MARK_RUBRIC = [
   'Единая шкала: positive («Положительно») — обязательный смысл передан корректно, даже другими словами; normal («Можно лучше») — полезный ответ/действие есть, но конкретный обязательный элемент отсутствует; negative («Плохо») — подтверждённая существенная ошибка, грубость, противоречие или полный уход от заданного вопроса.',
   'Сравнивай полный смысл исходной и улучшенной реплик. Если улучшение только стилистическое, короче или синонимично и не устраняет конкретный обязательный пробел, исходная реплика не заслуживает negative/normal. Одинаковая степень выполнения при одинаковом контексте должна получать одинаковую метку.',
   'До оценки определи действие клиента: информационный вопрос, просьба, возражение или сообщение. Вопрос о цене/характеристиках сам по себе не возражение. Возражение содержит препятствие, сомнение или несогласие; обычное сообщение о кредите не требует отработки возражения.',
   'Применяй критерий только когда возникла соответствующая ситуация. Не требуй фамилию, если критерий требует только имя. Не называй переспрос уже названных данных сильной стороной. Не оценивай неподтверждённое распознавание марки, имени или обрывка как фактическую ошибку.',
+  'Отдельные «Алло», «вас не слышно», «вы меня слышите» — проверка связи, а не доказательство провала продаж, грубости, отсутствия представления или следующего шага. Не штрафуй сотрудника за непрозвучавший ответ бота. Выполненные действия оценивай по всему содержательному диалогу; не переноси проблемы всего разговора в проверку связи.',
+  'Короткое «да», «нет», «да, конечно» на закрытый вопрос является прямым ответом. Например, «Да, конечно» на «Можно ли в кредит?» не является уходом от вопроса. Отсутствие обязательных подробностей можно отметить отдельно, если они требуются сценарием, сохраняя зачёт прямого ответа.',
 ].join('\n');
 
 export function clientAction(text: string): 'question' | 'request' | 'objection' | 'statement' {
@@ -42,8 +45,8 @@ export function reportCriterionCode(evaluation: unknown, code: string): string {
   return definition ? CRITERIA.find(([, pattern]) => pattern.test(definition.title ?? ''))?.[0] ?? code.toUpperCase() : code.toUpperCase();
 }
 /** An explicit applicability condition in the criterion is part of its rubric. */
-export function criterionAllowsNa(definition: { allowNa?: boolean; instruction?: string }): boolean {
-  return definition.allowNa === true || /(?:если|при\s+наличии)[^.!?]{0,100}(?:возражени|тема[^.!?]{0,40}(?:уместн|поднимал|обсуждал))/iu.test(definition.instruction ?? '');
+export function criterionAllowsNa(definition: { title?: string; allowNa?: boolean; instruction?: string }): boolean {
+  return definition.allowNa === true || conditionalCreditCriterion(definition) || /(?:если|при\s+наличии)[^.!?]{0,100}(?:возражени|тема[^.!?]{0,40}(?:уместн|поднимал|обсуждал))/iu.test(definition.instruction ?? '');
 }
 function reportCategory(category: string): UnifiedReportCategory | null {
   if (/контакт/iu.test(category) && !/повторн/iu.test(category)) return 'Контакт';

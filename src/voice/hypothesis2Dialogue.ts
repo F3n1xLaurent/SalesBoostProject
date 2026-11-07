@@ -1,4 +1,5 @@
 import { sameVisitTime } from './realtimeDialoguePolicy';
+import { isConnectionCheck } from './transcriptReliability';
 
 /** Adapt transport instructions, not business questions, in the isolated bridge. */
 export function adaptHypothesis2Prompt(prompt: string): string {
@@ -38,7 +39,28 @@ export function callbackFarewell(text: string): string | null {
   return time ? `Хорошо, перезвоню ${time}. До свидания.` : 'Хорошо, перезвоню. До свидания.';
 }
 
-type DialogueTurn = { role: string; text: string; metrics?: { interrupted?: boolean } };
+type DialogueTurn = { role: string; text: string; metrics?: { interrupted?: boolean; ttsFailed?: boolean } };
+
+/** Repeat once on an explicit audibility check, not on unrelated questions or
+ * hold instructions. Later checks do not replay the same long reply again. */
+export function connectionCheckResponse(turns: readonly DialogueTurn[], name: string | null = null): string | null {
+  const latest = turns.at(-1);
+  if (latest?.role !== 'manager' || !isConnectionCheck(latest.text)) return null;
+  const previousClient = turns.slice(0, -1).filter(turn => turn.role === 'client'
+    && !turn.text.startsWith('[') && !turn.metrics?.ttsFailed).at(-1);
+  if (!previousClient) return null;
+  const lastContent = turns.map(turn => turn.role === 'manager' && !isConnectionCheck(turn.text)).lastIndexOf(true);
+  const checks = turns.slice(lastContent + 1).filter(turn => turn.role === 'manager' && isConnectionCheck(turn.text)).length;
+  if (checks > 2) return null;
+  if (checks === 2) return 'Да, я на связи. Вы меня слышите?';
+  if (/меня\s+зовут[\s,.!?]*$/iu.test(previousClient.text)) {
+    return name ? `Меня зовут ${name}. Вы меня слышите?` : 'Да, я на связи. Вы меня слышите?';
+  }
+  const question = previousClient.text.match(/[^.!?]+\?/gu)?.at(-1)?.trim();
+  const repeat = question ?? previousClient.text.trim();
+  return repeat.length <= 300 && !/\d{1,2}:\s*$/u.test(repeat)
+    ? repeat : 'Да, я на связи. Вы меня слышите?';
+}
 const questionTopic = (text: string): string => {
   // Acknowledging the previous topic isn't asking it again: "Скидку понял.
   // Какой пробег?" belongs to mileage, not to discount.

@@ -249,7 +249,7 @@ describe('unified call report normalization', () => {
     });
   });
 
-  it('anchors an incomplete introduction finding to the opening manager line', () => {
+  it('rejects a misplaced introduction quote instead of moving its defect to another reply', () => {
     const opening = 'Да, добрый день. В наличии есть. Подскажите, что вас интересует?';
     const unrelatedLaterLine = 'Этот автомобиль прошёл юридическую проверку и диагностику.';
     const report = normalizeUnifiedCallReport(
@@ -278,7 +278,7 @@ describe('unified call report normalization', () => {
       },
     );
 
-    expect(report?.keyFindings[0]?.quote).toBe(opening);
+    expect(report?.keyFindings).toHaveLength(0);
   });
 
   it('does not accept a generic paraphrase as an improvement to a normal manager reply', () => {

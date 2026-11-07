@@ -1,3 +1,5 @@
+import { isConnectionCheck } from './transcriptReliability';
+
 /** Business state is derived from heard speech, never from end_call.reason. */
 export type PolicyTurn = { role: string; text: string; metrics?: { interrupted?: boolean } };
 // Interrupted turns already contain the conservative heard prefix. Keep that
@@ -89,6 +91,10 @@ export function dialogueNeedsValidation(turns: readonly PolicyTurn[]): boolean {
 export function unansweredManagerResponseIssue(turns: readonly PolicyTurn[], response: string): string | null {
   const manager = audible(turns).filter(t => t.role === 'manager').at(-1)?.text ?? '';
   const lastQuestion = manager.match(/[^.!?]*\?/gu)?.at(-1) ?? manager;
+  if (/(?:собственност|на\s+ч[её]м[^.!?]*езд|сейчас[^.!?]*езд|эксплуатируете)/iu.test(manager)
+    && /не\s+могу\s+уточнить|не\s+знаю[^.!?]*(?:автомобил|машин)|нужно\s+уточнить/iu.test(response)) {
+    return 'Это вопрос о твоём собственном автомобиле или его использовании. Ответь по легенде и предыдущим ответам, не изображай незнание личных обстоятельств. Если этих данных нет, допустим краткий отказ обсуждать личный вопрос без выдуманных фактов.';
+  }
   if (paymentQuestion(manager) && !/наличн|кредит|оплат|способ.*расч[её]т|собственн[^.!?]*средств|за\s+свои|(?:пока|ещ[её])\s+(?:выбираю|думаю)|не\s+(?:решил[аи]?|определил[а-яё]*|выбрал[аи]?)/iu.test(response)) {
     return 'Менеджер спросил о способе оплаты: наличные или кредит. Ответь по легенде; если способ ещё не выбран, прямо скажи это. Не подменяй ответ вопросом о времени визита.';
   }
@@ -138,7 +144,7 @@ export function dialogueRecoveryResponse(turns: readonly PolicyTurn[], options: 
     if (/(?:где|откуда)[^.!?]*(?:видел|увиде|объявлен|информац)/iu.test(state.manager)) return 'Точный источник объявления сейчас не могу назвать. Спасибо, до свидания.';
     if (!options.answerRequired) return 'Понятно, спасибо за информацию. До свидания.';
   }
-  if (options.answerRequired) return 'Пока не могу уточнить ответ на ваш вопрос. Подскажите, что именно вам важно знать?';
+  if (options.answerRequired) return 'Предпочту пока оставить этот вопрос без ответа.';
   const knownDay = history.filter(t => !/(?:^|\s)(?:или|либо)(?=\s|[,.]|$)/iu.test(t.text))
     .map(t => t.text.match(DAY)?.[0]?.toLowerCase()).filter(Boolean).at(-1);
   const formatDay = (day: string) => /сегодня|завтра/iu.test(day) ? day
@@ -181,6 +187,7 @@ export function unansweredFactResponseIssue(turns: readonly PolicyTurn[], respon
 }
 export function canEndDialogue(turns: readonly PolicyTurn[], response: string): boolean {
   const state=visitState(turns);
+  if (isConnectionCheck(state.manager)) return false;
   if (response.includes('?')) return false;
   if (unansweredManagerResponseIssue(turns, response)) return false;
   // A manager's explicit termination/refusal and callback are terminal even

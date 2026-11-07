@@ -33,10 +33,6 @@ const CLIENT_WAITING_PATTERN = /(?:буду ждать|я на линии|дож
 const OPERATOR_HANDOFF_PATTERN = /(?:соедин(?:ю|им|яем|ите|ить)|переключ(?:у|им|аем|ить)|перевед(?:у|ем|ём|ите|ти)|передам|позову|приглашу|ожидайте\s+(?:ответа|соединения)).{0,90}(?:менеджер|специалист|отдел|сотрудник|оператор)|(?:менеджер|специалист|отдел|сотрудник|оператор).{0,90}(?:соедин(?:ю|им|яем|ить)|переключ(?:у|им|аем|ить)|перевед(?:у|ем|ём|ти)|передам|позову)/i;
 const CALL_CENTER_INTRO_PATTERN = /(?:колл[ -]?центр|контактн(?:ый|ого)\s+центр|единая\s+(?:справочная|линия)|диспетчерская)/i;
 
-function normalizedText(text: string): string {
-  return text.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
-}
-
 function isNoise(text: string): boolean {
   return !/[\p{L}\p{N}]/u.test(text);
 }
@@ -64,16 +60,16 @@ function hasBothSides(turns: readonly TranscriptTurn[]): boolean {
 
 function hasPreconnectionEvidence(turns: readonly TranscriptTurn[], boundaryIndex: number): boolean {
   const prefix = turns.slice(0, boundaryIndex);
+  // Once a substantive employee answer exists, a later «Алло» cannot turn
+  // that conversation into a queue prefix. Repeated client questions are
+  // often a bot defect, not evidence of a transfer.
+  const liveManagerTurns = prefix.filter(turn => turn.role === 'manager'
+    && !isNoise(turn.text) && !isAutomaticSpeech(turn.text));
+  if (liveManagerTurns.some(turn => !isGreeting(turn.text)
+    || /цен[ауы]|стоимост|пробег|в\s+продаже|в\s+наличии|нацен|кредит|приезжайте|\d/iu.test(turn.text))) return false;
   if (prefix.some((turn) => turn.role === 'client' && CLIENT_WAITING_PATTERN.test(turn.text))) return true;
   if (prefix.filter((turn) => turn.role === 'manager' && isNoise(turn.text)).length >= 2) return true;
-
-  const clientCounts = new Map<string, number>();
-  for (const turn of prefix) {
-    if (turn.role !== 'client' || isNoise(turn.text)) continue;
-    const text = normalizedText(turn.text);
-    clientCounts.set(text, (clientCounts.get(text) ?? 0) + 1);
-  }
-  return [...clientCounts.values()].some((count) => count >= 2);
+  return false;
 }
 
 function resultFromBoundary(
@@ -142,7 +138,8 @@ export function prepareTranscriptForAnalysis(
 
   const greetingIndexes = managerIndexes.filter((index) => isGreeting(turns[index].text));
   if (greetingIndexes.length >= 2) {
-    const boundaryIndex = greetingIndexes.find((index) => index > greetingIndexes[0] && isLikelyHumanStart(turns[index].text));
+    const boundaryIndex = greetingIndexes.find((index) => index > greetingIndexes[0]
+      && SELF_INTRODUCTION_PATTERN.test(turns[index].text));
     if (boundaryIndex != null && hasPreconnectionEvidence(turns, boundaryIndex)) {
       const reason = options.ivrDetected ? 'ivr_flag_with_handoff' : 'second_greeting';
       const result = resultFromBoundary(turns, boundaryIndex, reason);

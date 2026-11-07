@@ -103,7 +103,7 @@ import { buildDealershipFromCar } from './llm/virtualClient';
 import { loadCar } from './data/carLoader';
 import { getVirtualClientReply, type Strictness } from './llm/virtualClient';
 import { evaluateSessionV2 } from './llm/evaluatorV2';
-import { resolveChecklistItemLabel } from './logic/evaluationHighlights';
+import { resolveChecklistItemLabel, resolvePlanCriterionLabel } from './logic/evaluationHighlights';
 import { buildTtsText, generateSpeechBuffer, generateSpeechElevenLabsVoice, generateSpeechOpenAI, generateSpeechOpenAIVoice } from './voice/tts';
 import { resolveTrainerVoiceSelection, type TrainerVoiceSelection } from './voice/trainerVoice';
 import { createTrainerTurnTimer, trainerTranscriptWithoutAudio, type TrainerTurnTimings } from './trainer/trainerTurnPerformance';
@@ -589,6 +589,7 @@ function extractChecklistFromSession(session: { checklistResultsJson: string | n
 }
 
 type PlanCriterionEvaluation = {
+  label: string;
   expectedAnswer: string;
   maxScore: number;
   score: number;
@@ -618,6 +619,7 @@ function extractPlanCriteriaEvaluation(evaluation: Record<string, unknown> | nul
     const score = Math.max(0, Math.min(maxScore, numberOrNull(item.score) ?? 0));
     return {
       expectedAnswer: String(item.expectedAnswer || item.title || item.name || item.question || '').trim(),
+      label: resolvePlanCriterionLabel(item),
       maxScore,
       score,
       evidence: String(item.evidence || item.comment || item.reason || '').trim(),
@@ -1479,7 +1481,7 @@ function extractReportIssuesFromSession(
       if (item.status === 'NA') continue;
       const ratio = item.maxScore > 0 ? item.score / item.maxScore : 0;
       if (ratio < 0.8) {
-        const label = item.expectedAnswer || 'Провал по критерию скрипта';
+        const label = item.label || 'Провал по критерию скрипта';
         issues.push(label);
       }
     }
@@ -9747,7 +9749,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         const ratio = item.maxScore > 0 ? item.score / item.maxScore : 0;
         const result = ratio >= 0.8 ? 'pass' as const : ratio >= 0.4 ? 'warn' as const : 'fail' as const;
         return {
-          label: item.expectedAnswer || `Критерий скрипта ${index + 1}`,
+          label: item.label || `Критерий скрипта ${index + 1}`,
           result,
           quote: item.evidence || `Баллы: ${round1(item.score)} из ${round1(item.maxScore)}`,
         };
@@ -9788,7 +9790,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         const maxScore = item.maxScore > 0 ? item.maxScore : 100;
         const lostPercent = Math.round(((maxScore - item.score) / maxScore) * 100);
         return {
-          issue: item.expectedAnswer || `Критерий скрипта ${index + 1}`,
+          issue: item.label || `Критерий скрипта ${index + 1}`,
           evidence: item.evidence,
           percent: Math.max(0, Math.min(100, lostPercent)),
         };

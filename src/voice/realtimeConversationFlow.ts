@@ -115,7 +115,7 @@ export type UserTurnEndpoint = {
   reason: UserTurnCompletion['reason'] | 'semantic_open_answer' | 'semantic_answer_grace' | 'opening_introduction_grace';
 };
 
-const HANGING_FUNCTION_WORD = /(?:^|\s)(в|во|на|за|по|с|со|к|ко|от|до|для|из|у|о|об|про|при|без|через|между|и|а|но|или|что|чтобы|потому|если|когда|не|ни)$/u;
+const HANGING_FUNCTION_WORD = /(?:^|\s)(в|во|на|за|по|с|со|к|ко|от|до|для|из|у|о|об|про|при|без|через|между|и|а|но|или|что|чтобы|потому|если|когда|как|какой|какая|какие|сколько|почему|зачем|не|ни)$/u;
 const OPEN_QUESTION = /(?:\?|\bчто\b|\bкак\b|\bпочему\b|\bкакие?\b|\bрасскажите\b|\bопишите\b|\bуточните\b)/iu;
 const CONCISE_COMPLETE_ANSWER = /^(?:да|нет|не\s+знаю|ничего|все|всё|нормально|хорошо|плохо|актуально|продан[ао]?|в\s+наличии|не\s+было|без\s+дтп)(?:\s|$)/u;
 const MEASUREMENT_UNIT_AT_END = /(?:^|\s)(?:рубл(?:ь|я|ей)|тысяч(?:а|и)?|миллион(?:а|ов)?|километр(?:а|ов)?|лет|год(?:а|ов)?|месяц(?:а|ев)?|дн(?:я|ей)|час(?:а|ов)?)$/u;
@@ -138,8 +138,10 @@ export function openingTurnNeedsIntroGrace(text: string): boolean {
 export function assessUserTurnCompletion(text: string, previousAssistantText: string): UserTurnCompletion {
   const normalized = normalizeConversationText(text);
   if (!normalized) return { incomplete: false, reason: 'complete' };
+  if (/^(?:как|сколько|почему|зачем)$/u.test(normalized) && /\?/u.test(text)) return { incomplete: false, reason: 'complete' };
   if (looksLikeContinuingThought(text)) return { incomplete: true, reason: 'continuation_marker' };
   if (HANGING_FUNCTION_WORD.test(normalized)) return { incomplete: true, reason: 'hanging_function_word' };
+  if (/(?:^|\s)меня\s+зовут$/u.test(normalized)) return { incomplete: true, reason: 'hanging_function_word' };
   const endsWithMeasurement = MEASUREMENT_UNIT_AT_END.test(normalized);
   const hasNumberAnchor = NUMBER_ANCHOR.test(normalized);
   if (endsWithMeasurement && !hasNumberAnchor && /(?:не\s+знаю|не\s+помню)/u.test(normalized)) {
