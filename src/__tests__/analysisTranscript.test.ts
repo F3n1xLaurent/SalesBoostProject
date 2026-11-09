@@ -176,4 +176,19 @@ describe('analysis transcript preparation', () => {
     ];
     expect(prepareTranscriptForAnalysis(transcript).transcript).toEqual(transcript);
   });
+
+  it('retains an employee who starts with a direct question after transfer without greeting again', () => {
+    const transcript: TranscriptTurn[] = [
+      { role: 'manager', text: 'Здравствуйте, контактный центр. Чем помочь?' },
+      { role: 'client', text: 'Соедините с отделом продаж.' },
+      { role: 'manager', text: 'Сейчас соединю вас с менеджером.' },
+      { role: 'client', text: 'Спасибо, жду.' },
+      { role: 'manager', text: 'Какой автомобиль вас интересует?' },
+      { role: 'client', text: 'Mercedes-Benz GLE. Подскажите, он в наличии?' },
+      { role: 'manager', text: 'Да, автомобиль есть, можно приехать на осмотр.' },
+    ];
+    const result = prepareTranscriptForAnalysis(transcript);
+    expect(result.reason).toBe('operator_handoff');
+    expect(result.transcript).toEqual(transcript.slice(4));
+  });
 });

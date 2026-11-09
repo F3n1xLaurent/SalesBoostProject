@@ -1,4 +1,5 @@
 import type { TranscriptTurn } from './callHistory';
+import { isDirectHumanInteraction } from './liveLineSignals';
 
 export interface AnalysisTranscriptResult {
   transcript: TranscriptTurn[];
@@ -46,7 +47,7 @@ function isGreeting(text: string): boolean {
 }
 
 function isLikelyHumanStart(text: string): boolean {
-  return isGreeting(text) || SELF_INTRODUCTION_PATTERN.test(text);
+  return isGreeting(text) || SELF_INTRODUCTION_PATTERN.test(text) || isDirectHumanInteraction(text);
 }
 
 function meaningfulManagerIndexes(turns: readonly TranscriptTurn[]): number[] {

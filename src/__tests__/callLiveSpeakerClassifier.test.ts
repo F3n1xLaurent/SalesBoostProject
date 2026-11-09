@@ -49,6 +49,24 @@ describe('fast local live speaker classifier', () => {
   });
 
   it.each([
+    'Вы голосовой помощник?',
+    'Алло, вы робот или человек?',
+    'Вы настоящий человек?',
+    'Вы меня слышите?',
+    'Какой автомобиль вас интересует?',
+  ])('recognizes an employee addressing the caller after transfer: %s', (text) => {
+    expect(classifyLiveSpeakerLocally(text)).toMatchObject({ speakerType: 'live_human', confidence: 1 });
+  });
+
+  it.each([
+    'Вы робот? Для соединения с отделом продаж нажмите 1.',
+    'Вы меня слышите? Оставьте сообщение после звукового сигнала.',
+    'Вас приветствует компания. Вы робот или человек?',
+  ])('does not let an interactive phrase unmute an explicit recording: %s', (text) => {
+    expect(classifyLiveSpeakerLocally(text)?.speakerType).toBe('ivr_or_recording');
+  });
+
+  it.each([
     'Приветствую! Линия абонента сейчас занята. Что важного ему передать?',
     'Я голосовой ассистент Мия. Запишу всё слово в слово. Попробуем?',
     'Здравствуйте! Это виртуальная помощница.',

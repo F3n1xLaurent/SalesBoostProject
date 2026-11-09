@@ -67,4 +67,16 @@ describe('call report eligibility', () => {
   it('does not classify the bot quoting an announcement as remote carrier speech', () => {
     expect(assessCallReportEligibility([{ role: 'client', text: 'До этого говорили: абонент занят.' }, manager('Слушаю ваш вопрос, автомобиль есть.')])).toEqual({ eligible: true });
   });
+
+  it('allows a substantive conversation after transfer even when the employee does not greet again', () => {
+    expect(assessCallReportEligibility([
+      manager('Здравствуйте, контактный центр.'),
+      { role: 'client', text: 'Соедините с отделом продаж.' },
+      manager('Сейчас соединю вас с менеджером.'),
+      { role: 'client', text: 'Хорошо, жду.' },
+      manager('Какой автомобиль вас интересует?'),
+      { role: 'client', text: 'GLE. Можно приехать на осмотр?' },
+      manager('Да, приезжайте, автомобиль в наличии.'),
+    ])).toEqual({ eligible: true });
+  });
 });

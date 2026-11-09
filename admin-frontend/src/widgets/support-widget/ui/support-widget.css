@@ -6,6 +6,11 @@
   font-family: inherit;
 }
 
+/* Keep bottom-of-page controls above the fixed launcher when fully scrolled. */
+.theme-brutal .super-admin-content:not(.super-admin-content--trainer-focus) {
+  padding-bottom: 100px !important;
+}
+
 .super-admin-app--active-batch .sa-batch-tray-root {
   right: 184px;
 }

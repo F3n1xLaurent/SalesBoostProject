@@ -100,6 +100,17 @@ describe('production bridge silence regressions with local transports', () => {
     expect(vox.sent.some(event => event.event === 'media')).toBe(true);
   });
 
+  it.each(['Вы голосовой помощник?', 'Какой автомобиль вас интересует?'])('unmutes a direct employee question after transfer without another greeting: %s', async text => {
+    await setup();
+    transport.responses.push({ tool: 'skip_turn', args: { kind: 'waiting' } });
+    await manager('Оставайтесь на линии, соединяю с отделом продаж.');
+    expect(vox.sent.filter(event => event.action === 'set_output_enabled').at(-1)?.enabled).toBe(false);
+    transport.responses.push({ text: 'Я голосовой AI-помощник. Звоню по поводу диагностики автомобиля.' });
+    await manager(text);
+    expect(vox.sent.filter(event => event.action === 'set_output_enabled').at(-1)?.enabled).toBe(true);
+    expect(vox.sent.some(event => event.event === 'media')).toBe(true);
+  });
+
   it('1007/1016: replays an unheard TTS reply on a fresh socket after the first-audio deadline', async () => {
     await setup();
     transport.stallTts = true;

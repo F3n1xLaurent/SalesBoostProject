@@ -2,6 +2,7 @@ import { config } from '../config';
 import { proxyApiLogHeaders, recordProxyApiResponse } from '../economics/proxyApiCosts';
 import { compatibleChatTemperature, openai } from '../lib/openaiClient';
 import { isTerminalAutomatedAnswer } from './terminalAutomatedAnswer';
+import { isDirectHumanInteraction } from './liveLineSignals';
 
 export type LiveSpeakerTranscriptTurn = {
   role: 'manager' | 'client' | string;
@@ -48,6 +49,10 @@ export function classifyLiveSpeakerLocally(candidate: unknown, recentTranscript:
 
   if (/^(?:\.{2,}|шум(?:\s|$)|музык(?:а|и|у|ой)(?:\s|$)|фонов(?:ый|ая|ое)\s+(?:шум|музыка)|звук\s+(?:дороги|мотора|радио)|\[(?:music|noise)\])/.test(text)) {
     return { speakerType: 'background_noise', confidence: 1, reason: 'local_noise_pattern' };
+  }
+
+  if (isDirectHumanInteraction(text)) {
+    return { speakerType: 'live_human', confidence: 1, reason: 'local_direct_interaction' };
   }
 
   if (/подожд|ожидайте|оставайтесь на линии|соединя(?:ем|ю|ет)|перевожу|вам ответит|оператор ответит|ваш звонок|вы позвонили|добро пожаловать|вас приветству(?:ет|ют)|приветству(?:ет|ют|ем) вас|рад(?:ы|а)? приветствовать вас|нажмите|выберите (?:пункт|цифру|клавишу)|голосов(?:ое|ого) меню|после сигнала|абонент (?:занят|недоступен)|не может ответить|оставьте сообщение|автоответчик|автоматическ(?:ий|ая) (?:помощник|ассистент)|виртуальн(?:ый|ая) (?:помощник|ассистент)|голосовой помощник|я робот/.test(text)) {
