@@ -702,6 +702,7 @@ export interface UserAccountItem {
     id: string;
     name: string;
     description: string | null;
+    isSystem?: boolean;
     permissions: string[];
   }>;
   analytics: {

@@ -545,6 +545,7 @@ function normalizeAccountResponse(account: Prisma.AccountGetPayload<{
       id: assignment.template.id,
       name: assignment.template.name,
       description: assignment.template.description,
+      isSystem: assignment.template.isSystem,
       permissions: JSON.parse(assignment.template.permissionsJson || '[]'),
     })),
     analytics,
@@ -775,12 +776,16 @@ export async function handleCreateUser(req: Request, res: Response): Promise<voi
   const displayName = String(body.displayName || '').trim() || null;
   const status = String(body.status || 'active').trim() || 'active';
   const memberships = parseMemberships(body.memberships);
+  const templateIds = parseTemplateIds(body.templateIds);
+  if (templateIds.length > 1) {
+    res.status(400).json({ error: 'Сотруднику можно назначить только один шаблон прав.' });
+    return;
+  }
   const managerProfiles = await expandManagerProfilesForDealershipMemberships(
     memberships,
     parseManagerProfiles(body.managerProfiles),
     { fullName: displayName, email, status: 'active' },
   );
-  const templateIds = parseTemplateIds(body.templateIds);
 
   if (!email || !password) {
     res.status(400).json({ error: 'Email и пароль обязательны.' });
@@ -912,6 +917,11 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
   const displayName = body.displayName != null ? String(body.displayName).trim() || null : undefined;
   const status = body.status != null ? String(body.status).trim() : undefined;
   const memberships = body.memberships != null ? parseMemberships(body.memberships) : undefined;
+  const templateIds = body.templateIds != null ? parseTemplateIds(body.templateIds) : undefined;
+  if (templateIds && templateIds.length > 1) {
+    res.status(400).json({ error: 'Сотруднику можно назначить только один шаблон прав.' });
+    return;
+  }
   const managerProfiles = body.managerProfiles != null || memberships
     ? await expandManagerProfilesForDealershipMemberships(
         memberships ?? [],
@@ -919,7 +929,6 @@ export async function handleUpdateUser(req: Request, res: Response): Promise<voi
         { fullName: displayName, email: email || '', status: 'active' },
       )
     : undefined;
-  const templateIds = body.templateIds != null ? parseTemplateIds(body.templateIds) : undefined;
 
   try {
     if (memberships) await assertMembershipsAllowed(account, memberships, templateIds || []);

@@ -27,6 +27,7 @@ import { BrutalModal } from '../../../shared/ui/brutal-modal';
 import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
 import { DeleteConfirmModal } from '../../../shared/ui/delete-confirm-modal';
 import { FiltersPanel, FilterGroup, FiltersToggleButton } from '../../../shared/ui/filters-panel';
+import { customUserRoleOptions, defaultPermissionTemplateId, resolveUserRole, selectedUserRole } from '../model/permissionTemplates';
 
 const TEMPLATE_FORM_ID = 'permission-template-form';
 
@@ -287,14 +288,6 @@ function roleDescription(role: string): string {
   return '';
 }
 
-function defaultTemplateNameForRole(role: string): string | null {
-  if (role === 'platform_superadmin') return 'Суперадмин платформы';
-  if (role === 'holding_admin') return 'Администратор холдинга';
-  if (role === 'dealership_admin') return 'Администратор автосалона';
-  if (role === 'manager') return 'Менеджер автосалона';
-  return null;
-}
-
 function statusLabel(status: string): string {
   if (status === 'active') return 'Аккаунт включен';
   if (status === 'invited') return 'Приглашение отправлено';
@@ -311,7 +304,10 @@ function userScopeLabel(user: UserAccountItem): string {
   return dealershipMembership?.scopeLabel || user.memberships[0]?.scopeLabel || 'Точка не указана';
 }
 
-function userRoleLabels(user: UserAccountItem): string[] {
+function userRoleLabels(user: UserAccountItem, templates: PermissionTemplateItem[]): string[] {
+  const custom = user.permissionTemplates.find(template => template.isSystem === false
+    || templates.some(item => item.id === template.id && !item.isSystem));
+  if (custom) return [custom.name];
   return [...new Set(user.memberships.map((membership) => roleLabel(membership.role)))];
 }
 
@@ -597,6 +593,7 @@ function CreateUserModal(props: {
 }) {
   const [form, setForm] = useState<UserFormState>(EMPTY_USER_FORM);
   const [attempted, setAttempted] = useState(false);
+  const roleSelectionTouched = useRef(false);
   const dealershipMap = useMemo(() => new Map((props.meta?.dealerships || []).map((item) => [item.id, item])), [props.meta]);
   const emailInvalid = attempted && !form.email.trim();
   const passwordInvalid = attempted && !form.password.trim();
@@ -617,28 +614,23 @@ function CreateUserModal(props: {
   useEffect(() => {
     if (!props.open) return;
     setAttempted(false);
+    roleSelectionTouched.current = false;
     setForm({
       ...EMPTY_USER_FORM,
       memberships: [{ role: 'manager', holdingId: '', dealershipId: '' }],
     });
   }, [props.open]);
 
-  function suggestedTemplateIdForRole(nextRole: string): string {
-    const templateName = defaultTemplateNameForRole(nextRole);
-    if (!templateName) return '';
-    return props.templates.find((template) => template.name === templateName)?.id || '';
-  }
-
   useEffect(() => {
-    if (!props.open || !props.canManageTemplates) return;
-    const firstRole = props.canManageGlobalUsers ? form.memberships[0]?.role : 'manager';
-    const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
+    if (!props.open || !props.canManageTemplates || roleSelectionTouched.current) return;
     setForm((current) => {
+      const firstRole = props.canManageGlobalUsers ? current.memberships[0]?.role : 'manager';
+      const templateId = defaultPermissionTemplateId(firstRole || 'manager', props.templates);
       const nextTemplateIds = templateId ? [templateId] : [];
       if (current.templateIds[0] === nextTemplateIds[0] && current.templateIds.length === nextTemplateIds.length) return current;
       return { ...current, templateIds: nextTemplateIds };
     });
-  }, [props.canManageGlobalUsers, props.canManageTemplates, props.open, props.templates, form.memberships]);
+  }, [props.canManageGlobalUsers, props.canManageTemplates, props.open, props.templates]);
 
   function updateMembership(index: number, patch: Partial<MembershipForm>) {
     setForm((current) => ({
@@ -650,13 +642,15 @@ function CreateUserModal(props: {
   }
 
   function updateMembershipRole(index: number, nextRole: string) {
-    const templateId = suggestedTemplateIdForRole(nextRole);
+    const selection = resolveUserRole(nextRole, props.templates, form.memberships[index]?.role === 'holding_admin' ? 'holding_admin' : 'manager');
+    roleSelectionTouched.current = true;
     setForm((current) => ({
       ...current,
       memberships: current.memberships.map((membership, membershipIndex) =>
-        membershipIndex === index ? { ...membership, role: nextRole, holdingId: '', dealershipId: '' } : membership,
+        membershipIndex === index ? { ...membership, role: selection.role,
+          ...(!nextRole.startsWith('template:') && membership.role !== selection.role ? { holdingId: '', dealershipId: '' } : {}) } : membership,
       ),
-      templateIds: props.canManageTemplates && templateId ? [templateId] : current.templateIds,
+      templateIds: props.canManageTemplates ? selection.templateIds : current.templateIds,
     }));
   }
 
@@ -730,7 +724,7 @@ function CreateUserModal(props: {
               const holdingId = membership.holdingId || dealershipMap.get(membership.dealershipId)?.holdingId || '';
               const roleOptions = !props.canManageGlobalUsers
                 ? [{ value: 'manager', label: roleLabel('manager'), description: roleDescription('manager') }]
-                : (props.meta?.roles || []).map((item) => ({ value: item, label: roleLabel(item), description: roleDescription(item) }));
+                : [...(props.meta?.roles || []).map((item) => ({ value: item, label: roleLabel(item), description: roleDescription(item) })), ...customUserRoleOptions(props.templates)];
               const holdingOptions = [
                 ...(membership.role === 'dealership_admin' || membership.role === 'manager'
                   ? [{ value: NO_HOLDING_VALUE, label: 'Без компании', description: 'Показать точки без привязки к компании' }]
@@ -745,13 +739,25 @@ function CreateUserModal(props: {
               return (
                 <div key={`${index}-${membership.role}-${membership.dealershipId}`} style={{ display: 'grid', gap: 10 }}>
                   <SearchableSelect
-                    label="Права"
-                    value={props.canManageGlobalUsers ? membership.role : 'manager'}
+                    label="Роль пользователя"
+                    value={props.canManageGlobalUsers ? selectedUserRole(membership.role, form.templateIds, props.templates) : 'manager'}
                     disabled={!props.canManageGlobalUsers}
                     options={roleOptions}
-                    placeholder="Выберите права сотрудника"
+                    placeholder="Выберите роль пользователя"
                     onChange={(value) => updateMembershipRole(index, value)}
                   />
+                  {selectedUserRole(membership.role, form.templateIds, props.templates).startsWith('template:') && (
+                    <SearchableSelect
+                      label="Область доступа"
+                      value={membership.role === 'holding_admin' ? 'company' : 'dealership'}
+                      options={[{ value: 'company', label: 'Компания' }, { value: 'dealership', label: 'Точка' }]}
+                      placeholder="Выберите область доступа"
+                      onChange={value => updateMembership(index, {
+                        role: value === 'company' ? 'holding_admin' : 'manager',
+                        ...(value === 'company' ? { dealershipId: '' } : {}),
+                      })}
+                    />
+                  )}
                   {membership.role === 'holding_admin' && (
                     <SearchableSelect
                       label="Компания"
@@ -790,6 +796,7 @@ function CreateUserModal(props: {
             })}
           </div>
         </div>
+
       </form>
     </ModalFrame>
   );
@@ -924,7 +931,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       list = list.filter((row) =>
         normalizeSearchValue(row.fullName).includes(q) ||
         normalizeSearchValue(row.user.email).includes(q) ||
-        userRoleLabels(row.user).some((label) => normalizeSearchValue(label).includes(q)) ||
+        userRoleLabels(row.user, templates).some((label) => normalizeSearchValue(label).includes(q)) ||
         normalizeSearchValue(row.dealershipName).includes(q) ||
         normalizeSearchValue(row.city).includes(q),
       );
@@ -968,7 +975,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       else cmp = (a.user.analytics[userSortKey] ?? -Infinity) - (b.user.analytics[userSortKey] ?? -Infinity);
       return userSortDir === 'asc' ? cmp : -cmp;
     });
-  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, role, roleFilter, search, selectedGlobalHoldingId, userSortDir, userSortKey, users]);
+  }, [dealershipFilter, emailFilter, fullNameFilter, holdingFilter, ownershipFilter, phoneFilter, role, roleFilter, search, selectedGlobalHoldingId, userSortDir, userSortKey, users, templates]);
 
   const activeUserFiltersCount = [
     fullNameFilter.trim(),
@@ -1093,23 +1100,6 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
     if (viewTemplateOpen) setOpenTemplatePermissionGroups([]);
   }, [viewTemplateOpen, activeTemplateId]);
 
-  function suggestedTemplateIdForRole(nextRole: string): string {
-    const templateName = defaultTemplateNameForRole(nextRole);
-    if (!templateName) return '';
-    return templates.find((template) => template.name === templateName)?.id || '';
-  }
-
-  useEffect(() => {
-    if (!editUserOpen || !canManageTemplates) return;
-    const firstRole = canManageGlobalUsers ? userForm.memberships[0]?.role : 'manager';
-    const templateId = suggestedTemplateIdForRole(firstRole || 'manager');
-    setUserForm((current) => {
-      const nextTemplateIds = templateId ? [templateId] : [];
-      if (current.templateIds[0] === nextTemplateIds[0] && current.templateIds.length === nextTemplateIds.length) return current;
-      return { ...current, templateIds: nextTemplateIds };
-    });
-  }, [canManageGlobalUsers, canManageTemplates, editUserOpen, templates, userForm.memberships]);
-
   function openEditUser(user: UserAccountItem) {
     setActiveUserId(user.id);
     const nextForm = buildUserForm(user);
@@ -1138,7 +1128,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
       managerEmail: firstProfile?.email || '',
       managerPhone: firstProfile?.phone || '',
       managerStatus: firstProfile?.status || 'active',
-      templateIds: user.permissionTemplates.map((template) => template.id),
+      templateIds: [...user.permissionTemplates].sort((a, b) => Number(templates.find(t => t.id === a.id)?.isSystem ?? true) - Number(templates.find(t => t.id === b.id)?.isSystem ?? true)).slice(0, 1).map(template => template.id),
     };
   }
 
@@ -1174,13 +1164,14 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   }
 
   function updateMembershipRole(index: number, nextRole: string) {
-    const templateId = suggestedTemplateIdForRole(nextRole);
+    const selection = resolveUserRole(nextRole, templates, userForm.memberships[index]?.role === 'holding_admin' ? 'holding_admin' : 'manager');
     setUserForm((current) => ({
       ...current,
       memberships: current.memberships.map((membership, membershipIndex) =>
-        membershipIndex === index ? { ...membership, role: nextRole, holdingId: '', dealershipId: '' } : membership,
+        membershipIndex === index ? { ...membership, role: selection.role,
+          ...(!nextRole.startsWith('template:') && membership.role !== selection.role ? { holdingId: '', dealershipId: '' } : {}) } : membership,
       ),
-      templateIds: canManageTemplates && templateId ? [templateId] : current.templateIds,
+      templateIds: canManageTemplates ? selection.templateIds : current.templateIds,
     }));
   }
 
@@ -1193,6 +1184,10 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
 
   async function saveUser(mode: 'create' | 'edit', form: UserFormState = userForm) {
     const fullName = form.managerFullName.trim();
+    if (canManageTemplates && form.templateIds.some(id => templates.some(t => t.id === id && !t.isSystem))
+      && form.memberships.some(m => m.role === 'holding_admin' ? !m.holdingId : !m.dealershipId)) {
+      throw new Error('Выберите компанию или точку для пользовательской роли.');
+    }
     const memberships = (!canManageGlobalUsers
       ? form.memberships.map((membership) => ({ ...membership, role: 'manager' }))
       : form.memberships
@@ -1416,7 +1411,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               const holdingId = membership.holdingId || dealershipMap.get(membership.dealershipId)?.holdingId || '';
               const roleOptions = !canManageGlobalUsers
                 ? [{ value: 'manager', label: roleLabel('manager'), description: roleDescription('manager') }]
-                : (meta?.roles || []).map((item) => ({ value: item, label: roleLabel(item), description: roleDescription(item) }));
+                : [...(meta?.roles || []).map((item) => ({ value: item, label: roleLabel(item), description: roleDescription(item) })), ...customUserRoleOptions(templates)];
               const holdingOptions = [
                 ...(membership.role === 'dealership_admin' || membership.role === 'manager'
                   ? [{ value: NO_HOLDING_VALUE, label: 'Без компании', description: 'Показать точки без привязки к компании' }]
@@ -1431,13 +1426,25 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               return (
                 <div key={`${index}-${membership.role}-${membership.dealershipId}`} style={{ display: 'grid', gap: 10 }}>
                   <SearchableSelect
-                    label="Права"
-                    value={canManageGlobalUsers ? membership.role : 'manager'}
+                    label="Роль пользователя"
+                    value={canManageGlobalUsers ? selectedUserRole(membership.role, userForm.templateIds, templates) : 'manager'}
                     disabled={!canManageGlobalUsers}
                     options={roleOptions}
-                    placeholder="Выберите права сотрудника"
+                    placeholder="Выберите роль пользователя"
                     onChange={(value) => updateMembershipRole(index, value)}
                   />
+                  {selectedUserRole(membership.role, userForm.templateIds, templates).startsWith('template:') && (
+                    <SearchableSelect
+                      label="Область доступа"
+                      value={membership.role === 'holding_admin' ? 'company' : 'dealership'}
+                      options={[{ value: 'company', label: 'Компания' }, { value: 'dealership', label: 'Точка' }]}
+                      placeholder="Выберите область доступа"
+                      onChange={value => updateMembership(index, {
+                        role: value === 'company' ? 'holding_admin' : 'manager',
+                        ...(value === 'company' ? { dealershipId: '' } : {}),
+                      })}
+                    />
+                  )}
                   {membership.role === 'holding_admin' && (
                     <SearchableSelect
                       label="Компания"
@@ -1476,6 +1483,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
             })}
           </div>
         </div>
+
       </form>
     );
   }
@@ -1966,7 +1974,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                         </td>
                         <td className="sa-users-role-cell">
                           <div className="sa-users-role-chips">
-                            {userRoleLabels(row.user).map((label) => (
+                            {userRoleLabels(row.user, templates).map((label) => (
                               <span key={label} className="sa-metric-chip">{label}</span>
                             ))}
                           </div>
@@ -2027,7 +2035,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
                       <span className={`sa-mobile-rating ${ratingClass(analytics.aiRating)}`}>{analytics.aiRating}</span>
                     </div>
                     <div className="sa-mobile-chips">
-                      {userRoleLabels(row.user).map((label) => (
+                      {userRoleLabels(row.user, templates).map((label) => (
                         <span key={label} className="sa-metric-chip">{label}</span>
                       ))}
                       <span className="sa-metric-chip"><span className={delta.cls}>{delta.text}</span></span>
