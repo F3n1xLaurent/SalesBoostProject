@@ -37,5 +37,5 @@ export async function requestReportJson(params: OpenAI.Chat.Completions.ChatComp
       return parsed as Record<string, unknown>;
     } catch (error) { lastError = error; }
   }
-  throw new Error('Report generation did not return complete JSON', { cause: lastError });
+  throw new Error(`Report generation did not return complete JSON: ${lastError instanceof Error ? lastError.message : String(lastError)}`, { cause: lastError });
 }

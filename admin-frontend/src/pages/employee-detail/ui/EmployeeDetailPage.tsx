@@ -839,6 +839,7 @@ export function EmployeeDetail({ employeeId, onBack, onOpenDealership, onOpenCom
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Рекомендации</h2>
         <RecommendationsBlock
+          branchId={detail.dealershipId ?? undefined}
           data={recommendations}
           loading={recommendationsLoading}
           error={recommendationsError}

@@ -1,3 +1,4 @@
+import { trackProductEvent } from '../../../shared/analytics/productAnalytics';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router';
@@ -1438,6 +1439,7 @@ export function TrainPage(props: { embedded?: boolean }) {
         fetchTrainerHistory(),
       ]);
       setProfile(profileData);
+      if (!options?.silent) trackProductEvent('trainer_opened', { targetType: 'employee', targetId: profileData.employeeId });
       setScenarios(scenarioData);
       setHistory(historyData);
       setSelectedScenarioId((current) => current || scenarioData[0]?.id || '');

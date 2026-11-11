@@ -77,3 +77,6 @@ git push origin feature/<task-name>
 - Не коммитить локальный файл базы `prisma/dev.db`.
 
 <!-- npm run seed-ai-call -- --email test@mail.ru -->
+
+npx prisma migrate deploy
+npx prisma generate

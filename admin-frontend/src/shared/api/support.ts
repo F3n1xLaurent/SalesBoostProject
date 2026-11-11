@@ -54,6 +54,7 @@ export type SupportMessage = {
 };
 
 export type SupportMeta = {
+  categoriesPending?: boolean;
   categories: string[];
   statuses: SupportTicketStatus[];
   maxMessageLength: number;

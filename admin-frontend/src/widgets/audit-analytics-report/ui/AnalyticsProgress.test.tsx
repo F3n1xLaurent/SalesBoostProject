@@ -9,6 +9,12 @@ const detail = (overrides: Partial<NonNullable<AuditDetailItem['analyticsProgres
 });
 afterEach(() => vi.useRealTimers());
 describe('animated analytics stages', () => {
+  it('does not offer a paid restart while a report is waiting for an available worker', () => {
+    const html = renderToStaticMarkup(<AnalyticsProgress detail={detail({ status: 'waiting', waitingForSlot: true,
+      startedAt: '2000-01-01T00:00:00Z', message: 'Отчёт в очереди на обработку.' })} onRetry={() => {}} />);
+    expect(html).toContain('Отчёт в очереди');
+    expect(html).not.toContain('Переполучить отчёт');
+  });
   it.each(['waiting', 'processing'] as const)('shows retry for %s after two minutes even when reopening the report', (status) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-11-03T12:02:00Z'));

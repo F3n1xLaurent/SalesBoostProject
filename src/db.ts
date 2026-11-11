@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { instrumentPrismaHttpTiming } from './diagnostics/httpPerformance';
 
 // Keep the module tiny so tsx watch restarts cleanly after Prisma client regeneration.
 // SQLite permits only one writer. Prisma otherwise creates a CPU-sized pool,
@@ -17,3 +18,4 @@ const databaseUrl = runtimeDatabaseUrl(process.env.DATABASE_URL);
 export const prisma = new PrismaClient(databaseUrl
   ? { datasources: { db: { url: databaseUrl } } }
   : undefined);
+instrumentPrismaHttpTiming(prisma);

@@ -1,3 +1,5 @@
+import { reportError } from '../monitoring/reportError';
+import { recordRequestEvent } from '../analytics/requestEvent';
 import { assertCompanyModule, BillingAccessError } from '../billing/access';
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
@@ -831,6 +833,7 @@ export async function handleCreateCallPlan(req: Request, res: Response): Promise
     const data = parsePlanPayload((req.body || {}) as Record<string, unknown>, holdingId);
     await assertPlanReferences(holdingId, data);
     const created = await prisma.callPlan.create({ data });
+    recordRequestEvent(req, { eventName: 'call_plan_created', companyId: holdingId, targetType: 'company', targetId: holdingId, deduplicationKey: `call_plan_created:${created.id}`, properties: { plan_id: created.id, script_id: created.scriptId, frequency: created.frequency, target_type: created.targetType === 'dealerships' ? 'branches' : 'employees', targets_count: JSON.parse(created.targetIdsJson).length } });
     res.status(201).json({ item: normalizePlan(created) });
   } catch (error) {
     res.status(error instanceof Error && error.message.includes('доступ') ? 403 : 400).json({ error: error instanceof Error ? error.message : 'Не удалось создать план прозвона.' });
@@ -1675,7 +1678,7 @@ async function runCallPlanScheduleChecker(): Promise<void> {
       }
     }
   } catch (error) {
-    console.error('[call-plan-scheduler] schedule check failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[call-plan-scheduler] schedule check failed' });
   } finally {
     callPlanScheduleCheckerRunning = false;
   }
@@ -1706,7 +1709,7 @@ async function runCallPlanDueRunner(): Promise<void> {
       await launchScheduledPlanCall(call);
     }
   } catch (error) {
-    console.error('[call-plan-scheduler] due runner failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[call-plan-scheduler] due runner failed' });
   } finally {
     callPlanDueRunnerRunning = false;
   }

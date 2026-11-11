@@ -28,6 +28,7 @@ import {
 } from '../../../shared/api/support';
 import { appendSupportFiles, pastedSupportFiles, SupportFilePicker, SupportMessageAttachments } from './SupportAttachments';
 import './support-widget.css';
+import { watchSupportMeta } from '../model/watchSupportMeta';
 
 type View = 'list' | 'create' | 'thread';
 
@@ -139,12 +140,13 @@ export function SupportWidget() {
   }, []);
 
   useEffect(() => {
-    void Promise.all([
-      loadTickets(false),
-      getSupportMeta().then((meta) => setCategories(meta.categories)).catch(() => undefined),
-    ]);
+    const stopMeta = watchSupportMeta(getSupportMeta, meta => {
+      setCategories(meta.categories);
+      setCategory(current => meta.categories.includes(current) ? current : '');
+    });
+    void loadTickets(false);
     const timer = window.setInterval(() => void loadTickets(false), 30_000);
-    return () => window.clearInterval(timer);
+    return () => { stopMeta(); window.clearInterval(timer); };
   }, [loadTickets]);
 
   useEffect(() => {

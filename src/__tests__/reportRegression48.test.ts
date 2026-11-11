@@ -97,6 +97,8 @@ describe('48dc0cca: per-problem semantic evidence validation', () => {
     expect(localExampleIssues(task)).toEqual([]);
     task.example = 'Здравствуйте, я Дмитрий из компании «Тест». Проверю наличие.';
     expect(localExampleIssues(task)).toEqual([]);
+    task.example = 'Меня зовут [имя], я менеджер ООО «Тестовый салон». Проверю наличие.';
+    expect(localExampleIssues(task)).toEqual([]);
   });
   it('does not let a generic promise mask missing snow/rain/dirt/warranty answers', () => {
     const task = basicTask(); task.knownDialog[0].text = 'Как работают датчики в снег, дождь, при загрязнении? Что с гарантией?';
@@ -213,5 +215,17 @@ describe('48dc0cca: generation repair loop and persisted review metadata', () =>
     const result = source === 'trainer' ? await generateUnifiedTrainerReport(input) : (await generateCallAnalyticsBundle({ ...input, outcome: 'completed' })).unifiedCallReport!;
     expect(result.source).toBe(source);
     expect(result.exampleReviews?.[0]).toMatchObject({ status: 'pass', exampleHash: reportExampleHash(task.example) });
+  });
+});
+
+
+describe('call 809 coaching validation', () => {
+  it('allows an open needs question even if a later client answer also uses the word important', () => {
+    const transcript = [{ role: 'client' as const, text: 'Предложение по Porsche Cayenne актуально?' }, { role: 'manager' as const, text: 'Да, предложение актуально.' }, { role: 'client' as const, text: 'Понимаю, для меня важно ездить с детьми. Нужно точное время.' }];
+    const example = 'Понимаю ваш вопрос. Да, предложение актуально. Точные условия уточню. Подскажите, что для вас особенно важно при выборе?';
+    const report = normalizeUnifiedCallReport({ keyFindings: [finding('NO_NEEDS_DISCOVERY', transcript[1].text, 'Не уточнил потребности.', example)] }, { totalScore: 52, transcript })!;
+    expect(report.keyFindings[0].betterExample).toBe(example);
+    const leaked = normalizeUnifiedCallReport({ keyFindings: [finding('NO_NEEDS_DISCOVERY', transcript[1].text, 'Не уточнил потребности.', 'Да, предложение актуально. Для поездок с детьми этот вариант подходит.')] }, { totalScore: 52, transcript })!;
+    expect(leaked.keyFindings[0].betterExample).toBe('');
   });
 });

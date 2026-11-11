@@ -1,6 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../config';
+// These tests inspect the live TTS transport; opening preparation has its own
+// cache and bridge integration coverage.
+vi.mock('../voice/realtimeOpeningAudio', () => ({ prepareOpeningAudio: () => () => {}, preparedOpeningAudio: () => null }));
 import { createHypothesis2Simulation } from '../voice/cometRealtimeTest';
 import type WebSocket from 'ws';
 

@@ -18,7 +18,8 @@ import {
   statusAfterCustomerMessage,
   type SupportTicketStatus,
 } from './domain';
-import { getBitrixSupportCategories } from './bitrix24';
+import { getBitrixSupportCategories, getCachedBitrixSupportCategories, areBitrixSupportCategoriesRefreshing } from './bitrix24';
+import { measureHttpStage } from '../diagnostics/httpPerformance';
 import { verifySupportAttachmentLink } from './attachmentLinks';
 
 const MAX_MESSAGE_LENGTH = 10_000;
@@ -225,9 +226,13 @@ async function findPublicTicket(req: Request, ticketId: string) {
 }
 
 export async function handleGetSupportMeta(_req: Request, res: Response): Promise<void> {
-  const bitrixCategories = await getBitrixSupportCategories();
+  const { bitrixCategories, categoriesPending } = await measureHttpStage('support_categories', async () => {
+    const bitrixCategories = getCachedBitrixSupportCategories();
+    return { bitrixCategories, categoriesPending: !bitrixCategories.length && areBitrixSupportCategoriesRefreshing() };
+  });
   res.json({
     categories: bitrixCategories.length ? bitrixCategories : AUTHENTICATED_SUPPORT_CATEGORIES,
+    categoriesPending,
     statuses: SUPPORT_TICKET_STATUSES,
     maxMessageLength: MAX_MESSAGE_LENGTH,
   });

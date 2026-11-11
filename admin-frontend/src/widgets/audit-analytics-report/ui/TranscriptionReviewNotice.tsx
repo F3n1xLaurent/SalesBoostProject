@@ -1,7 +1,9 @@
 import React from 'react';
+import { useDevMode } from '../../../entities/session/model/useDevMode';
 
 export function TranscriptionReviewNotice({ items }: { items?: Array<{ turnIndex: number; quote: string; reason: string }> }) {
-  if (!items?.length) return null;
+  const { devMode } = useDevMode();
+  if (!devMode || !items?.length) return null;
   return <aside className="sa-call-report-block" role="note" aria-label="Спорные фрагменты распознавания">
     <h2 className="sa-section-title">Нужно проверить запись</h2>
     <p>Эти фрагменты не считаются доказанной ошибкой менеджера. Исходная расшифровка сохранена.</p>

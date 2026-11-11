@@ -53,7 +53,7 @@ export function MetricComparisonModal({
     if (!open || columns.length < 2) return;
     trackProductEvent('comparison_used', {
       targetType: 'comparison',
-      properties: { comparison_type: title, selected_count: columns.length },
+      properties: { comparison_type: aiLevel === 'user' || aiLevel === 'employee' || aiLevel === 'manager' ? 'employees' : 'branches', selected_count: columns.length },
     });
   }, [columns.length, open, title]);
 

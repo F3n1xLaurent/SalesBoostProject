@@ -1,16 +1,7 @@
+import { productAnalyticsRoute } from '../routing/adminRoutes';
 import { apiFetch } from '../../entities/session';
 
-export type ClientProductEventName =
-  | 'session_started'
-  | 'page_viewed'
-  | 'analytics_opened'
-  | 'manager_viewed'
-  | 'dealership_viewed'
-  | 'comparison_used'
-  | 'report_viewed'
-  | 'score_viewed'
-  | 'errors_viewed'
-  | 'recommendations_viewed';
+export type ClientProductEventName = 'session_started' | 'page_viewed' | 'analytics_opened' | 'company_viewed' | 'employee_viewed' | 'branch_viewed' | 'comparison_used' | 'report_viewed' | 'report_findings_opened' | 'report_recommendations_opened' | 'trainer_opened' | 'branch_recommendation_opened';
 
 type TrackOptions = {
   route?: string;
@@ -45,6 +36,8 @@ function clientSessionId(): string {
 export function trackProductEvent(eventName: ClientProductEventName, options: TrackOptions = {}): void {
   if (typeof window === 'undefined') return;
   const sessionId = clientSessionId();
+  const route = productAnalyticsRoute(options.route ?? window.location.pathname);
+  if (eventName === 'page_viewed') options = { ...options, route: route.route_template, properties: { ...options.properties, ...route } };
   const eventKey = [eventName, options.route, options.targetType, options.targetId, JSON.stringify(options.properties ?? {})].join(':');
   const now = Date.now();
   if (now - (recentEvents.get(eventKey) ?? 0) < 1_000) return;

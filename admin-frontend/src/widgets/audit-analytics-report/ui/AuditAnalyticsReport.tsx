@@ -491,17 +491,16 @@ export function AuditAnalyticsReport({
   useEffect(() => {
     if (!report) return;
     const targetType = detail.type === 'call' ? 'voice_call' : 'trainer_session';
-    const properties = { report_type: detail.type } as const;
+    const properties = { report_type: detail.type === 'call' ? 'call' : 'training', is_own: auth.status === 'authenticated' && detail.employeeAccountId === auth.user.account.id, surface: 'report' } as const;
     trackProductEvent('report_viewed', { targetType, targetId: detail.id, properties });
-    trackProductEvent('score_viewed', { targetType, targetId: detail.id, properties });
-  }, [detail.id, detail.type, report]);
+  }, [detail.id, detail.type, Boolean(report)]);
 
   const toggleFindings = () => {
     if (!findingsOpen) {
-      trackProductEvent('errors_viewed', {
+      trackProductEvent('report_findings_opened', {
         targetType: detail.type === 'call' ? 'voice_call' : 'trainer_session',
         targetId: detail.id,
-        properties: { report_type: detail.type },
+        properties: { report_type: detail.type === 'call' ? 'call' : 'training', is_own: auth.status === 'authenticated' && detail.employeeAccountId === auth.user.account.id, surface: 'report' },
       });
     }
     setFindingsOpen(!findingsOpen);
@@ -509,10 +508,10 @@ export function AuditAnalyticsReport({
 
   const toggleRecommendations = () => {
     if (!recommendationsOpen) {
-      trackProductEvent('recommendations_viewed', {
+      trackProductEvent('report_recommendations_opened', {
         targetType: detail.type === 'call' ? 'voice_call' : 'trainer_session',
         targetId: detail.id,
-        properties: { report_type: detail.type },
+        properties: { report_type: detail.type === 'call' ? 'call' : 'training', is_own: auth.status === 'authenticated' && detail.employeeAccountId === auth.user.account.id, surface: 'report' },
       });
     }
     setRecommendationsOpen(!recommendationsOpen);

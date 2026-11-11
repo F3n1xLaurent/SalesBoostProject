@@ -17,6 +17,7 @@ export type AuthUser = {
     id: string;
     role: string;
     holdingId: string | null;
+    companyId?: string | null;
     dealershipId: string | null;
   }>;
 };

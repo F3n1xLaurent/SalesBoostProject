@@ -367,7 +367,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   useEffect(() => {
     if (!accountId) return;
     trackProductEvent('page_viewed', { route: location.pathname });
-  }, [accountId, location.pathname]);
+  }, [accountId, location.pathname, role]);
 
   useEffect(() => {
     if (!accountId) return;
@@ -379,9 +379,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   useEffect(() => {
     if (!accountId) return;
     if (selectedEmployeeId) {
-      trackProductEvent('manager_viewed', {
+      trackProductEvent('employee_viewed', {
         route: location.pathname,
-        targetType: 'manager',
+        targetType: 'employee',
         targetId: selectedEmployeeId,
       });
     }
@@ -390,13 +390,17 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   useEffect(() => {
     if (!accountId) return;
     if (selectedDealershipId) {
-      trackProductEvent('dealership_viewed', {
+      trackProductEvent('branch_viewed', {
         route: location.pathname,
-        targetType: 'dealership',
+        targetType: 'branch',
         targetId: selectedDealershipId,
       });
     }
   }, [accountId, location.pathname, selectedDealershipId]);
+
+  useEffect(() => {
+    if (accountId && selectedHoldingId) trackProductEvent('company_viewed', { targetType: 'company', targetId: selectedHoldingId });
+  }, [accountId, selectedHoldingId]);
 
   useEffect(() => {
     if (!mobileNavOpen || !isMobileAdminNav) return;

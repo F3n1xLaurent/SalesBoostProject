@@ -144,14 +144,8 @@ function SignalCard({ signal, onOpen }: { signal: RecommendationSignal; onOpen?:
   );
 }
 
-export function RecommendationsBlock({ data, loading, error, onOpen }: { data: RecommendationResult | null; loading?: boolean; error?: string | null; onOpen?: (signal: RecommendationSignal) => void }) {
-  useEffect(() => {
-    if (data?.state !== 'findings') return;
-    trackProductEvent('recommendations_viewed', {
-      targetType: 'analytics_recommendations',
-      properties: { surface: 'recommendations_block' },
-    });
-  }, [data]);
+export function RecommendationsBlock({ data, loading, error, onOpen, branchId, companyView = false }: { branchId?: string; companyView?: boolean; data: RecommendationResult | null; loading?: boolean; error?: string | null; onOpen?: (signal: RecommendationSignal) => void }) {
+
 
   if (loading) return <div className="sa-card sa-recommendation-state">Рассчитываем рекомендации…</div>;
   if (error) return <div className="sa-card sa-recommendation-state is-error">{error}</div>;
@@ -161,7 +155,7 @@ export function RecommendationsBlock({ data, loading, error, onOpen }: { data: R
   const all = [...data.quick, ...data.systemic];
   return (
     <div className="sa-recommendation-insights">
-      {all.map((signal) => <SignalCard key={signal.id} signal={signal} onOpen={onOpen} />)}
+      {all.map((signal) => <SignalCard key={signal.id} signal={signal} onOpen={signal => { if (onOpen) { const target = branchId ?? (companyView && signal.scope === 'quick' ? signal.entityId : undefined); if (target) trackProductEvent('branch_recommendation_opened', { targetType: 'branch', targetId: target, properties: { recommendation_type: signal.kind, surface: 'recommendations_block' } }); onOpen(signal); } }} />)}
     </div>
   );
 }

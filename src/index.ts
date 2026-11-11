@@ -9,7 +9,9 @@ import { handleSettings, handleSettingsCallback } from './handlers/settings';
 import { sendCSV, isAdmin } from './utils';
 import { initCommandsMenu, setDefaultCommands, setChatCommands } from './commandsMenu';
 import { prisma } from './db';
-import { startServer } from './server';
+import { startServer, closeHttpServer } from './server';
+import { flushProductAnalytics } from './analytics/productAnalytics';
+import * as Sentry from '@sentry/node';
 import { startTunnel } from './tunnel';
 import { registerManagerMessageHandlers } from './bot';
 import { isTtsEnabled } from './voice/tts';
@@ -18,6 +20,25 @@ import { seedCityDictionaryIfNeeded } from './data/cityDictionary';
 import { seedCallReportProblemCatalog } from './voice/problemCatalog';
 
 const bot = new Telegraf(config.botToken);
+let stopping = false;
+async function shutdown(signal: string) {
+  if (stopping) return;
+  stopping = true;
+  const deadline = setTimeout(() => process.exit(1), 10000);
+  deadline.unref();
+  try { bot.stop(signal); } catch { /* HTTP-only deployments do not start polling. */ }
+  try {
+    await closeHttpServer();
+    await flushProductAnalytics();
+    await Sentry.flush(3000);
+    await prisma.$disconnect();
+    clearTimeout(deadline);
+    process.exit(0);
+  } catch (error) { console.error('[shutdown]', error); process.exit(1); }
+}
+process.once('SIGINT', () => { void shutdown('SIGINT'); });
+process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+
 
 // Registration scene (prompt is sent from /start handler before entering)
 const registrationScene = new Scenes.BaseScene('registration');
@@ -436,8 +457,7 @@ async function main() {
     }
     console.log('      TTS:', isTtsEnabled() ? 'enabled (OpenAI)' : 'disabled');
 
-    process.once('SIGINT', () => bot.stop('SIGINT'));
-    process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
   } catch (error) {
     console.error('[ERROR] Failed to start:', error instanceof Error ? error.message : error);
     if (error instanceof Error && error.stack) {

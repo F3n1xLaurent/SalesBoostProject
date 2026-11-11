@@ -3,8 +3,21 @@ const mocks = vi.hoisted(() => ({
   voiceFind: vi.fn(), voiceUpdate: vi.fn(), voiceUpsert: vi.fn(), planFind: vi.fn(), planUpdate: vi.fn(),
   scriptFind: vi.fn(), evaluate: vi.fn(), bundle: vi.fn(), criteria: vi.fn(), recording: vi.fn(), retranscribe: vi.fn(),
   durable: vi.fn(), finish: vi.fn(), attribution: vi.fn(), deleted: vi.fn(),
+  jobs: new Map<string, any>(),
 }));
 vi.mock('../db', () => ({ prisma: {
+  callAnalysisJob: {
+    findUnique: async ({ where }: any) => mocks.jobs.get(where.callId) ?? null,
+    upsert: async ({ where, create, update }: any) => {
+      const row = { ...(mocks.jobs.get(where.callId) ?? create), ...(mocks.jobs.has(where.callId) ? update : {}) };
+      mocks.jobs.set(where.callId, row); return row;
+    },
+    updateMany: async ({ where, data }: any) => {
+      const row = mocks.jobs.get(where.callId);
+      if (!row || row.runId !== where.runId || (where.status && row.status !== where.status)) return { count: 0 };
+      mocks.jobs.set(where.callId, { ...row, ...data }); return { count: 1 };
+    },
+  },
   voiceCallSession: { findUnique: mocks.voiceFind, update: mocks.voiceUpdate, upsert: mocks.voiceUpsert },
   callPlanCall: { findUnique: mocks.planFind, update: mocks.planUpdate },
   callPlan: { findUnique: async () => ({ scriptId: 'script' }) }, callScript: { findUnique: mocks.scriptFind },
@@ -27,7 +40,8 @@ vi.mock('../analytics/productAnalytics', () => ({ recordProductEvent: vi.fn() })
 vi.mock('../voice/productionRealtimeState', () => ({ flushProductionRealtimeState: mocks.durable }));
 vi.mock('../voice/callPlanTelephony', () => ({ finishProductionCallPlanTelephony: mocks.finish }));
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from '../voice/voiceCallSession';
-import { scheduleAuditReportBackfill } from '../logic/auditAnalyticsProgress';
+import { scheduleAuditReportBackfill, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
+import { analyticsQueue } from '../logic/analyticsQueue';
 
 const transcript = [
   { role: 'manager', text: 'Здравствуйте, менеджер Анна, слушаю вас.' },
@@ -45,6 +59,7 @@ function patch(target: Record<string, any>, data: Record<string, any>) {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.jobs.clear();
   mocks.deleted.mockResolvedValue(null);
   session = { callId: 'call-production', to: '+79507503215', scenario: 'openai_realtime', source: 'scheduled',
     startedAt: new Date('2026-10-29T10:00:00Z'), connectedAt: new Date('2026-10-29T10:00:05Z'),
@@ -73,6 +88,20 @@ beforeEach(() => {
 });
 const finalEvent = { call_id: 'call-production', event: 'disconnected', ts: '2026-10-29T10:02:00Z' };
 describe('production hypothesis 2 through the existing recording and report pipeline', () => {
+  it('saves hangup and frees telephony before waiting, without starting recording or paid analysis outside its slot', async () => {
+    const releases: Array<() => void> = [];
+    const blockers = Array.from({ length: analyticsQueue.concurrency }, (_, index) => withAuditAnalyticsProgress(`finalize-blocker-${index}`, 'report',
+      () => new Promise<void>(resolve => releases.push(resolve))));
+    const processing = finalizeVoiceCallSession({ call_id: 'call-production', event: 'disconnected',
+      ts: '2026-10-29T10:05:00Z', recording_started: true });
+    try {
+      await vi.waitFor(() => expect(session.endedAt).toEqual(new Date('2026-10-29T10:05:00Z')));
+      expect(mocks.finish).toHaveBeenCalled();
+      expect(mocks.recording).not.toHaveBeenCalled(); expect(mocks.evaluate).not.toHaveBeenCalled();
+      expect(mocks.jobs.get('call-production')).toMatchObject({ status: 'queued' });
+    } finally { releases.forEach(release => release()); await Promise.all([...blockers, processing]); }
+    expect(mocks.evaluate).toHaveBeenCalledOnce();
+  });
   it('restarts a stalled report after two minutes and ignores the old late result', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
     let releaseOld!: (value: unknown) => void;
@@ -136,6 +165,22 @@ describe('production hypothesis 2 through the existing recording and report pipe
     expect(planCall.evaluationJson).toBe(session.evaluationJson);
     expect(planCall.transcriptJson).toBe(session.transcriptJson);
     expect(mocks.evaluate).toHaveBeenCalledTimes(1);
+  });
+  it('persists a report failure and preserves the scored assessment, while failing the durable job', async () => {
+    mocks.bundle.mockRejectedValueOnce(new Error('example review rejected'));
+    await expect(finalizeVoiceCallSession(finalEvent)).rejects.toThrow('example review rejected');
+    expect(session.totalScore).toBe(88);
+    expect(JSON.parse(session.evaluationJson)).toMatchObject({ overall_score_0_100: 88, unified_call_report: null, plan_criteria: { percent: 100 } });
+    expect(session.failureReason).toBe('REPORT_GENERATION_FAILED: example review rejected');
+    expect(planCall.failureReason).toBe(session.failureReason);
+    expect(mocks.jobs.get('call-production').status).toBe('failed');
+    expect(mocks.criteria).toHaveBeenCalledOnce();
+  });
+  it('does not treat an empty unified report as successful processing', async () => {
+    mocks.bundle.mockResolvedValueOnce({ callSummary: null, replyImprovements: null, unifiedCallReport: null });
+    await expect(finalizeVoiceCallSession(finalEvent)).rejects.toThrow('EMPTY_UNIFIED_CALL_REPORT');
+    expect(mocks.jobs.get('call-production').status).toBe('failed');
+    expect(session.totalScore).toBe(88);
   });
   it('does not evaluate an unanswered call', async () => {
     session.connectedAt = null; session.recordingStatus = null;

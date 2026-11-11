@@ -5,6 +5,7 @@ import { config } from '../config';
 import type { RealtimeTestPlanConfiguration } from './callSettingsManagement';
 import { classifyLiveSpeaker, classifyLiveSpeakerLocally, type LiveSpeakerDecision } from './callLiveSpeakerClassifier';
 import { elevenLabsWebSocketOptions } from './elevenLabsHttp';
+import { prepareOpeningAudio, preparedOpeningAudio } from './realtimeOpeningAudio';
 import { startVoiceCall } from './startVoiceCall';
 import {
   naturalizeAssistantText,
@@ -44,6 +45,7 @@ type TurnMetrics = {
   cancelRaceCount?: number;
   responseOutputGuardMs?: number;
   ttsFailed?: boolean;
+  openingAudioCached?: boolean;
 };
 
 type TranscriptTurn = {
@@ -625,6 +627,7 @@ class CometElevenLabsTurn {
   private ttsRequestedAt: string | null = null;
   private firstAudioTimer: NodeJS.Timeout | null = null;
   private audioRecoveryCount = 0;
+  private openingChecked = false;
   private readonly dialogueProtocol: boolean;
 
   constructor(
@@ -659,7 +662,11 @@ class CometElevenLabsTurn {
   finish(): void {
     if (this.stopped) return;
     this.flushText();
-    if (!this.textSent && this.pending.length === 0) return this.stopMedia();
+    if (!this.textSent && this.pending.length === 0) {
+      if (this.audioBytes) this.finishGeneration();
+      else this.stopMedia();
+      return;
+    }
     this.finishRequested = true;
     this.ensureSocket();
     this.flushPending();
@@ -690,6 +697,19 @@ class CometElevenLabsTurn {
     if (!this.textSent && this.pending.length === 0) text = naturalizeAssistantText(text);
     if (!text) return;
     if (hasNaturalFarewell(text)) this.farewellSent = true;
+    if (!this.openingChecked) {
+      this.openingChecked = true;
+      const cached = preparedOpeningAudio(this.session, text,
+        this.session.connectionState === 'live_conversation'
+        && !this.session.transcript.some(turn => turn.role === 'client'));
+      if (cached) {
+        this.metrics.openingAudioCached = true;
+        this.alignment.push(...cached.alignment);
+        this.queueAudio(cached.audio.toString('base64'));
+        text = text.replace(/^Здравствуйте[.!]\s*/u, '');
+        if (!text) return;
+      }
+    }
     this.pending.push(`${hypothesis2SpokenText(text, this.session.subjectTitle)} `);
     this.ensureSocket();
     this.flushPending();
@@ -943,11 +963,15 @@ class CometElevenLabsV4Socket {
   private pending: unknown[] = [];
   private connectStartedAt: string | null = null;
   private keepAliveTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private idleReconnects = 0;
 
   constructor(private readonly session: CometRealtimeTestSession) {}
 
   connect(): void {
     if (this.closed || this.ws) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     const tts = this.session.elevenLabsTts;
     this.connectStartedAt = isoNow();
     const url = `wss://api.elevenlabs.io/v1/text-to-dialogue/stream-input?model_id=${encodeURIComponent(tts.modelId)}&output_format=ulaw_8000&language_code=ru&sync_alignment=true&apply_text_normalization=on`;
@@ -1020,6 +1044,14 @@ class CometElevenLabsV4Socket {
         this.activeTurn = null;
         this.activeFrames = [];
       }
+      // Heal a failed preconnect while dialing/inside IVR, rather than waiting
+      // for the employee's greeting to discover the dead TTS socket. Active
+      // unheard turns retain their separate, bounded first-audio recovery.
+      if (!this.closed && !this.activeTurn && !this.session.endedAt && this.idleReconnects < 3) {
+        const delay = [250, 1_000, 2_500][this.idleReconnects++];
+        this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; this.connect(); }, delay);
+        this.reconnectTimer.unref();
+      }
     });
   }
 
@@ -1067,6 +1099,8 @@ class CometElevenLabsV4Socket {
 
   close(): void {
     this.closed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     this.activeTurn = null;
     this.activeFrames = [];
     this.pending = [];
@@ -1095,7 +1129,8 @@ class CometElevenLabsV4Socket {
 function sessionInstructions(session: CometRealtimeTestSession): string {
   return `${adaptHypothesis2Prompt(session.prompt)}\n\n` +
     'Ты AI-клиент и инициатор исходящего телефонного звонка. На другом конце менеджер, которому позвонил ты. ' +
-    'После первого приветствия менеджера обязательно сразу начни разговор по сценарию: коротко поздоровайся, представься, назови предмет звонка и задай первый уместный вопрос. ' +
+    'Начинай разговор только после содержательной реплики живого сотрудника. IVR, автоответчик, реклама, музыка и просьба подождать не требуют приветствия: используй skip_turn. ' +
+    'Оцени уместность первой фразы по всей реплике собеседника. Если уместно поздороваться, начни отдельным предложением «Здравствуйте.», затем представься и продолжи сценарий. Если сотрудник сразу задал вопрос, сначала ответь по существу; приветствие необязательно. ' +
     'Не спрашивай, по какому вопросу звонят тебе. Если менеджер спрашивает причину звонка, назови свою причину из сценария. ' +
     'На прямой вопрос менеджера сначала сразу дай конкретный ответ и только потом возвращайся к своим вопросам по сценарию. ' +
     'Если в одной реплике менеджер задал несколько вопросов, ответь на каждый из них в том же ответе; не выбирай только последний. ' +
@@ -1326,6 +1361,7 @@ class PreparedCometConnection {
 
 const preparedCometConnections = new Map<string, PreparedCometConnection>();
 const preparedDialogueSockets = new Map<string, CometElevenLabsV4Socket>();
+const openingAudioOwners = new Map<string, () => void>();
 
 function prepareRealtimeProviders(session: CometRealtimeTestSession): void {
   const comet = new PreparedCometConnection(session);
@@ -1347,9 +1383,12 @@ function prepareRealtimeProviders(session: CometRealtimeTestSession): void {
     prepared.ws.on('error', (error) => session.errors.push(`ElevenLabs preconnect: ${error.message}`));
     preparedSpeechSockets.set(session.callId, prepared);
   }
+  openingAudioOwners.set(session.callId, prepareOpeningAudio(session));
 }
 
 function disposePreparedProviders(callId: string): void {
+  openingAudioOwners.get(callId)?.();
+  openingAudioOwners.delete(callId);
   preparedCometConnections.get(callId)?.close();
   preparedCometConnections.delete(callId);
   preparedDialogueSockets.get(callId)?.close();
@@ -1657,6 +1696,20 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     assistantItemIds.push(...speculativeToolItemIds);
     speculativeToolItemIds = [];
     repairAssistantText('');
+    // Text/TTS generation is not playback. A continued manager utterance may
+    // arrive even after TTS was created, or while Vox buffers its first packet.
+    const unheardTurn = ttsTurn;
+    if (unheardTurn || awaitingAssistantMediaEnd) {
+      awaitingAssistantMediaEnd = true; // suppress cancel's playback callback
+      unheardTurn?.cancel();
+      sendJson(vox, { customEvent: 'control', action: 'clear_media' });
+      ttsTurn = null;
+      playbackTurn = null;
+      assistantSpeaking = false;
+      awaitingAssistantMediaEnd = false;
+      const index = session.transcript.findIndex(turn => turn.role === 'client' && turn.metrics === currentMetrics);
+      if (index >= 0) session.transcript.splice(index, 1);
+    }
     assistantText = '';
     assistantTurnRecorded = true;
     // Generation may already have finished behind the output gate. Consume
@@ -1744,9 +1797,10 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       : '');
 
   const openingResponseInstructions = () => responseInstructions(
-    'Менеджер ответил на твой исходящий звонок. Сразу начни разговор по заданному сценарию: ' +
-    'коротко поздоровайся, представься как клиент, назови предмет и причину звонка и задай первый уместный вопрос. ' +
-    'Обязательно выдай текстовую реплику, не оставляй ответ пустым.',
+    'Менеджер ответил на твой исходящий звонок. Оцени всю последнюю реплику собеседника перед первым ответом. ' +
+    'Для IVR, автоответчика, просьбы подождать или неоднозначного соединения используй skip_turn, не произноси приветствие. ' +
+    'Если живой сотрудник пригласил к разговору и приветствие уместно, начни отдельным предложением «Здравствуйте.», затем представься как клиент, назови причину звонка и задай первый уместный вопрос сценария. ' +
+    'Если сотрудник сразу задал содержательный вопрос, сначала ответь на него по смыслу, приветствие необязательно. Не воспроизводи заготовку вне контекста.',
   );
 
   const createResponseNow = (turnInstructions?: string) => {
@@ -2968,8 +3022,10 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
         }
         return;
       }
-      if (!ttsTurn && !awaitingAssistantMediaEnd && (unheardContinuationCandidate
-        || (hasVoice && (speculativeManagerResponse || (localTurnCommitted && awaitingManagerTranscript))))) {
+      const beforePlayback = !playbackTurn?.playbackStartedAt || !!playbackTurn.playbackEndedAt;
+      if (beforePlayback && (unheardContinuationCandidate
+        || (hasVoice && (ttsTurn || awaitingAssistantMediaEnd || responseActive || responseRequestPending
+          || speculativeManagerResponse || (localTurnCommitted && awaitingManagerTranscript))))) {
         const at = isoNow();
         if (!unheardContinuationCandidate) {
           unheardContinuationCandidate = { frames: [], voicedMs: 0, startedAt: at, lastVoiceAt: at };
@@ -3103,6 +3159,8 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       return;
     }
     if (message.customEvent === 'media_status' && message.status === 'started') {
+      clearBargeCandidate();
+      clearUnheardContinuationCandidate();
       if (playbackTurn) playbackTurn.playbackStartedAt = isoNow();
       currentMetrics.speechToVoxPlaybackMs = elapsed(lastCompletedManagerVoiceAt ?? lastVoiceActivityAt ?? lastSpeechStoppedAt, isoNow());
       return;
@@ -3111,6 +3169,8 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   vox.on('error', (error) => session.errors.push(`Vox media socket: ${error.message}`));
   vox.on('close', () => {
     mediaClosed = true;
+    openingAudioOwners.get(session.callId)?.();
+    openingAudioOwners.delete(session.callId);
     clearResponseWatchdog();
     if (providerRecoveryTimer) clearTimeout(providerRecoveryTimer);
     if (recoveryHangupTimer) clearTimeout(recoveryHangupTimer);

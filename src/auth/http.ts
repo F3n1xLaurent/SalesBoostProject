@@ -1,10 +1,11 @@
-import type { AccountMembership, AccountPermissionTemplateAssignment, PermissionTemplate } from '@prisma/client';
 import type { NextFunction, Request, Response } from 'express';
+import type { AccountMembership, AccountPermissionTemplateAssignment, PermissionTemplate } from '@prisma/client';
+import { measureHttpStage } from '../diagnostics/httpPerformance';
 import { prisma } from '../db';
 import { config } from '../config';
 import { verifyPassword } from './password';
 import { createAuthToken, verifyAuthToken } from './token';
-import { recordProductEvent, type ProductRole } from '../analytics/productAnalytics';
+import { recordProductEvent, toEventRole, getProductOrganizationContext, type ProductRole } from '../analytics/productAnalytics';
 import * as Sentry from '@sentry/node';
 
 export type FrontendRole = 'super' | 'company' | 'dealer' | 'staff';
@@ -38,7 +39,7 @@ function toAllowedRoles(memberships: AccountMembership[]): FrontendRole[] {
   return Array.from(out);
 }
 
-function accountToAuthPayload(account: AccountWithMemberships) {
+async function accountToAuthPayload(account: AccountWithMemberships) {
   const templateAssignments = account.permissionTemplateAssignments as TemplateAssignmentWithTemplate[];
   return {
     account: {
@@ -49,12 +50,13 @@ function accountToAuthPayload(account: AccountWithMemberships) {
     },
     allowedRoles: toAllowedRoles(account.memberships),
     defaultRole: toFrontendRole(account.memberships),
-    memberships: account.memberships.map((membership) => ({
+    memberships: await Promise.all(account.memberships.map(async (membership) => ({
       id: membership.id,
       role: membership.role,
       holdingId: membership.holdingId,
+      companyId: (await getProductOrganizationContext(membership.holdingId, membership.dealershipId)).companyId,
       dealershipId: membership.dealershipId,
-    })),
+    }))),
     permissionTemplates: templateAssignments.map((assignment) => ({
       id: assignment.template.id,
       name: assignment.template.name,
@@ -65,21 +67,23 @@ function accountToAuthPayload(account: AccountWithMemberships) {
 }
 
 async function getAccountForRequest(req: Request) {
-  const authHeader = req.get('authorization') || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  if (!token) return null;
-  const payload = verifyAuthToken(token, tokenSecret());
-  if (!payload) return null;
-  return prisma.account.findUnique({
-    where: { id: payload.sub },
-    include: {
-      memberships: true,
-      permissionTemplateAssignments: {
-        include: {
-          template: true,
+  return measureHttpStage('auth', async () => {
+    const authHeader = req.get('authorization') || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!token) return null;
+    const payload = verifyAuthToken(token, tokenSecret());
+    if (!payload) return null;
+    return prisma.account.findUnique({
+      where: { id: payload.sub },
+      include: {
+        memberships: true,
+        permissionTemplateAssignments: {
+          include: {
+            template: true,
+          },
         },
       },
-    },
+    });
   });
 }
 
@@ -150,7 +154,7 @@ export async function handleAuthLogin(req: Request, res: Response): Promise<void
   const token = createAuthToken({ sub: account.id, email: account.email }, tokenSecret());
   res.json({
     token,
-    ...accountToAuthPayload(account),
+    ...(await accountToAuthPayload(account)),
   });
 }
 
@@ -161,7 +165,7 @@ export async function handleAuthMe(req: Request, res: Response): Promise<void> {
     return;
   }
   req.authAccount = account;
-  res.json(accountToAuthPayload(account));
+  res.json(await accountToAuthPayload(account));
 }
 
 export async function adminApiAuthMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -171,6 +175,13 @@ export async function adminApiAuthMiddleware(req: Request, res: Response, next: 
     return;
   }
   req.authAccount = account;
-  Sentry.getIsolationScope().setUser({ id: account.id });
+  const monitoringScope = Sentry.getIsolationScope();
+  monitoringScope.setUser({ id: account.id });
+  const roleMap: Record<string,string> = { super:'platform_superadmin',company:'holding_admin',dealer:'dealership_admin',staff:'manager' };
+  const selected = account.memberships.find(item => item.role === roleMap[String(req.get('x-admin-role') ?? '')]) ?? account.memberships[0];
+  monitoringScope.setTag('role', toEventRole(selected?.role as ProductRole) ?? 'unknown');
+  const organization = await getProductOrganizationContext(selected?.holdingId ?? null, selected?.dealershipId ?? null);
+  monitoringScope.setTag('company_id', organization.companyId ?? 'none');
+  monitoringScope.setTag('branch_id', selected?.dealershipId ?? 'none');
   next();
 }

@@ -1,3 +1,5 @@
+import { useUnit } from 'effector-react';
+import { $auth } from '../../../entities/session';
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
@@ -45,6 +47,7 @@ import {
 } from '../../../shared/lib/organization-name-validation';
 
 type HoldingFormState = {
+  isTest: boolean;
   name: string;
   description: string;
   type: HoldingType;
@@ -60,6 +63,7 @@ type HoldingsPageProps = {
 };
 
 const EMPTY_HOLDING_FORM: HoldingFormState = {
+  isTest: false,
   name: '',
   description: '',
   type: 'own',
@@ -181,6 +185,7 @@ function buildHoldingForm(item: HoldingItem): HoldingFormState {
     description: item.description || '',
     type: item.type,
     isActive: item.isActive,
+    isTest: item.isTest ?? false,
     dealershipIds: item.dealerships.map((dealership) => dealership.id),
   };
 }
@@ -191,6 +196,7 @@ function normalizeHoldingForm(form: HoldingFormState) {
     description: form.description.trim(),
     type: form.type,
     isActive: form.isActive,
+    isTest: form.isTest,
     dealershipIds: [...form.dealershipIds].sort(),
   };
 }
@@ -667,6 +673,7 @@ function HoldingAnalyticsDetail({
       <section className="sa-section">
         <h2 className="sa-section-title">Рекомендации</h2>
         <RecommendationsBlock
+          companyView
           data={recommendations}
           loading={loading && !recommendations}
           error={recommendationsError}
@@ -737,6 +744,8 @@ function HoldingAnalyticsDetail({
 }
 
 export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealership }: HoldingsPageProps = {}) {
+  const auth = useUnit($auth);
+  const canSetTest = auth.status === 'authenticated' && auth.user.memberships.some(item => item.role === 'platform_superadmin');
   const { showToast } = useToast();
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [dealerships, setDealerships] = useState<DealershipItem[]>([]);
@@ -952,6 +961,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         type: holdingForm.type,
         code: null,
         isActive: true,
+        ...(canSetTest ? { isTest: holdingForm.isTest } : {}),
         dealershipIds: [],
       });
       setCreateHoldingOpen(false);
@@ -989,6 +999,7 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
         type: holdingForm.type,
         code: activeHolding.code || null,
         isActive: holdingForm.isActive,
+        ...(canSetTest ? { isTest: holdingForm.isTest } : {}),
         dealershipIds: holdingForm.dealershipIds,
       });
       setEditHoldingOpen(false);
@@ -1147,6 +1158,9 @@ export function HoldingsPage({ holdingId, onOpenHolding, onBack, onOpenDealershi
             onChange={(type) => setHoldingForm((current) => ({ ...current, type }))}
           />
         </div>
+        {canSetTest && <button type="button" className="sa-toggle-field" aria-pressed={holdingForm.isTest} onClick={() => setHoldingForm(current => ({ ...current, isTest: !current.isTest }))}>
+          <span className="sa-toggle-field__text">Тестовая</span><span className="sa-toggle-field__control" aria-hidden="true"><span className="sa-toggle-field__thumb" /></span>
+        </button>}
         {!isCreate && (
           <button
             type="button"

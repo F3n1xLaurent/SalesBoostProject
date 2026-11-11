@@ -25,7 +25,7 @@ export function createRetryAuditReportHandler(loadScopedJob: (req: Request, id: 
       const progress = auditAnalyticsProgress({
         key: job.key, transcriptReady: job.stage !== 'transcription', evaluationReady: job.stage === 'report', reportReady: false,
       });
-      if (!started && progress.status !== 'processing') {
+      if (!started && progress.status !== 'processing' && !progress.waitingForSlot) {
         return void res.status(503).json({ error: 'Сервис подготовки отчётов занят. Попробуйте ещё раз позже.' });
       }
       // An already running job is a successful, idempotent response to a repeated click.

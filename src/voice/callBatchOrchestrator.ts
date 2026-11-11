@@ -1,3 +1,4 @@
+import { reportError } from '../monitoring/reportError';
 import { assertDealershipModule, BillingAccessError } from '../billing/access';
 import { prisma } from '../db';
 import { addCall, getRecordByCallId, setVoxSessionId, type TranscriptTurn } from './callHistory';
@@ -354,7 +355,7 @@ async function processTick(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error('[call-batch] tick error:', err instanceof Error ? err.message : err);
+    reportError(err, { task: '[call-batch] tick error' });
   } finally {
     tickInFlight = false;
   }
@@ -441,7 +442,7 @@ export function startCallBatchOrchestrator(): void {
   if (timer) return;
   timer = setInterval(() => {
     processTick().catch((err) => {
-      console.error('[call-batch] background tick failed:', err instanceof Error ? err.message : err);
+      reportError(err, { task: '[call-batch] background tick failed' });
     });
   }, TICK_MS);
 }

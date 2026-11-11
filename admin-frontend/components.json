@@ -1,0 +1,1 @@
+{"style":"new-york","rsc":false,"tsx":true,"tailwind":{"config":"","css":"src/pages/internal-analytics/ui/activity/activity.css","baseColor":"neutral","cssVariables":false},"aliases":{"components":"@/components","utils":"@/lib/utils","ui":"@/components/ui"},"iconLibrary":"lucide"}

@@ -729,6 +729,7 @@ export function DealershipDetail({ dealershipId, dealership, onBack, onOpenEmplo
       <section className="sa-section" style={{ marginBottom: 32 }}>
         <h2 className="sa-section-title">Рекомендации</h2>
         <RecommendationsBlock
+          branchId={dealershipId}
           data={recommendations}
           loading={detailLoading && !recommendations}
           error={recommendationsError}

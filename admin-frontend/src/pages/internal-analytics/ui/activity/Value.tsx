@@ -1,0 +1,14 @@
+import React from 'react';
+import { CartesianGrid, Line, LineChart, Tooltip, XAxis, YAxis } from 'recharts';
+import { ChartContainer } from '../../../../components/ui/chart';
+import { Formula } from '../../../../components/ui/tooltip';
+import { Panel, Breakdown, signed, number, nsFormula } from './shared';
+import type { ActivityResponse } from './types';
+export function Value({ data, growth }: {
+  data: ActivityResponse['value'];
+  growth: number | null;
+}) {
+  const total = Object.values(data.groups).reduce((a, b) => a + b, 0);
+  const max = Math.max(1, Math.abs(data.trainedVsNot.trained.value ?? 0), Math.abs(data.trainedVsNot.notTrained.value ?? 0));
+  return <section><h2 className="av-section-title">Ценность продукта<Formula>{nsFormula}</Formula></h2><div className="av-three"><Panel title="Точки по росту качества звонков" help="Точки с хотя бы одним завершённым оценённым звонком за всю историю; рост от +5 баллов, снижение от −5."><p className="av-muted">{number(total)} точек</p><Breakdown items={[{ label: 'Качество выросло', count: data.groups.improved, color: '#71865b' }, { label: 'Без заметных изменений', count: data.groups.flat, color: '#b9bbb0' }, { label: 'Качество снизилось', count: data.groups.declined, color: '#ba6c63' }, { label: 'Мало звонков для оценки', count: data.groups.insufficient, color: '#e1e1da' }]} /></Panel><Panel title="Рост качества с подключения" help={nsFormula}><div className="av-value-large">{signed(growth)} <small>баллов</small></div><ChartContainer label="Рост качества по времени" height={150}><LineChart data={data.series} margin={{ left: -28, right: 4 }}><CartesianGrid vertical={false} strokeDasharray="3 4" /><XAxis dataKey="date" tickFormatter={v => v.slice(5)} minTickGap={40} tickLine={false} axisLine={false} /><YAxis tickLine={false} axisLine={false} /><Tooltip /><Line name="Рост, баллов" dataKey="value" stroke="#606c47" dot={false} strokeWidth={2} connectNulls={false} /></LineChart></ChartContainer></Panel><Panel title="Рост качества: тренируются или нет" help="Точка тренируется, если за последние 30 дней хотя бы 50% её сотрудников завершили тренировку; сравниваем средний рост точек с достаточным числом звонков.">{([['trained', 'Сотрудники тренируются'], ['notTrained', 'Не тренируются']] as const).map(([key, label]) => <div className="av-growth-row" key={key}><div><span>{label}<Formula>{`${number(data.trainedVsNot[key].branches)} точек с данными в группе.`}</Formula></span><strong className={data.trainedVsNot[key].value === null ? 'av-muted' : (data.trainedVsNot[key].value ?? 0) >= 0 ? 'av-positive' : 'av-negative'}>{signed(data.trainedVsNot[key].value)}</strong></div><div className="av-track"><span style={{ width: `${Math.abs(data.trainedVsNot[key].value ?? 0) / max * 100}%`, background: key === 'trained' ? '#71865b' : '#b9bbb0' }} /></div></div>)}</Panel></div></section>;
+}

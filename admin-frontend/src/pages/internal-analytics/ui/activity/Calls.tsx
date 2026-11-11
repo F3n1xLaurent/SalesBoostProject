@@ -1,0 +1,10 @@
+import React from 'react';
+import { Formula } from '../../../../components/ui/tooltip';
+import { Panel, Breakdown, SmallMetric, number, percent, duration } from './shared';
+import type { ActivityResponse } from './types';
+export function Calls({ data }: {
+  data: ActivityResponse['calls'];
+}) {
+  const steps = [['Звонок запущен', data.funnel.launched, 'Все записи звонков с началом в периоде, кроме демо.'], ['Дозвонились', data.funnel.connected, 'Заполнено connectedAt: трубку взяли.'], ['Разговор состоялся', data.funnel.talked, 'Исход звонка completed.'], ['Звонок оценён', data.funnel.evaluated, 'Исход completed и итоговый балл заполнен.']] as const;
+  return <Panel title="Звонки" help="Все звонки с началом в выбранном периоде, кроме демо, включая звонки на общий номер точки без сотрудника."><div className="av-funnel">{steps.map(([label, count, help]) => <div key={label}><div><span>{label}<Formula>{help}</Formula></span><strong>{number(count)} <small>{percent(data.funnel.launched ? count / data.funnel.launched * 100 : null)}</small></strong></div><div className="av-track"><span style={{ width: `${data.funnel.launched ? count / data.funnel.launched * 100 : 0}%` }} /></div></div>)}</div><Breakdown items={[{ label: 'Разговор', count: data.outcomes.completed, color: '#71865b' }, { label: 'Обрыв', count: data.outcomes.disconnected, color: '#bf925a' }, { label: 'Не взяли', count: data.outcomes.no_answer, color: '#b9bbb0' }, { label: 'Занято', count: data.outcomes.busy, color: '#8c92a5' }, { label: 'Сбой', count: data.outcomes.failed, color: '#ba6c63' }]} /><div className="av-metrics av-metrics-three"><SmallMetric label="Средний разговор" value={duration(data.avgTalkSec)} help="Средний talkDurationSec, либо durationSec, только для звонков с исходом completed." /><SmallMetric label="Точки без проверок" value={number(data.branchesWithoutCalls)} help="Точки компаний с хотя бы одним планом звонков, в которые за период не запустили ни одного звонка." /><SmallMetric label="Не оценено" value={number(data.notEvaluated)} help="Разговоры completed без итоговой оценки; причины сбоев оценки проверяются в Sentry." /></div></Panel>;
+}

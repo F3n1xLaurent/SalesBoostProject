@@ -1,3 +1,9 @@
+import { regenerateVoiceReport } from './audits/regenerateVoiceReport';
+import { filterDemoCalls, parseDemoCallNumericId } from './analytics/demoCallSearch';
+import { createEmployeeImportHandlers } from './auth/employeeImport';
+import { recordCallEvent } from './analytics/callEvents';
+import { recordTrainingEvent } from './analytics/trainingEvents';
+import { reportError } from './monitoring/reportError';
 import { billingRouter } from './billing/http';
 import { assertCompanyModule, assertDealershipModule, BillingAccessError } from './billing/access';
 import express from 'express';
@@ -9,7 +15,9 @@ import type { Telegraf } from 'telegraf';
 import type { Prisma } from '@prisma/client';
 import { WebSocketServer } from 'ws';
 import { prisma } from './db';
+import { startCallAnalysisRecovery } from './voice/callAnalysisJobs';
 import { handleGetDiagnosticCase } from './diagnostics/http';
+import { createHttpPerformanceMiddleware } from './diagnostics/httpPerformance';
 import { config } from './config';
 import { compatibleChatTemperature, openai } from './lib/openaiClient';
 import { buildScriptCriteriaEvaluationPrompt } from './llm/scriptCriteriaPrompt';
@@ -270,6 +278,7 @@ import {
   type TopicCode,
 } from './logic/topicStateMachine';
 import { getInternalActivityAnalytics } from './analytics/internalActivityAnalytics';
+import { parseActivityScope, ActivityInputError } from './analytics/activity/scope';
 import {
   parseClientProductEvent,
   recordProductEvent,
@@ -1746,6 +1755,7 @@ import { getTunnelUrl } from './tunnel';
 import { getCallSourceInfo } from './voice/dealershipCallSource';
 
 const app = express();
+app.use(createHttpPerformanceMiddleware());
 const notifyBitrix24AboutDemoCall = createDemoCallBitrix24Notifier(config.bitrix24WebhookUrl);
 
 /** Path for Telegram webhook (production). Call registerTelegramWebhook(bot) before startServer(). */
@@ -2315,7 +2325,7 @@ async function ttsBase64(
       return encode(fallback, 'openai', voice.openaiVoiceId || (voice.fallbackVoice === 'female' ? 'nova' : 'onyx'));
     } catch (error) {
       signal?.throwIfAborted();
-      console.error('[trainer] OpenAI TTS fallback error:', error);
+      reportError(error, { task: '[trainer] OpenAI TTS fallback error' });
       return null;
     }
   }
@@ -2938,7 +2948,7 @@ async function runTrainerSessionTurn(params: {
       } catch (error) {
         params.simulation?.signal.throwIfAborted();
         params.turnControl?.assertCurrent();
-        console.error('[trainer] ElevenLabs agent turn error:', error);
+        reportError(error, { task: '[trainer] ElevenLabs agent turn error' });
         elevenLabsTextAgentDisabled = true;
         closeElevenLabsAgentConversation(session.id);
         nextElevenLabsConversationId = null;
@@ -3196,6 +3206,9 @@ async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<voi
         where: { id: plan.id },
         data: { sessionsJson: jsonStringify(nextItems) },
       });
+      if (nextItems.length > 0 && nextItems.every(item => item.status === 'completed')) {
+        void recordProductEvent({ eventName: 'trainer_daily_plan_completed', accountId: session.employee.accountId, role: 'employee', companyId: session.companyId, branchId: session.branchId, employeeId: session.employeeId, targetType: 'employee', targetId: session.employeeId, deduplicationKey: `trainer_daily_plan_completed:${plan.id}`, properties: { plan_date: plan.planDate, items_count: nextItems.length }, occurredAt: session.completedAt ?? new Date() }).catch(error => reportError(error, { task: 'analytics-daily-plan' }));
+      }
     }
   }
 
@@ -3203,22 +3216,8 @@ async function finalizeTrainerSessionSideEffects(sessionId: string): Promise<voi
     await updateTrainerStreakOnCompletion(session.employeeId, session.startedAt);
   }
 
-  if (session.status === 'completed') {
-    void recordProductEvent({
-      eventName: 'training_completed',
-      accountId: session.employee.accountId,
-      role: 'manager',
-      holdingId: session.companyId ?? session.employee.dealership.holdingId,
-      dealershipId: session.branchId ?? session.employee.dealershipId,
-      managerId: session.employeeId,
-      targetType: 'trainer_session',
-      targetId: session.id,
-      properties: { status: session.status, session_type: session.sessionType },
-      deduplicationKey: `training_completed:${session.id}`,
-      occurredAt: session.completedAt ?? new Date(),
-    }).catch((error) => {
-      console.warn('[analytics] failed to record training completion:', error instanceof Error ? error.message : error);
-    });
+  if (session.status === 'completed' || session.status === 'failed') {
+    recordTrainingEvent(session.id, session.failureReason?.startsWith('SYSTEM_ERROR:') ? 'training_processing_failed' : 'training_completed');
   }
 
   if (session.elevenLabsConversationId) scheduleElevenLabsCostSync(session.id);
@@ -3270,8 +3269,10 @@ function scheduleTrainerSessionFinalization(sessionId: string): void {
 
   trainerSessionFinalizationTasks.set(sessionId, task);
   void task
-    .catch((error) => {
-      console.error(`[trainer] session finalization failed session=${sessionId}:`, error instanceof Error ? error.message : error);
+    .catch(async (error) => {
+      reportError(error, { task: 'trainer-finalization', stage: 'evaluation', entityId: sessionId });
+      await prisma.trainerSession.update({ where: { id: sessionId }, data: { status: 'failed', failureReason: 'SYSTEM_ERROR:evaluation', completedAt: new Date() } }).catch(persistenceError => reportError(persistenceError, { task: 'trainer-failure-persistence', entityId: sessionId }));
+      recordTrainingEvent(sessionId, 'training_processing_failed', { failure_stage: 'evaluation' });
     })
     .finally(() => {
       if (trainerSessionFinalizationTasks.get(sessionId) === task) {
@@ -3444,21 +3445,21 @@ const bitrixSupportBody = express.urlencoded({ extended: true, limit: '256kb' })
 
 app.post('/api/integrations/bitrix24/support/install', bitrixSupportBody, (req, res) => {
   handleBitrixSupportInstall(req, res).catch((error) => {
-    console.error('[support/bitrix24] install error:', error);
+    reportError(error, { task: '[support/bitrix24] install error' });
     res.status(500).json({ error: 'Не удалось установить интеграцию поддержки.' });
   });
 });
 
 app.post('/api/integrations/bitrix24/support/events', bitrixSupportBody, (req, res) => {
   handleBitrixSupportEvent(req, res).catch((error) => {
-    console.error('[support/bitrix24] event error:', error);
+    reportError(error, { task: '[support/bitrix24] event error' });
     res.status(500).json({ error: 'Не удалось обработать событие Битрикс24.' });
   });
 });
 
 app.get('/api/integrations/bitrix24/support/attachments/:attachmentId', (req, res) => {
   handleDownloadBitrixSupportAttachment(req, res).catch((error) => {
-    console.error('[support/bitrix24] attachment download error:', error);
+    reportError(error, { task: '[support/bitrix24] attachment download error' });
     if (!res.headersSent) res.status(500).json({ error: 'Не удалось загрузить файл.' });
   });
 });
@@ -3547,7 +3548,7 @@ app.post('/api/training/web/start', async (req, res) => {
     });
   } catch (error) {
     if (error instanceof BillingAccessError) return res.status(403).json({ error: error.message });
-    console.error('[web-training] start error:', error);
+    reportError(error, { task: '[web-training] start error' });
     const msg = error instanceof Error ? error.message : String(error);
 
     // Максимально безопасный fallback: просто текст без внешних вызовов
@@ -3594,7 +3595,7 @@ app.post('/api/training/web/message', async (req, res) => {
 
     res.json(out);
   } catch (error) {
-    console.error('[web-training] message error:', error);
+    reportError(error, { task: '[web-training] message error' });
     const msg = error instanceof Error ? error.message : String(error);
 
     res.json({
@@ -3658,7 +3659,7 @@ app.post('/api/training/web/voice-message', async (req, res) => {
 
     res.json({ ...out, managerTranscript: managerText });
   } catch (error) {
-    console.error('[web-training] voice-message error:', error);
+    reportError(error, { task: '[web-training] voice-message error' });
     const msg = error instanceof Error ? error.message : String(error);
     res.json({
       clientMessage:
@@ -3700,56 +3701,56 @@ app.get('/', (req, res) => {
 
 app.post('/api/auth/login', (req, res) => {
   handleAuthLogin(req, res).catch((error) => {
-    console.error('Auth login error:', error);
+    reportError(error, { task: 'Auth login error' });
     res.status(500).json({ error: 'Ошибка авторизации. Попробуйте позже.' });
   });
 });
 
 app.get('/api/auth/me', (req, res) => {
   handleAuthMe(req, res).catch((error) => {
-    console.error('Auth me error:', error);
+    reportError(error, { task: 'Auth me error' });
     res.status(500).json({ error: 'Ошибка проверки сессии. Попробуйте позже.' });
   });
 });
 
 app.get('/api/public/support/meta', (req, res) => {
   handleGetPublicSupportMeta(req, res).catch((error) => {
-    console.error('Public support meta error:', error);
+    reportError(error, { task: 'Public support meta error' });
     res.status(500).json({ error: 'Не удалось загрузить параметры поддержки.' });
   });
 });
 
 app.post('/api/public/support/tickets', (req, res) => {
   handleCreatePublicSupportTicket(req, res).catch((error) => {
-    console.error('Public support ticket create error:', error);
+    reportError(error, { task: 'Public support ticket create error' });
     res.status(500).json({ error: 'Не удалось создать обращение.' });
   });
 });
 
 app.get('/api/public/support/tickets/:id', (req, res) => {
   handleGetPublicSupportTicket(req, res).catch((error) => {
-    console.error('Public support ticket detail error:', error);
+    reportError(error, { task: 'Public support ticket detail error' });
     res.status(500).json({ error: 'Не удалось загрузить обращение.' });
   });
 });
 
 app.post('/api/public/support/tickets/:id/messages', (req, res) => {
   handleCreatePublicSupportMessage(req, res).catch((error) => {
-    console.error('Public support message create error:', error);
+    reportError(error, { task: 'Public support message create error' });
     res.status(500).json({ error: 'Не удалось отправить сообщение.' });
   });
 });
 
 app.post('/api/public/support/tickets/:id/read', (req, res) => {
   handleMarkPublicSupportTicketRead(req, res).catch((error) => {
-    console.error('Public support ticket read error:', error);
+    reportError(error, { task: 'Public support ticket read error' });
     res.status(500).json({ error: 'Не удалось отметить сообщения прочитанными.' });
   });
 });
 
 app.put('/api/public/support/tickets/:id/rating', (req, res) => {
   handleRatePublicSupportTicket(req, res).catch((error) => {
-    console.error('Public support rating error:', error);
+    reportError(error, { task: 'Public support rating error' });
     res.status(500).json({ error: 'Не удалось сохранить оценку.' });
   });
 });
@@ -3759,7 +3760,7 @@ app.post(
   express.raw({ type: () => true, limit: '10mb' }),
   (req, res) => {
     handleUploadPublicSupportAttachment(req, res).catch((error) => {
-      console.error('Public support attachment upload error:', error);
+      reportError(error, { task: 'Public support attachment upload error' });
       res.status(500).json({ error: 'Не удалось загрузить файл.' });
     });
   },
@@ -3767,7 +3768,7 @@ app.post(
 
 app.get('/api/public/support/tickets/:id/attachments/:attachmentId', (req, res) => {
   handleDownloadPublicSupportAttachment(req, res).catch((error) => {
-    console.error('Public support attachment download error:', error);
+    reportError(error, { task: 'Public support attachment download error' });
     if (!res.headersSent) res.status(500).json({ error: 'Не удалось загрузить файл.' });
   });
 });
@@ -3831,14 +3832,14 @@ app.get('/api/admin/verify', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Verify error:', error);
+    reportError(error, { task: 'Verify error' });
     res.status(500).json({ error: 'Ошибка сервера. Попробуйте позже.' });
   }
 });
 
 app.use('/api/admin', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
-    console.error('Admin API auth error:', error);
+    reportError(error, { task: 'Admin API auth error' });
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
   });
 });
@@ -3849,56 +3850,56 @@ app.use(['/api/admin/auto-testing', '/api/admin/realtime-test'], requireTestingS
 
 app.use('/api/imports', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
-    console.error('Imports API auth error:', error);
+    reportError(error, { task: 'Imports API auth error' });
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
   });
 });
 
 app.use('/api/trainer', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
-    console.error('Trainer API auth error:', error);
+    reportError(error, { task: 'Trainer API auth error' });
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
   });
 });
 
 app.use('/api/support', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
-    console.error('Support API auth error:', error);
+    reportError(error, { task: 'Support API auth error' });
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
   });
 });
 
 app.get('/api/support/meta', (req, res) => {
   handleGetSupportMeta(req, res).catch((error) => {
-    console.error('Support meta error:', error);
+    reportError(error, { task: 'Support meta error' });
     res.status(500).json({ error: 'Не удалось загрузить параметры поддержки.' });
   });
 });
 
 app.get('/api/support/tickets', (req, res) => {
   handleListSupportTickets(req, res).catch((error) => {
-    console.error('Support ticket list error:', error);
+    reportError(error, { task: 'Support ticket list error' });
     res.status(500).json({ error: 'Не удалось загрузить обращения.' });
   });
 });
 
 app.post('/api/support/tickets', (req, res) => {
   handleCreateSupportTicket(req, res).catch((error) => {
-    console.error('Support ticket create error:', error);
+    reportError(error, { task: 'Support ticket create error' });
     res.status(500).json({ error: 'Не удалось создать обращение.' });
   });
 });
 
 app.get('/api/support/tickets/:id', (req, res) => {
   handleGetSupportTicket(req, res).catch((error) => {
-    console.error('Support ticket detail error:', error);
+    reportError(error, { task: 'Support ticket detail error' });
     res.status(500).json({ error: 'Не удалось загрузить обращение.' });
   });
 });
 
 app.post('/api/support/tickets/:id/messages', (req, res) => {
   handleCreateSupportMessage(req, res).catch((error) => {
-    console.error('Support message create error:', error);
+    reportError(error, { task: 'Support message create error' });
     res.status(500).json({ error: 'Не удалось отправить сообщение.' });
   });
 });
@@ -3908,7 +3909,7 @@ app.post(
   express.raw({ type: () => true, limit: '10mb' }),
   (req, res) => {
     handleUploadSupportAttachment(req, res).catch((error) => {
-      console.error('Support attachment upload error:', error);
+      reportError(error, { task: 'Support attachment upload error' });
       res.status(500).json({ error: 'Не удалось загрузить файл.' });
     });
   },
@@ -3916,28 +3917,28 @@ app.post(
 
 app.get('/api/support/attachments/:attachmentId', (req, res) => {
   handleDownloadSupportAttachment(req, res).catch((error) => {
-    console.error('Support attachment download error:', error);
+    reportError(error, { task: 'Support attachment download error' });
     if (!res.headersSent) res.status(500).json({ error: 'Не удалось загрузить файл.' });
   });
 });
 
 app.post('/api/support/tickets/:id/read', (req, res) => {
   handleMarkSupportTicketRead(req, res).catch((error) => {
-    console.error('Support ticket read error:', error);
+    reportError(error, { task: 'Support ticket read error' });
     res.status(500).json({ error: 'Не удалось отметить сообщения прочитанными.' });
   });
 });
 
 app.post('/api/support/tickets/:id/close', (req, res) => {
   handleCloseSupportTicket(req, res).catch((error) => {
-    console.error('Support ticket close error:', error);
+    reportError(error, { task: 'Support ticket close error' });
     res.status(500).json({ error: 'Не удалось закрыть обращение.' });
   });
 });
 
 app.put('/api/support/tickets/:id/rating', (req, res) => {
   handleRateSupportTicket(req, res).catch((error) => {
-    console.error('Support ticket rating error:', error);
+    reportError(error, { task: 'Support ticket rating error' });
     res.status(500).json({ error: 'Не удалось сохранить оценку.' });
   });
 });
@@ -3948,6 +3949,39 @@ app.post('/api/admin/product-events', async (req, res) => {
     if (!event) return res.status(400).json({ error: 'Некорректное событие аналитики.' });
     const context = await getProductEventContext(req);
     if (!context) return res.status(403).json({ error: 'Роль пользователя недоступна.' });
+    // Attribute entity views to the entity's scope, after checking the same access as its page.
+    const isSuper = req.authAccount!.memberships.some(item => item.role === 'platform_superadmin');
+    const branchAccess: Prisma.DealershipWhereInput = isSuper ? {} : context.role === 'holding_admin' ? { holdingId: context.holdingId ?? '' } : { id: context.dealershipId ?? '' };
+    if (event.targetId && event.targetType === 'company') {
+      if (!isSuper && event.targetId !== context.holdingId) return res.status(403).json({ error: 'Компания недоступна.' });
+      context.holdingId = event.targetId;
+    }
+    if (event.targetId && event.targetType === 'branch') {
+      const branch = await prisma.dealership.findFirst({ where: { AND: [{ id: event.targetId, isDeleted: false }, branchAccess] }, select: { id: true, holdingId: true } });
+      if (!branch) return res.status(403).json({ error: 'Точка недоступна.' });
+      context.holdingId = branch.holdingId; context.dealershipId = branch.id;
+    }
+    if (event.targetId && event.targetType === 'employee') {
+      const employee = await prisma.managerProfile.findFirst({ where: { OR: [{ id: event.targetId }, { accountId: event.targetId }], dealership: branchAccess, ...(context.role === 'manager' ? { accountId: context.accountId } : {}) }, select: { id: true, dealershipId: true, dealership: { select: { holdingId: true } } } });
+      if (!employee) return res.status(403).json({ error: 'Сотрудник недоступен.' });
+      context.holdingId = employee.dealership.holdingId; context.dealershipId = employee.dealershipId; context.managerId = employee.id;
+    }
+    if (event.targetId && event.targetType === 'voice_call') {
+      const numericId = Number(event.targetId.replace(/^call-/, ''));
+      const call = await prisma.voiceCallSession.findFirst({ where: { AND: [Number.isSafeInteger(numericId) ? { id: numericId } : { callId: event.targetId }, buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] }, select: { dealershipId: true, managerId: true, dealership: { select: { holdingId: true } } } });
+      if (!call) return res.status(403).json({ error: 'Отчёт недоступен.' });
+      context.holdingId = call.dealership?.holdingId ?? null; context.dealershipId = call.dealershipId; context.managerId = call.managerId;
+    }
+    if (event.targetId && event.targetType === 'trainer_session') {
+      const session = await prisma.trainerSession.findFirst({ where: { AND: [{ id: event.targetId.replace(/^trainer-/, '') }, buildTrainerSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] }, select: { companyId: true, branchId: true, employeeId: true } });
+      if (!session) return res.status(403).json({ error: 'Отчёт недоступен.' });
+      context.holdingId = session.companyId; context.dealershipId = session.branchId; context.managerId = session.employeeId;
+    }
+    if (event.eventName === 'trainer_opened' && context.managerId) {
+      const plan = await prisma.trainerDailyPlan.findUnique({ where: { employeeId_planDate: { employeeId: context.managerId, planDate: trainerPlanDate(new Date()) } }, select: { sessionsJson: true } });
+      const items = safeArray<{ status?: string }>(plan?.sessionsJson);
+      event.properties = { ...event.properties, has_daily_plan: !!plan, plan_items_done: Math.min(3, items.filter(item => item.status === 'completed').length) };
+    }
     const deduplicationKey = event.eventName === 'session_started' && event.clientSessionId
       ? `session_started:${context.accountId}:${event.clientSessionId}`
       : null;
@@ -4210,7 +4244,7 @@ app.get('/api/trainer/profile', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('trainer/profile error:', error);
+    reportError(error, { task: 'trainer/profile error' });
     res.status(500).json({ error: 'Не удалось загрузить профиль тренажёра.' });
   }
 });
@@ -4237,7 +4271,7 @@ app.get('/api/trainer/scenarios', async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error('trainer/scenarios error:', error);
+    reportError(error, { task: 'trainer/scenarios error' });
     res.status(500).json({ error: 'Не удалось загрузить сценарии.' });
   }
 });
@@ -4256,7 +4290,7 @@ app.get('/api/trainer/plan/today', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('trainer/plan/today error:', error);
+    reportError(error, { task: 'trainer/plan/today error' });
     res.status(500).json({ error: 'Не удалось загрузить план дня.' });
   }
 });
@@ -4283,7 +4317,7 @@ app.get('/api/trainer/history', async (req, res) => {
     const catalog = await getCallReportProblemCatalog(prisma);
     res.json({ items: sessions.map(trainerSessionSummary) });
   } catch (error) {
-    console.error('trainer/history error:', error);
+    reportError(error, { task: 'trainer/history error' });
     res.status(500).json({ error: 'Не удалось загрузить историю тренировок.' });
   }
 });
@@ -4388,21 +4422,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
       include: { scenario: { select: { id: true, name: true } } },
     });
 
-    void recordProductEvent({
-      eventName: 'training_started',
-      accountId: manager.accountId,
-      role: 'manager',
-      holdingId: manager.dealership.holdingId,
-      dealershipId: manager.dealershipId,
-      managerId: manager.id,
-      targetType: 'trainer_session',
-      targetId: session.id,
-      properties: { session_type: session.sessionType },
-      deduplicationKey: `training_started:${session.id}`,
-      occurredAt: session.startedAt,
-    }).catch((error) => {
-      console.warn('[analytics] failed to record training start:', error instanceof Error ? error.message : error);
-    });
+    recordTrainingEvent(session.id, 'training_started');
 
     if (sessionType === 'plan' && plan && planItem) {
       const nextItems = planItems.map((item) => item.id === planItem?.id
@@ -4418,8 +4438,10 @@ app.post('/api/trainer/session/start', async (req, res) => {
       sessionId: session.id,
       replyMode,
       ttsVoice,
-    }).catch((error) => {
-      console.error('trainer/session/start initial dialog error:', error);
+    }).catch(async (error) => {
+      reportError(error, { task: 'trainer/session/start initial dialog error', stage: 'dialog', entityId: session.id });
+      await prisma.trainerSession.update({ where: { id: session.id }, data: { status: 'failed', failureReason: 'SYSTEM_ERROR:dialog', completedAt: new Date() } }).catch(persistenceError => reportError(persistenceError, { task: 'trainer-failure-persistence', entityId: session.id }));
+      recordTrainingEvent(session.id, 'training_processing_failed', { failure_stage: 'dialog' });
       return null;
     });
 
@@ -4433,7 +4455,7 @@ app.post('/api/trainer/session/start', async (req, res) => {
     });
   } catch (error) {
     if (error instanceof BillingAccessError) return res.status(403).json({ error: error.message });
-    console.error('trainer/session/start error:', error);
+    reportError(error, { task: 'trainer/session/start error' });
     res.status(500).json({ error: 'Не удалось запустить тренировку.' });
   }
 });
@@ -4454,7 +4476,7 @@ app.get('/api/trainer/session/:id/dialog', async (req, res) => {
         replyMode: 'text+voice',
         ttsVoice: 'male',
       }).catch((error) => {
-        console.error('trainer/session/dialog recovery error:', error);
+        reportError(error, { task: 'trainer/session/dialog recovery error' });
       });
     }
     res.json({
@@ -4463,7 +4485,7 @@ app.get('/api/trainer/session/:id/dialog', async (req, res) => {
       transcript,
     });
   } catch (error) {
-    console.error('trainer/session/dialog error:', error);
+    reportError(error, { task: 'trainer/session/dialog error' });
     res.status(500).json({ error: 'Не удалось загрузить диалог тренировки.' });
   }
 });
@@ -4518,7 +4540,7 @@ app.post('/api/trainer/session/:id/voice-message', async (req, res) => {
     console.log(`[trainer] voice-message done session=${session.id} ms=${Date.now() - requestStartedAt} timings=${JSON.stringify(out.timings)}`);
     res.json(out);
   } catch (error) {
-    console.error('trainer/session/voice-message error:', error);
+    reportError(error, { task: 'trainer/session/voice-message error' });
     const message = error instanceof Error ? error.message : '';
     const status = (error as { status?: number })?.status;
     if (status && [400, 409, 413, 429].includes(status)) return res.status(status).json({ error: message });
@@ -4563,7 +4585,7 @@ app.get('/api/trainer/session/:id/report', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('trainer/session/report error:', error);
+    reportError(error, { task: 'trainer/session/report error' });
     res.status(500).json({ error: 'Не удалось загрузить отчёт тренировки.' });
   }
 });
@@ -4587,7 +4609,7 @@ app.get('/api/trainer/session/:id/audit-detail', async (req, res) => {
     }
     res.json({ item: await buildTrainerAuditDetailItem(session) });
   } catch (error) {
-    console.error('trainer/session/audit-detail error:', error);
+    reportError(error, { task: 'trainer/session/audit-detail error' });
     res.status(500).json({ error: 'Не удалось загрузить отчёт тренировки.' });
   }
 });
@@ -4625,294 +4647,305 @@ async function handleFinishTrainerSession(req: express.Request, res: express.Res
     }
     res.json({ session: trainerSessionSummary(updated) });
   } catch (error) {
-    console.error('trainer/session/finish error:', error);
+    reportError(error, { task: 'trainer/session/finish error' });
     res.status(500).json({ error: 'Не удалось завершить тренировку.' });
   }
 }
 
+app.post('/api/trainer/session/:id/cancel', async (req, res) => {
+  try {
+    const employee = await resolveTrainerManager(req);
+    if (!employee) return res.status(404).json({ error: 'Профиль сотрудника не найден.' });
+    const updated = await prisma.trainerSession.updateMany({ where: { id: String(req.params.id), employeeId: employee.id, status: { in: ['in_progress', 'paused'] } }, data: { status: 'cancelled', completedAt: new Date() } });
+    if (!updated.count) return res.status(409).json({ error: 'Тренировка уже завершена или недоступна.' });
+    closeElevenLabsAgentConversation(String(req.params.id));
+    recordTrainingEvent(String(req.params.id), 'training_cancelled');
+    return res.json({ ok: true });
+  } catch (error) { reportError(error, { task: 'trainer-cancel' }); return res.status(500).json({ error: 'Не удалось отменить тренировку.' }); }
+});
 app.post('/api/trainer/session/:id/finish', handleFinishTrainerSession);
 // Backward compatibility for an already loaded frontend bundle.
 app.post('/api/trainer/session/:id/abandon', handleFinishTrainerSession);
 
 app.post('/api/imports/analyze-source', (req, res) => {
   handleAnalyzeImportSource(req, res).catch((error) => {
-    console.error('Analyze import source error:', error);
+    reportError(error, { task: 'Analyze import source error' });
     res.status(500).json({ error: 'Не удалось проанализировать источник.' });
   });
 });
 
 app.post('/api/imports/generate-tag-rule', (req, res) => {
   handleGenerateImportTagRule(req, res).catch((error) => {
-    console.error('Generate import tag rule error:', error);
+    reportError(error, { task: 'Generate import tag rule error' });
     res.status(500).json({ error: 'Не удалось сформировать правило.' });
   });
 });
 
 app.post('/api/imports/generate-tag-rules', (req, res) => {
   handleGenerateImportTagRules(req, res).catch((error) => {
-    console.error('Generate import tag rules error:', error);
+    reportError(error, { task: 'Generate import tag rules error' });
     res.status(500).json({ error: 'Не удалось сформировать правила.' });
   });
 });
 
 app.post('/api/imports/test-tag-rules', (req, res) => {
   handleTestImportTagRules(req, res).catch((error) => {
-    console.error('Test import tag rules error:', error);
+    reportError(error, { task: 'Test import tag rules error' });
     res.status(500).json({ error: 'Не удалось протестировать правила тегов.' });
   });
 });
 
 app.post('/api/imports/preview', (req, res) => {
   handlePreviewImportConfig(req, res).catch((error) => {
-    console.error('Preview import config error:', error);
+    reportError(error, { task: 'Preview import config error' });
     res.status(500).json({ error: 'Не удалось построить preview.' });
   });
 });
 
 app.get('/api/imported-items/tags', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
-    console.error('Imported tags API auth error:', error);
+    reportError(error, { task: 'Imported tags API auth error' });
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
   });
 }, (req, res) => {
   handleListImportedTags(req, res).catch((error) => {
-    console.error('List imported tags error:', error);
+    reportError(error, { task: 'List imported tags error' });
     res.status(500).json({ error: 'Не удалось загрузить теги.' });
   });
 });
 
 app.get('/api/imported-items', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
-    console.error('Imported items API auth error:', error);
+    reportError(error, { task: 'Imported items API auth error' });
     res.status(500).json({ error: 'Ошибка проверки доступа. Попробуйте позже.' });
   });
 }, (req, res) => {
   handleListImportedItems(req, res).catch((error) => {
-    console.error('List imported items error:', error);
+    reportError(error, { task: 'List imported items error' });
     res.status(500).json({ error: 'Не удалось загрузить данные.' });
   });
 });
 
 app.get('/api/imports', (req, res) => {
   handleListImports(req, res).catch((error) => {
-    console.error('List imports error:', error);
+    reportError(error, { task: 'List imports error' });
     res.status(500).json({ error: 'Не удалось загрузить импорты.' });
   });
 });
 
 app.get('/api/admin/call-settings/customer-profiles', (req, res) => {
   handleListCallCustomerProfiles(req, res).catch((error) => {
-    console.error('List call customer profiles error:', error);
+    reportError(error, { task: 'List call customer profiles error' });
     res.status(500).json({ error: 'Не удалось загрузить профили клиентов.' });
   });
 });
 
 app.get('/api/admin/call-settings/customer-voices', (req, res) => {
   handleListCallCustomerVoices(req, res).catch((error) => {
-    console.error('List call customer voices error:', error);
+    reportError(error, { task: 'List call customer voices error' });
     res.status(500).json({ error: 'Не удалось загрузить голоса клиентов.' });
   });
 });
 
 app.post('/api/admin/call-settings/customer-voices', (req, res) => {
   handleCreateCallCustomerVoice(req, res).catch((error) => {
-    console.error('Create call customer voice error:', error);
+    reportError(error, { task: 'Create call customer voice error' });
     res.status(500).json({ error: 'Не удалось создать голос клиента.' });
   });
 });
 
 app.patch('/api/admin/call-settings/customer-voices/:id', (req, res) => {
   handleUpdateCallCustomerVoice(req, res).catch((error) => {
-    console.error('Update call customer voice error:', error);
+    reportError(error, { task: 'Update call customer voice error' });
     res.status(500).json({ error: 'Не удалось обновить голос клиента.' });
   });
 });
 
 app.delete('/api/admin/call-settings/customer-voices/:id', (req, res) => {
   handleDeleteCallCustomerVoice(req, res).catch((error) => {
-    console.error('Delete call customer voice error:', error);
+    reportError(error, { task: 'Delete call customer voice error' });
     res.status(500).json({ error: 'Не удалось удалить голос клиента.' });
   });
 });
 
 app.post('/api/admin/call-settings/customer-profiles', (req, res) => {
   handleCreateCallCustomerProfile(req, res).catch((error) => {
-    console.error('Create call customer profile error:', error);
+    reportError(error, { task: 'Create call customer profile error' });
     res.status(500).json({ error: 'Не удалось создать профиль клиента.' });
   });
 });
 
 app.patch('/api/admin/call-settings/customer-profiles/:id', (req, res) => {
   handleUpdateCallCustomerProfile(req, res).catch((error) => {
-    console.error('Update call customer profile error:', error);
+    reportError(error, { task: 'Update call customer profile error' });
     res.status(500).json({ error: 'Не удалось обновить профиль клиента.' });
   });
 });
 
 app.delete('/api/admin/call-settings/customer-profiles/:id', (req, res) => {
   handleDeleteCallCustomerProfile(req, res).catch((error) => {
-    console.error('Delete call customer profile error:', error);
+    reportError(error, { task: 'Delete call customer profile error' });
     res.status(500).json({ error: 'Не удалось удалить профиль клиента.' });
   });
 });
 
 app.get('/api/admin/call-settings/scripts', (req, res) => {
   handleListCallScripts(req, res).catch((error) => {
-    console.error('List call scripts error:', error);
+    reportError(error, { task: 'List call scripts error' });
     res.status(500).json({ error: 'Не удалось загрузить скрипты.' });
   });
 });
 
 app.get('/api/admin/evaluation-checklists', (req, res) => {
   handleListEvaluationChecklists(req, res).catch((error) => {
-    console.error('List evaluation checklists error:', error);
+    reportError(error, { task: 'List evaluation checklists error' });
     res.status(500).json({ error: 'Не удалось загрузить чек-листы.' });
   });
 });
 
 app.post('/api/admin/evaluation-checklists', (req, res) => {
   handleCreateEvaluationChecklist(req, res).catch((error) => {
-    console.error('Create evaluation checklist error:', error);
+    reportError(error, { task: 'Create evaluation checklist error' });
     res.status(500).json({ error: 'Не удалось создать чек-лист.' });
   });
 });
 
 app.patch('/api/admin/evaluation-checklists/:id', (req, res) => {
   handleUpdateEvaluationChecklist(req, res).catch((error) => {
-    console.error('Update evaluation checklist error:', error);
+    reportError(error, { task: 'Update evaluation checklist error' });
     res.status(500).json({ error: 'Не удалось обновить чек-лист.' });
   });
 });
 
 app.delete('/api/admin/evaluation-checklists/:id', (req, res) => {
   handleArchiveEvaluationChecklist(req, res).catch((error) => {
-    console.error('Archive evaluation checklist error:', error);
+    reportError(error, { task: 'Archive evaluation checklist error' });
     res.status(500).json({ error: 'Не удалось архивировать чек-лист.' });
   });
 });
 
 app.get('/api/admin/demo-call/config', (req, res) => {
   handleGetDemoCallAdminConfiguration(req, res).catch((error) => {
-    console.error('Get demo call configuration error:', error);
+    reportError(error, { task: 'Get demo call configuration error' });
     res.status(500).json({ error: 'Не удалось загрузить настройки демо-стенда.' });
   });
 });
 
 app.put('/api/admin/demo-call/voices/:id', (req, res) => {
   handleUpdateDemoCallVoice(req, res).catch((error) => {
-    console.error('Update demo call voice error:', error);
+    reportError(error, { task: 'Update demo call voice error' });
     res.status(500).json({ error: 'Не удалось обновить голос демо-стенда.' });
   });
 });
 
 app.put('/api/admin/demo-call/profile', (req, res) => {
   handleUpdateDemoCallProfile(req, res).catch((error) => {
-    console.error('Update demo call profile error:', error);
+    reportError(error, { task: 'Update demo call profile error' });
     res.status(500).json({ error: 'Не удалось обновить профиль демо-стенда.' });
   });
 });
 
 app.put('/api/admin/demo-call/script', (req, res) => {
   handleUpdateDemoCallScript(req, res).catch((error) => {
-    console.error('Update demo call script error:', error);
+    reportError(error, { task: 'Update demo call script error' });
     res.status(500).json({ error: 'Не удалось обновить скрипт демо-стенда.' });
   });
 });
 
 app.post('/api/admin/call-settings/scripts', (req, res) => {
   handleCreateCallScript(req, res).catch((error) => {
-    console.error('Create call script error:', error);
+    reportError(error, { task: 'Create call script error' });
     res.status(500).json({ error: 'Не удалось создать скрипт.' });
   });
 });
 
 app.patch('/api/admin/call-settings/scripts/:id', (req, res) => {
   handleUpdateCallScript(req, res).catch((error) => {
-    console.error('Update call script error:', error);
+    reportError(error, { task: 'Update call script error' });
     res.status(500).json({ error: 'Не удалось обновить скрипт.' });
   });
 });
 
 app.delete('/api/admin/call-settings/scripts/:id', (req, res) => {
   handleDeleteCallScript(req, res).catch((error) => {
-    console.error('Delete call script error:', error);
+    reportError(error, { task: 'Delete call script error' });
     res.status(500).json({ error: 'Не удалось удалить скрипт.' });
   });
 });
 
 app.get('/api/admin/call-settings/plan-options', (req, res) => {
   handleGetCallPlanOptions(req, res).catch((error) => {
-    console.error('Get call plan options error:', error);
+    reportError(error, { task: 'Get call plan options error' });
     res.status(500).json({ error: 'Не удалось загрузить данные плана прозвона.' });
   });
 });
 
 app.get('/api/admin/call-settings/plans', (req, res) => {
   handleListCallPlans(req, res).catch((error) => {
-    console.error('List call plans error:', error);
+    reportError(error, { task: 'List call plans error' });
     res.status(500).json({ error: 'Не удалось загрузить планы прозвона.' });
   });
 });
 
 app.post('/api/admin/call-settings/plans', (req, res) => {
   handleCreateCallPlan(req, res).catch((error) => {
-    console.error('Create call plan error:', error);
+    reportError(error, { task: 'Create call plan error' });
     res.status(500).json({ error: 'Не удалось создать план прозвона.' });
   });
 });
 
 app.patch('/api/admin/call-settings/plans/:id', (req, res) => {
   handleUpdateCallPlan(req, res).catch((error) => {
-    console.error('Update call plan error:', error);
+    reportError(error, { task: 'Update call plan error' });
     res.status(500).json({ error: 'Не удалось обновить план прозвона.' });
   });
 });
 
 app.delete('/api/admin/call-settings/plans/:id', (req, res) => {
   handleDeleteCallPlan(req, res).catch((error) => {
-    console.error('Delete call plan error:', error);
+    reportError(error, { task: 'Delete call plan error' });
     res.status(500).json({ error: 'Не удалось удалить план прозвона.' });
   });
 });
 
 app.post('/api/admin/call-settings/plans/:id/initiate', (req, res) => {
   handleInitiateCallPlan(req, res).catch((error) => {
-    console.error('Initiate call plan error:', error);
+    reportError(error, { task: 'Initiate call plan error' });
     res.status(500).json({ error: 'Не удалось инициировать прозвон.' });
   });
 });
 
 app.get('/api/admin/call-settings/plans/:id/prompt-preview', (req, res) => {
   handlePreviewCallPlanPrompt(req, res).catch((error) => {
-    console.error('Preview call plan prompt error:', error);
+    reportError(error, { task: 'Preview call plan prompt error' });
     res.status(500).json({ error: 'Не удалось сгенерировать промпт.' });
   });
 });
 
 app.get('/api/admin/call-settings/plans/:id/calls', (req, res) => {
   handleListCallPlanCalls(req, res).catch((error) => {
-    console.error('List call plan calls error:', error);
+    reportError(error, { task: 'List call plan calls error' });
     res.status(500).json({ error: 'Не удалось загрузить историю прозвона.' });
   });
 });
 
 app.delete('/api/admin/call-settings/plans/:id/calls/:callId', (req, res) => {
   handleDeleteCallPlanCall(req, res).catch((error) => {
-    console.error('Delete call plan history item error:', error);
+    reportError(error, { task: 'Delete call plan history item error' });
     res.status(500).json({ error: 'Не удалось удалить запись истории прозвона.' });
   });
 });
 
 app.get('/api/admin/call-settings/plans/:id/schedule', (req, res) => {
   handleGetCallPlanSchedule(req, res).catch((error) => {
-    console.error('Get call plan schedule error:', error);
+    reportError(error, { task: 'Get call plan schedule error' });
     res.status(500).json({ error: 'Не удалось загрузить расписание прозвона.' });
   });
 });
 
 app.post('/api/admin/call-settings/plans/:id/schedule/:callId/recreate', (req, res) => {
   handleRecreateCallPlanScheduleCall(req, res).catch((error) => {
-    console.error('Recreate call plan schedule call error:', error);
+    reportError(error, { task: 'Recreate call plan schedule call error' });
     res.status(500).json({ error: 'Не удалось пересоздать расписание прозвона.' });
   });
 });
@@ -5020,13 +5053,13 @@ app.get('/api/admin/realtime-test/regressions/:runId/audio/:caseId', (req, res) 
 app.post('/api/admin/realtime-test/calls', (req, res) => {
   if (req.body?.provider === 'comet' || req.body?.provider === 'openai') {
     handleStartCometRealtimeTest(req, res).catch((error) => {
-      console.error('Start GPT Realtime test call error:', error);
+      reportError(error, { task: 'Start GPT Realtime test call error' });
       res.status(500).json({ error: 'Не удалось запустить гипотезу 2.' });
     });
     return;
   }
   handleStartYandexRealtimeTest(req, res).catch((error) => {
-    console.error('Start Yandex Realtime test call error:', error);
+    reportError(error, { task: 'Start Yandex Realtime test call error' });
     res.status(500).json({ error: 'Не удалось запустить тестовый звонок.' });
   });
 });
@@ -5038,350 +5071,354 @@ app.get('/api/admin/realtime-test/calls/:callId', (req, res) => {
 
 app.post('/api/imports', (req, res) => {
   handleCreateImport(req, res).catch((error) => {
-    console.error('Create import error:', error);
+    reportError(error, { task: 'Create import error' });
     res.status(500).json({ error: 'Не удалось создать импорт.' });
   });
 });
 
 app.get('/api/imports/:id', (req, res) => {
   handleGetImport(req, res).catch((error) => {
-    console.error('Get import error:', error);
+    reportError(error, { task: 'Get import error' });
     res.status(500).json({ error: 'Не удалось загрузить импорт.' });
   });
 });
 
 app.patch('/api/imports/:id', (req, res) => {
   handleUpdateImport(req, res).catch((error) => {
-    console.error('Update import error:', error);
+    reportError(error, { task: 'Update import error' });
     res.status(500).json({ error: 'Не удалось обновить импорт.' });
   });
 });
 
 app.delete('/api/imports/:id', (req, res) => {
   handleDeleteImport(req, res).catch((error) => {
-    console.error('Delete import error:', error);
+    reportError(error, { task: 'Delete import error' });
     res.status(500).json({ error: 'Не удалось удалить импорт.' });
   });
 });
 
 app.post('/api/imports/:id/run', (req, res) => {
   handleRunImport(req, res).catch((error) => {
-    console.error('Run import error:', error);
+    reportError(error, { task: 'Run import error' });
     res.status(500).json({ error: 'Не удалось запустить импорт.' });
   });
 });
 
 app.post('/api/imports/:id/cancel', (req, res) => {
   handleCancelImport(req, res).catch((error) => {
-    console.error('Cancel import error:', error);
+    reportError(error, { task: 'Cancel import error' });
     res.status(500).json({ error: 'Не удалось остановить загрузку.' });
   });
 });
 
 app.get('/api/admin/rbac/meta', (req, res) => {
   handleRbacMeta(req, res).catch((error) => {
-    console.error('RBAC meta error:', error);
+    reportError(error, { task: 'RBAC meta error' });
     res.status(500).json({ error: 'Не удалось загрузить RBAC-метаданные.' });
   });
 });
 
 app.get('/api/admin/holdings', (req, res) => {
   handleListHoldings(req, res).catch((error) => {
-    console.error('List holdings error:', error);
+    reportError(error, { task: 'List holdings error' });
     res.status(500).json({ error: 'Не удалось загрузить компании.' });
   });
 });
 
 app.get('/api/admin/holdings/:holdingId/recommendations', (req, res) => {
   handleHoldingRecommendations(req, res).catch((error) => {
-    console.error('Holding recommendations error:', error);
+    reportError(error, { task: 'Holding recommendations error' });
     res.status(500).json({ error: 'Не удалось рассчитать рекомендации компании.' });
   });
 });
 
 app.get('/api/admin/cities', (req, res) => {
   handleListCities(req, res).catch((error) => {
-    console.error('List cities route error:', error);
+    reportError(error, { task: 'List cities route error' });
     res.status(500).json({ error: 'Не удалось загрузить города.' });
   });
 });
 
 app.post('/api/admin/cities', (req, res) => {
   handleCreateCity(req, res).catch((error) => {
-    console.error('Create city route error:', error);
+    reportError(error, { task: 'Create city route error' });
     res.status(500).json({ error: 'Не удалось добавить город.' });
   });
 });
 
 app.patch('/api/admin/cities', (req, res) => {
   handleUpdateCity(req, res).catch((error) => {
-    console.error('Update city route error:', error);
+    reportError(error, { task: 'Update city route error' });
     res.status(500).json({ error: 'Не удалось переименовать город.' });
   });
 });
 
 app.post('/api/admin/holdings', (req, res) => {
   handleCreateHolding(req, res).catch((error) => {
-    console.error('Create holding route error:', error);
+    reportError(error, { task: 'Create holding route error' });
     res.status(500).json({ error: 'Не удалось создать компанию.' });
   });
 });
 
 app.patch('/api/admin/holdings/:holdingId', (req, res) => {
   handleUpdateHolding(req, res).catch((error) => {
-    console.error('Update holding route error:', error);
+    reportError(error, { task: 'Update holding route error' });
     res.status(500).json({ error: 'Не удалось обновить компанию.' });
   });
 });
 
 app.delete('/api/admin/holdings/:holdingId', (req, res) => {
   handleDeleteHolding(req, res).catch((error) => {
-    console.error('Delete holding route error:', error);
+    reportError(error, { task: 'Delete holding route error' });
     res.status(500).json({ error: 'Не удалось удалить компанию.' });
   });
 });
 
 app.post('/api/admin/holdings/:holdingId/restore', (req, res) => {
   handleRestoreHolding(req, res).catch((error) => {
-    console.error('Restore holding route error:', error);
+    reportError(error, { task: 'Restore holding route error' });
     res.status(500).json({ error: 'Не удалось восстановить компанию.' });
   });
 });
 
 app.get('/api/admin/dealerships', (req, res) => {
   handleListDealerships(req, res).catch((error) => {
-    console.error('List dealerships error:', error);
+    reportError(error, { task: 'List dealerships error' });
     res.status(500).json({ error: 'Не удалось загрузить точки.' });
   });
 });
 
 app.get('/api/admin/dealerships/:dealershipId/recommendations', (req, res) => {
   handleDealershipRecommendations(req, res).catch((error) => {
-    console.error('Dealership recommendations error:', error);
+    reportError(error, { task: 'Dealership recommendations error' });
     res.status(500).json({ error: 'Не удалось рассчитать рекомендации точки.' });
   });
 });
 
 app.post('/api/admin/dealerships', (req, res) => {
   handleCreateDealership(req, res).catch((error) => {
-    console.error('Create dealership route error:', error);
+    reportError(error, { task: 'Create dealership route error' });
     res.status(500).json({ error: 'Не удалось создать точку.' });
   });
 });
 
 app.patch('/api/admin/dealerships/:dealershipId', (req, res) => {
   handleUpdateDealership(req, res).catch((error) => {
-    console.error('Update dealership route error:', error);
+    reportError(error, { task: 'Update dealership route error' });
     res.status(500).json({ error: 'Не удалось обновить точку.' });
   });
 });
 
 app.delete('/api/admin/dealerships/:dealershipId', (req, res) => {
   handleDeleteDealership(req, res).catch((error) => {
-    console.error('Delete dealership route error:', error);
+    reportError(error, { task: 'Delete dealership route error' });
     res.status(500).json({ error: 'Не удалось удалить точку.' });
   });
 });
 
 app.post('/api/admin/dealerships/:dealershipId/restore', (req, res) => {
   handleRestoreDealership(req, res).catch((error) => {
-    console.error('Restore dealership route error:', error);
+    reportError(error, { task: 'Restore dealership route error' });
     res.status(500).json({ error: 'Не удалось восстановить точку.' });
   });
 });
 
 app.get('/api/admin/dealership-directions', (req, res) => {
   handleListDealershipDirections(req, res).catch((error) => {
-    console.error('List dealership directions route error:', error);
+    reportError(error, { task: 'List dealership directions route error' });
     res.status(500).json({ error: 'Не удалось загрузить направления точек.' });
   });
 });
 
 app.post('/api/admin/dealership-directions', (req, res) => {
   handleCreateDealershipDirection(req, res).catch((error) => {
-    console.error('Create dealership direction route error:', error);
+    reportError(error, { task: 'Create dealership direction route error' });
     res.status(500).json({ error: 'Не удалось создать направление точки.' });
   });
 });
 
 app.patch('/api/admin/dealership-directions/:directionId', (req, res) => {
   handleUpdateDealershipDirection(req, res).catch((error) => {
-    console.error('Update dealership direction route error:', error);
+    reportError(error, { task: 'Update dealership direction route error' });
     res.status(500).json({ error: 'Не удалось обновить направление точки.' });
   });
 });
 
 app.delete('/api/admin/dealership-directions/:directionId', (req, res) => {
   handleDeleteDealershipDirection(req, res).catch((error) => {
-    console.error('Delete dealership direction route error:', error);
+    reportError(error, { task: 'Delete dealership direction route error' });
     res.status(500).json({ error: 'Не удалось удалить направление точки.' });
   });
 });
 
 app.get('/api/admin/phone-number-types', (req, res) => {
   handleListPhoneNumberTypes(req, res).catch((error) => {
-    console.error('List phone number types route error:', error);
+    reportError(error, { task: 'List phone number types route error' });
     res.status(500).json({ error: 'Не удалось загрузить типы номеров.' });
   });
 });
 
 app.post('/api/admin/phone-number-types', (req, res) => {
   handleCreatePhoneNumberType(req, res).catch((error) => {
-    console.error('Create phone number type route error:', error);
+    reportError(error, { task: 'Create phone number type route error' });
     res.status(500).json({ error: 'Не удалось создать тип номера.' });
   });
 });
 
 app.patch('/api/admin/phone-number-types/:typeId', (req, res) => {
   handleUpdatePhoneNumberType(req, res).catch((error) => {
-    console.error('Update phone number type route error:', error);
+    reportError(error, { task: 'Update phone number type route error' });
     res.status(500).json({ error: 'Не удалось обновить тип номера.' });
   });
 });
 
 app.delete('/api/admin/phone-number-types/:typeId', (req, res) => {
   handleDeletePhoneNumberType(req, res).catch((error) => {
-    console.error('Delete phone number type route error:', error);
+    reportError(error, { task: 'Delete phone number type route error' });
     res.status(500).json({ error: 'Не удалось удалить тип номера.' });
   });
 });
 
 app.get('/api/admin/dealerships/:dealershipId/phone-numbers', (req, res) => {
   handleListDealershipPhoneNumbers(req, res).catch((error) => {
-    console.error('List dealership phone numbers route error:', error);
+    reportError(error, { task: 'List dealership phone numbers route error' });
     res.status(500).json({ error: 'Не удалось загрузить номера телефонов.' });
   });
 });
 
 app.post('/api/admin/dealerships/:dealershipId/phone-numbers', (req, res) => {
   handleCreateDealershipPhoneNumber(req, res).catch((error) => {
-    console.error('Create dealership phone number route error:', error);
+    reportError(error, { task: 'Create dealership phone number route error' });
     res.status(500).json({ error: 'Не удалось добавить номер телефона.' });
   });
 });
 
 app.patch('/api/admin/dealership-phone-numbers/:phoneNumberId', (req, res) => {
   handleUpdateDealershipPhoneNumber(req, res).catch((error) => {
-    console.error('Update dealership phone number route error:', error);
+    reportError(error, { task: 'Update dealership phone number route error' });
     res.status(500).json({ error: 'Не удалось обновить номер телефона.' });
   });
 });
 
 app.delete('/api/admin/dealership-phone-numbers/:phoneNumberId', (req, res) => {
   handleDeleteDealershipPhoneNumber(req, res).catch((error) => {
-    console.error('Delete dealership phone number route error:', error);
+    reportError(error, { task: 'Delete dealership phone number route error' });
     res.status(500).json({ error: 'Не удалось удалить номер телефона.' });
   });
 });
 
 app.post('/api/admin/organization/sync-mock', (req, res) => {
   handleSyncMockOrganization(req, res).catch((error) => {
-    console.error('Sync mock organization route error:', error);
+    reportError(error, { task: 'Sync mock organization route error' });
     res.status(500).json({ error: 'Не удалось синхронизировать оргструктуру.' });
   });
 });
 
+const employeeImport = createEmployeeImportHandlers();
+app.post('/api/admin/employees/import/preview', employeeImport.preview);
+app.post('/api/admin/employees/import', employeeImport.commit);
+
 app.get('/api/admin/users', (req, res) => {
   handleListUsers(req, res).catch((error) => {
-    console.error('List users error:', error);
+    reportError(error, { task: 'List users error' });
     res.status(500).json({ error: 'Не удалось загрузить пользователей.' });
   });
 });
 
 app.get('/api/admin/users/:accountId/recommendations', (req, res) => {
   handleUserRecommendations(req, res).catch((error) => {
-    console.error('User recommendations error:', error);
+    reportError(error, { task: 'User recommendations error' });
     res.status(500).json({ error: 'Не удалось рассчитать рекомендации пользователя.' });
   });
 });
 
 app.post('/api/admin/users', (req, res) => {
   handleCreateUser(req, res).catch((error) => {
-    console.error('Create user route error:', error);
+    reportError(error, { task: 'Create user route error' });
     res.status(500).json({ error: 'Не удалось создать пользователя.' });
   });
 });
 
 app.patch('/api/admin/users/:accountId', (req, res) => {
   handleUpdateUser(req, res).catch((error) => {
-    console.error('Update user route error:', error);
+    reportError(error, { task: 'Update user route error' });
     res.status(500).json({ error: 'Не удалось обновить пользователя.' });
   });
 });
 
 app.post('/api/admin/me/password', (req, res) => {
   handleChangeOwnPassword(req, res).catch((error) => {
-    console.error('Change own password route error:', error);
+    reportError(error, { task: 'Change own password route error' });
     res.status(500).json({ error: 'Не удалось изменить пароль.' });
   });
 });
 
 app.post('/api/admin/users/:accountId/password', (req, res) => {
   handleChangeUserPassword(req, res).catch((error) => {
-    console.error('Change user password route error:', error);
+    reportError(error, { task: 'Change user password route error' });
     res.status(500).json({ error: 'Не удалось изменить пароль пользователя.' });
   });
 });
 
 app.delete('/api/admin/users/:accountId', (req, res) => {
   handleDeleteUser(req, res).catch((error) => {
-    console.error('Delete user route error:', error);
+    reportError(error, { task: 'Delete user route error' });
     res.status(500).json({ error: 'Не удалось удалить пользователя.' });
   });
 });
 
 app.get('/api/admin/users/:accountId/phone-numbers', (req, res) => {
   handleListUserPhoneNumbers(req, res).catch((error) => {
-    console.error('List user phone numbers route error:', error);
+    reportError(error, { task: 'List user phone numbers route error' });
     res.status(500).json({ error: 'Не удалось загрузить номера телефонов.' });
   });
 });
 
 app.post('/api/admin/users/:accountId/phone-numbers', (req, res) => {
   handleCreateUserPhoneNumber(req, res).catch((error) => {
-    console.error('Create user phone number route error:', error);
+    reportError(error, { task: 'Create user phone number route error' });
     res.status(500).json({ error: 'Не удалось добавить номер телефона.' });
   });
 });
 
 app.patch('/api/admin/user-phone-numbers/:phoneNumberId', (req, res) => {
   handleUpdateUserPhoneNumber(req, res).catch((error) => {
-    console.error('Update user phone number route error:', error);
+    reportError(error, { task: 'Update user phone number route error' });
     res.status(500).json({ error: 'Не удалось обновить номер телефона.' });
   });
 });
 
 app.delete('/api/admin/user-phone-numbers/:phoneNumberId', (req, res) => {
   handleDeleteUserPhoneNumber(req, res).catch((error) => {
-    console.error('Delete user phone number route error:', error);
+    reportError(error, { task: 'Delete user phone number route error' });
     res.status(500).json({ error: 'Не удалось удалить номер телефона.' });
   });
 });
 
 app.get('/api/admin/permission-templates', (req, res) => {
   handleListPermissionTemplates(req, res).catch((error) => {
-    console.error('List permission templates error:', error);
+    reportError(error, { task: 'List permission templates error' });
     res.status(500).json({ error: 'Не удалось загрузить шаблоны прав.' });
   });
 });
 
 app.post('/api/admin/permission-templates', (req, res) => {
   handleCreatePermissionTemplate(req, res).catch((error) => {
-    console.error('Create permission template error:', error);
+    reportError(error, { task: 'Create permission template error' });
     res.status(500).json({ error: 'Не удалось создать шаблон прав.' });
   });
 });
 
 app.patch('/api/admin/permission-templates/:templateId', (req, res) => {
   handleUpdatePermissionTemplate(req, res).catch((error) => {
-    console.error('Update permission template error:', error);
+    reportError(error, { task: 'Update permission template error' });
     res.status(500).json({ error: 'Не удалось обновить шаблон прав.' });
   });
 });
 
 app.delete('/api/admin/permission-templates/:templateId', (req, res) => {
   handleDeletePermissionTemplate(req, res).catch((error) => {
-    console.error('Delete permission template error:', error);
+    reportError(error, { task: 'Delete permission template error' });
     res.status(500).json({ error: 'Не удалось удалить шаблон прав.' });
   });
 });
@@ -5561,7 +5598,7 @@ app.get('/api/admin/training-sessions/:sessionId', async (req, res) => {
       steps,
     });
   } catch (error) {
-    console.error('Get training session error:', error);
+    reportError(error, { task: 'Get training session error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -5666,7 +5703,7 @@ app.get('/api/admin/attempts/:attemptId', async (req, res) => {
       steps,
     });
   } catch (error) {
-    console.error('Get attempt details error:', error);
+    reportError(error, { task: 'Get attempt details error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -5885,7 +5922,7 @@ app.get('/api/admin/attempts', async (req, res) => {
       totalPages: Math.ceil(total / limit),
     });
   } catch (error) {
-    console.error('Get attempts error:', error);
+    reportError(error, { task: 'Get attempts error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6101,7 +6138,7 @@ app.get('/api/admin/summary', async (req, res) => {
     teamSummaryCache = { data: payload, expiresAt: now + ANALYTICS_TTL_MS };
     res.json(payload);
   } catch (error) {
-    console.error('Get summary error:', error);
+    reportError(error, { task: 'Get summary error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6400,7 +6437,7 @@ app.get('/api/admin/dashboard/overview', async (req, res) => {
       riskLabel: dealershipRatings.lowDealerships[0]?.name ?? topWeakness?.weakness ?? null,
     });
   } catch (error) {
-    console.error('dashboard/overview error:', error);
+    reportError(error, { task: 'dashboard/overview error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6473,7 +6510,7 @@ app.get('/api/admin/voice-dashboard', async (_req, res) => {
     voiceDashboardCache = { data: payload, expiresAt: now + ANALYTICS_TTL_MS };
     res.json(payload);
   } catch (error) {
-    console.error('Get voice-dashboard error:', error);
+    reportError(error, { task: 'Get voice-dashboard error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6553,7 +6590,7 @@ app.get('/api/admin/expenses', async (req, res) => {
       billingUrl: 'https://platform.openai.com/account/billing',
     });
   } catch (error) {
-    console.error('Get expenses error:', error);
+    reportError(error, { task: 'Get expenses error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6587,7 +6624,7 @@ app.get('/api/admin/managers', async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error('Get managers error:', error);
+    reportError(error, { task: 'Get managers error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6638,7 +6675,7 @@ app.get('/api/admin/managers/:managerId/attempts', async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error('Get manager attempts error:', error);
+    reportError(error, { task: 'Get manager attempts error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6671,7 +6708,7 @@ app.get('/api/admin/test-numbers', (_req, res) => {
     const numbers = getTestNumbers();
     res.json({ numbers });
   } catch (err) {
-    console.error('test-numbers error:', err);
+    reportError(err, { task: 'test-numbers error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -6722,17 +6759,18 @@ app.post('/api/admin/start-voice-call', async (req, res) => {
     } catch (e) {
       console.warn('[voice] VoiceCallSession create (may already exist):', e instanceof Error ? e.message : e);
     }
+    recordCallEvent(result.callId, 'call_attempted', {}, new Date(result.startedAt));
     res.json({ callId: result.callId, startedAt: result.startedAt, to, scenario: result.scenario });
   } catch (err) {
     if (err instanceof BillingAccessError) return res.status(403).json({ error: err.message });
-    console.error('start-voice-call error:', err);
+    reportError(err, { task: 'start-voice-call error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 app.get('/api/public/demo-call/config', (req, res) => {
   handleGetPublicDemoCallConfiguration(req, res).catch((error) => {
-    console.error('Public demo call configuration error:', error);
+    reportError(error, { task: 'Public demo call configuration error' });
     res.status(503).json({ error: 'Демо-стенд временно не настроен.' });
   });
 });
@@ -6761,7 +6799,7 @@ app.post('/api/public/demo-call/evaluate-example', async (req, res) => {
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Не удалось оценить пример.';
-    console.error('public demo-call/evaluate-example error:', err);
+    reportError(err, { task: 'public demo-call/evaluate-example error' });
     res.status(500).json({ error: message });
   }
 });
@@ -6810,7 +6848,7 @@ app.get('/api/public/demo-call/:callId', async (req, res) => {
         : null,
     });
   } catch (err) {
-    console.error('public demo-call/:callId error:', err);
+    reportError(err, { task: 'public demo-call/:callId error' });
     res.status(500).json({ error: 'Не удалось получить статус звонка.' });
   }
 });
@@ -6821,11 +6859,10 @@ app.get('/api/admin/internal-analytics/activity', async (req, res) => {
       (membership) => membership.role === 'platform_superadmin',
     );
     if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
-    const requestedPeriod = Number.parseInt(String(req.query.period || '30'), 10);
-    const period = requestedPeriod === 7 || requestedPeriod === 90 ? requestedPeriod : 30;
-    return res.json(await getInternalActivityAnalytics(period));
+    return res.json(await getInternalActivityAnalytics(parseActivityScope(req.query)));
   } catch (error) {
-    console.error('internal-analytics/activity error:', error);
+    if (error instanceof ActivityInputError) return res.status(error.status).json({ error: error.message });
+    reportError(error, { task: 'internal-analytics/activity error' });
     return res.status(500).json({ error: 'Не удалось загрузить аналитику активности.' });
   }
 });
@@ -6850,7 +6887,7 @@ app.get('/api/admin/internal-analytics/support', async (req, res) => {
     }
     return res.json(await getSupportAnalytics(dateFrom, dateTo));
   } catch (error) {
-    console.error('internal-analytics/support error:', error);
+    reportError(error, { task: 'internal-analytics/support error' });
     return res.status(500).json({ error: 'Не удалось загрузить аналитику поддержки.' });
   }
 });
@@ -6875,7 +6912,7 @@ app.get('/api/admin/internal-analytics/economics', async (req, res) => {
     }
     return res.json(await getEconomicsAnalytics(dateFrom, dateTo));
   } catch (error) {
-    console.error('internal-analytics/economics error:', error);
+    reportError(error, { task: 'internal-analytics/economics error' });
     return res.status(500).json({ error: 'Не удалось загрузить экономику.' });
   }
 });
@@ -6892,7 +6929,7 @@ app.post('/api/admin/internal-analytics/economics/sync', async (req, res) => {
     ]);
     return res.json({ ...providers, tariffs });
   } catch (error) {
-    console.error('internal-analytics/economics/sync error:', error);
+    reportError(error, { task: 'internal-analytics/economics/sync error' });
     return res.status(500).json({ error: 'Не удалось синхронизировать расходы.' });
   }
 });
@@ -6905,7 +6942,7 @@ app.post('/api/admin/internal-analytics/economics/balances/refresh', async (req,
     if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
     return res.json(await refreshProviderBalances());
   } catch (error) {
-    console.error('internal-analytics/economics/balances/refresh error:', error);
+    reportError(error, { task: 'internal-analytics/economics/balances/refresh error' });
     return res.status(500).json({ error: 'Не удалось обновить балансы.' });
   }
 });
@@ -6923,7 +6960,7 @@ app.post('/api/admin/internal-analytics/economics/technical-expenses', async (re
     const expense = await prisma.monthlyTechnicalExpense.create({ data: { name, amountRub } });
     return res.status(201).json(expense);
   } catch (error) {
-    console.error('internal-analytics/economics/technical-expenses create error:', error);
+    reportError(error, { task: 'internal-analytics/economics/technical-expenses create error' });
     return res.status(500).json({ error: 'Не удалось добавить расход.' });
   }
 });
@@ -6937,7 +6974,7 @@ app.delete('/api/admin/internal-analytics/economics/technical-expenses/:id', asy
     await prisma.monthlyTechnicalExpense.update({ where: { id: req.params.id }, data: { isActive: false } });
     return res.json({ ok: true });
   } catch (error) {
-    console.error('internal-analytics/economics/technical-expenses delete error:', error);
+    reportError(error, { task: 'internal-analytics/economics/technical-expenses delete error' });
     return res.status(500).json({ error: 'Не удалось удалить расход.' });
   }
 });
@@ -6952,7 +6989,7 @@ app.post('/api/admin/internal-analytics/economics/forecast', async (req, res) =>
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось рассчитать прогноз.';
     const isValidationError = /должно быть от/.test(message);
-    console.error('internal-analytics/economics/forecast error:', error);
+    reportError(error, { task: 'internal-analytics/economics/forecast error' });
     return res.status(isValidationError ? 400 : 500).json({ error: message });
   }
 });
@@ -6968,7 +7005,7 @@ app.post('/api/admin/internal-analytics/economics/proxyapi-import', async (req, 
     if (Buffer.byteLength(ndjson, 'utf8') > 20 * 1024 * 1024) return res.status(413).json({ error: 'Файл больше 20 МБ.' });
     return res.json(await importProxyApiLogs(ndjson));
   } catch (error) {
-    console.error('internal-analytics/economics/proxyapi-import error:', error);
+    reportError(error, { task: 'internal-analytics/economics/proxyapi-import error' });
     return res.status(500).json({ error: 'Не удалось импортировать логи ProxyAPI.' });
   }
 });
@@ -6981,6 +7018,8 @@ app.get('/api/admin/internal-analytics/demo', async (req, res) => {
     if (!isPlatformSuperadmin) return res.status(403).json({ error: 'Доступно только суперадминистратору.' });
 
     const query = String(req.query.q || '').trim().slice(0, 100);
+    const numericId = parseDemoCallNumericId(query);
+    const callsQuery = String(req.query.callsQuery || '').trim().slice(0, 200);
     const finiteNumber = (value: unknown, min: number, max: number) => {
       if (value == null || value === '') return undefined;
       const parsed = Number(value);
@@ -7001,6 +7040,7 @@ app.get('/api/admin/internal-analytics/demo', async (req, res) => {
       where: {
         source: 'demo',
         ...(query ? { OR: [
+          ...(numericId === null ? [] : [{ id: numericId }]),
           { to: { contains: query } },
           { ipAddress: { contains: query } },
           { callId: { contains: query } },
@@ -7068,6 +7108,20 @@ app.get('/api/admin/internal-analytics/demo', async (req, res) => {
       }
     }
 
+    const matchingCalls = filterDemoCalls(sessions.map((session) => ({
+      id: session.id,
+      callId: session.callId,
+      phone: session.to,
+      ivrDetected: session.ivrDetected,
+      ivrPath: parseStoredIvrPath(session.ivrPathJson),
+      ipAddress: session.ipAddress,
+      startedAt: session.startedAt.toISOString(),
+      outcome: session.failureReason ? 'error' : (session.outcome || (session.endedAt ? 'completed' : 'processing')),
+      durationSec: session.durationSec,
+      totalScore: session.totalScore,
+      error: session.failureReason,
+    })), callsQuery);
+
     res.json({
       summary: {
         totalCalls: sessions.length,
@@ -7098,22 +7152,11 @@ app.get('/api/admin/internal-analytics/demo', async (req, res) => {
         .sort(([a], [b]) => a.localeCompare(b))
         .slice(-30)
         .map(([date, value]) => ({ date, calls: value.calls, answered: value.answered, avgScore: average(value.scores) })),
-      recentCalls: sessions.slice(0, 100).map((session) => ({
-        id: session.id,
-        callId: session.callId,
-        phone: session.to,
-        ivrDetected: session.ivrDetected,
-        ivrPath: parseStoredIvrPath(session.ivrPathJson),
-        ipAddress: session.ipAddress,
-        startedAt: session.startedAt.toISOString(),
-        outcome: session.failureReason ? 'error' : (session.outcome || (session.endedAt ? 'completed' : 'processing')),
-        durationSec: session.durationSec,
-        totalScore: session.totalScore,
-        error: session.failureReason,
-      })),
+      recentCallsTotal: matchingCalls.length,
+      recentCalls: matchingCalls.slice(0, 100),
     });
   } catch (error) {
-    console.error('internal demo analytics error:', error);
+    reportError(error, { task: 'internal demo analytics error' });
     res.status(500).json({ error: 'Не удалось загрузить внутреннюю аналитику.' });
   }
 });
@@ -7184,7 +7227,7 @@ app.get('/api/admin/super-admin/dealership-schedules', async (_req, res) => {
     }));
     res.json({ schedules });
   } catch (err) {
-    console.error('super-admin/dealership-schedules error:', err);
+    reportError(err, { task: 'super-admin/dealership-schedules error' });
     res.json({ schedules: [] });
   }
 });
@@ -7199,7 +7242,7 @@ app.get('/api/admin/super-admin/call-orchestrator-config', async (_req, res) => 
       sourceMode: process.env.CALL_SOURCE_MODE || 'mock',
     });
   } catch (err) {
-    console.error('super-admin/call-orchestrator-config error:', err);
+    reportError(err, { task: 'super-admin/call-orchestrator-config error' });
     res.json({
       callSource: { mode: 'mock', targetsAvailable: 0, usingMockFallback: true },
       autoDailyEnabled: false,
@@ -7757,7 +7800,7 @@ app.get('/api/admin/call-history', async (req, res) => {
     });
     res.json({ calls });
   } catch (err) {
-    console.error('call-history error:', err);
+    reportError(err, { task: 'call-history error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -7781,7 +7824,7 @@ app.get('/api/admin/call-history/:id', async (req, res) => {
       recordingUrl: session.recordingUrl,
     });
   } catch (err) {
-    console.error('call-history/:id error:', err);
+    reportError(err, { task: 'call-history/:id error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8210,7 +8253,7 @@ app.get('/api/admin/analytics/overview', async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('analytics/overview error:', err);
+    reportError(err, { task: 'analytics/overview error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8226,7 +8269,7 @@ app.post('/api/admin/analytics/comparison-summary', async (req, res) => {
     const item = await generateComparisonAISummary({ level, items });
     res.json({ item });
   } catch (err) {
-    console.error('analytics/comparison-summary error:', err);
+    reportError(err, { task: 'analytics/comparison-summary error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8286,7 +8329,7 @@ app.get('/api/admin/analytics/dealerships', async (req, res) => {
     });
     res.json({ items });
   } catch (err) {
-    console.error('analytics/dealerships error:', err);
+    reportError(err, { task: 'analytics/dealerships error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8341,7 +8384,7 @@ app.get('/api/admin/analytics/holdings', async (_req, res) => {
     });
     res.json({ items });
   } catch (err) {
-    console.error('analytics/holdings error:', err);
+    reportError(err, { task: 'analytics/holdings error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8351,7 +8394,7 @@ app.get('/api/admin/call-report-problems', async (_req, res) => {
     const items = await getCallReportProblemCatalog(prisma);
     res.json({ items });
   } catch (error) {
-    console.error('call-report-problems error:', error);
+    reportError(error, { task: 'call-report-problems error' });
     res.status(500).json({ error: 'Не удалось загрузить справочник проблем.' });
   }
 });
@@ -8523,7 +8566,7 @@ app.get('/api/admin/analytics/holdings/:id', async (req, res) => {
 
     res.json({ item });
   } catch (err) {
-    console.error('analytics/holdings/:id error:', err);
+    reportError(err, { task: 'analytics/holdings/:id error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8619,7 +8662,7 @@ app.get('/api/admin/analytics/dealerships/:id/plans', async (req, res) => {
 
     res.json({ items });
   } catch (err) {
-    console.error('analytics/dealerships/:id/plans error:', err);
+    reportError(err, { task: 'analytics/dealerships/:id/plans error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8657,7 +8700,7 @@ app.post('/api/admin/analytics/dealerships/:id/plans/:planId/exclude', async (re
     res.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Не удалось исключить точку из расписания.';
-    console.error('analytics/dealerships/:id/plans/:planId/exclude error:', err);
+    reportError(err, { task: 'analytics/dealerships/:id/plans/:planId/exclude error' });
     res.status(message.includes('доступ') ? 403 : 500).json({ error: message });
   }
 });
@@ -8826,7 +8869,7 @@ app.get('/api/admin/analytics/dealerships/:id', async (req, res) => {
     };
     res.json({ item });
   } catch (err) {
-    console.error('analytics/dealerships/:id error:', err);
+    reportError(err, { task: 'analytics/dealerships/:id error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8855,7 +8898,7 @@ app.get('/api/admin/analytics/managers/:id/plans', async (req, res) => {
 
     res.json({ items });
   } catch (err) {
-    console.error('analytics/managers/:id/plans error:', err);
+    reportError(err, { task: 'analytics/managers/:id/plans error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -8890,7 +8933,7 @@ app.post('/api/admin/analytics/managers/:id/plans/:planId/exclude', async (req, 
     res.json({ success: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Не удалось исключить менеджера из расписания.';
-    console.error('analytics/managers/:id/plans/:planId/exclude error:', err);
+    reportError(err, { task: 'analytics/managers/:id/plans/:planId/exclude error' });
     res.status(message.includes('доступ') ? 403 : 500).json({ error: message });
   }
 });
@@ -9145,7 +9188,7 @@ app.get('/api/admin/analytics/managers/:id', async (req, res) => {
     };
     res.json({ item });
   } catch (err) {
-    console.error('analytics/managers/:id error:', err);
+    reportError(err, { task: 'analytics/managers/:id error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -9215,7 +9258,7 @@ app.get('/api/admin/analytics/managers', async (_req, res) => {
     });
     res.json({ items });
   } catch (err) {
-    console.error('analytics/managers error:', err);
+    reportError(err, { task: 'analytics/managers error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -9376,7 +9419,7 @@ app.get('/api/admin/super-admin/audits', async (req, res) => {
 
     res.json({ audits: items });
   } catch (err) {
-    console.error('super-admin/audits error:', err);
+    reportError(err, { task: 'super-admin/audits error' });
     res.json({ audits: [] });
   }
 });
@@ -9396,7 +9439,7 @@ async function buildTrainerAuditDetailItem(session: {
   topRecommendationsJson: string | null;
   dimensionsJson: string | null;
   objectionsAnalysisJson: string | null;
-  employee?: { fullName: string; dealership?: { id: string; name: string; city: string | null; holding?: { id: string; name: string } | null } | null } | null;
+  employee?: { accountId?: string | null; fullName: string; dealership?: { id: string; name: string; city: string | null; holding?: { id: string; name: string } | null } | null } | null;
   branch?: { id: string; name: string; city: string | null; holding?: { id: string; name: string } | null } | null;
   company?: { id: string; name: string } | null;
   scenario?: { id: string; name: string } | null;
@@ -9504,6 +9547,7 @@ async function buildTrainerAuditDetailItem(session: {
     type: 'trainer' as const,
     dateTime: endedAt.toISOString(),
     employeeId: session.employeeId,
+    employeeAccountId: session.employee?.accountId ?? null,
     employeeName: session.employee?.fullName ?? 'Не назначен',
     dealershipId: branch?.id ?? '',
     dealershipName: branch?.name ?? company?.name ?? 'Без точки',
@@ -9630,16 +9674,7 @@ app.post('/api/admin/audits/:id/retry-report', createRetryAuditReportHandler(asy
       // The full pipeline already attempted this stage. If it failed, expose
       // that failure rather than immediately paying for another hidden retry.
       if (!evaluation) throw new Error('Call report could not be recovered');
-      updateAuditAnalyticsStage('report');
-      const generated = await generateUnifiedCallReport({
-        transcript: safeArray<{ role: 'manager' | 'client'; text: string }>(latest.transcriptJson),
-        outcome: latest.outcome, totalScore: scoreFromEvaluation(current, latest.totalScore), evaluation: current,
-      });
-      assertAuditAnalyticsCurrent();
-      await prisma.voiceCallSession.updateMany({
-        where: { id: session.id, evaluationJson: latest.evaluationJson },
-        data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }), failureReason: null },
-      });
+      await regenerateVoiceReport(session.callId);
     }),
   };
 }));
@@ -9852,9 +9887,10 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       }))
       .filter((line) => line.text);
     const catalog = await getCallReportProblemCatalog(prisma);
+    const reportScenario = safeJsonParseLocal<{ prompt?: string }>(session.caseContextJson, {});
     let unifiedReport = normalizeStoredUnifiedCallReport(
       evaluation?.unified_call_report,
-      { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions, evaluation },
+      { totalScore: score, transcript: reportTranscript, dimensionScores: dimensions, evaluation, scenarioContext: reportScenario.prompt },
       catalog,
     );
     if (!unifiedReport && type === 'call' && evaluation && Object.keys(evaluation).length && reportTranscript.length >= 2
@@ -9862,27 +9898,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       && assessCallReportEligibility(reportTranscript, { ivrDetected: session.ivrDetected }).eligible) {
       // Return the snapshot immediately. Opening/polling an audit must not wait
       // minutes for an LLM response or start another copy of the same repair.
-      const evaluationSnapshot = evaluation;
-      scheduleAuditReportBackfill(`voice:${session.callId}`, () => withCostContext({
-        entityType: 'voice_call', entityId: session.callId, stage: 'report_backfill',
-      }, async () => {
-        const generated = await generateUnifiedCallReport({
-          transcript: reportTranscript,
-          outcome: session.outcome,
-          totalScore: score,
-          evaluation: evaluationSnapshot,
-        });
-        assertAuditAnalyticsCurrent();
-        const latest = await prisma.voiceCallSession.findUnique({ where: { id: session.id }, select: { evaluationJson: true } });
-        if (!latest) return;
-        const current = safeJsonParseLocal<Record<string, unknown> | null>(latest.evaluationJson, null);
-        if (!current || current.unified_call_report) return;
-        assertAuditAnalyticsCurrent();
-        await prisma.voiceCallSession.updateMany({
-          where: { id: session.id, evaluationJson: latest.evaluationJson },
-          data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }) },
-        });
-      }));
+      if (!session.failureReason) scheduleAuditReportBackfill(`voice:${session.callId}`, () => regenerateVoiceReport(session.callId));
     }
 
     res.json({
@@ -9891,6 +9907,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
         type,
         dateTime: session.startedAt.toISOString(),
         employeeId: session.managerId ?? '',
+        employeeAccountId: session.manager?.accountId ?? null,
         employeeName: session.manager?.fullName ?? 'Не назначен',
         dealershipId: session.dealershipId ?? '',
         dealershipName: session.dealership?.name ?? session.to,
@@ -9937,14 +9954,14 @@ app.get('/api/admin/audits/:id', async (req, res) => {
           key: `voice:${session.callId}`, transcriptReady: reportTranscript.length >= 2,
           startedAt: session.endedAt ?? session.startedAt,
           evaluationReady: Boolean(evaluation && Object.keys(evaluation).length), reportReady: Boolean(unifiedReport),
-          failureReason: evaluation ? null : session.failureReason,
+          failureReason: session.failureReason,
           unavailable: ['no_answer', 'busy', 'cancelled'].includes(session.outcome ?? ''),
         }),
         unifiedReport,
       },
     });
   } catch (err) {
-    console.error('admin/audits/:id error:', err);
+    reportError(err, { task: 'admin/audits/:id error' });
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -10043,7 +10060,7 @@ app.get('/api/admin/super-admin/time-series', async (_req, res) => {
 
     res.json({ series });
   } catch (err) {
-    console.error('super-admin/time-series error:', err);
+    reportError(err, { task: 'super-admin/time-series error' });
     res.json({ series: [] });
   }
 });
@@ -10077,7 +10094,7 @@ app.get('/api/admin/super-admin/mock-entities', async (req, res) => {
       : [];
     res.json({ companies, dealers });
   } catch (err) {
-    console.error('super-admin/mock-entities error:', err);
+    reportError(err, { task: 'super-admin/mock-entities error' });
     res.json({ companies: [], dealers: [] });
   }
 });
@@ -10099,7 +10116,7 @@ app.get('/api/admin/super-admin/settings', async (_req, res) => {
       telephonyProvider: 'Voximplant',
     });
   } catch (err) {
-    console.error('super-admin/settings error:', err);
+    reportError(err, { task: 'super-admin/settings error' });
     res.json({
       totalScripts: 0,
       totalPhones: 0,
@@ -10128,7 +10145,7 @@ app.get('*', (req, res, next) => {
 Sentry.setupExpressErrorHandler(app);
 
 app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('Unhandled HTTP error:', error);
+  reportError(error, { task: 'Unhandled HTTP error' });
   if (res.headersSent) return;
   res.locals.sentryExceptionCaptured = true;
   const httpError = error as { status?: unknown; type?: unknown };
@@ -10155,6 +10172,17 @@ app.use((req, res) => {
   );
 });
 
+let activeHttpServer: http.Server | https.Server | null = null;
+export async function closeHttpServer(): Promise<void> {
+  const server = activeHttpServer;
+  if (!server) return;
+  activeHttpServer = null;
+  await new Promise<void>(resolve => {
+    const timeout = setTimeout(() => { server.closeAllConnections(); resolve(); }, 3000);
+    timeout.unref();
+    server.close(() => { clearTimeout(timeout); resolve(); });
+  });
+}
 export function startServer(): Promise<void> {
   return new Promise((resolve, reject) => {
     // Try multiple paths for certificates (dev and production)
@@ -10193,6 +10221,7 @@ export function startServer(): Promise<void> {
     const useHttp = useTunnel || isLocalhost || !certPath || !keyPath || !config.miniAppUrl.startsWith('https://');
 
     const onListen = () => {
+      startCallAnalysisRecovery(finalizeVoiceCallSession, isVoiceCallFinalizing);
       startCallBatchOrchestrator();
       startCallPlanScheduler();
       startImportScheduler();
@@ -10216,7 +10245,7 @@ export function startServer(): Promise<void> {
         console.error('[ERROR] Port ' + port + ' is already in use.');
         console.error('        Stop the other process or use another port: PORT=3002 npm run dev');
       } else {
-        console.error('[ERROR] Server error:', err);
+        reportError(err, { task: '[ERROR] Server error' });
       }
       reject(err);
     };
@@ -10265,6 +10294,7 @@ export function startServer(): Promise<void> {
         cert: fs.readFileSync(certPath),
       };
       const httpsServer = https.createServer(options, app);
+      activeHttpServer = httpsServer;
       attachVoiceStream(httpsServer);
       httpsServer.on('error', onError);
       httpsServer.listen(port, host, () => {
@@ -10275,6 +10305,7 @@ export function startServer(): Promise<void> {
       });
     } else {
       const httpServer = http.createServer(app);
+      activeHttpServer = httpServer;
       attachVoiceStream(httpServer);
       httpServer.on('error', onError);
       httpServer.listen(port, host, () => {

@@ -1,3 +1,5 @@
+import { reportError } from '../monitoring/reportError';
+import { recordCallEvent } from '../analytics/callEvents';
 import { assertCompanyModule } from '../billing/access';
 import { randomUUID } from 'node:crypto';
 import { prisma } from '../db';
@@ -78,6 +80,7 @@ async function prepareTelephony(phone: string, plan: RealtimeTestPlanConfigurati
         await dispose();
         throw error;
       }
+      recordCallEvent(callId, 'call_attempted', {}, new Date(startedAt));
       addCall(callId, phone, startedAt);
       realtime?.markDialing(startedAt);
       if (realtime) {
@@ -125,4 +128,8 @@ export async function markCallPlanLaunchFailed(callId: string, error: unknown): 
   const endedAt = new Date();
   await prisma.voiceCallSession.updateMany({ where: { callId, connectedAt: null, endedAt: null }, data: { outcome: 'failed', endedAt, failureReason: reason } });
   await prisma.callPlanCall.updateMany({ where: { callId, endedAt: null }, data: { status: 'failed', outcome: 'failed', endedAt, failureReason: reason } });
+  recordCallEvent(callId, 'call_attempted');
+  recordCallEvent(callId, 'call_ended', {}, endedAt);
+  recordCallEvent(callId, 'call_processing_failed', { failure_stage: 'launch' }, endedAt);
+  reportError(error, { task: 'call-launch', stage: 'launch', entityId: callId });
 }

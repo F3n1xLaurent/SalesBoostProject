@@ -1,8 +1,11 @@
+import { reportError } from '../monitoring/reportError';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from 'crypto';
 import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { config } from '../config';
 import { prisma } from '../db';
+import { measureHttpStage, withoutHttpDiagnostics } from '../diagnostics/httpPerformance';
+import { SupportCategoryCache } from './categoryCache';
 import {
   MAX_SUPPORT_ATTACHMENT_BYTES,
   supportAttachmentExtension,
@@ -21,7 +24,7 @@ let refreshPromise: Promise<void> | null = null;
 let configurationRecoveryAttempted = false;
 let discoveredFieldsCache: { expiresAt: number; value: DealFieldMap } | null = null;
 let dealFieldsCache: { expiresAt: number; value: Record<string, Record<string, unknown>> } | null = null;
-let staleSupportCategories: string[] = [];
+let dealFieldsPending: Promise<Record<string, Record<string, unknown>>> | null = null;
 let contactProductIdFieldCache: string | null = null;
 
 type BitrixAuth = {
@@ -157,23 +160,36 @@ async function resolvedFieldMap(): Promise<DealFieldMap> {
 
 async function loadDealFields(): Promise<Record<string, Record<string, unknown>>> {
   if (dealFieldsCache && dealFieldsCache.expiresAt > Date.now()) return dealFieldsCache.value;
-  const value = await bitrixCall<Record<string, Record<string, unknown>>>('crm.deal.fields', {});
-  dealFieldsCache = { expiresAt: Date.now() + 30 * 60_000, value };
-  return value;
+  if (!dealFieldsPending) {
+    dealFieldsPending = bitrixCall<Record<string, Record<string, unknown>>>('crm.deal.fields', {}).then(value => {
+      dealFieldsCache = { expiresAt: Date.now() + 30 * 60_000, value };
+      return value;
+    }).finally(() => { dealFieldsPending = null; });
+  }
+  return dealFieldsPending;
 }
 
-export async function getBitrixSupportCategories(): Promise<string[]> {
-  try {
-    const [map, fields] = await Promise.all([resolvedFieldMap(), loadDealFields()]);
+const supportCategoryCache = new SupportCategoryCache(() => withoutHttpDiagnostics(async () => {
+    const map = await resolvedFieldMap();
+    const fields = await loadDealFields();
     const items = map.category && Array.isArray(fields[map.category]?.items)
       ? fields[map.category].items as Array<Record<string, unknown>>
       : [];
     const categories = items.map((item) => stringValue(item.VALUE ?? item.value)).filter(Boolean);
-    if (categories.length) staleSupportCategories = categories;
-    return categories.length ? categories : staleSupportCategories;
-  } catch {
-    return staleSupportCategories;
-  }
+    return categories;
+}), { onRefresh: event => console.info('[support-category-cache]', JSON.stringify(event)) });
+
+/** Used by GET meta: stale data or the existing caller fallback is immediate. */
+export function getCachedBitrixSupportCategories(): string[] { return supportCategoryCache.read(); }
+export function areBitrixSupportCategoriesRefreshing(): boolean { return supportCategoryCache.refreshing; }
+export function refreshBitrixSupportCategories(): Promise<boolean> { return supportCategoryCache.refresh(); }
+
+/** Mutating ticket validation may wait for the first refresh, as before. */
+export async function getBitrixSupportCategories(): Promise<string[]> {
+  return measureHttpStage('support_categories', async () => {
+    await supportCategoryCache.refresh();
+    return supportCategoryCache.read();
+  });
 }
 
 async function categoryValueForDeal(category: string, map: DealFieldMap): Promise<string> {
@@ -294,12 +310,12 @@ async function bitrixCall<T>(method: string, params: Record<string, unknown>): P
   let installation = await prisma.supportBitrixInstallation.findFirst({ where: { status: 'active' } });
   if (!installation) throw new BitrixSupportError('INSTALLATION_NOT_FOUND');
   if (installation.accessTokenExpiresAt.getTime() <= Date.now() + 120_000) {
-    await refreshInstallation();
+    await measureHttpStage('bitrix_refresh', refreshInstallation);
     installation = await prisma.supportBitrixInstallation.findUnique({ where: { memberId: installation.memberId } });
     if (!installation) throw new BitrixSupportError('INSTALLATION_NOT_FOUND');
   }
 
-  const call = async () => {
+  const call = () => measureHttpStage('bitrix_http', async () => {
     const response = await fetch(new URL(`${method}.json`, endpoint(installation!.clientEndpoint)), {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -308,11 +324,11 @@ async function bitrixCall<T>(method: string, params: Record<string, unknown>): P
     });
     const payload = await response.json().catch(() => ({})) as { result?: T; error?: string; error_description?: string };
     return { response, payload };
-  };
+  });
 
   let result = await call();
   if (result.payload.error === 'expired_token') {
-    await refreshInstallation();
+    await measureHttpStage('bitrix_refresh', refreshInstallation);
     installation = await prisma.supportBitrixInstallation.findUnique({ where: { memberId: installation.memberId } });
     result = await call();
   }
@@ -1217,6 +1233,9 @@ export async function enqueueBitrixInboundAttachmentBackfill(): Promise<number> 
 export function startBitrixSupportScheduler(): void {
   if (schedulerStarted) return;
   schedulerStarted = true;
+  void refreshBitrixSupportCategories();
+  const cacheTimer = setInterval(() => { void refreshBitrixSupportCategories(); }, 60_000);
+  cacheTimer.unref?.();
   const run = async () => {
     if (processorRunning) return;
     processorRunning = true;
@@ -1230,7 +1249,7 @@ export function startBitrixSupportScheduler(): void {
       }
       await runBitrixSupportOutbox();
     }
-    catch (error) { console.error('[support/bitrix24] outbox failed:', error instanceof Error ? error.message : error); }
+    catch (error) { reportError(error, { task: '[support/bitrix24] outbox failed' }); }
     finally { processorRunning = false; }
   };
   void run();

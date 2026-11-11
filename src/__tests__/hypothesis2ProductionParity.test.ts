@@ -6,12 +6,17 @@ import { config } from '../config';
 import { handleCometRealtimeTestSocket, handleCometRealtimeTestWebhook, handleStartCometRealtimeTest, handleGetCometRealtimeTest,
   prepareProductionOpenAiRealtimeCall, updateProductionRealtimeLifecycle, createCallPlanSimulation } from '../voice/cometRealtimeTest';
 
-const mocks = vi.hoisted(() => ({ sockets: [] as any[], failuresRemaining: 0, acknowledgeHistory: true, handshake: true, start: vi.fn(),
+const mocks = vi.hoisted(() => ({ sockets: [] as any[], failuresRemaining: 0, acknowledgeHistory: true, handshake: true, openingAudio: false, start: vi.fn(),
   plan: { planId: 'plan', planName: 'План', prompt: 'Ты Анна, женщина. Звонишь по Kia Carnival. Уточни цену.',
     elevenLabsVoiceId: 'profile-voice', customerVoiceId: 'voice-row', subjectTitle: 'Kia Carnival', subjectDescription: null },
   tts: { modelId: 'eleven_v4_turbo', defaultVoiceId: 'agent-default', stability: 0.75, similarityBoost: 0.75, speed: 1.13,
     source: 'agent' as const, optimizeStreamingLatency: 0, pronunciationDictionaryLocators: [] },
 }));
+vi.mock('../voice/realtimeOpeningAudio', async original => {
+  const actual = await original<typeof import('../voice/realtimeOpeningAudio')>();
+  return { ...actual, prepareOpeningAudio: (...args: Parameters<typeof actual.prepareOpeningAudio>) => mocks.openingAudio ? actual.prepareOpeningAudio(...args) : () => {},
+    preparedOpeningAudio: (...args: Parameters<typeof actual.preparedOpeningAudio>) => mocks.openingAudio ? actual.preparedOpeningAudio(...args) : null };
+});
 vi.mock('../voice/callSettingsManagement', () => ({ resolveRealtimeTestPlanConfiguration: async () => mocks.plan }));
 vi.mock('../voice/startVoiceCall', () => ({ startVoiceCall: mocks.start }));
 vi.mock('../voice/yandexRealtimeTest', async (original) => ({ ...await original<typeof import('../voice/yandexRealtimeTest')>(), resolveAgentTtsSettings: async () => mocks.tts }));
@@ -53,6 +58,7 @@ const cleanups: Array<() => void> = [];
 beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks(); mocks.sockets.length = 0; mocks.failuresRemaining = 0;
   mocks.acknowledgeHistory = true; mocks.handshake = true;
+  mocks.openingAudio = false;
   config.openaiRealtimeApiKey = 'test'; config.elevenLabsApiKey = 'test'; config.openaiRealtimeModel = 'gpt-realtime-2';
   config.openaiRealtimeEndpointSilenceMs = 400; config.openaiRealtimeLongTurnEndpointSilenceMs = 650;
   mocks.start.mockImplementation(async (_phone, options) => ({ callId: options.callId, scenario: options.scenario, startedAt: new Date().toISOString() }));
@@ -193,6 +199,87 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
     'Хорошо, давайте тогда коротко закрепим договорённость и аккуратно подведём разговор к завершению. До свидания.',
   ];
   for (const mode of ['test', 'production'] as const) {
+    it(`${mode}: warms greeting audio without speaking to IVR and uses it only after the model chooses it`, async () => {
+      mocks.openingAudio = true;
+      const pair = await launch(mode);
+      const preparation = pair.sockets.filter(socket => socket.url.includes('elevenlabs'))[1];
+      preparation?.server({ audio: Buffer.alloc(8_000, 0xff).toString('base64'), is_final_audio_for_turn: true });
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(false);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'ivr', transcript: 'Здравствуйте! Для соединения с отделом продаж нажмите один.' });
+      expect(pair.snapshot().transcript.some((turn: any) => turn.role === 'client')).toBe(false);
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(false);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'human', transcript: 'Алло, слушаю.' });
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(false);
+      pair.provider.server({ type: 'response.created', response: { id: 'opening-cached' } });
+      const text = 'Здравствуйте. Меня зовут Анна. Звоню по поводу Киа Карнивал.';
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'opening-cached', delta: text });
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(true);
+      expect(spokenInputs(pair)).toBe('Меня зовут Анна. Звоню по поводу Киа Карнивал.');
+      pair.provider.server({ type: 'response.done', response: { id: 'opening-cached' } });
+      expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'client')).toEqual([
+        expect.objectContaining({ text, metrics: expect.objectContaining({ openingAudioCached: true }) }),
+      ]);
+    });
+    it(`${mode}: answers a substantive first question without automatically playing a cached greeting`, async () => {
+      mocks.openingAudio = true;
+      const pair = await launch(mode);
+      pair.sockets.filter(socket => socket.url.includes('elevenlabs'))[1]?.server({ audio: Buffer.alloc(8_000).toString('base64'), is_final_audio_for_turn: true });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'question', transcript: 'Какой автомобиль вас интересует?' });
+      pair.provider.server({ type: 'response.created', response: { id: 'answer' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'answer', delta: 'Интересует Киа Карнивал из объявления.' });
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(false);
+      expect(spokenInputs(pair)).toBe('Интересует Киа Карнивал из объявления.');
+    });
+    it.each([
+      { buffered: false, finished: false }, { buffered: false, finished: true }, { buffered: true, finished: true },
+    ])(`${mode}: treats continued speech before Vox playback as continuation (%j)`, async ({ buffered, finished }) => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'unheard' } });
+      pair.provider.server({ type: 'response.output_item.added', response_id: 'unheard', item: { type: 'message', id: 'unheard-item' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'unheard', delta: 'Здравствуйте. Машина ещё актуальна?' });
+      if (finished) pair.provider.server({ type: 'response.done', response: { id: 'unheard' } });
+      const requestsBeforeContinuation = pair.provider.sent.filter((event: any) => event.type === 'response.create').length;
+      if (buffered) pair.tts.server({ audio: Buffer.alloc(16_000).toString('base64') });
+      for (let i = 0; i < 8; i++) {
+        pair.vox.input({ event: 'media', media: { payload: managerAudio.toString('base64') } });
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      const events = pair.snapshot().conversationFlow.events;
+      expect(events.some((event: any) => event.type === 'continuation_confirmed')).toBe(true);
+      expect(events.some((event: any) => event.type === 'barge_in_confirmed')).toBe(false);
+      expect(pair.provider.sent.some((event: any) => event.type === 'response.cancel' && event.response_id === 'unheard')).toBe(!finished);
+      if (!finished) pair.provider.server({ type: 'response.done', response: { id: 'unheard', status: 'cancelled' } });
+      expect(pair.vox.sent).toContainEqual({ customEvent: 'control', action: 'clear_media' });
+      const sentAudio = pair.vox.sent.filter((event: any) => event.event === 'media').length;
+      pair.tts.server({ audio: Buffer.alloc(8_000).toString('base64') });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(pair.vox.sent.filter((event: any) => event.event === 'media')).toHaveLength(sentAudio);
+      expect(pair.snapshot().transcript.some((turn: any) => turn.metrics.interrupted)).toBe(false);
+      expect(pair.snapshot().transcript.some((turn: any) => turn.role === 'client')).toBe(false);
+      await vi.advanceTimersByTimeAsync(500);
+      pair.provider.server({ type: 'input_audio_buffer.committed', item_id: 'continued-greeting' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'continued-greeting', transcript: 'Вас не слышно, чем могу помочь?' });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(pair.provider.sent.filter((event: any) => event.type === 'response.create').length).toBeGreaterThan(requestsBeforeContinuation);
+    });
+    it(`${mode}: reconnects idle TTS before the operator answers, with a bounded retry budget`, async () => {
+      const pair = await launch(mode);
+      let socket = pair.tts;
+      for (const delay of [250, 1_000, 2_500]) {
+        const count = mocks.sockets.length;
+        socket.close(); await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(mocks.sockets).toHaveLength(count);
+        await vi.advanceTimersByTimeAsync(1);
+        socket = mocks.sockets.at(-1);
+        expect(socket).not.toBe(pair.tts);
+        expect(socket.sent).toContainEqual(expect.objectContaining({ voices: ['profile-voice'] }));
+      }
+      const count = mocks.sockets.length;
+      socket.close(); await vi.advanceTimersByTimeAsync(20_000);
+      expect(mocks.sockets).toHaveLength(count);
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(false);
+    });
     const replacementProvider = () => mocks.sockets.filter(socket => socket.url.includes('/realtime')).at(-1);
     it(`${mode}: a new options question is answered before closing a confirmed appointment`, async () => {
       const pair = await launch(mode);

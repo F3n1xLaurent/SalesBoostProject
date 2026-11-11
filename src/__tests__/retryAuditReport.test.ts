@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 import { createRetryAuditReportHandler, type AuditReportRetryJob } from '../audits/retryAuditReport';
-import { auditAnalyticsProgress, scheduleAuditReportBackfill } from '../logic/auditAnalyticsProgress';
+import { auditAnalyticsProgress, scheduleAuditReportBackfill, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
+import { analyticsQueue } from '../logic/analyticsQueue';
 
 let sequence = 0;
 const job = (overrides: Partial<AuditReportRetryJob> = {}): AuditReportRetryJob => ({
@@ -17,6 +18,20 @@ async function request(load: (req: Request, id: string) => Promise<AuditReportRe
 }
 
 describe('manual audit report recovery', () => {
+  it('returns idempotent 202 for a report waiting in the shared queue', async () => {
+    const releases: Array<() => void> = [];
+    const blockers = Array.from({ length: analyticsQueue.concurrency }, (_, i) => withAuditAnalyticsProgress(`retry-blocker-${i}`, 'evaluation',
+      () => new Promise<void>(resolve => releases.push(resolve))));
+    const data = job();
+    try {
+      const first = await request(async () => data), second = await request(async () => data);
+      expect(first.status).toBe(202); expect(first.body.started).toBe(true);
+      expect(second.status).toBe(202); expect(second.body.started).toBe(false);
+      expect(second.body.analyticsProgress).toMatchObject({ status: 'waiting', waitingForSlot: true });
+      expect(data.run).not.toHaveBeenCalled();
+    } finally { releases.forEach(release => release()); await Promise.all(blockers); }
+    await vi.waitFor(() => expect(data.run).toHaveBeenCalledOnce());
+  });
   it('passes the authenticated request into the scoped lookup and hides inaccessible audits', async () => {
     const load = vi.fn(async () => null);
     expect((await request(load)).status).toBe(404);

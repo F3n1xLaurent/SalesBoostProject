@@ -1,3 +1,4 @@
+import { reportError } from '../monitoring/reportError';
 import { prisma } from '../db';
 import { config } from '../config';
 import { resolveExchangeRate } from './exchangeRates';
@@ -173,11 +174,11 @@ export function startProviderBalanceScheduler(): void {
   if (schedulerStarted) return;
   schedulerStarted = true;
   void refreshProviderBalances().catch((error) => {
-    console.warn('[economics] initial balance refresh failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[economics] initial balance refresh failed' });
   });
   const timer = setInterval(() => {
     void refreshProviderBalances().catch((error) => {
-      console.warn('[economics] scheduled balance refresh failed:', error instanceof Error ? error.message : error);
+      reportError(error, { task: '[economics] scheduled balance refresh failed' });
     });
   }, HOUR_MS);
   timer.unref?.();

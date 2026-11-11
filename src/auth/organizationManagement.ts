@@ -1,3 +1,5 @@
+import { clearActivityCache } from '../analytics/activity';
+import { clearProductAnalyticsContextCache } from '../analytics/productAnalytics';
 import type { Prisma } from '@prisma/client';
 import type { Request, Response } from 'express';
 import { getPhoneCallStats, normalizeCallPhone, type PhoneCallStats } from '../voice/phoneNumberStats';
@@ -141,6 +143,7 @@ function normalizeHoldingResponse(
     description: holding.description,
     type: holding.type as HoldingType,
     isActive: holding.isActive,
+    isTest: holding.isTest,
     isDeleted: holding.isDeleted,
     createdAt: holding.createdAt,
     updatedAt: holding.updatedAt,
@@ -681,6 +684,8 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
   const description = parseString(body.description);
   const type = parseHoldingType(body.type, 'own');
   const isActive = parseBoolean(body.isActive, true);
+  if (body.isTest !== undefined && (!account.memberships.some(item => item.role === 'platform_superadmin') || typeof body.isTest !== 'boolean')) { res.status(403).json({ error: 'Тестовую компанию может назначить только суперадминистратор.' }); return; }
+  const isTest = body.isTest === true;
   const dealershipIds = parseDealershipIds(body.dealershipIds);
 
   if (!name) {
@@ -707,7 +712,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
     const created = await prisma.$transaction(async (tx) => {
       const resolvedCode = code ?? await generateUniqueHoldingCode(tx, name);
       const holding = await tx.holding.create({
-        data: { name, code: resolvedCode, description, type, isActive },
+        data: { name, code: resolvedCode, description, type, isActive, isTest },
       });
 
       if (dealershipIds.length > 0) {
@@ -727,6 +732,7 @@ export async function handleCreateHolding(req: Request, res: Response): Promise<
       });
     });
 
+    clearActivityCache(); clearProductAnalyticsContextCache();
     res.status(201).json({ item: normalizeHoldingResponse(created) });
   } catch (error) {
     console.error('Create holding error:', error);
@@ -760,6 +766,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
   const description = body.description !== undefined ? parseString(body.description) : undefined;
   const type = body.type != null ? parseHoldingType(body.type, 'own') : undefined;
   const isActive = body.isActive != null ? parseBoolean(body.isActive, true) : undefined;
+  if (body.isTest !== undefined && typeof body.isTest !== 'boolean') { res.status(400).json({ error: 'isTest должен быть булевым значением.' }); return; }
   const dealershipIds = body.dealershipIds != null ? parseDealershipIds(body.dealershipIds) : undefined;
 
   if (body.name != null && !name) {
@@ -782,6 +789,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
       if (description !== undefined) holdingData.description = description;
       if (type !== undefined) holdingData.type = type;
       if (isActive !== undefined) holdingData.isActive = isActive;
+      if (typeof body.isTest === 'boolean') holdingData.isTest = body.isTest;
 
       await tx.holding.update({
         where: { id: holdingId },
@@ -812,6 +820,7 @@ export async function handleUpdateHolding(req: Request, res: Response): Promise<
       },
     });
 
+    clearActivityCache(); clearProductAnalyticsContextCache();
     res.json({ item: normalizeHoldingResponse(updated) });
   } catch (error) {
     console.error('Update holding error:', error);

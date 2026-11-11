@@ -1,3 +1,4 @@
+import { reportError } from '../monitoring/reportError';
 import { prisma } from '../db';
 import { config } from '../config';
 import { fetchElevenLabs } from '../voice/elevenLabsHttp';
@@ -270,7 +271,7 @@ export async function syncRecentProviderCosts(days: number): Promise<{ vox: numb
     voxTransactions = result.imported;
   } catch (error) {
     errors += 1;
-    console.warn('[economics] Voximplant transaction sync failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[economics] Voximplant transaction sync failed' });
   }
   return { vox, voxTransactions, elevenLabs, errors };
 }
@@ -354,11 +355,11 @@ export function startVoximplantTransactionScheduler(): void {
   void syncVoximplantTransactions().then((result) => {
     console.info(`[economics] Voximplant transactions synced=${result.imported} skipped=${result.skipped}`);
   }).catch((error) => {
-    console.warn('[economics] initial Voximplant transaction sync failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[economics] initial Voximplant transaction sync failed' });
   });
   const timer = setInterval(() => {
     void syncVoximplantTransactions(3).catch((error) => {
-      console.warn('[economics] scheduled Voximplant transaction sync failed:', error instanceof Error ? error.message : error);
+      reportError(error, { task: '[economics] scheduled Voximplant transaction sync failed' });
     });
   }, 60 * 60 * 1000);
   timer.unref?.();

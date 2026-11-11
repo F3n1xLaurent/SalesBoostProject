@@ -1,3 +1,4 @@
+import { reportError } from '../monitoring/reportError';
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
@@ -1577,7 +1578,7 @@ async function runDueScheduledImports(): Promise<void> {
       });
     }
   } catch (error) {
-    console.error('[imports/scheduler] tick failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[imports/scheduler] tick failed' });
   } finally {
     importSchedulerTickRunning = false;
   }

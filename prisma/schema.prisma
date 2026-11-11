@@ -45,12 +45,13 @@ model Account {
 /// events that cannot be reconstructed later (page/report/recommendation views).
 model ProductAnalyticsEvent {
   id               String   @id @default(cuid())
+  initiatedBy      String   @default("user")
   eventName        String
   accountId        String?
   role             String?
-  holdingId        String?
-  dealershipId     String?
-  managerId        String?
+  companyId        String?
+  branchId     String?
+  employeeId        String?
   targetType       String?
   targetId         String?
   route            String?
@@ -60,12 +61,13 @@ model ProductAnalyticsEvent {
   occurredAt       DateTime @default(now())
   createdAt        DateTime @default(now())
 
+  @@index([initiatedBy, occurredAt])
   @@index([eventName, occurredAt])
   @@index([accountId, occurredAt])
   @@index([role, occurredAt])
-  @@index([holdingId, occurredAt])
-  @@index([dealershipId, occurredAt])
-  @@index([managerId, occurredAt])
+  @@index([companyId, occurredAt])
+  @@index([branchId, occurredAt])
+  @@index([employeeId, occurredAt])
   @@map("product_analytics_events")
 }
 
@@ -76,6 +78,7 @@ model Holding {
   code        String?  @unique
   description String?
   type        String   @default("own") // "own" | "franchised"
+  isTest      Boolean  @default(false)
   isActive    Boolean  @default(true)
   isDeleted   Boolean  @default(false)
   createdAt   DateTime @default(now())
@@ -825,6 +828,21 @@ model AttemptAnswer {
 }
 
 // Voice call session: one row per call (same phone can have many sessions = history of calls).
+// Durable initial call-analysis backlog. The single application process owns
+// execution; queued/interrupted rows are recovered after its restart.
+model CallAnalysisJob {
+  callId      String   @id
+  runId       String
+  payloadJson String
+  status      String   @default("queued")
+  queuedAt    DateTime @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  updatedAt   DateTime @updatedAt
+  @@index([status, queuedAt])
+  @@map("call_analysis_jobs")
+}
+
 model VoiceCallSession {
   id               Int       @id @default(autoincrement())
   callId           String    @unique  // UUID from start-voice-call

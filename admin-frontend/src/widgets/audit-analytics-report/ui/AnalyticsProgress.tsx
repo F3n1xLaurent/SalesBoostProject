@@ -36,7 +36,7 @@ export function AnalyticsProgress({ detail, connectionLost = false, onRetry, ret
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [pending]);
-  const delayed = pending && analyticsRetryDelayed(now, observedAt, progress.startedAt);
+  const delayed = pending && !progress.waitingForSlot && analyticsRetryDelayed(now, observedAt, progress.startedAt);
   const title = failed ? 'Не удалось подготовить аналитику' : unavailable ? 'Нет разговора для анализа' : 'Готовим аналитику';
   return <section className={`sa-analytics-progress${failed ? ' is-failed' : ''}${processing ? ' is-processing' : ''}`} role="status" aria-live="polite" aria-atomic="true">
     <header className="sa-analytics-progress-head">

@@ -21,6 +21,7 @@ export function writeStoredRole(accountId: string, role: AdminRole): void {
   try {
     window.localStorage.setItem(keyFor(accountId), role);
     window.localStorage.setItem(CURRENT_ROLE_STORAGE_KEY, role);
+    window.dispatchEvent(new Event('admin:role-changed'));
   } catch {
     // Ignore storage errors: URL routing still keeps the current page usable.
   }

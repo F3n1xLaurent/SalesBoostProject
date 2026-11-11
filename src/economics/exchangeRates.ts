@@ -1,3 +1,4 @@
+import { reportError } from '../monitoring/reportError';
 import { prisma } from '../db';
 
 const CBR_DAILY_URL = 'https://www.cbr.ru/scripts/XML_daily.asp';
@@ -171,11 +172,11 @@ export function startExchangeRateScheduler(): void {
   if (schedulerStarted) return;
   schedulerStarted = true;
   void refreshDailyExchangeRates().catch((error) => {
-    console.warn('[economics] initial CBR rate refresh failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[economics] initial CBR rate refresh failed' });
   });
   const timer = setInterval(() => {
     void refreshDailyExchangeRates().catch((error) => {
-      console.warn('[economics] scheduled CBR rate refresh failed:', error instanceof Error ? error.message : error);
+      reportError(error, { task: '[economics] scheduled CBR rate refresh failed' });
     });
   }, DAY_MS);
   timer.unref?.();

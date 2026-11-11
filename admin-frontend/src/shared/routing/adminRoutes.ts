@@ -178,3 +178,12 @@ export function buildAuditPath(id: string): string {
 export function buildBatchPath(id: string): string {
   return `/audits/batches/${encodeURIComponent(id)}`;
 }
+
+export function productAnalyticsRoute(pathname: string): { section: string; route_template: string } {
+  const route = parseAdminPath(pathname);
+  const sections: Partial<Record<AdminTab,string>> = { dashboard:'dashboard',analytics:'analytics',holdings:'companies',companies:'branches','dealer-companies':'branches',users:'employees',autodealers:'employees','dealer-team':'employees',audits:'audits','dealer-calls':'audits',imports:'data',checklists:'checklists',dealershipDirections:'branch_directions',typesNumbers:'number_types',callSettings:'call_settings',billing:'billing','staff-profile':'profile','staff-trainer':'trainer',internalAnalytics:'internal_analytics',testing:'testing',dictionaries:'dictionaries',settings:'settings' };
+  const parts=pathname.split('/').filter(Boolean);
+  const idIndex = parts[0] === 'staff' && parts[1] === 'trainer' ? 2 : parts[0] === 'call-settings' || parts[0] === 'audits' && parts[1] === 'batches' ? 2 : parts[0] === 'train' || ['holdings','companies','users','autodealers','audits'].includes(parts[0]) ? 1 : -1;
+  if(idIndex>=0 && parts.length>idIndex) parts[idIndex]=':id';
+  return { section:sections[route.tab] ?? 'settings',route_template:'/'+parts.join('/') };
+}

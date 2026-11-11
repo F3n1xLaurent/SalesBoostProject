@@ -137,6 +137,7 @@ export interface CallReportProblemItem {
 }
 
 export interface AuditDetailItem {
+  employeeAccountId?: string | null;
   id: string;
   type: 'trainer' | 'call';
   dateTime: string;
@@ -184,6 +185,8 @@ export interface AuditDetailItem {
   recordingDurationSec?: number;
   analyticsProgress?: {
     startedAt?: string;
+    waitingForSlot?: boolean;
+    queuePosition?: number;
     stage: 'transcription' | 'evaluation' | 'report';
     status: 'waiting' | 'processing' | 'ready' | 'failed' | 'unavailable';
     transcriptReady: boolean;
@@ -598,6 +601,7 @@ export type DealershipType = 'own' | 'franchised';
 export type DealershipDirection = string;
 
 export interface HoldingItem {
+  isTest?: boolean;
   id: string;
   name: string;
   code: string | null;
@@ -1622,6 +1626,7 @@ export async function createHolding(payload: {
   type?: HoldingType;
   code?: string | null;
   isActive?: boolean;
+  isTest?: boolean;
   dealershipIds?: string[];
 }): Promise<HoldingItem> {
   const res = await apiFetch(`${API_BASE}/api/admin/holdings`, {
@@ -1642,6 +1647,7 @@ export async function updateHolding(
     type?: HoldingType;
     code?: string | null;
     isActive?: boolean;
+    isTest?: boolean;
     dealershipIds?: string[];
   },
 ): Promise<HoldingItem> {

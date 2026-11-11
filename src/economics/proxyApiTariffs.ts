@@ -1,3 +1,4 @@
+import { reportError } from '../monitoring/reportError';
 import { createHash } from 'node:crypto';
 import { prisma } from '../db';
 import { config } from '../config';
@@ -244,11 +245,11 @@ export function startProxyApiTariffScheduler(): void {
   if (schedulerStarted || config.aiApiProvider !== 'proxyapi') return;
   schedulerStarted = true;
   void refreshProxyApiTariffs().catch((error) => {
-    console.warn('[economics] initial ProxyAPI tariff refresh failed:', error instanceof Error ? error.message : error);
+    reportError(error, { task: '[economics] initial ProxyAPI tariff refresh failed' });
   });
   const timer = setInterval(() => {
     void refreshProxyApiTariffs().catch((error) => {
-      console.warn('[economics] scheduled ProxyAPI tariff refresh failed:', error instanceof Error ? error.message : error);
+      reportError(error, { task: '[economics] scheduled ProxyAPI tariff refresh failed' });
     });
   }, REFRESH_INTERVAL_MS);
   timer.unref?.();

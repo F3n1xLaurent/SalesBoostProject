@@ -5,6 +5,8 @@ import { currentCostContext, withCostContext } from '../economics/costContext';
 
 type ReportStage = 'generation' | 'findingCoverage' | 'dialogCoverage' | 'exampleRepair' | 'exampleReview';
 const context = new AsyncLocalStorage<{ controller: AbortController; deadline: number }>();
+const traceContext = new AsyncLocalStorage<(stage: string, result: unknown) => Promise<void>>();
+export function withReportTrace<T>(sink: (stage: string, result: unknown) => Promise<void>, task: () => Promise<T>): Promise<T> { return traceContext.run(sink, task); }
 export const REPORT_GENERATION_TIMEOUT_MS = 300_000;
 
 /** Nested generators share a deadline. Cancellation reaches the actual HTTP
@@ -36,6 +38,7 @@ export async function createReportCompletion(params: OpenAI.Chat.Completions.Cha
   try {
     const response = await withCostContext({ entityType: cost?.entityType ?? 'report_generation', entityId: cost?.entityId ?? 'unattributed',
       ...cost, stage: `report_${stage}` }, () => openai.chat.completions.create(params, options));
+    await traceContext.getStore()?.(stage, { content: response.choices[0]?.message?.content, finishReason: response.choices[0]?.finish_reason });
     console.info('[report/stage]', { stage, ms: Math.round(performance.now() - started),
       inputTokens: response.usage?.prompt_tokens, outputTokens: response.usage?.completion_tokens,
       reasoningTokens: response.usage?.completion_tokens_details?.reasoning_tokens, finishReason: response.choices[0]?.finish_reason });

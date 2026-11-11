@@ -1,3 +1,4 @@
+import { reportError } from '../monitoring/reportError';
 import type { PrismaClient, SupportTicketStatusHistory } from '@prisma/client';
 import { prisma } from '../db';
 import { config } from '../config';
@@ -235,7 +236,7 @@ export function startSupportAutomationScheduler(): void {
         console.info('[support/automation] completed', result);
       }
     } catch (error) {
-      console.error('[support/automation] failed:', error instanceof Error ? error.message : error);
+      reportError(error, { task: '[support/automation] failed' });
     } finally {
       automationRunning = false;
     }

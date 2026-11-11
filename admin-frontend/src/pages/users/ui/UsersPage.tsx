@@ -1,3 +1,4 @@
+import { EmployeeImportModal } from './employee-import/EmployeeImportModal';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { EmployeeDetail } from '../../employee-detail/ui/EmployeeDetailPage';
@@ -843,6 +844,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
   const [activeTemplateId, setActiveTemplateId] = useState<string | null>(null);
 
   const [createUserOpen, setCreateUserOpen] = useState(false);
+  const [employeeImportOpen, setEmployeeImportOpen] = useState(false);
   const [viewUserOpen, setViewUserOpen] = useState(false);
   const [editUserOpen, setEditUserOpen] = useState(false);
   const [editDeleteConfirm, setEditDeleteConfirm] = useState(false);
@@ -1680,6 +1682,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
               disabled={loading || (meta?.holdings || []).length === 0}
               loading={loading}
             />
+            {tab === 'users' && role !== 'staff' && <button type="button" className="sa-btn-outline" disabled={!meta || loading} onClick={() => setEmployeeImportOpen(true)}>Импорт сотрудников</button>}
             {tab === 'templates' && canManageTemplates && (
               <button
                 type="button"
@@ -1698,6 +1701,7 @@ export function UsersPage({ role, employeeId, onSelectEmployee, onBackToUsers, o
         </div>
       )}
 
+      {employeeImportOpen && meta && <EmployeeImportModal meta={meta} initialCompanyId={selectedGlobalHoldingId === 'all' ? '' : selectedGlobalHoldingId} onClose={() => setEmployeeImportOpen(false)} onImported={async count => { setNotice(`Импортировано сотрудников: ${count}.`); try { const result = await fetchUsers(); setUsers(result.items); } catch { setError('Сотрудники импортированы, но список не обновился. Перезагрузите страницу.'); } }} />}
       {error && <div className="sa-card" style={{ marginBottom: 16, color: '#991B1B', background: '#FEF2F2' }}>{error}</div>}
       {notice && <div className="sa-card" style={{ marginBottom: 16, color: '#166534', background: '#F0FDF4' }}>{notice}</div>}
 

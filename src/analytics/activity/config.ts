@@ -1,0 +1,13 @@
+export const BASELINE_CALLS = 20;
+export const MIN_WINDOW_CALLS = 10;
+export const GROWTH_THRESHOLD = 5;
+export const TRAINED_SHARE = 0.5;
+export const NS_WINDOW_DAYS = 30;
+export const ABANDON_AFTER_HOURS = 2;
+export const DAY_MS = 86400000;
+export const CACHE_TTL_MS = 300000;
+export const dayKey = (date: Date) => new Date(date.getTime() + 10800000).toISOString().slice(0, 10);
+export const dayStart = (date: Date) => new Date(`${dayKey(date)}T00:00:00+03:00`);
+export const ratio = (part: number, total: number) => total ? part / total * 100 : null;
+export const mean = (values: number[]) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+export const unique = <T>(items: T[]) => new Set(items).size;

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../db', () => ({
   prisma: {
     productAnalyticsEvent: { create: mocks.create },
+    account: { findUnique: async () => ({ createdAt: new Date('2026-01-01'), memberships: [{ role: 'manager' }] }) },
   },
 }));
 
@@ -57,12 +58,12 @@ describe('product analytics event boundary', () => {
 
   it('does not accept free-form target fields that may contain PII', () => {
     expect(parseClientProductEvent({
-      eventName: 'manager_viewed',
-      targetType: 'manager',
+      eventName: 'employee_viewed',
+      targetType: 'employee',
       targetId: 'user@example.com',
-    })).toMatchObject({ targetType: 'manager', targetId: null });
+    })).toMatchObject({ targetType: 'employee', targetId: null });
     expect(parseClientProductEvent({
-      eventName: 'manager_viewed',
+      eventName: 'employee_viewed',
       targetType: 'unexpected_type',
       targetId: 'manager-1',
     })).toMatchObject({ targetType: null, targetId: null });

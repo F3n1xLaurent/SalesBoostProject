@@ -252,7 +252,7 @@ const GENERIC_EXAMPLE_WORDS = new Set([
   // Ordinary coaching actions are not facts borrowed from a later client turn.
   // Names, brands, numbers and substantive needs remain protected below.
   'адрес', 'контакт', 'отправ', 'отправить', 'направ', 'сообщ', 'подтверд', 'провер',
-  'бюджет',
+  'бюджет', 'важн', 'точн', 'понима',
   'чтоб', 'повседневн', 'ежедневн', 'удобн', 'комфортн', 'приятн', 'именно',
   'сначал', 'затем', 'после', 'перед', 'если', 'когда', 'потому',
 ]);
@@ -520,6 +520,13 @@ function fullTurnExample(value: unknown, turnIndex: number, findings: UnifiedCal
   const lostActions = correctsFacts ? [] : preservedActionIssues(transcript[turnIndex].text, example);
   if (lostActions.length) { issues?.push(...lostActions); return ''; }
   return example;
+}
+
+export function reportExampleStructuralIssues(example: string, turnIndex: number, report: UnifiedCallReport, transcript: TranscriptTurn[], scenarioContext = ''): string[] {
+  const issues: string[] = [];
+  const indices = reportFindingGroups(report, transcript).get(turnIndex) ?? [];
+  fullTurnExample(example, turnIndex, indices.map(index => report.keyFindings[index]), transcript, scenarioContext, report.transcriptionUncertainties, issues);
+  return issues;
 }
 
 /** One canonical full-turn example, never competing fragments across cards. */
@@ -1349,18 +1356,28 @@ async function generateUnifiedCallReportWithinBudget(input: {
     ...compatibleChatTemperature(config.openaiChatModel, 0.2),
   });
 
-  const dimensionScores = input.evaluation.dimension_scores && typeof input.evaluation.dimension_scores === 'object'
-    ? input.evaluation.dimension_scores as Record<string, number>
-    : undefined;
-  const normalized = normalizeUnifiedCallReport(
-    parsed,
-    { totalScore, transcript: input.transcript, source, dimensionScores, evaluation: input.evaluation, scenarioContext: input.scenarioContext },
-    catalog,
-  );
-  if (!normalized) throw new Error('Invalid unified report JSON');
-  const covered = await ensureRecommendationFindingCoverage(normalized, input.transcript, catalog, input.evaluation, input.scenarioContext);
-  const annotated = await ensureReportDialogCoverage(covered, input.transcript, input.evaluation);
-  return finalizeGeneratedReport(requireCompleteReportExamples(await ensureReportExampleQuality(annotated, input.transcript, input.scenarioContext)));
+  return completeGeneratedUnifiedCallReport(parsed, input);
+}
+
+/** Resume a saved draft through the same normalization and quality gates as a fresh report. */
+export async function completeGeneratedUnifiedCallReport(parsed: unknown, input: Parameters<typeof generateUnifiedCallReportWithinBudget>[0]): Promise<UnifiedCallReport> {
+  return withReportGenerationBudget(async () => {
+    const source = input.source ?? 'call';
+    const totalScore = clampScore(input.totalScore ?? input.evaluation.overall_score_0_100 ?? 0);
+    const catalog = withReportProblemVariants(await getCallReportProblemCatalog(prisma));
+    const dimensionScores = input.evaluation.dimension_scores && typeof input.evaluation.dimension_scores === 'object'
+      ? input.evaluation.dimension_scores as Record<string, number>
+      : undefined;
+    const normalized = normalizeUnifiedCallReport(
+      parsed,
+      { totalScore, transcript: input.transcript, source, dimensionScores, evaluation: input.evaluation, scenarioContext: input.scenarioContext },
+      catalog,
+    );
+    if (!normalized) throw new Error('Invalid unified report JSON');
+    const covered = await ensureRecommendationFindingCoverage(normalized, input.transcript, catalog, input.evaluation, input.scenarioContext);
+    const annotated = await ensureReportDialogCoverage(covered, input.transcript, input.evaluation);
+    return finalizeGeneratedReport(requireCompleteReportExamples(await ensureReportExampleQuality(annotated, input.transcript, input.scenarioContext)));
+  });
 }
 
 export async function generateUnifiedTrainerReport(input: {
