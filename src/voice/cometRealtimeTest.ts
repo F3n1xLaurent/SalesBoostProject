@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { config } from '../config';
 import type { RealtimeTestPlanConfiguration } from './callSettingsManagement';
 import { classifyLiveSpeaker, classifyLiveSpeakerLocally, type LiveSpeakerDecision } from './callLiveSpeakerClassifier';
+import { activeLineSegment } from './liveLineSignals';
 import { elevenLabsWebSocketOptions } from './elevenLabsHttp';
 import { PREPARED_GREETING, prepareOpeningAudio, preparedOpeningAudio } from './realtimeOpeningAudio';
 import { startVoiceCall } from './startVoiceCall';
@@ -17,7 +18,7 @@ import { assessUserTurnCompletion, classifyInterruption, mergeLogicalTurnText } 
 import { detectVehicleEntityMismatch, vehicleMismatchInstruction } from './realtimeEntityConsistency';
 import { appendSpeechAlignment, audibleTextAt, type SpeechAlignmentPoint } from './realtimeBargeIn';
 import { hypothesis2SpokenSubject, hypothesis2SpokenText } from './hypothesis2Speech';
-import { adaptHypothesis2Prompt, callbackFarewell, connectionCheckResponse, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd, visitDecisionInstructions, type VisitOffer } from './hypothesis2Dialogue';
+import { adaptHypothesis2Prompt, callbackFarewell, connectionCheckResponse, customerRoleResponse, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd, visitDecisionInstructions, type VisitOffer } from './hypothesis2Dialogue';
 import { extractNaturalFarewell, hasClosingIntention, hasNaturalFarewell, throughFirstFarewell } from './hypothesis2Closing';
 import { canEndDialogue, currentManagerVisitTime, dialogueAgreementInstruction, dialogueNeedsValidation, dialogueRecoveryResponse, previousClientVisitTime, repeatedVisitQuestionIssue, sameVisitTime, unansweredFactInstruction, unansweredFactResponseIssue, unansweredManagerResponseIssue } from './realtimeDialoguePolicy';
 export { hasNaturalFarewell } from './hypothesis2Closing';
@@ -508,6 +509,15 @@ export function hasExplicitHoldInstruction(text: string): boolean {
 }
 
 export function classifyHypothesis2LineLocally(text: string): LiveSpeakerDecision | null {
+  text = activeLineSegment(text);
+  const local = classifyLiveSpeakerLocally(text);
+  if (local?.endCall) return local;
+  if (local?.speakerType === 'ivr_or_recording' && !hasExplicitHoldInstruction(text)
+    && !/(?:вас\s+приветству(?:ет|ют)|вы\s+позвонили|(?:голосовой|виртуальный|автоматический)\s+(?:ассистент|помощник))/iu.test(text)
+    && /(?:оператор|менеджер|администратор)\s+(?!отдел|продаж|ответ|помож|проконсульт|вам|вас)[а-яё-]{2,}/iu.test(text)
+    && /рада?\s+вас\s+приветствовать/iu.test(text)) {
+    return { speakerType: 'live_human', confidence: 1, reason: 'named_employee_address' };
+  }
   // A past transfer mentioned by a named employee must not match the broad
   // recording marker "ваш звонок" in the shared primary-dialer classifier.
   if (!hasExplicitHoldInstruction(text)
@@ -515,7 +525,7 @@ export function classifyHypothesis2LineLocally(text: string): LiveSpeakerDecisio
     && /(?:алло|меня\s+зовут|чем\s+могу\s+помочь)/iu.test(text)) {
     return { speakerType: 'live_human', confidence: 1, reason: 'named_employee_after_transfer' };
   }
-  return classifyLiveSpeakerLocally(text);
+  return local;
 }
 
 export function isGarbledManagerText(text: string): boolean {
@@ -1166,7 +1176,8 @@ function sessionInstructions(session: CometRealtimeTestSession): string {
     'Не говори «зафиксирую договорённость», «закроем разговор», «перехожу к завершению». Подтверждение конкретной договорённости и прощание должны быть одним ответом: например «Хорошо, завтра к пяти. Спасибо, до свидания». После прощания не генерируй второе прощание или новый вопрос. ' +
     'Если менеджер попросил перезвонить, коротко подтверди предложенное время, попрощайся одной репликой и вызови end_call. Если время уже названо, не спрашивай его повторно. ' +
     'После перевода на другого сотрудника кратко назови причину звонка, сохрани своё имя и ранее полученные ответы. Не начинай весь сценарий заново. ' +
-    'Если прямо спрашивают, робот ли ты, честно и коротко ответь, что ты голосовой AI-помощник. Не утверждай, что ты живой человек; сохрани выбранное имя и вернись к предмету разговора. ' +
+    'Если спрашивают «вы робот?», не меняй выбранное имя и роль клиента: коротко представься своим именем и вернись к последнему реальному вопросу об автомобиле. Не добавляй заявления «я живой человек» и технические объяснения про AI, модель, телефонию или сервис звонков. ' +
+    'Предложение отправить визитку или адрес на номер звонка — обычное согласование контакта. Можно сказать «Отправьте, пожалуйста, визитку с адресом на этот номер». Не сомневайся в собственном номере и не придумывай, кому он принадлежит, как маршрутизируется звонок и будут ли доставлены сообщения. Не обещай получение сообщения до фактического получения. ' +
     'Не запрашивай имя менеджера и не спрашивай, когда ему удобно приехать: покупатель в этом звонке — ты. Если время и адрес визита уже названы, подтверди их. ' +
     (session.subjectTitle ? `Предмет разговора: «${session.subjectTitle}». Не смешивай его с другими марками или моделями. ` : '') +
     (session.subjectTitle ? `В устной реплике произноси название так: «${hypothesis2SpokenSubject(session.subjectTitle)}». Не читай служебные коды кузова и римские поколения из заголовка объявления. ` : '') +
@@ -1477,6 +1488,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   let managerHasFloor = false;
   let pendingInterruptionInstruction = '';
   let rejectedSkipTurnCount = 0;
+  let lineClassificationPending = false;
   let hangupSent = false;
   let bargeFrames: Buffer[] = [];
   let bargeStartedAt: string | null = null;
@@ -1676,13 +1688,14 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     if (isGarbledManagerText(text)) return 'Не совсем слышно. Повторите, пожалуйста.';
     return assessUserTurnCompletion(text, previousClient).incomplete
       ? 'Повторите, пожалуйста, конец фразы.'
-      : connectionCheckResponse(dialogueHistory(), assistantPreferredName) ?? callbackFarewell(text);
+      : customerRoleResponse(dialogueHistory(), assistantPreferredName)
+        ?? connectionCheckResponse(dialogueHistory(), assistantPreferredName) ?? callbackFarewell(text);
   };
 
   const flushPendingResponseEvents = () => {
     if (responseTranscriptTimer) clearTimeout(responseTranscriptTimer);
     responseTranscriptTimer = null;
-    if (unheardContinuationCandidate) {
+    if (unheardContinuationCandidate || lineClassificationPending) {
       // Keep output behind the short acoustic confirmation window, including
       // when ASR arrives while the candidate is still only one noisy frame.
       responseTranscriptTimer = setTimeout(flushPendingResponseEvents, 240);
@@ -1869,6 +1882,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   };
 
   const managerTurnInstructions = (text: string) => {
+    text = activeLineSegment(text);
     const nameInstruction = managerPreferredName && extractManagerPreferredName(text)
       ? ` Менеджер сообщил, что его нужно называть «${managerPreferredName}»: коротко признай поправку и дальше используй только это имя.`
       : '';
@@ -1884,6 +1898,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     const clarificationInstruction = isGarbledManagerText(text)
       ? ' Распознавание содержит грамматически бессвязный фрагмент. Следующая реплика должна только попросить повторить сказанное; не придумывай смысл и не задавай новый вопрос сценария.' : '';
     return `Последняя завершённая реплика менеджера дословно: «${text}». ` +
+      'Не приписывай собеседнику вопросы и варианты ответа, которых не было в его реплике. Обрывок вроде «Вас» не задаёт новую тему: дождись продолжения или нейтрально попроси повторить, без выдуманных альтернатив. ' +
       'Ответь по существу на каждый заданный в ней вопрос, включая перечисленные подряд; ничего не пропускай. ' +
       'Сверь предмет ответа с вопросом: «для кого» — кто будет ездить, «какие опции используете» — конкретные функции из легенды/предпочтений, «когда» — дата и время. Не подменяй их ответом о сроке владения или другом предыдущем вопросе. ' +
       'Если это не вопрос, естественно отреагируй на всю мысль. Если текст бессвязный или неоднозначный, не додумывай ответ за менеджера — коротко переспроси. ' +
@@ -2139,7 +2154,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     // be checked for a callback/garbled utterance. Never add a fixed wait when
     // ASR is already available. A bounded fallback protects against absent ASR.
     if (!flushingResponseEvents && !suppressInterruptedOutput && !ttsTurn
-      && (pendingManagerTimings.length || committedManagerTimings.size || unheardContinuationCandidate)
+      && (pendingManagerTimings.length || committedManagerTimings.size || unheardContinuationCandidate || lineClassificationPending)
       && /^(?:response\.(?:output_text|text)\.(?:delta|done)|response\.function_call_arguments\.done|response\.done)$/u.test(eventType)) {
       pendingResponseEvents.push({ ...message, receivedAt: isoNow() });
       if (!responseTranscriptTimer) {
@@ -2258,8 +2273,10 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
           if (!currentOffer || !sameVisitTime(currentOffer, pendingVisitOffer.time)) pendingVisitOffer = null;
         }
         const classificationRevision = ++liveSpeakerClassificationRevision;
+        lineClassificationPending = false;
         const applyLineDecision = (decision: LiveSpeakerDecision) => {
-          if (classificationRevision !== liveSpeakerClassificationRevision) return;
+          if (classificationRevision !== liveSpeakerClassificationRevision || mediaClosed) return;
+          lineClassificationPending = false;
           if (decision.endCall === true) {
             session.connectionState = 'waiting_operator';
             finishAfterPlayback = true;
@@ -2294,11 +2311,20 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
         const localDecision = classifyHypothesis2LineLocally(text);
         if (localDecision) applyLineDecision(localDecision);
         else if (session.connectionState !== 'live_conversation') {
+          // In a muted IVR/transfer state, response.done would otherwise throw
+          // away the entire new employee reply before classification returns.
+          lineClassificationPending = session.connectionState === 'waiting_operator' || session.ivrDetected;
           void classifyLiveSpeaker({
             candidateText: text,
             recentTranscript: session.transcript.slice(-3),
-          }).then(applyLineDecision).catch((error) => {
+          }).then(decision => {
+            applyLineDecision(decision);
+            if (classificationRevision === liveSpeakerClassificationRevision && !mediaClosed && !hangupSent) flushPendingResponseEvents();
+          }).catch((error) => {
+            if (classificationRevision !== liveSpeakerClassificationRevision || mediaClosed) return;
+            lineClassificationPending = false;
             session.errors.push(`Классификация линии: ${error instanceof Error ? error.message : String(error)}`);
+            flushPendingResponseEvents();
           });
         }
         if (hangupSent) return;
@@ -2385,7 +2411,6 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       suppressInterruptedOutput = false;
       managerHasFloor = false;
       playbackTurn = null;
-      guardedResponseText = managerResponseGuard();
       responseCreatedAt = isoNow();
       firstTextAt = null;
       assistantText = '';
@@ -2393,6 +2418,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
         endpointWaitMs: elapsed(lastCompletedManagerCommitAt ?? lastSpeechStoppedAt, responseCreatedAt),
         silentResponseRetries: silentResponseRetryCount || undefined,
       };
+      guardedResponseText = managerResponseGuard();
       assistantTurnRecorded = false;
       responseHadToolCall = false;
       visitEndAttempted = false;
@@ -2401,7 +2427,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       return;
     }
     if (eventType === 'response.output_text.delta' || eventType === 'response.text.delta') {
-      if (suppressInterruptedOutput) return;
+      if (suppressInterruptedOutput || session.connectionState === 'waiting_operator') return;
       const delta = String(message.delta ?? '');
       if (!delta) return;
       const at: string = message.receivedAt ?? isoNow();
@@ -2468,7 +2494,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       return;
     }
     if (eventType === 'response.output_text.done' || eventType === 'response.text.done') {
-      if (suppressInterruptedOutput) return;
+      if (suppressInterruptedOutput || session.connectionState === 'waiting_operator') return;
       // Keep the text stream open until tools are finished. end_call may need
       // to append a goodbye to this SAME TTS turn, without discarding its body.
       if (!guardedResponseText && !pendingVisitOffer && !dialogueNeedsValidation(dialogueHistory())) recordAssistantTurn(message.text, message.receivedAt ?? isoNow());
@@ -2483,9 +2509,9 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
       session.tools.push({ name, arguments: args, at: isoNow() });
       if (name === 'send_dtmf') {
         const digit = String(args.digit ?? '');
-        const recentManagerText = [...session.transcript]
+        const recentManagerText = activeLineSegment([...session.transcript]
           .reverse()
-          .find((turn) => turn.role === 'manager')?.text ?? '';
+          .find((turn) => turn.role === 'manager')?.text ?? '');
         const hasExplicitInstruction = /нажмите|наберите|выберите\s+(?:пункт|цифру|клавишу)|клавиш[ауи]|кнопк[ауи]/iu.test(recentManagerText);
         if (/^[0-9*#]$/.test(digit) && hasExplicitInstruction) {
           session.ivrDetected = true;
@@ -2502,9 +2528,9 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
         }
       } else if (name === 'skip_turn') {
         const kind = String(args.kind ?? 'uncertain');
-        const recentManagerText = [...session.transcript]
+        const recentManagerText = activeLineSegment([...session.transcript]
           .reverse()
-          .find((turn) => turn.role === 'manager')?.text ?? '';
+          .find((turn) => turn.role === 'manager')?.text ?? '');
         const hasHoldInstruction = hasExplicitHoldInstruction(recentManagerText);
         const hasIvrInstruction = /(?:нажмите|наберите|выберите\s+(?:пункт|цифру|клавишу)|голосов(?:ое|ого)\s+меню)/iu.test(recentManagerText);
         const localLine = classifyHypothesis2LineLocally(recentManagerText);
@@ -3212,6 +3238,8 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
   vox.on('error', (error) => session.errors.push(`Vox media socket: ${error.message}`));
   vox.on('close', () => {
     mediaClosed = true;
+    lineClassificationPending = false;
+    liveSpeakerClassificationRevision++;
     openingAudioOwners.get(session.callId)?.();
     openingAudioOwners.delete(session.callId);
     clearResponseWatchdog();

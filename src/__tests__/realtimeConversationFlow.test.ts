@@ -42,6 +42,9 @@ describe('realtime conversation flow', () => {
     expect(classify('нет', true).kind).toBe('interrupt');
     expect(classify('угу', true).kind).toBe('interrupt');
   });
+  it.each(['Вас.', 'Вам', 'Вы', 'Для вас'])('1181: does not invent an interruption topic from %s', text => {
+    expect(classify(text).kind).toBe('candidate');
+  });
 
   it('does not double-count repeated partial hypotheses', () => {
     expect(mergeTranscriptionHypothesis('подождите', 'подождите', true)).toBe('подождите');

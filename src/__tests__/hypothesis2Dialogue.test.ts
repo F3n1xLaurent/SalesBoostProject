@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { adaptHypothesis2Prompt, callbackFarewell, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd } from '../voice/hypothesis2Dialogue';
+import { adaptHypothesis2Prompt, callbackFarewell, customerRoleResponse, pinSelfIntroduction, profileIdentity, dialogueProgressInstructions, explicitVisitOffer, hasVisitDecision, visitResponseCanEnd } from '../voice/hypothesis2Dialogue';
 import { buildCustomerScenarioPromptCore } from '../voice/customerScenarioPrompt';
 import { parseRegressionAssessment, REGRESSION_JUDGE_INSTRUCTIONS, regressionAssessmentScope } from '../voice/realtimeRegressionAssessment';
 
 describe('hypothesis 2 dialogue guards', () => {
+  it('agrees to a business card on the calling number without inventing ownership or delivery status', () => {
+    const text = 'Звоните с вашего личного номера для отправки визитки с адресом ДЦ?';
+    expect(customerRoleResponse([{ role: 'manager', text }], 'Анна')).toBe('Отправьте, пожалуйста, визитку с адресом на этот номер.');
+    expect(customerRoleResponse([{ role: 'manager', text: 'Можно прислать адрес на этот номер?' }])).toBe('Отправьте, пожалуйста, визитку с адресом на этот номер.');
+    expect(customerRoleResponse([{ role: 'manager', text: 'Это мой личный номер, запишите его.' }])).toBeNull();
+    expect(customerRoleResponse([{ role: 'manager', text: 'Это ваш личный номер?' }])).toBe('Для связи используйте этот номер.');
+    expect(customerRoleResponse([{ role: 'manager', text: 'Можно прислать адрес на этот номер? Какой автомобиль интересует?' }])).toBeNull();
+  });
+  it('1185: keeps the chosen name and returns to a real unanswered customer question', () => {
+    const history = [{ role: 'client', text: 'Меня зовут Анна. Чёрный Туарег ещё в продаже?' }, { role: 'manager', text: 'Это робот?' }];
+    expect(customerRoleResponse(history, 'Анна')).toBe('Меня зовут Анна. Чёрный Туарег ещё в продаже?');
+    expect(customerRoleResponse([{ role: 'manager', text: 'Вы робот или живой человек?' }], 'Максим')).toBe('Меня зовут Максим. Я звоню по поводу автомобиля из объявления.');
+    expect(customerRoleResponse([{ role: 'manager', text: 'У машины роботизированная коробка.' }], 'Максим')).toBeNull();
+    expect(customerRoleResponse([{ role: 'manager', text: 'Вы роботизированную коробку рассматриваете?' }], 'Максим')).toBeNull();
+  });
   it('remembers the clarification limit across paraphrases from 8cfa445a', () => {
     const turns = [
       { role: 'client', text: 'Есть ли запасное колесо в комплекте?' },

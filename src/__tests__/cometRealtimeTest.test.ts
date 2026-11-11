@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { activeLineSegment } from '../voice/liveLineSignals';
 import {
   areRussianNamesEquivalent,
   classifyHypothesis2LineLocally,
@@ -20,6 +21,12 @@ it('1196: keeps actual priorities while removing their technical announcement', 
   expect(sanitizeRealtimeSpokenText('Хорошо, давайте коротко расставлю приоритеты, чтобы было проще дальше выбирать.')).toBe('');
   expect(sanitizeRealtimeSpokenText('Давайте уточним следующий шаг: о чём договоримся?')).toBe('');
   expect(sanitizeRealtimeSpokenText('Для меня важнее удобство парковки и комфорт.')).toBe('Для меня важнее удобство парковки и комфорт.');
+});
+
+it('preserves business questions before an audibility check and after the first post-transfer greeting', () => {
+  const live = 'Какой у вас бюджет? Алло, вы меня слышите?';
+  expect(activeLineSegment(live)).toBe(live);
+  expect(activeLineSegment(`Оставайтесь на линии, сейчас соединю. Добрый день. ${live}`)).toBe(`Добрый день. ${live}`);
 });
 
 const bridge = readFileSync(resolve(process.cwd(), 'src/voice/cometRealtimeTest.ts'), 'utf8');
@@ -187,6 +194,24 @@ describe('Comet Realtime PCM bridge', () => {
     expect(classifyHypothesis2LineLocally('Ваш звонок очень важен для нас. Ожидайте ответа оператора.')?.speakerType).toBe('ivr_or_recording');
     expect(isGarbledManagerText('который было не в любое время.')).toBe(true);
     expect(isGarbledManagerText('Приезжайте в любое время.')).toBe(false);
+  });
+  it.each([
+    'Добрый день, компания Арконт, оператор Елена, рада вас приветствовать.',
+    'Оставайтесь на линии, сейчас соединю. Сергей, добрый день, меня зовут Ильнур, менеджер отдела продаж. По определенной машине обращаетесь?',
+    'Вас приветствует Петровский. Нажмите два. Неправильный ввод. Здравствуйте, группа компаний Петровский, Елена, слушаю вас.',
+    'Доброе утро, Новоавтоком.',
+    'Подак. Контрактирина. Здравствуйте. Алло, вас не слышно.',
+    'Про Карлсона, меня, Олег, слушаю вас.',
+  ])('recognizes the latest human address in holding calls: %s', text => {
+    expect(classifyHypothesis2LineLocally(text)?.speakerType).toBe('live_human');
+  });
+  it.each([
+    'Добрый день, вы позвонили в компанию. Все разговоры записываются. Ожидайте ответа оператора.',
+    'Добрый день, оператор Елена вам ответит. Оставайтесь на линии.',
+    'Вас приветствует компания. Для соединения произнесите алло.',
+    'Я голосовой ассистент Мия. Здравствуйте.',
+  ])('does not treat greetings inside an automated script as a connected employee: %s', text => {
+    expect(classifyHypothesis2LineLocally(text)?.speakerType).toBe('ivr_or_recording');
   });
 
   it('uses the call-plan ElevenLabs voice and lets Voximplant only transport audio', () => {

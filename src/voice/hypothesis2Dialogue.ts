@@ -41,6 +41,26 @@ export function callbackFarewell(text: string): string | null {
 
 type DialogueTurn = { role: string; text: string; metrics?: { interrupted?: boolean; ttsFailed?: boolean } };
 
+/** Narrow identity/contact questions do not require inventing transport facts
+ * or changing the customer persona. Leave mixed business questions to the model. */
+export function customerRoleResponse(turns: readonly DialogueTurn[], name: string | null = null): string | null {
+  const latest = turns.at(-1);
+  if (latest?.role !== 'manager') return null;
+  const text = latest.text;
+  if ((text.match(/\?/gu) ?? []).length > 1
+    || /(?:какой|какая|сколько|когда|где)[^.!?]*(?:бюджет|автомобил|машин|покупк|приех|подъех|сумм)/iu.test(text)) return null;
+  const personalNumber = /звоните[^.!?]*(?:личн|номер)|ваш(?:его|им)?[^.!?]*номер|на\s+(?:этот|данный)\s+номер/iu.test(text);
+  const sendContact = /визитк|(?:отправ|присл|направ)[^.!?]*(?:адрес|сообщен|смс|sms)/iu.test(text);
+  if (personalNumber && sendContact) return 'Отправьте, пожалуйста, визитку с адресом на этот номер.';
+  if (personalNumber && /личн/iu.test(text)) return 'Для связи используйте этот номер.';
+  const robotQuestion = /(?:вы|ты|это)\s+(?:что,?\s+|случайно\s+|не\s+)?(?:робот|бот|голосовой\s+(?:ai[ -]?)?(?:ассистент|помощник))(?=[\s,.!?]|$)|(?:говорю|разговариваю)\s+с\s+роботом/iu.test(text);
+  if (!robotQuestion) return null;
+  const previous = turns.slice(0, -1).filter(turn => turn.role === 'client' && !turn.metrics?.ttsFailed && !turn.text.startsWith('[')).at(-1);
+  const question = previous?.text.match(/[^.!?]+\?/gu)?.at(-1)?.trim();
+  const intro = name ? `Меня зовут ${name}. ` : '';
+  return `${intro}${question && question.length <= 180 ? question : 'Я звоню по поводу автомобиля из объявления.'}`;
+}
+
 /** Repeat once on an explicit audibility check, not on unrelated questions or
  * hold instructions. Later checks do not replay the same long reply again. */
 export function connectionCheckResponse(turns: readonly DialogueTurn[], name: string | null = null): string | null {

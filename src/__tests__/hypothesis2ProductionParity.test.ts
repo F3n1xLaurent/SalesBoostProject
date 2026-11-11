@@ -6,12 +6,18 @@ import { config } from '../config';
 import { handleCometRealtimeTestSocket, handleCometRealtimeTestWebhook, handleStartCometRealtimeTest, handleGetCometRealtimeTest,
   prepareProductionOpenAiRealtimeCall, updateProductionRealtimeLifecycle, createCallPlanSimulation } from '../voice/cometRealtimeTest';
 
-const mocks = vi.hoisted(() => ({ sockets: [] as any[], failuresRemaining: 0, acknowledgeHistory: true, handshake: true, openingAudio: false, start: vi.fn(),
+const mocks = vi.hoisted(() => ({ sockets: [] as any[], failuresRemaining: 0, acknowledgeHistory: true, handshake: true, openingAudio: false,
+  classifyOverride: null as null | ((input: unknown) => Promise<any>), start: vi.fn(),
   plan: { planId: 'plan', planName: 'План', prompt: 'Ты Анна, женщина. Звонишь по Kia Carnival. Уточни цену.',
     elevenLabsVoiceId: 'profile-voice', customerVoiceId: 'voice-row', subjectTitle: 'Kia Carnival', subjectDescription: null },
   tts: { modelId: 'eleven_v4_turbo', defaultVoiceId: 'agent-default', stability: 0.75, similarityBoost: 0.75, speed: 1.13,
     source: 'agent' as const, optimizeStreamingLatency: 0, pronunciationDictionaryLocators: [] },
 }));
+vi.mock('../voice/callLiveSpeakerClassifier', async original => {
+  const actual = await original<typeof import('../voice/callLiveSpeakerClassifier')>();
+  return { ...actual, classifyLiveSpeaker: (input: Parameters<typeof actual.classifyLiveSpeaker>[0]) =>
+    mocks.classifyOverride ? mocks.classifyOverride(input) : actual.classifyLiveSpeaker(input) };
+});
 vi.mock('../voice/realtimeOpeningAudio', async original => {
   const actual = await original<typeof import('../voice/realtimeOpeningAudio')>();
   return { ...actual, prepareOpeningAudio: (...args: Parameters<typeof actual.prepareOpeningAudio>) => mocks.openingAudio ? actual.prepareOpeningAudio(...args) : () => {},
@@ -59,6 +65,7 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.clearAllMocks(); mocks.sockets.length = 0; mocks.failuresRemaining = 0;
   mocks.acknowledgeHistory = true; mocks.handshake = true;
   mocks.openingAudio = false;
+  mocks.classifyOverride = null;
   config.openaiRealtimeApiKey = 'test'; config.elevenLabsApiKey = 'test'; config.openaiRealtimeModel = 'gpt-realtime-2';
   config.openaiRealtimeEndpointSilenceMs = 400; config.openaiRealtimeLongTurnEndpointSilenceMs = 650;
   mocks.start.mockImplementation(async (_phone, options) => ({ callId: options.callId, scenario: options.scenario, startedAt: new Date().toISOString() }));
@@ -138,6 +145,13 @@ async function askManagerQuestion(pair: Awaited<ReturnType<typeof launch>>) {
   pair.tts.sent.length = 0;
 }
 
+function enterTransferWait(pair: Awaited<ReturnType<typeof launch>>) {
+  pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'hold', transcript: 'Оставайтесь на линии, сейчас соединю с отделом продаж.' });
+  pair.provider.server({ type: 'response.created', response: { id: 'hold-response' } });
+  pair.provider.server({ type: 'response.function_call_arguments.done', response_id: 'hold-response', name: 'skip_turn', call_id: 'hold-tool', arguments: JSON.stringify({ kind: 'waiting' }) });
+  pair.provider.server({ type: 'response.done', response: { id: 'hold-response' } });
+}
+
 describe('actual hypothesis-2 and production launch parity (no live providers)', () => {
   it('uses the real production session/configuration for a plan simulation without dialing', async () => {
     config.openaiRealtimeModel = 'gpt-realtime-2.1';
@@ -199,6 +213,107 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
     'Хорошо, давайте тогда коротко закрепим договорённость и аккуратно подведём разговор к завершению. До свидания.',
   ];
   for (const mode of ['test', 'production'] as const) {
+    it(`${mode}: 1181 does not interrupt or invent a new question from the isolated word Vas`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'still-speaking' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'still-speaking', delta: 'Меня зовут Анна. Подскажите, машина с пробегом ещё в продаже?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'still-speaking' } });
+      pair.tts.server({ audio: Buffer.alloc(64_000).toString('base64'), is_final_audio_for_turn: true });
+      pair.vox.input({ customEvent: 'media_status', status: 'started' });
+      await vi.advanceTimersByTimeAsync(500);
+      for (let i = 0; i < 8; i++) {
+        pair.vox.input({ event: 'media', media: { payload: managerAudio.toString('base64') } });
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      await vi.advanceTimersByTimeAsync(300);
+      pair.provider.server({ type: 'input_audio_buffer.committed', item_id: 'pronoun' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'pronoun', transcript: 'Вас.' });
+      expect(pair.vox.sent.some((event: any) => event.action === 'clear_media')).toBe(false);
+      expect(pair.snapshot().conversationFlow.events.some((event: any) => event.type === 'barge_in_confirmed')).toBe(false);
+      expect(pair.provider.sent).toContainEqual({ type: 'conversation.item.delete', item_id: 'pronoun' });
+      expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'client')).toHaveLength(1);
+    });
+    it.each(['recording', 'closed'])(`${mode}: deferred classification returning after %s cannot leak queued speech`, async outcome => {
+      let resolve!: (value: any) => void;
+      mocks.classifyOverride = () => new Promise(done => { resolve = done; });
+      const pair = await launch(mode); enterTransferWait(pair);
+      await commitManagerFragment(pair, 'unknown-speaker'); await vi.advanceTimersByTimeAsync(350);
+      pair.provider.server({ type: 'response.created', response: { id: 'pending-speaker' } });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'unknown-speaker', transcript: 'Информация о специальных предложениях.' });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'pending-speaker', delta: 'Здравствуйте. Машина ещё в продаже?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'pending-speaker' } });
+      if (outcome === 'closed') pair.vox.close();
+      const sent = pair.vox.sent.length;
+      resolve({ speakerType: outcome === 'closed' ? 'live_human' : 'ivr_or_recording', confidence: 1, reason: outcome });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(false);
+      expect(pair.snapshot().transcript.some((turn: any) => turn.role === 'client')).toBe(false);
+      if (outcome === 'closed') expect(pair.vox.sent).toHaveLength(sent);
+    });
+    it.each([
+      ['1163', 'Алло.'],
+      ['1166', 'Подак. Контрактирина. Здравствуйте. Алло, вас не слышно.'],
+      ['1169', 'Добрый день, компания Арконт, оператор Елена, рада вас приветствовать.'],
+      ['1179', 'Доброе утро, Новоавтоком.'],
+      ['1175', 'Сергей, добрый день, меня зовут Ильнур, менеджер отдела продаж. По определенной машине обращаетесь?'],
+      ['1177', 'Про Карлсона, меня, Олег, слушаю вас.'],
+    ])(`${mode}: resumes speech after IVR/transfer on call %s`, async (_call, greeting) => {
+      const pair = await launch(mode); enterTransferWait(pair);
+      await commitManagerFragment(pair, 'employee'); await vi.advanceTimersByTimeAsync(350);
+      expect(pair.provider.sent.some((event: any) => event.type === 'response.create')).toBe(true);
+      pair.provider.server({ type: 'response.created', response: { id: 'employee-response' } });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'employee', transcript: greeting });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'employee-response', delta: 'Меня зовут Анна. Подскажите, машина ещё в продаже?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'employee-response' } });
+      expect(spokenInputs(pair)).toContain('Подскажите, машина ещё в продаже?');
+      expect(pair.vox.sent.filter((event: any) => event.action === 'set_output_enabled').at(-1)?.enabled).toBe(true);
+      expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'client')).toHaveLength(1);
+    });
+    it(`${mode}: waits for delayed live-speaker classification without losing the transferred employee reply`, async () => {
+      let resolve!: (value: any) => void;
+      mocks.classifyOverride = () => new Promise(done => { resolve = done; });
+      const pair = await launch(mode); enterTransferWait(pair);
+      await commitManagerFragment(pair, 'new-employee'); await vi.advanceTimersByTimeAsync(350);
+      pair.provider.server({ type: 'response.created', response: { id: 'classified-response' } });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'new-employee', transcript: 'Ваши пожелания по комплектации?' });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'classified-response', delta: 'Пока сравниваю комплектации. Подскажите, машина ещё в продаже?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'classified-response' } });
+      await vi.advanceTimersByTimeAsync(1_300);
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.snapshot().transcript.some((turn: any) => turn.role === 'client')).toBe(false);
+      resolve({ speakerType: 'live_human', confidence: 1, reason: 'employee_address' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spokenInputs(pair)).toBe('Пока сравниваю комплектации. Подскажите, машина ещё в продаже?');
+      expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'client')).toHaveLength(1);
+      expect(pair.vox.sent.filter((event: any) => event.action === 'set_output_enabled').at(-1)?.enabled).toBe(true);
+    });
+    it(`${mode}: a mixed hold-plus-human transcript cannot mute the new employee again`, async () => {
+      const pair = await launch(mode); enterTransferWait(pair);
+      const transcript = 'Оставайтесь на линии, сейчас соединю. Добрый день, меня зовут Ильнур, по какой машине обращаетесь?';
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'combined', transcript });
+      pair.provider.server({ type: 'response.created', response: { id: 'erroneous-skip' } });
+      pair.provider.server({ type: 'response.function_call_arguments.done', response_id: 'erroneous-skip', name: 'skip_turn', call_id: 'wrong-wait', arguments: JSON.stringify({ kind: 'waiting' }) });
+      const output = pair.provider.sent.find((event: any) => event.item?.call_id === 'wrong-wait');
+      expect(JSON.parse(output.item.output).ignored).toBe(true);
+      expect(pair.vox.sent.filter((event: any) => event.action === 'set_output_enabled').at(-1)?.enabled).toBe(true);
+    });
+    it.each([
+      ['Звоните с вашего личного номера для отправки визитки с адресом ДЦ?', 'Не уверен, что это мой личный номер. Связь может идти через сервис, и сообщения могут не дойти.', 'Отправьте, пожалуйста, визитку с адресом на этот номер.'],
+      ['Это робот?', 'Да, я голосовой AI-помощник.', 'Меня зовут Анна. Что по порогам — не сильно ли гнилые?'],
+    ])(`${mode}: stays in the customer role when asked %s`, async (question, draft, expected) => {
+      const pair = await launch(mode); await askManagerQuestion(pair);
+      await commitManagerFragment(pair, 'identity-question');
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'identity-question', transcript: question });
+      await vi.advanceTimersByTimeAsync(500);
+      pair.provider.server({ type: 'response.created', response: { id: 'identity-response' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'identity-response', delta: draft });
+      expect(spokenInputs(pair)).toBe('');
+      pair.provider.server({ type: 'response.done', response: { id: 'identity-response' } });
+      expect(spokenInputs(pair)).toBe(expected);
+      expect(pair.snapshot().transcript.at(-1)?.text).toBe(expected);
+    });
     it(`${mode}: preserves heard audio if TTS fails before the model finishes and ignores late text`, async () => {
       const pair = await launch(mode);
       pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'human', transcript: 'Ну, Илья, установлен автомат.' });
