@@ -23,6 +23,7 @@ import { findManagerClientNameRequest, isClientNameCriterion } from '../logic/co
 import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logic/transcriptionUncertainty';
 import { clientAction, confirmedTimeInDialog, criterionAllowsNa, reportCriterionCode, REPORT_MARK_RUBRIC } from '../voice/reportAssessment';
 import { creditConsultationRequested, isCreditExplanationCriterion } from '../logic/creditApplicability';
+import { REPORT_EVIDENCE_RULES } from '../voice/reportQualityRules';
 
 // ── Types ──
 
@@ -337,6 +338,7 @@ ${transcriptionContext}
 ${transcriptionUncertainties.length ? `\n=== НЕОПРЕДЕЛЁННОСТЬ РАСПОЗНАВАНИЯ (НЕ ДОКАЗАННАЯ ОШИБКА МЕНЕДЖЕРА) ===\n${JSON.stringify(transcriptionUncertainties)}\nСохрани исходный текст. Не выдумывай исправленный год. Оцени остальные действия независимо от спорного слова.` : ''}
 
 === ЗАДАНИЕ ===
+${REPORT_EVIDENCE_RULES}
 Оцени каждый пункт чеклиста. Верни JSON.`;
 
   let classification: LLMClassification | null = null;

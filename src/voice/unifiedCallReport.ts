@@ -8,7 +8,7 @@ import { reportGenerationIssues, requestReportJson } from './reportGeneration';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { isConnectionCheckTurn, isUnreliableManagerUtterance } from './transcriptReliability';
-import { groundReportTurnComment } from './reportTurnGrounding';
+import { groundReportTurnComment, hasGroundedProductAnswer } from './reportTurnGrounding';
 import { createReportCompletion, withReportGenerationBudget } from './reportExecution';
 import { buildEvaluationHighlights, normalizeManagerNarrationGender } from '../logic/evaluationHighlights';
 import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
@@ -21,6 +21,8 @@ import {
   problemByTitle,
   UNCONFIRMED_NEXT_STEP_TITLE,
   FOLLOW_UP_PROBLEM_TITLE,
+  INCOMPLETE_INTRO_TITLE,
+  PARTIAL_PRODUCT_ANSWER_TITLE,
   withReportProblemVariants,
   type ProblemCatalogItem,
 } from './problemCatalog';
@@ -255,7 +257,7 @@ const GENERIC_EXAMPLE_WORDS = new Set([
   'бюджет', 'важн', 'точн', 'понима',
   'чтоб', 'повседневн', 'ежедневн', 'удобн', 'комфортн', 'приятн', 'именно',
   'сначал', 'затем', 'после', 'перед', 'если', 'когда', 'потому',
-]);
+].flatMap(word => [word, wordStem(word)]));
 
 function wordStem(value: string): string {
   const normalized = value.toLocaleLowerCase('ru-RU').replace(/ё/g, 'е').replace(/[^а-яa-z0-9]/g, '');
@@ -621,6 +623,14 @@ export function normalizeUnifiedCallReport(
         && (quoteIndex < 0 || isUnreliableManagerUtterance(fallback.transcript[quoteIndex].text)
           || isConnectionCheckTurn(fallback.transcript, quoteIndex))) return null;
       if (problem.code === 'WRONG_CLIENT_NAME' && !repeatedNameRequest(fallback.transcript, quoteIndex)) return null;
+      if (problem.code === 'NO_DIRECT_ANSWER' && hasGroundedProductAnswer(quoteIndex, fallback.transcript)) {
+        problem = { ...problem, title: PARTIAL_PRODUCT_ANSWER_TITLE };
+      }
+      if (problem.code === 'NO_INTRO_COMPANY' && /автосалон|компани/iu.test(fallback.transcript[quoteIndex]?.text ?? '')
+        && /назвал[^.!?]{0,45}компани/iu.test(asText(raw.comment))
+        && !/не\s+(?:назвал|сообщил|представил)[^.!?]{0,30}компани/iu.test(asText(raw.comment))) {
+        problem = { ...problem, title: INCOMPLETE_INTRO_TITLE };
+      }
       if (problem.code === 'WEAK_OBJECTION_HANDLING') {
         const client = [...fallback.transcript.slice(0, quoteIndex)].reverse().find(turn => turn.role === 'client');
         const groundedObjection = raw.clientActionType === 'objection' && typeof raw.clientQuote === 'string'
@@ -734,13 +744,18 @@ export function normalizeUnifiedCallReport(
     });
     if (matchedFindings.length) {
       const turnStrengths = buildEvaluationHighlights(fallback.evaluation, 8, fallback.transcript, { positiveManagerTurnIndexes: new Set([index]) }).strengths;
-      const severe = matchedFindings.some((finding) => finding.importance === 'Критично'
-        || ['PRODUCT_MISINFORMATION', 'WRONG_CLIENT_NAME', 'BAD_TONE', 'CRITICAL_VIOLATION', 'NO_DIRECT_ANSWER'].includes(problemByTitle(catalog, finding.problemTitle)?.code ?? ''));
-      const mixed = !severe && turnStrengths.length >= 1;
+      const usefulProductAnswer = hasGroundedProductAnswer(index, fallback.transcript);
+      const severe = matchedFindings.some((finding) => {
+        const code = problemByTitle(catalog, finding.problemTitle)?.code ?? '';
+        if (['PRODUCT_MISINFORMATION', 'BAD_TONE', 'CRITICAL_VIOLATION'].includes(code)) return true;
+        if (usefulProductAnswer && ['WRONG_CLIENT_NAME', 'NO_DIRECT_ANSWER', 'WEAK_BENEFIT_PRESENTATION'].includes(code)) return false;
+        return finding.importance === 'Критично' || ['WRONG_CLIENT_NAME', 'NO_DIRECT_ANSWER'].includes(code);
+      });
+      const mixed = !severe && (turnStrengths.length >= 1 || usefulProductAnswer || line.mark === 'normal');
       return {
         ...line,
         mark: mixed ? 'normal' as const : 'negative' as const,
-        comment: `${mixed ? `Выполнено: ${turnStrengths.slice(0, 3).join('; ')}. При этом: ` : ''}${mergeUniqueText(matchedFindings.map((finding) => finding.comment || finding.problemTitle), 8).join(' ')}`,
+        comment: `${mixed && turnStrengths.length ? `Выполнено: ${turnStrengths.slice(0, 3).map(text => text.replace(/[.;\s]+$/u, '')).join('; ')}. При этом: ` : ''}${mergeUniqueText(matchedFindings.map((finding) => finding.comment || finding.problemTitle), 8).join(' ')}`,
         betterExample: matchedFindings[0].betterExample || line.betterExample || null,
       };
     }
@@ -889,6 +904,23 @@ export function normalizeStoredUnifiedCallReport(
   if (!report) return null;
   const source = args[0] as Partial<UnifiedCallReport> | null;
   if (!Array.isArray(source?.exampleReviews)) return withFallbackFindingBetterExamples(report, args[1].transcript, args[1].scenarioContext);
+  // Read endpoints may lack the scenario snapshot used by generation. Keep an
+  // unchanged, semantically approved example rather than treating its known
+  // persona facts as a leak from later turns. All other structural checks still
+  // apply, and a changed hash never inherits that approval.
+  for (const review of source.exampleReviews) {
+    if (review?.status !== 'pass' || !Number.isInteger(review.turnIndex)) continue;
+    const original = source.dialog?.[review.turnIndex]?.betterExample;
+    if (!original || review.exampleHash !== reportExampleHash(original) || report.dialog[review.turnIndex]?.role !== 'manager') continue;
+    const oldText = source.dialog?.[review.turnIndex]?.text;
+    if (typeof oldText === 'string' && oldText.trim() !== report.dialog[review.turnIndex].text.trim()) continue;
+    const indices = reportFindingGroups(report, args[1].transcript).get(review.turnIndex) ?? [];
+    const example = fullTurnExample(original, review.turnIndex, indices.map(index => report.keyFindings[index]),
+      args[1].transcript, args[1].scenarioContext || original, report.transcriptionUncertainties);
+    if (!example) continue;
+    report.dialog[review.turnIndex].betterExample = example;
+    for (const index of indices) report.keyFindings[index].betterExample = example;
+  }
   // A read must not refill a semantically rejected example with an unchecked template.
   const exampleReviews = source.exampleReviews.filter((item) => item && Number.isInteger(item.turnIndex)
     && report.dialog[item.turnIndex]?.role === 'manager' && ['pass', 'fail', 'review'].includes(item.status)

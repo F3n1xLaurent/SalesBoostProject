@@ -199,6 +199,137 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
     'Хорошо, давайте тогда коротко закрепим договорённость и аккуратно подведём разговор к завершению. До свидания.',
   ];
   for (const mode of ['test', 'production'] as const) {
+    it(`${mode}: preserves heard audio if TTS fails before the model finishes and ignores late text`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'human', transcript: 'Ну, Илья, установлен автомат.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'tts-before-model-done' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'tts-before-model-done', delta: 'Хорошо. А какие опции комфорта там предусмотрены?' });
+      const chars = Array.from('Я Анна. Хорошо. ');
+      pair.tts.server({ audio: Buffer.alloc(8_000).toString('base64'), alignment: {
+        chars, char_start_times_ms: chars.map((_, index) => index * 20), char_durations_ms: chars.map(() => 20),
+      } });
+      pair.vox.input({ customEvent: 'media_status', status: 'started' });
+      pair.tts.drop(); await vi.advanceTimersByTimeAsync(1_500);
+      expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'client').map((turn: any) => turn.text)).toEqual(['Я Анна. Хорошо.']);
+      const inputCount = mocks.sockets.flatMap(socket => socket.sent).filter((event: any) => event.inputs?.length).length;
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'tts-before-model-done', delta: ' Ещё один непрозвучавший вопрос.' });
+      pair.provider.server({ type: 'response.done', response: { id: 'tts-before-model-done' } });
+      expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'client').map((turn: any) => turn.text)).toEqual(['Я Анна. Хорошо.']);
+      expect(mocks.sockets.flatMap(socket => socket.sent).filter((event: any) => event.inputs?.length)).toHaveLength(inputCount);
+    });
+    it.each(['close', 'provider-error'])(`${mode}: partial live TTS ending with %s never records the unheard suffix`, async failure => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'human', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'partial-live' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'partial-live', delta: 'Меня зовут Анна. Смотрю Киа Карнивал, машина ещё актуальна?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'partial-live' } });
+      const chars = Array.from('Меня зовут Анна. ');
+      pair.tts.server({ audio: Buffer.alloc(8_000).toString('base64'), alignment: {
+        chars, char_start_times_ms: chars.map((_, index) => index * 20), char_durations_ms: chars.map(() => 20),
+      } });
+      pair.vox.input({ customEvent: 'media_status', status: 'started' });
+      if (failure === 'close') pair.tts.drop();
+      else pair.tts.server({ error: 'upstream_stream_failed' });
+      await vi.advanceTimersByTimeAsync(1_500);
+      const client = pair.snapshot().transcript.find((turn: any) => turn.role === 'client');
+      expect(client.text).toBe('Меня зовут Анна.');
+      expect(client.metrics.ttsFailed).toBe(true);
+      expect(client.metrics.audioDurationMs).toBe(1_000);
+      expect(pair.vox.sent.some((event: any) => event.event === 'stop')).toBe(true);
+      expect(pair.snapshot().errors).toContain('ElevenLabs: audio stream ended before its final frame');
+    });
+    it(`${mode}: an unaligned partial TTS stream stays explicitly incomplete`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'human', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'unaligned-partial' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'unaligned-partial', delta: 'Меня зовут Анна. Смотрю Киа Карнивал, машина ещё актуальна?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'unaligned-partial' } });
+      pair.tts.server({ audio: Buffer.alloc(8_000).toString('base64') });
+      pair.vox.input({ customEvent: 'media_status', status: 'started' });
+      pair.tts.drop(); await vi.advanceTimersByTimeAsync(1_500);
+      expect(pair.snapshot().transcript.find((turn: any) => turn.role === 'client')?.text).toBe('[реплика прозвучала не полностью]');
+    });
+    it(`${mode}: a wrong-name correction cannot turn filtered technical output into spoken text`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'wrong-name', transcript: 'Ну, Илья, у этой машины установлен автомат.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'filtered-with-name' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'filtered-with-name', delta: 'Давайте уточним следующий шаг: о чём договоримся?' });
+      expect(spokenInputs(pair)).toBe('');
+      expect(pair.vox.sent.some((event: any) => event.event === 'media')).toBe(false);
+    });
+    it(`${mode}: keeps one continuous manager utterance while cancellation acknowledgement is delayed`, async () => {
+      const pair = await launch(mode);
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'greeting', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'unheard-delayed' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'unheard-delayed', delta: 'Здравствуйте. Машина ещё актуальна?' });
+      // No response.done acknowledgement until after the entire long utterance.
+      for (let i = 0; i < 100; i++) {
+        pair.vox.input({ event: 'media', media: { payload: managerAudio.toString('base64') } });
+        await vi.advanceTimersByTimeAsync(20);
+      }
+      expect(pair.snapshot().conversationFlow.events.filter((event: any) => event.type === 'continuation_confirmed')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(700);
+      expect(pair.provider.sent.some((event: any) => event.type === 'input_audio_buffer.commit')).toBe(true);
+      pair.provider.server({ type: 'response.done', response: { id: 'unheard-delayed', status: 'cancelled' } });
+      pair.provider.server({ type: 'input_audio_buffer.committed', item_id: 'whole-manager-turn' });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'whole-manager-turn', transcript: 'Вас не слышно, чем могу помочь?' });
+      await vi.advanceTimersByTimeAsync(700);
+      expect(pair.provider.sent.some((event: any) => event.type === 'response.create')).toBe(true);
+    });
+    it(`${mode}: cached greeting does not conceal a broken TTS stream for the rest of the reply`, async () => {
+      mocks.openingAudio = true;
+      const pair = await launch(mode);
+      pair.sockets.filter(socket => socket.url.includes('elevenlabs'))[1]?.server({ audio: Buffer.alloc(8_000).toString('base64'), is_final_audio_for_turn: true });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'human', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'cached-with-rest' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'cached-with-rest', delta: 'Здравствуйте. Меня зовут Анна. Машина ещё актуальна?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'cached-with-rest' } });
+      pair.vox.input({ customEvent: 'media_status', status: 'started' });
+      pair.tts.drop();
+      await vi.advanceTimersByTimeAsync(5_000);
+      const replacement = mocks.sockets.at(-1);
+      const replay = replacement.sent.flatMap((event: any) => event.inputs ?? []).map((input: any) => input.text).join('').trim();
+      expect(replay).toBe('Меня зовут Анна. Машина ещё актуальна?');
+      replacement.server({ audio: Buffer.alloc(8_000).toString('base64'), is_final_audio_for_turn: true });
+      await vi.advanceTimersByTimeAsync(2_000);
+      const turn = pair.snapshot().transcript.find((turn: any) => turn.role === 'client');
+      expect(turn.metrics.audioDurationMs).toBe(2_000);
+      expect(turn.metrics.ttsFailed).not.toBe(true);
+    });
+    it(`${mode}: corrects Ilya when the chosen client name is Maxim, once before the useful reply`, async () => {
+      const prompt = mocks.plan.prompt;
+      mocks.plan.prompt = 'Ты Максим, мужчина. Звонишь по Kia Carnival. Уточни цену.';
+      let pair: Awaited<ReturnType<typeof launch>>;
+      try { pair = await launch(mode); } finally { mocks.plan.prompt = prompt; }
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'wrong-name', transcript: 'Ну, Илья, у этой машины установлен автомат. Максимально удобен для новичка.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'correct-name' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'correct-name', delta: 'Хорошо. А какие опции комфорта там предусмотрены?' });
+      expect(spokenInputs(pair)).toBe('Я Максим. Хорошо. А какие опции комфорта там предусмотрены?');
+      pair.provider.server({ type: 'response.done', response: { id: 'correct-name' } });
+      expect(pair.snapshot().transcript.find((turn: any) => turn.role === 'client')?.text).toBe('Я Максим. Хорошо. А какие опции комфорта там предусмотрены?');
+    });
+    it(`${mode}: failed speech after a cached greeting records only what was audible and stops playback`, async () => {
+      mocks.openingAudio = true;
+      const pair = await launch(mode);
+      pair.sockets.filter(socket => socket.url.includes('elevenlabs'))[1]?.server({ audio: Buffer.alloc(8_000).toString('base64'), is_final_audio_for_turn: true });
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'human', transcript: 'Алло, слушаю.' });
+      pair.provider.server({ type: 'response.created', response: { id: 'partial-failed' } });
+      pair.provider.server({ type: 'response.output_text.delta', response_id: 'partial-failed', delta: 'Здравствуйте. Меня зовут Анна. Машина ещё актуальна?' });
+      pair.provider.server({ type: 'response.done', response: { id: 'partial-failed' } });
+      pair.vox.input({ customEvent: 'media_status', status: 'started' });
+      pair.tts.drop();
+      await vi.advanceTimersByTimeAsync(10_001);
+      const client = pair.snapshot().transcript.find((turn: any) => turn.role === 'client');
+      expect(client.text).toBe('Здравствуйте.');
+      expect(client.metrics.ttsFailed).toBe(true);
+      expect(client.metrics.audioDurationMs).toBe(1_000);
+      expect(pair.vox.sent.some((event: any) => event.event === 'stop')).toBe(true);
+      pair.vox.input({ customEvent: 'media_status', status: 'ended' });
+      await commitManagerFragment(pair, 'after-failure');
+      pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'after-failure', transcript: 'Вы меня слышите?' });
+      await vi.advanceTimersByTimeAsync(700);
+      expect(pair.provider.sent.some((event: any) => event.type === 'response.create')).toBe(true);
+    });
     it(`${mode}: warms greeting audio without speaking to IVR and uses it only after the model chooses it`, async () => {
       mocks.openingAudio = true;
       const pair = await launch(mode);
@@ -950,7 +1081,7 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
       expect(pair.snapshot().transcript.filter((turn: any) => turn.role === 'manager' && turn.text.startsWith('Нет'))).toHaveLength(1);
       expect(spokenInputs(pair)).toBe('');
     });
-    it(`${mode}: recovery queued behind cancellation resumes on cancel-not-active and ignores duplicate empty ASR`, async () => {
+    it(`${mode}: recovery queued behind cancellation validates the completed clarification and ignores duplicate empty ASR`, async () => {
       const pair = await launch(mode);
       await askManagerQuestion(pair);
       await commitManagerFragment(pair, 'unfinished');
@@ -970,7 +1101,12 @@ describe('actual hypothesis-2 and production launch parity (no live providers)',
       pair.provider.server({ type: 'response.created', response: { id: 'after-race' } });
       pair.provider.server({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'unrecognized', transcript: '' });
       pair.provider.server({ type: 'response.output_text.delta', response_id: 'after-race', delta: 'Правильно понимаю, пороги без коррозии?' });
-      expect(spokenInputs(pair)).toBe('Правильно понимаю, пороги без коррозии?');
+      // «Нет, ничего не…» is still unfinished: noise did not complete it.
+      // Wait for the guarded response rather than voicing the model's guess.
+      expect(spokenInputs(pair)).toBe('');
+      pair.provider.server({ type: 'response.done', response: { id: 'after-race' } });
+      expect(spokenInputs(pair)).toBe('Повторите, пожалуйста, конец фразы.');
+      expect(pair.snapshot().transcript.at(-1)?.text).toBe('Повторите, пожалуйста, конец фразы.');
       expect(pair.snapshot().errors).toEqual([]);
       await vi.advanceTimersByTimeAsync(2000);
       expect(pair.provider.sent.filter((event: any) => event.type === 'response.create')).toHaveLength(2);

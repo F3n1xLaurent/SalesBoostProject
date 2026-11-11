@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureFindingBetterExamples, normalizeUnifiedCallReport, requireCompleteReportExamples } from '../voice/unifiedCallReport';
+import { ensureFindingBetterExamples, normalizeStoredUnifiedCallReport, normalizeUnifiedCallReport, requireCompleteReportExamples } from '../voice/unifiedCallReport';
+import { reportExampleHash } from '../voice/reportExampleReview';
 import { checklistCategoryScores, clientAction, confirmedTimeInDialog, deduplicateReportStrengths, reportCriterionCode } from '../voice/reportAssessment';
 import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logic/transcriptionUncertainty';
 import { computeCustomChecklistResult, evaluateSessionV2 } from '../llm/evaluatorV2';
@@ -10,6 +11,69 @@ const manager = (text: string) => ({ role: 'manager' as const, text });
 const client = (text: string) => ({ role: 'client' as const, text });
 
 describe('production call report calibration', () => {
+  it.each(['Не знаю, автомат или механика.', 'Автоматическая коробка? Уточню позже.', 'Возможно, установлен автомат.'])('does not treat %s as a grounded useful answer', answer => {
+    const transcript = [client('Какая коробка передач?'), manager(answer)];
+    const report = normalizeUnifiedCallReport({ keyFindings: [{ problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа',
+      quote: answer, comment: 'Не дал содержательного ответа.', importance: 'Важно' }], dialog: [{}, { mark: 'normal' }] }, { totalScore: 60, transcript })!;
+    expect(report.keyFindings[0].problemTitle).toBe('Ушёл от вопроса клиента / не дал прямого ответа');
+    expect(report.dialog[1].mark).toBe('negative');
+  });
+  it('retains a known transmission answer when only its finer detail is unknown', () => {
+    const transcript = [client('Какая коробка передач?'), manager('Установлен автомат, но число ступеней не знаю.')];
+    const report = normalizeUnifiedCallReport({ keyFindings: [{ problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа',
+      quote: transcript[1].text, comment: 'Не указал число ступеней.', importance: 'Важно' }] }, { totalScore: 60, transcript })!;
+    expect(report.dialog[1].mark).toBe('normal');
+  });
+  it('does not restore a reviewed example onto a client turn or a changed manager quote', () => {
+    const example = 'Что для вас важнее при выборе первой машины?';
+    const source = { dialog: [{ role: 'manager', text: 'Расскажи.', mark: 'normal', comment: 'Вопрос общий.', betterExample: example }, {}],
+      exampleReviews: [{ turnIndex: 0, exampleHash: reportExampleHash(example), status: 'pass', issues: [] }] };
+    const clientTurn = normalizeStoredUnifiedCallReport(source, { totalScore: 60, transcript: [client('Расскажи.'), client('Моя первая машина.')] })!;
+    expect(clientTurn.dialog[0].betterExample).toBeNull();
+    const changed = normalizeStoredUnifiedCallReport(source, { totalScore: 60, transcript: [manager('Сколько лет водите?'), client('Это первая машина.')] })!;
+    expect(changed.dialog[0].betterExample).toBeNull();
+    expect(changed.exampleReviews?.[0].status).toBe('review');
+  });
+  it.each(['normal', 'negative'])("1193/1196: an incomplete useful parking answer stays normal despite raw mark %s", mark => {
+    const transcript = [client('Это первая машина, габариты большие?'), manager('Это среднеразмерный внедорожник, парковаться поможет система автоматической парковки.')];
+    const report = normalizeUnifiedCallReport({ dialog: [{}, { mark, comment: 'Ответ полезный, но нет длины и ширины.' }], keyFindings: [{
+      problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа', importance: 'Критично',
+      quote: transcript[1].text, comment: 'Ответил про парковку, но не назвал длину и ширину.',
+    }] }, { totalScore: 66, transcript })!;
+    expect(report.dialog[1].mark).toBe('normal');
+    expect(report.keyFindings[0].problemTitle).toBe('Недостаточно подробно ответил на вопрос');
+    expect(report.totalScore).toBe(66);
+  });
+  it('1196: does not claim the company was omitted when only the rest of the introduction is missing', () => {
+    const transcript = [manager('Добрый день, автосалон Море Авто, меня зовут Оля.')];
+    const evaluation = { checklist_definition: { items: [{ id: 'intro', title: 'Представление', instruction: 'Назвать компанию, имя и фамилию, представиться экспертом.', category: 'Контакт', points: 10 }] } };
+    const report = normalizeUnifiedCallReport({ keyFindings: [{ problemTitle: 'Не представился / не назвал компанию', quote: transcript[0].text,
+      comment: 'Менеджер назвал название компании и имя, но не назвал фамилию и не представился экспертом.' }] }, { totalScore: 66, transcript, evaluation })!;
+    expect(report.keyFindings[0].problemTitle).toBe('Неполное представление');
+    expect(normalizeUnifiedCallReport(report, { totalScore: 66, transcript, evaluation })!.keyFindings[0].problemTitle).toBe('Неполное представление');
+  });
+  it('1196: a wrong name does not erase a useful answer about transmission', () => {
+    const transcript = [client('Меня зовут Максим. Какая коробка?'), manager('Ну, Илья, установлен автомат. Удобен для новичка.')];
+    const report = normalizeUnifiedCallReport({ keyFindings: [{ problemTitle: 'Перепутал имя клиента', quote: transcript[1].text, importance: 'Критично', comment: 'Перепутал имя клиента.' }],
+      dialog: [{}, { mark: 'negative', comment: 'Коробка названа, имя перепутано.' }] }, { totalScore: 66, transcript })!;
+    expect(report.dialog[1].mark).toBe('normal');
+  });
+  it('1196: preserves a reviewed example when a read lacks the original persona context', () => {
+    const transcript = [client('Смотрю автомобиль для города.'), manager('Расскажи.'), client('Это моя первая машина.')];
+    const example = 'Что для вас важнее при выборе первой машины — удобство парковки или комфорт?';
+    const source = { dialog: [{}, { mark: 'normal', comment: 'Вопрос слишком общий.', betterExample: example }, {}],
+      exampleReviews: [{ turnIndex: 1, exampleHash: reportExampleHash(example), status: 'pass', issues: [] }] };
+    expect(normalizeUnifiedCallReport(source, { totalScore: 60, transcript })!.dialog[1].betterExample).toBeNull();
+    expect(normalizeStoredUnifiedCallReport(source, { totalScore: 60, transcript })!.dialog[1].betterExample).toBe(example);
+    const changed = { ...source, dialog: [{}, { ...source.dialog[1], betterExample: `${example} У вас двое детей.` }, {}] };
+    expect(normalizeStoredUnifiedCallReport(changed, { totalScore: 60, transcript })!.exampleReviews?.[0].status).toBe('review');
+  });
+  it('1196: common connecting words are not treated as facts from the future', () => {
+    const transcript = [manager('Расскажи.'), client('После этого обсудим автомобиль.')];
+    const example = 'Что для вас важнее? После ответа предложу подходящий вариант.';
+    expect(normalizeUnifiedCallReport({ dialog: [{ mark: 'normal', comment: 'Нужно конкретное уточнение.', betterExample: example }, {}] },
+      { totalScore: 60, transcript })!.dialog[0].betterExample).toBe(example);
+  });
   it('merges paraphrased repeated strengths without dropping independent actions', () => {
     expect(deduplicateReportStrengths(['Менеджер представился по имени.', 'Менеджер назвал компанию.',
       'Менеджер поздоровался и представился, назвал компанию.', 'Менеджер предложил визит.'])).toEqual([

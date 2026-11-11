@@ -12,6 +12,8 @@ export type ProblemCatalogItem = {
 // A display variant of the existing code, not a new scoring criterion.
 export const UNCONFIRMED_NEXT_STEP_TITLE = 'Не закрепил детали следующего шага';
 export const FOLLOW_UP_PROBLEM_TITLE = 'Не договорился о повторном контакте';
+export const INCOMPLETE_INTRO_TITLE = 'Неполное представление';
+export const PARTIAL_PRODUCT_ANSWER_TITLE = 'Недостаточно подробно ответил на вопрос';
 
 export const DEFAULT_CALL_REPORT_PROBLEMS: ProblemCatalogItem[] = [
   { code: 'NO_INTRO_COMPANY', title: 'Не представился / не назвал компанию', category: 'Контакт', sortOrder: 10 },
@@ -72,6 +74,12 @@ export async function getCallReportProblemCatalog(prisma: PrismaClient): Promise
 export function problemByTitle(catalog: ProblemCatalogItem[], title: unknown): ProblemCatalogItem | null {
   const normalized = String(title ?? '').trim().toLowerCase();
   if (!normalized) return null;
+  const displayCode = normalized === INCOMPLETE_INTRO_TITLE.toLowerCase() ? 'NO_INTRO_COMPANY'
+    : normalized === PARTIAL_PRODUCT_ANSWER_TITLE.toLowerCase() ? 'NO_DIRECT_ANSWER' : null;
+  if (displayCode) {
+    const base = catalog.find(item => item.code === displayCode);
+    return base ? { ...base, title: displayCode === 'NO_INTRO_COMPANY' ? INCOMPLETE_INTRO_TITLE : PARTIAL_PRODUCT_ANSWER_TITLE } : null;
+  }
   if (normalized === FOLLOW_UP_PROBLEM_TITLE.toLowerCase()) {
     const base = catalog.find((item) => item.code === 'NO_FOLLOW_UP' || item.code === 'NO_NEXT_STEP');
     return base ? { ...base, code: 'NO_FOLLOW_UP', title: FOLLOW_UP_PROBLEM_TITLE } : null;

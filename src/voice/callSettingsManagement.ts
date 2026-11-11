@@ -1737,6 +1737,7 @@ async function launchManualPlanTarget(
   });
   const prepared = await prepareCallPlanTelephony(target.phoneNumber.phone, {
     planId: plan.id, planName: plan.name, prompt, elevenLabsVoiceId,
+    companyName: target.dealershipName,
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title ?? null,
     subjectDescription: context.importedItem?.description ?? null,
@@ -1929,6 +1930,7 @@ export type RealtimeTestPlanConfiguration = {
   customerVoiceId: string | null;
   subjectTitle: string | null;
   subjectDescription: string | null;
+  companyName?: string | null;
 };
 
 /**
@@ -1964,6 +1966,7 @@ export async function resolveRealtimeTestPlanConfiguration(
     planName: plan.name,
     prompt,
     elevenLabsVoiceId: customerVoice?.elevenLabsCode?.trim() || null,
+    companyName: previewTarget?.dealershipName ?? null,
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title?.trim() || null,
     subjectDescription: context.importedItem?.description?.trim() || null,

@@ -4,6 +4,27 @@ const manager = (text: string) => ({role:'manager',text});
 const client = (text: string) => ({role:'client',text});
 
 describe('production dialogue agreement regressions', () => {
+  it('1196: recognizes an invitation after eighteen without inventing an exact appointment', () => {
+    const turns = [manager('Тогда приглашаем вас сегодня после восемнадцати ноль ноль.')];
+    expect(hasVisitNegotiation(turns)).toBe(true);
+    expect(currentManagerVisitTime(turns)).toBeNull();
+    expect(dialogueRecoveryResponse(turns)).toBe('Во сколько сегодня после восемнадцати ноль ноль можно приехать?');
+    expect(canEndDialogue(turns, 'Хорошо, договорились. До свидания.')).toBe(false);
+  });
+  it('1196: requests priorities themselves rather than accepting their announcement', () => {
+    const turns = [client('Это моя первая машина, парковаться боюсь.'), manager('Максим, что важнее всего в автомобиле?')];
+    expect(unansweredManagerResponseIssue(turns, 'Давайте коротко расставлю приоритеты, чтобы было проще дальше выбирать.')).not.toBeNull();
+    expect(unansweredManagerResponseIssue(turns, 'Для меня главное, чтобы было удобно парковаться.')).toBeNull();
+    expect(dialogueRecoveryResponse(turns, { answerRequired: true })).toBe('Для меня главное, чтобы было удобно парковаться.');
+  });
+  it('1190/1193: avoids fabricated personal facts and technical placeholders', () => {
+    const location = [manager('В городе находитесь?')];
+    expect(unansweredManagerResponseIssue(location, 'Пока не могу уточнить, где именно сейчас нахожусь.')).not.toBeNull();
+    expect(dialogueRecoveryResponse(location)).toBe('Пока хочу узнать об автомобиле по телефону.');
+    const payment = [manager('Планируете в кредит или за наличные?')];
+    expect(unansweredManagerResponseIssue(payment, 'Пока не могу уточнить, ещё не решил, в кредит или за наличные.')).not.toBeNull();
+    expect(dialogueRecoveryResponse(payment)).toBe('Способ оплаты пока выбираю. Окончательно решу после осмотра.');
+  });
   it('949: recording notice and mileage never create a visit at 15:00', () => {
     const turns = [manager('Для контроля качества обслуживания разговор будет записан.'),
       manager('Добрый день, чем могу помочь?'),

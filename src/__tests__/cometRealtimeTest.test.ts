@@ -16,6 +16,12 @@ import {
   sanitizeRealtimeSpokenText,
 } from '../voice/cometRealtimeTest';
 
+it('1196: keeps actual priorities while removing their technical announcement', () => {
+  expect(sanitizeRealtimeSpokenText('Хорошо, давайте коротко расставлю приоритеты, чтобы было проще дальше выбирать.')).toBe('');
+  expect(sanitizeRealtimeSpokenText('Давайте уточним следующий шаг: о чём договоримся?')).toBe('');
+  expect(sanitizeRealtimeSpokenText('Для меня важнее удобство парковки и комфорт.')).toBe('Для меня важнее удобство парковки и комфорт.');
+});
+
 const bridge = readFileSync(resolve(process.cwd(), 'src/voice/cometRealtimeTest.ts'), 'utf8');
 const scenario = readFileSync(resolve(process.cwd(), 'voximplant/scenario_voice_comet_realtime_test.js'), 'utf8');
 

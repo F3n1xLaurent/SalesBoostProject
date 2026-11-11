@@ -5,12 +5,13 @@ export type PolicyTurn = { role: string; text: string; metrics?: { interrupted?:
 // Interrupted turns already contain the conservative heard prefix. Keep that
 // prefix (including a chosen hour), but exclude wholly inaudible generations.
 const audible = (turns: readonly PolicyTurn[]) => turns.filter(t => !t.text.startsWith('[') && t.text.trim());
-const VISIT = /визит|встреч|прие[хдз]|подъе[хдз]|тест.?драйв|запис(?:аться|ать|ыва|али|ан[аы]?\s+на)|запиш|жд[её]м\s+вас/iu;
+const VISIT = /визит|встреч|приглаша|приглас|посещ|прие[хдз]|подъе[хдз]|тест.?драйв|запис(?:аться|ать|ыва|али|ан[аы]?\s+на)|запиш|(?:жд[её]м|ждать)\s+вас/iu;
 const DAY = /послезавтра|завтра|сегодня|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресенье/iu;
 const HOURS: Record<string, number> = { один: 1,одному: 1,час: 1,два: 2,двум: 2,двух: 2,три: 3,трём: 3,трех: 3,трёх: 3,четыре: 4,четырём: 4,четырех: 4,пять: 5,пяти: 5,шесть: 6,шести: 6,семь: 7,семи: 7,восемь: 8,восьми: 8,девять: 9,девяти: 9,десять: 10,десяти: 10,одиннадцать: 11,одиннадцати: 11,двенадцать: 12,двенадцати: 12,тринадцать: 13,тринадцати: 13,четырнадцать: 14,четырнадцати: 14,пятнадцать: 15,пятнадцати: 15,шестнадцать: 16,шестнадцати: 16,семнадцать: 17,семнадцати: 17,восемнадцать: 18,восемнадцати: 18,девятнадцать: 19,девятнадцати: 19,двадцать: 20,двадцати: 20 };
 Object.assign(HOURS, { 'двадцать один': 21, 'двадцати одному': 21, 'двадцать два': 22, 'двадцати двум': 22, 'двадцать три': 23, 'двадцати трём': 23 });
 const AVAILABILITY_RANGE = /(?:с|от)\s+(?:\d|[а-яё]+)\S*\s+до\s|\b\d{1,2}\s*[-–]\s*\d{1,2}\b/iu;
-const OPTIONS_QUESTION = /(?:каки[емх]|чем)[^.!?]*(?:опци|функци)|(?:опци|функци)[^.!?]*(?:пользуетесь|важн)/iu;
+const OPTIONS_QUESTION = /(?:каки[емх]|чем)[^.!?]*(?:опци|функци)|(?:опци|функци)[^.!?]*(?:пользуетесь|важн)|что[^.!?]*(?:важнее|важно|приоритет)/iu;
+const LOCATION_QUESTION = /(?:где|откуда)[^.!?]*(?:находит|звоните|жив[её]те)|в\s+городе\s+находитесь/iu;
 const REJECTED_SLOT = /(?:слот|время)[^.!?]*занят|(?:приехать|подъехать|записать(?:ся)?)[^.!?]*не\s+(?:получится|смож)|(?:не\s+(?:подходит|получится|смогу)|занят[оы]?)(?=[\s,.!?]|$)/iu;
 const CLOCK_MENTION = /\d{1,2}:\d{2}|(?:^|[\s,.!?])час(?:а|ов|у|ам)?(?=[\s,.!?]|$)/iu;
 function paymentQuestion(text: string): boolean {
@@ -85,12 +86,15 @@ export function dialogueNeedsValidation(turns: readonly PolicyTurn[]): boolean {
   if (/(?:до\s+свидания|всего\s+доброго|до\s+встречи|не\s+звоните|разговор\s+окончен)/iu.test(state.manager)) return false;
   const visitDecision = state.active && (state.clientSlot || VISIT.test(state.manager) || DAY.test(state.manager)
     || visitSlot(state.manager) || /удобн|врем|час/iu.test(state.manager));
-  return !!visitDecision || !!state.managerSlot || paymentQuestion(state.manager) || OPTIONS_QUESTION.test(state.manager) || unansweredFactInstruction(turns).length > 0;
+  return !!visitDecision || !!state.managerSlot || paymentQuestion(state.manager) || LOCATION_QUESTION.test(state.manager) || OPTIONS_QUESTION.test(state.manager) || unansweredFactInstruction(turns).length > 0;
 }
 /** Reject clear non-answers, without claiming to semantically grade every reply. */
 export function unansweredManagerResponseIssue(turns: readonly PolicyTurn[], response: string): string | null {
   const manager = audible(turns).filter(t => t.role === 'manager').at(-1)?.text ?? '';
   const lastQuestion = manager.match(/[^.!?]*\?/gu)?.at(-1) ?? manager;
+  if ((LOCATION_QUESTION.test(manager) || paymentQuestion(manager)) && /пока\s+не\s+могу\s+уточнить/iu.test(response)) {
+    return 'Не используй техническую заглушку. Ответь по легенде; если способ оплаты не выбран, прямо скажи это. Если местоположение не задано, можно естественно сказать, что пока хочешь обсудить автомобиль по телефону, без выдуманного города.';
+  }
   if (/(?:собственност|на\s+ч[её]м[^.!?]*езд|сейчас[^.!?]*езд|эксплуатируете)/iu.test(manager)
     && /не\s+могу\s+уточнить|не\s+знаю[^.!?]*(?:автомобил|машин)|нужно\s+уточнить/iu.test(response)) {
     return 'Это вопрос о твоём собственном автомобиле или его использовании. Ответь по легенде и предыдущим ответам, не изображай незнание личных обстоятельств. Если этих данных нет, допустим краткий отказ обсуждать личный вопрос без выдуманных фактов.';
@@ -140,6 +144,13 @@ export function dialogueRecoveryResponse(turns: readonly PolicyTurn[], options: 
   const history = audible(turns);
   const state = visitState(history);
   if (paymentQuestion(state.manager)) return 'Способ оплаты пока выбираю. Окончательно решу после осмотра.';
+  if (LOCATION_QUESTION.test(state.manager)) return 'Пока хочу узнать об автомобиле по телефону.';
+  if (OPTIONS_QUESTION.test(state.manager)) {
+    const clientContext = history.filter(turn => turn.role === 'client').map(turn => turn.text).join(' ');
+    return /парков/iu.test(clientContext)
+      ? 'Для меня главное, чтобы было удобно парковаться.'
+      : 'Пока сравниваю варианты и определяюсь с приоритетами.';
+  }
   if (productUnavailable(history)) {
     if (/(?:где|откуда)[^.!?]*(?:видел|увиде|объявлен|информац)/iu.test(state.manager)) return 'Точный источник объявления сейчас не могу назвать. Спасибо, до свидания.';
     if (!options.answerRequired) return 'Понятно, спасибо за информацию. До свидания.';
@@ -169,10 +180,13 @@ export function dialogueRecoveryResponse(turns: readonly PolicyTurn[], options: 
   if (state.active && visitQuestions.length >= 2) return 'Пока не удалось согласовать время. Давайте вернёмся к записи позже.';
   if (state.clientSlot) return `Мне удобно ${format(state.clientSlot)}. Сможете подтвердить это время?`;
   if (state.active) {
+    const hours = Object.keys(HOURS).sort((a, b) => b.length - a.length).join('|');
+    const after = state.manager.match(new RegExp(`после\\s+(?:\\d{1,2}(?::\\d{2})?|${hours})(?:\\s+ноль\\s+ноль|\\s+час(?:ов|а)?)?`, 'iu'))?.[0];
+    if (after) return `Во сколько ${knownDay ? `${formatDay(knownDay)} ` : ''}${after} можно приехать?`;
     return knownDay ? `Во сколько ${formatDay(knownDay)} можно приехать?`
       : 'Подскажите, на какой конкретный день и время договоримся?';
   }
-  return 'Давайте уточним следующий шаг: о чём договоримся?';
+  return 'Подскажите, как можно посмотреть автомобиль?';
 }
 export function unansweredFactResponseIssue(turns: readonly PolicyTurn[], response: string): string | null {
   const instruction = unansweredFactInstruction(turns);

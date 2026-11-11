@@ -87,7 +87,6 @@ import {
   generateUnifiedCallReport,
   generateUnifiedTrainerReport,
   normalizeStoredUnifiedCallReport,
-  normalizeUnifiedCallReport,
 } from './voice/unifiedCallReport';
 import {
   DEFAULT_CALL_REPORT_PROBLEMS,
@@ -3381,7 +3380,7 @@ function buildVoiceCallDetailResponse(session: {
       text: String(line.text || '').trim(),
     }))
     .filter((line) => line.text);
-  const unifiedReport = normalizeUnifiedCallReport(
+  const unifiedReport = normalizeStoredUnifiedCallReport(
     evaluation?.unified_call_report,
     {
       totalScore: score ?? 0,

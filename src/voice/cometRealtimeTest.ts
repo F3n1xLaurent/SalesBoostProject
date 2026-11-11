@@ -5,7 +5,7 @@ import { config } from '../config';
 import type { RealtimeTestPlanConfiguration } from './callSettingsManagement';
 import { classifyLiveSpeaker, classifyLiveSpeakerLocally, type LiveSpeakerDecision } from './callLiveSpeakerClassifier';
 import { elevenLabsWebSocketOptions } from './elevenLabsHttp';
-import { prepareOpeningAudio, preparedOpeningAudio } from './realtimeOpeningAudio';
+import { PREPARED_GREETING, prepareOpeningAudio, preparedOpeningAudio } from './realtimeOpeningAudio';
 import { startVoiceCall } from './startVoiceCall';
 import {
   naturalizeAssistantText,
@@ -74,6 +74,7 @@ type CometRealtimeTestSession = {
   phone: string;
   prompt: string;
   subjectTitle: string | null;
+  companyName?: string | null;
   elevenLabsVoiceId: string;
   elevenLabsTts: ElevenLabsTtsSettings;
   status: string;
@@ -220,6 +221,7 @@ function createPhoneRealtimeSession(input: {
     production: input.production, callId: input.callId, token: randomUUID(), provider: input.provider, model: input.model,
     planId: input.plan.planId, planName: input.plan.planName, phone: normalizePhone(input.phone), prompt: input.plan.prompt,
     subjectTitle: input.plan.subjectTitle, elevenLabsVoiceId: input.voiceId, elevenLabsTts: input.tts,
+    companyName: input.plan.companyName,
     status: 'starting', createdAt: isoNow(), startedAt: null, connectedAt: null, endedAt: null,
     providerConnectedAt: null, providerReadyAt: null, providerWarmupDoneAt: null,
     firstSpeechStoppedAt: null, firstTextAfterSpeechAt: null, firstAudioAfterSpeechAt: null,
@@ -486,6 +488,7 @@ export function sanitizeRealtimeSpokenText(text: string): string {
 
 export function containsTechnicalRealtimeSpeech(text: string): boolean {
   return TECHNICAL_SPEECH_PATTERN.test(text) || hasClosingIntention(text)
+    || /(?:давайте\s+)?(?:коротко\s+)?расставлю\s+приоритеты|давайте\s+уточним\s+следующий\s+шаг/iu.test(text)
     // Narrating a future confirmation isn't the confirmation itself. Keep
     // concrete replies such as «Подтверждаю, завтра в пять» available.
     || /(?:коротко|кратко)\s+подтвержу|(?:сейчас|теперь)\s+(?:мы\s+)?(?:коротко\s+)?(?:договоримся|согласуем)[^.!?…]*(?:подтвержу|подытожу|зафиксирую)/iu.test(text)
@@ -553,7 +556,7 @@ const RUSSIAN_NAME_ALIASES: Record<string, string> = {
   михаил: 'михаил', миша: 'михаил', миш: 'михаил',
   николай: 'николай', коля: 'николай', коль: 'николай',
   сергей: 'сергей', серёжа: 'сергей', сережа: 'сергей', серёж: 'сергей', сереж: 'сергей',
-  антон: 'антон', максим: 'максим', макс: 'максим', никита: 'никита',
+  антон: 'антон', максим: 'максим', макс: 'максим', никита: 'никита', илья: 'илья', илюша: 'илья',
   андрей: 'андрей', игорь: 'игорь', олег: 'олег', виктор: 'виктор',
   анна: 'анна', аня: 'анна', елена: 'елена', лена: 'елена',
   мария: 'мария', маша: 'мария', нина: 'нина', ольга: 'ольга',
@@ -627,6 +630,7 @@ class CometElevenLabsTurn {
   private ttsRequestedAt: string | null = null;
   private firstAudioTimer: NodeJS.Timeout | null = null;
   private audioRecoveryCount = 0;
+  private dialogueAudioReceived = false;
   private openingChecked = false;
   private readonly dialogueProtocol: boolean;
 
@@ -640,7 +644,7 @@ class CometElevenLabsTurn {
     private readonly shouldBlockFarewell: () => boolean,
     private readonly onPlaybackStarted: () => void,
     private readonly onStopped: () => void,
-    private readonly normalizeSpeech: (text: string) => string = (text) => text,
+    private readonly normalizeSpeech: (text: string, firstChunk?: boolean) => string = (text) => text,
   ) {
     this.dialogueProtocol = /^eleven_v4/.test(session.elevenLabsTts.modelId);
   }
@@ -692,7 +696,7 @@ class CometElevenLabsTurn {
     this.textBuffer = this.textBuffer.slice(boundary).trimStart();
     if (!text) return;
     if (this.farewellSent) return;
-    text = this.normalizeSpeech(sanitizeRealtimeSpokenText(text));
+    text = this.normalizeSpeech(sanitizeRealtimeSpokenText(text), !this.textSent && !this.audioBytes && !this.pending.length);
     if (this.shouldBlockFarewell() && hasNaturalFarewell(text)) text = '';
     if (!this.textSent && this.pending.length === 0) text = naturalizeAssistantText(text);
     if (!text) return;
@@ -806,6 +810,7 @@ class CometElevenLabsTurn {
 
   receiveDialogueAudio(payload: string, alignment?: unknown): void {
     if (this.stopped) return;
+    if (Buffer.byteLength(payload, 'base64') > 0) this.dialogueAudioReceived = true;
     appendSpeechAlignment(this.alignment, alignment, this.totalAudioMs);
     this.queueAudio(payload);
   }
@@ -814,8 +819,19 @@ class CometElevenLabsTurn {
     this.finishGeneration();
   }
 
+  failDialogueTurn(): void {
+    if (this.stopped || this.generationFinished) return;
+    this.metrics.ttsFailed = true;
+    this.session.errors.push('ElevenLabs: audio stream ended before its final frame');
+    // Finish playing only the chunks already received; never replay a partly
+    // audible reply or label its unheard text as a successful synthesis.
+    this.finishGeneration();
+  }
+
   hasReceivedDialogueAudio(): boolean {
-    return this.audioBytes > 0;
+    // Cached opening audio belongs to playback, not to this live TTS request.
+    // Otherwise a dead socket appears successful after just «Здравствуйте».
+    return this.dialogueAudioReceived;
   }
 
   private clearFirstAudioTimer(): void {
@@ -827,7 +843,7 @@ class CometElevenLabsTurn {
     this.clearFirstAudioTimer();
     this.firstAudioTimer = setTimeout(() => {
       this.firstAudioTimer = null;
-      if (this.stopped || this.audioBytes) return;
+      if (this.stopped || (this.dialogueSocket ? this.dialogueAudioReceived : this.audioBytes > 0)) return;
       // Replay the already generated reply, never ask the LLM to invent a
       // replacement or replay speech that the employee has already heard.
       if (this.dialogueSocket && this.audioRecoveryCount++ < 1) {
@@ -837,8 +853,11 @@ class CometElevenLabsTurn {
       } else {
         this.session.errors.push('ElevenLabs: no audio after bounded recovery');
         this.metrics.ttsFailed = true;
-        this.metrics.audioDurationMs = 0;
-        this.cancel();
+        this.metrics.audioDurationMs = Math.round(this.audioBytes / 8);
+        if (this.audioBytes) {
+          this.dialogueSocket?.cancel(this);
+          this.stopMedia();
+        } else this.cancel();
       }
     }, 5_000);
     this.firstAudioTimer.unref();
@@ -1016,7 +1035,7 @@ class CometElevenLabsV4Socket {
       if (message.error || message.detail) {
         this.session.errors.push(`ElevenLabs: ${String(message.error?.message ?? message.detail?.message ?? message.error ?? message.detail)}`);
         if (turn?.hasReceivedDialogueAudio()) {
-          turn.completeDialogueTurn();
+          turn.failDialogueTurn();
           this.activeTurn = null;
           this.activeFrames = [];
         }
@@ -1040,7 +1059,7 @@ class CometElevenLabsV4Socket {
         // Its first-audio deadline owns the one retry. Immediate reconnects
         // here can otherwise loop indefinitely on provider errors.
       } else if (turn) {
-        turn.completeDialogueTurn();
+        turn.failDialogueTurn();
         this.activeTurn = null;
         this.activeFrames = [];
       }
@@ -1134,7 +1153,8 @@ function sessionInstructions(session: CometRealtimeTestSession): string {
     'Не спрашивай, по какому вопросу звонят тебе. Если менеджер спрашивает причину звонка, назови свою причину из сценария. ' +
     'На прямой вопрос менеджера сначала сразу дай конкретный ответ и только потом возвращайся к своим вопросам по сценарию. ' +
     'Если в одной реплике менеджер задал несколько вопросов, ответь на каждый из них в том же ответе; не выбирай только последний. ' +
-    'Не игнорируй вопрос о том, какой автомобиль ты сейчас эксплуатируешь: ответь по легенде. Если данных в легенде нет, естественно скажи «Пока не могу уточнить»; не выдумывай биографию, бюджет, автомобиль, сроки и способ оплаты. Род согласуй с выбранным профилем. ' +
+    'На вопросы о твоих личных обстоятельствах отвечай естественно по легенде. Если данных нет, не выдумывай их: можно отказаться обсуждать точное местоположение, а для ещё не выбранного способа оплаты сказать, что пока выбираешь. Не используй заглушки «Пока не могу уточнить» и не изображай незнание того, где находишься или на чём ездишь. Род согласуй с выбранным профилем. ' +
+    'Не анонсируй будущий ответ: вместо «давайте расставлю приоритеты» сразу назови сами приоритеты по легенде. Не произноси «следующий шаг», «пройдём сценарий» и другие инструкции. ' +
     'На предложение визита ответь сразу: согласись, откажись или уточни время, не откладывая ответ на несколько реплик. ' +
     'Если менеджер исправил своё имя или попросил обращаться иначе, коротко признай поправку и используй только новое имя. ' +
     'Запомни имя, которым ты представился. Если менеджер обратился к тебе другим именем, сразу коротко и спокойно поправь его. ' +
@@ -1179,7 +1199,10 @@ function cometSessionUpdate(session: CometRealtimeTestSession): unknown {
             prompt: [
               'Телефонный разговор на русском языке о продаже автомобиля.',
               session.subjectTitle ? `Автомобиль: ${session.subjectTitle}.` : '',
+              session.subjectTitle ? `Русское произношение названия: ${hypothesis2SpokenSubject(session.subjectTitle)}.` : '',
+              session.companyName ? `Название компании: ${session.companyName}.` : '',
               'Точно распознавай марки, модели, числа и короткие ответы «да», «нет», «алло».',
+              'Справочные названия помогают распознаванию, но не заменяют другое отчётливо произнесённое название.',
             ].filter(Boolean).join(' '),
           },
           turn_detection: null,
@@ -1633,16 +1656,25 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
     sendJson(comet, { type: 'response.cancel', response_id: activeResponseId, event_id: eventId });
   };
 
-  const normalizeAssistantSpeech = (text: string) => {
+  const normalizeAssistantSpeech = (text: string, firstChunk = true) => {
     assistantPreferredName ??= extractAssistantPreferredName(text);
-    return pinSelfIntroduction(text, assistantPreferredName);
+    const normalized = pinSelfIntroduction(text, assistantPreferredName);
+    if (!normalized.trim()) return '';
+    const manager = [...session.transcript].reverse().find(turn => turn.role === 'manager')?.text ?? '';
+    const addressed = extractManagerAddressedClientName(manager);
+    if (firstChunk && assistantPreferredName && addressed && !areRussianNamesEquivalent(assistantPreferredName, addressed)
+      && !normalized.toLocaleLowerCase('ru').includes(assistantPreferredName.toLocaleLowerCase('ru'))) {
+      return `Я ${assistantPreferredName}. ${normalized}`;
+    }
+    return normalized;
   };
 
   const managerResponseGuard = () => {
     if (pendingManagerTimings.length || committedManagerTimings.size) return null;
     const text = [...session.transcript].reverse().find((turn) => turn.role === 'manager')?.text ?? '';
     const previousClient = [...dialogueHistory()].reverse().find(turn => turn.role === 'client')?.text ?? '';
-    return isGarbledManagerText(text) || assessUserTurnCompletion(text, previousClient).incomplete
+    if (isGarbledManagerText(text)) return 'Не совсем слышно. Повторите, пожалуйста.';
+    return assessUserTurnCompletion(text, previousClient).incomplete
       ? 'Повторите, пожалуйста, конец фразы.'
       : connectionCheckResponse(dialogueHistory(), assistantPreferredName) ?? callbackFarewell(text);
   };
@@ -2407,11 +2439,22 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
           () => {
             if (turnMetrics.ttsFailed) {
               const recorded = session.transcript.find(turn => turn.role === 'client' && turn.metrics === turnMetrics);
-              if (recorded) recorded.text = '[реплика не прозвучала]';
+              const heardMs = playbackTurn?.playbackStartedAt ? elapsed(playbackTurn.playbackStartedAt, isoNow()) ?? 0 : 0;
+              const alignment = playbackTurn?.alignment ?? [];
+              const audioText = turnMetrics.openingAudioCached && (!playbackTurn?.hasReceivedDialogueAudio() || !alignment.length) ? PREPARED_GREETING : normalizeAssistantSpeech(assistantText);
+              const heard = alignment.length || audioText === PREPARED_GREETING
+                ? audibleTextAt(alignment, heardMs, audioText, playbackTurn?.totalAudioMs ?? 0) : '';
+              const failedText = heard || (heardMs > 0 && turnMetrics.audioDurationMs ? '[реплика прозвучала не полностью]' : '[реплика не прозвучала]');
+              if (recorded) recorded.text = failedText;
+              else if (turnMetrics.audioDurationMs) session.transcript.push({ role: 'client', text: failedText, at: isoNow(), metrics: turnMetrics });
               if (currentMetrics === turnMetrics) {
-                repairAssistantText('');
-                assistantText = '';
+                repairAssistantText(heard);
+                assistantText = heard;
                 assistantTurnRecorded = true;
+                suppressInterruptedOutput = true;
+                managerHasFloor = true;
+                if (responseActive && activeResponseId) cancelledResponses.add(activeResponseId);
+                cancelActiveResponse();
               }
             }
             ttsTurn = null;
@@ -3023,7 +3066,7 @@ export function handleCometRealtimeTestSocket(vox: WebSocket, requestUrl: string
         return;
       }
       const beforePlayback = !playbackTurn?.playbackStartedAt || !!playbackTurn.playbackEndedAt;
-      if (beforePlayback && (unheardContinuationCandidate
+      if (beforePlayback && !managerHasFloor && (unheardContinuationCandidate
         || (hasVoice && (ttsTurn || awaitingAssistantMediaEnd || responseActive || responseRequestPending
           || speculativeManagerResponse || (localTurnCommitted && awaitingManagerTranscript))))) {
         const at = isoNow();
