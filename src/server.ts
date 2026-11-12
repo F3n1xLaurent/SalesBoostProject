@@ -2471,6 +2471,7 @@ async function finalizeTrainerSessionEvaluation(params: {
       baseScore: audit.score,
       finalPoints,
       evaluationJson: jsonStringify(audit.evaluation),
+      ...(audit.evaluation.unified_call_report ? { reportCheckpointJson: null } : {}),
       dimensionsJson: jsonStringify(audit.dimensions),
       checklistResultsJson: jsonStringify(audit.checklist),
       objectionsAnalysisJson: jsonStringify(audit.issues),
@@ -9536,7 +9537,7 @@ async function buildTrainerAuditDetailItem(session: {
       assertAuditAnalyticsCurrent();
       await prisma.trainerSession.updateMany({
         where: { id: session.id, evaluationJson: latest.evaluationJson },
-        data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }) },
+        data: { evaluationJson: JSON.stringify({ ...current, unified_call_report: generated }), reportCheckpointJson: null },
       });
     }));
   }
@@ -9634,7 +9635,7 @@ app.post('/api/admin/audits/:id/retry-report', createRetryAuditReportHandler(asy
         assertAuditAnalyticsCurrent();
         await prisma.trainerSession.updateMany({
           where: { id: session.id, evaluationJson: session.evaluationJson },
-          data: { evaluationJson: JSON.stringify({ ...evaluation, unified_call_report: generated }) },
+          data: { evaluationJson: JSON.stringify({ ...evaluation, unified_call_report: generated }), reportCheckpointJson: null },
         });
       }),
     };

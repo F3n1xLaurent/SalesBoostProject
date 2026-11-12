@@ -31,7 +31,7 @@ describe('bounded report execution', () => {
       options.signal.addEventListener('abort', () => reject(new Error('aborted HTTP request')), { once: true });
     })) as any);
     const task = withReportGenerationBudget(() => createReportCompletion({ model: 'test', messages: [] }, 'exampleRepair'), 25);
-    const rejected = expect(task).rejects.toThrow('aborted HTTP request');
+    const rejected = expect(task).rejects.toThrow('REPORT_GENERATION_TIMEOUT');
     await vi.advanceTimersByTimeAsync(25); await rejected;
     expect(create.mock.calls[0][1]).toMatchObject({ timeout: 25, maxRetries: 0 });
     expect(create.mock.calls[0][1]?.signal?.aborted).toBe(true);
@@ -46,6 +46,12 @@ describe('bounded report execution', () => {
     const rejected = expect(task).rejects.toThrow('REPORT_GENERATION_TIMEOUT');
     await vi.advanceTimersByTimeAsync(30); await rejected;
   });
+  it('settles at the deadline even if the task ignores the abort signal forever', async () => {
+    vi.useFakeTimers();
+    const task = withReportGenerationBudget(() => new Promise<void>(() => {}), 25);
+    const rejected = expect(task).rejects.toThrow('REPORT_GENERATION_TIMEOUT');
+    await vi.advanceTimersByTimeAsync(25); await rejected;
+  });
 
   it('does not inherit ten-minute SDK timeouts or hidden transport retries in auxiliary requests', async () => {
     const create = vi.spyOn(openai.chat.completions, 'create').mockResolvedValue(completion({}));
@@ -58,6 +64,32 @@ describe('bounded report execution', () => {
 });
 
 describe('compact drafts keep the same quality gates', () => {
+  it('repairs a long dialogue in bounded batches and retries only the truncated batch', async () => {
+    const transcript = Array.from({ length: 10 }, () => [
+      { role: 'client' as const, text: 'Автомобиль есть в наличии?' }, { role: 'manager' as const, text: 'Не знаю.' },
+    ]).flat();
+    const report = normalizeUnifiedCallReport({ dialog: transcript.map(turn => turn.role === 'manager'
+      ? { mark: 'normal', comment: 'Не ответил о наличии.', betterExample: null } : {}) }, { totalScore: 70, transcript })!;
+    const seen: number[][] = [];
+    let active = 0, maximum = 0, truncated = false;
+    vi.spyOn(openai.chat.completions, 'create').mockImplementation((async (params: any) => {
+      const content = params.messages.at(-1).content as string;
+      const { items } = JSON.parse(content.slice(content.indexOf('{\n  "items":'), content.lastIndexOf('\nВерни JSON')));
+      seen.push(items.map((item: any) => item.quoteIndex));
+      active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => setTimeout(resolve, 0)); active--;
+      if (!truncated && items.some((item: any) => item.quoteIndex === 7)) {
+        truncated = true; return { choices: [{ finish_reason: 'length', message: { content: '{"items":[' } }] };
+      }
+      return completion({ items: items.map((item: any) => ({ index: item.index, betterExample: 'Я проверю наличие автомобиля и сообщу подтверждённый ответ.' })) });
+    }) as any);
+    const repaired = await ensureFindingBetterExamples(report, transcript);
+    expect(seen).toHaveLength(5);
+    expect(seen.every(batch => batch.length <= 3)).toBe(true);
+    expect(maximum).toBe(2);
+    expect(seen.at(-1)).toEqual([7, 9, 11]);
+    expect(repaired.dialog.filter(line => line.role === 'manager').every(line => !!line.betterExample)).toBe(true);
+  });
   it('does not hide multiple clarifications behind imperative requests without a question mark', () => {
     expect(clarificationRequestIssues('Что для вас важнее при выборе? Напишите удобные дату и время визита и контакт.')).toHaveLength(1);
     expect(clarificationRequestIssues('Напишите удобную дату и время визита.')).toEqual([]);

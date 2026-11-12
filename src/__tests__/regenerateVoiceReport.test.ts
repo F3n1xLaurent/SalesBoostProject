@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ generate: vi.fn(), persist: vi.fn(), plan: vi.fn(), jobPersist: vi.fn(), error: vi.fn(), session: null as any, job: null as any }));
+const mocks = vi.hoisted(() => ({ generate: vi.fn(), persist: vi.fn(), plan: vi.fn(), snapshot: vi.fn(), jobPersist: vi.fn(), error: vi.fn(), session: null as any, job: null as any }));
 vi.mock('../db', () => {
   const db = {
     voiceCallSession: {
       findUnique: async () => ({ ...mocks.session }),
       updateMany: mocks.persist,
     },
-    callPlanCall: { updateMany: mocks.plan },
+    callPlanCall: { updateMany: mocks.plan, findUnique: mocks.snapshot },
     callAnalysisJob: {
       findUnique: async () => mocks.job,
       upsert: async ({ create, update }: any) => { mocks.job = mocks.job ? { ...mocks.job, ...update } : create; return mocks.job; },
@@ -33,9 +33,27 @@ beforeEach(() => {
     Object.assign(mocks.session, data); return { count: 1 };
   });
   mocks.plan.mockResolvedValue({ count: 0 });
+  mocks.snapshot.mockResolvedValue(null);
   mocks.jobPersist.mockImplementation(async ({ data }: any) => { Object.assign(mocks.job, data); return { count: 1 }; });
 });
 describe('report-only voice repair', () => {
+  it('1147: restores frozen scenario and assessment facts when the session stores only plan IDs', async () => {
+    const prompt = 'Контекст легенды клиента. '.repeat(700);
+    mocks.snapshot.mockResolvedValue({ promptText: prompt, criteriaJson: JSON.stringify([{ expectedAnswer: 'ТО, диагностика и шиномонтаж в МореАвто Сервис.' }]) });
+    mocks.session.caseContextJson = JSON.stringify({ planId: 'plan', scriptId: 'original-script' });
+    await regenerateVoiceReport('repair-call');
+    const context = mocks.generate.mock.calls[0][0].scenarioContext;
+    expect(context.slice(0, 10_000)).toContain('ТО, диагностика и шиномонтаж');
+    expect(JSON.parse(context).scenario).toBe(prompt.trim());
+    expect(mocks.snapshot).toHaveBeenCalledWith({ where: { callId: 'repair-call' }, select: { promptText: true, criteriaJson: true } });
+    expect(mocks.session.totalScore).toBe(52);
+  });
+  it('uses a self-contained demo snapshot without consulting a mutable plan', async () => {
+    mocks.session.caseContextJson = JSON.stringify({ prompt: 'Исходная легенда.', criteria: [{ expectedAnswer: 'Исходные условия.' }] });
+    await regenerateVoiceReport('repair-call');
+    expect(JSON.parse(mocks.generate.mock.calls[0][0].scenarioContext)).toEqual({ assessmentCriteria: [{ expectedAnswer: 'Исходные условия.' }], scenario: 'Исходная легенда.' });
+    expect(mocks.snapshot).not.toHaveBeenCalled();
+  });
   it('preserves the original score and checklist while saving the missing report', async () => {
     await regenerateVoiceReport('repair-call');
     expect(mocks.session.totalScore).toBe(52);

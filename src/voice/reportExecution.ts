@@ -8,6 +8,7 @@ const context = new AsyncLocalStorage<{ controller: AbortController; deadline: n
 const traceContext = new AsyncLocalStorage<(stage: string, result: unknown) => Promise<void>>();
 export function withReportTrace<T>(sink: (stage: string, result: unknown) => Promise<void>, task: () => Promise<T>): Promise<T> { return traceContext.run(sink, task); }
 export const REPORT_GENERATION_TIMEOUT_MS = 300_000;
+export function assertReportGenerationActive(): void { context.getStore()?.controller.signal.throwIfAborted(); }
 
 /** Nested generators share a deadline. Cancellation reaches the actual HTTP
  * requests, and an expired task cannot publish a partially checked report. */
@@ -15,15 +16,20 @@ export async function withReportGenerationBudget<T>(task: () => Promise<T>, time
   const parent = context.getStore();
   if (parent) { parent.controller.signal.throwIfAborted(); return task(); }
   const controller = new AbortController();
+  let onAbort!: () => void;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(controller.signal.reason ?? new Error('REPORT_GENERATION_TIMEOUT'));
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+  });
   const timer = setTimeout(() => controller.abort(new Error('REPORT_GENERATION_TIMEOUT')), timeoutMs);
   timer.unref();
   try {
     return await context.run({ controller, deadline: Date.now() + timeoutMs }, async () => {
-      const result = await task();
+      const result = await Promise.race([task(), cancelled]);
       controller.signal.throwIfAborted();
       return result;
     });
-  } finally { clearTimeout(timer); controller.abort(); }
+  } finally { clearTimeout(timer); controller.signal.removeEventListener('abort', onAbort); controller.abort(); }
 }
 
 export async function createReportCompletion(params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming, stage: ReportStage) {
@@ -57,11 +63,13 @@ export async function mapReportBatches<T, R>(items: readonly T[], size: number, 
   for (let index = 0; index < items.length; index += size) batches.push(items.slice(index, index + size));
   const results = new Array<R>(batches.length);
   let next = 0;
+  let failed = false;
   await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, async () => {
-    while (next < batches.length) {
+    while (!failed && next < batches.length) {
       const index = next++;
       context.getStore()?.controller.signal.throwIfAborted();
-      results[index] = await task(batches[index]);
+      try { results[index] = await task(batches[index]); }
+      catch (error) { failed = true; throw error; }
     }
   }));
   return results;

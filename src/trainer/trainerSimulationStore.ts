@@ -6,7 +6,7 @@ export function createBuiltinTrainerSimulationRow(id: string, context: Record<st
   const now = new Date();
   return { id, employeeId: 'autotest-fixture', branchId: null, companyId: null, sessionType: 'free', scenarioId: scenario.id, scenario: { id: scenario.id, name: scenario.name },
     title: null, status: 'in_progress', difficulty: 'medium', clientType: String(context.clientType || ''), elevenLabsConversationId: null,
-    caseContextJson: JSON.stringify(context), transcriptJson: '[]', evaluationJson: null, dimensionsJson: null, checklistResultsJson: null,
+    caseContextJson: JSON.stringify(context), transcriptJson: '[]', evaluationJson: null, reportCheckpointJson: null, dimensionsJson: null, checklistResultsJson: null,
     objectionsAnalysisJson: null, topRecommendationsJson: null, score: null, baseScore: null, multiplier: 1, finalPoints: null, durationSec: 0, failureReason: null,
     startedAt: now, completedAt: null, createdAt: now, updatedAt: now };
 }

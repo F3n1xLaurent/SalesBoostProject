@@ -4,6 +4,7 @@ import { compatibleChatMaxTokens } from '../lib/openaiClient';
 import { compatibleReportReasoning } from '../lib/chatReasoning';
 import { REPORT_EXAMPLE_ACCEPTANCE_RULES } from './reportQualityRules';
 import { createReportCompletion, mapReportBatches } from './reportExecution';
+import { cachedReportReview, isReportCheckpointError, saveReportReview } from './reportCheckpoint';
 
 export type ReportExampleTask = {
   turnIndex: number; example: string;
@@ -46,8 +47,8 @@ export function localExampleIssues(task: ReportExampleTask): string[] {
   if (!task.example.trim()) return ['Не создан полный пример ответа.'];
   const issues = [...preservedActionIssues(task.knownDialog.at(-1)?.text ?? '', task.example), ...clarificationRequestIssues(task.example)];
   if (task.problems.some((problem) => problem.code === 'NO_INTRO_COMPANY')) {
-    if (!/(?:[Мм]еня\s+зовут|[Мм]о[её]\s+имя|\[имя(?:\s+менеджера)?\]|[Яя]\s+[А-ЯЁ][а-яё]+(?:\s*[,—-]|\s+из\s))/u.test(task.example)) issues.push('В примере не представлено имя менеджера; допустим явный заполнитель [имя].');
-    if (!/(?:компани[яию]|автоцентр|автосалон|центр[а-яё]*\s+[«"]|(?:ООО|АО|ПАО|ИП)\s*[«"][^»"\n]{2,}[»"])/iu.test(task.example)) issues.push('В примере не названа компания.');
+    if (!/(?:[Мм]еня\s+зовут|[Мм]о[её]\s+имя|\[имя(?:\s+менеджера)?\]|(?:[Ээ]то|[Гг]оворит|[Бб]еспокоит)\s+[А-ЯЁ][а-яё-]+|[Яя]\s+[А-ЯЁ][а-яё]+(?:\s*[,—-]|\s+из\s))/u.test(task.example)) issues.push('В примере не представлено имя менеджера; допустим явный заполнитель [имя].');
+    if (!/(?:компани[яию]|автоцентр|автосалон|центр[а-яё]*\s+[«"]|(?:ООО|АО|ПАО|ИП)\s*[«"][^»"\n]{2,}[»"]|(?:в|из)\s+[«"„“][^»"“”\n]{2,}[»"“”])/iu.test(task.example)) issues.push('В примере не названа компания.');
   }
   const clientRequest = [...task.knownDialog.slice(0, -1)].reverse().find((turn) => turn.role === 'client')?.text ?? '';
   const conditions = [
@@ -88,7 +89,23 @@ export function parseExampleReviews(tasks: ReportExampleTask[], value: unknown):
 }
 
 export async function reviewReportExamples(tasks: ReportExampleTask[]): Promise<ReportExampleReview[]> {
-  return (await mapReportBatches(tasks, 2, 2, reviewReportExampleBatch)).flat();
+  const results = new Map<number, ReportExampleReview>();
+  const pending = tasks.filter(task => {
+    const cached = cachedReportReview(task);
+    if (!cached) return true;
+    const checked = parseExampleReviews([task], { items: [cached] })[0];
+    if (checked.status === 'review' || checked.validationIssues?.length) return true;
+    results.set(task.turnIndex, checked); return false;
+  });
+  await mapReportBatches(pending, 2, 2, async batch => {
+    const reviews = await reviewReportExampleBatch(batch);
+    for (const review of reviews) {
+      const task = batch.find(item => item.turnIndex === review.turnIndex)!;
+      await saveReportReview(task, review);
+      results.set(review.turnIndex, review);
+    }
+  });
+  return tasks.map(task => results.get(task.turnIndex)!);
 }
 
 async function reviewReportExampleBatch(tasks: ReportExampleTask[]): Promise<ReportExampleReview[]> {
@@ -113,7 +130,7 @@ async function reviewReportExampleBatch(tasks: ReportExampleTask[]): Promise<Rep
     results.push(...parsed.filter((item) => !item.validationIssues?.length || attempt === 1));
     remaining = remaining.filter((task) => parsed.some((item) => item.turnIndex === task.turnIndex && item.validationIssues?.length));
   } catch (error) {
-    if ([401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
+    if (isReportCheckpointError(error) || [401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
     if (attempt === 0 && error instanceof SyntaxError) continue;
     return [...results, ...remaining.map((task): ReportExampleReview => ({ turnIndex: task.turnIndex, exampleHash: reportExampleHash(task.example), status: 'review', issues: [`Смысловая проверка недоступна: ${error instanceof Error ? error.message : String(error)}`] }))];
   }

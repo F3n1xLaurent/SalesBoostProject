@@ -17,6 +17,7 @@ const active = new Map<string, { stage: AnalyticsStage; token: symbol; queuedAt:
 const backfills = new Map<string, { status: 'processing' | 'failed' | 'done'; updatedAt: number }>();
 const failures = new Map<string, { stage: AnalyticsStage; updatedAt: number }>();
 const RETENTION_MS = 30 * 60_000;
+export function currentAuditAnalyticsKey(): string | undefined { return context.getStore()?.key; }
 export const AUDIT_ANALYTICS_RETRY_AFTER_MS = 2 * 60_000;
 
 /** A superseded worker may finish its network request, but must not publish its result. */
@@ -62,11 +63,13 @@ export function scheduleAuditReportBackfill(key: string, task: () => Promise<voi
   const now = Date.now();
   for (const [id, job] of backfills) if (job.status !== 'processing' && now - job.updatedAt > RETENTION_MS) backfills.delete(id);
   const running = active.get(key);
-  // Waiting is healthy backpressure, never a reason to pay for a replacement.
-  if (running && running.startedAt == null) return false;
-  const startedAt = running?.startedAt ?? backfills.get(key)?.updatedAt;
+  // Both queued and executing workers own this key until they settle. A report
+  // legitimately takes longer than the UI's two-minute retry hint; replacing
+  // its token would discard the result and collide with its durable DB job.
+  if (running) return false;
+  const startedAt = backfills.get(key)?.updatedAt;
   const expired = options.retry && startedAt != null && now - startedAt >= AUDIT_ANALYTICS_RETRY_AFTER_MS;
-  if ((running || backfills.get(key)?.status === 'processing') && !expired) return false;
+  if (backfills.get(key)?.status === 'processing' && !expired) return false;
   if (options.retry) backfills.delete(key);
   if (backfills.has(key) || backfills.size >= 1000) return false;
   const job = { status: 'processing' as 'processing' | 'failed' | 'done', updatedAt: now };

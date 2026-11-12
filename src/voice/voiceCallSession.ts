@@ -25,6 +25,7 @@ import {
 } from './voxCallOutcome';
 import { sanitizeTranscriptTurns } from './transcriptSanitizer';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
+import { loadCallReportScenarioContext } from './callReportContext';
 import { assessCallReportEligibility } from './callReportEligibility';
 import { filterUnreliableManagerTurns } from './transcriptReliability';
 import { attributeCallToIntroducedManager } from './callManagerAttribution';
@@ -813,8 +814,9 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload, options:
       const recommendations = Array.isArray((evaluation as any).recommendations) ? (evaluation as any).recommendations : [];
       const dimensionScores = (evaluation as any).dimension_scores ?? null;
       const analyticsStartedAt = performance.now();
-      const [analyticsBundle, criteria] = await Promise.all([
-        generateCallAnalyticsBundle({
+      planCriteria = await criteriaPromise;
+      const reportScenarioContext = await loadCallReportScenarioContext(callId, existingSession?.caseContextJson ?? null) ?? evaluationScenarioContext;
+      const analyticsBundle = await generateCallAnalyticsBundle({
           transcript: analysisTranscript,
           outcome,
           totalScore: evaluation.overall_score_0_100 ?? null,
@@ -824,16 +826,14 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload, options:
             checklist,
             issues,
             recommendations,
+            plan_criteria: planCriteria,
           },
-          scenarioContext: evaluationScenarioContext,
-        }),
-        criteriaPromise,
-      ]);
+          scenarioContext: reportScenarioContext,
+        });
       callSummary = analyticsBundle.callSummary;
       replyImprovements = analyticsBundle.replyImprovements;
       unifiedCallReport = analyticsBundle.unifiedCallReport;
       if (!unifiedCallReport) throw new Error('EMPTY_UNIFIED_CALL_REPORT');
-      planCriteria = criteria;
       console.log('[voice/session] analytics bundle done', { callId, ms: elapsedMs(analyticsStartedAt) });
     } catch (err) {
       assertAuditAnalyticsCurrent();
@@ -861,6 +861,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload, options:
       where: { callId },
       data: {
         evaluationJson,
+        ...(unifiedCallReport ? { reportCheckpointJson: null } : {}),
         dimensionsJson: analyticsFields.dimensionsJson,
         checklistResultsJson: analyticsFields.checklistResultsJson,
         totalScore,

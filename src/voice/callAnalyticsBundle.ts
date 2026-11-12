@@ -4,6 +4,7 @@ import { compatibleChatTemperature } from '../lib/openaiClient';
 import { REPORT_QUALITY_RULES } from './reportQualityRules';
 import { requestReportJson } from './reportGeneration';
 import { withReportGenerationBudget } from './reportExecution';
+import { savedReportDraft, saveReportDraft, withReportCheckpoint } from './reportCheckpoint';
 import type { CallSummary, ReplyImprovement } from './callSummary';
 import type { TranscriptTurn } from './callHistory';
 import {
@@ -21,6 +22,7 @@ import {
   UNIFIED_REPORT_CATEGORIES,
   unifiedVerdict,
   type UnifiedCallReport,
+  completeGeneratedUnifiedCallReport,
 } from './unifiedCallReport';
 
 type EvaluationInput = {
@@ -29,6 +31,7 @@ type EvaluationInput = {
   checklist?: unknown;
   issues?: unknown;
   recommendations?: unknown[];
+  plan_criteria?: unknown;
 };
 
 type AnalyticsBundle = {
@@ -42,7 +45,11 @@ function asText(value: unknown): string {
 }
 
 export async function generateCallAnalyticsBundle(input: Parameters<typeof generateCallAnalyticsBundleWithinBudget>[0]): Promise<AnalyticsBundle> {
-  return withReportGenerationBudget(() => generateCallAnalyticsBundleWithinBudget(input));
+  return withReportCheckpoint(input, effective => withReportGenerationBudget(async () => {
+    const draft = savedReportDraft();
+    if (draft) return { callSummary: null, replyImprovements: null, unifiedCallReport: await completeGeneratedUnifiedCallReport(draft, effective) };
+    return generateCallAnalyticsBundleWithinBudget(effective);
+  }));
 }
 
 async function generateCallAnalyticsBundleWithinBudget(input: {
@@ -167,12 +174,16 @@ async function generateCallAnalyticsBundleWithinBudget(input: {
   const coveredReport = unifiedCallReport
     ? await ensureRecommendationFindingCoverage(unifiedCallReport, input.transcript, catalog, input.evaluation, input.scenarioContext)
     : null;
+  if (coveredReport) await saveReportDraft(coveredReport);
   const annotatedReport = coveredReport ? await ensureReportDialogCoverage(coveredReport, input.transcript, input.evaluation) : null;
+  if (annotatedReport) await saveReportDraft(annotatedReport);
+  const checkedReport = annotatedReport ? await ensureReportExampleQuality(annotatedReport, input.transcript, input.scenarioContext) : null;
+  if (checkedReport) await saveReportDraft(checkedReport);
   return {
     callSummary: null,
     replyImprovements: null,
-    unifiedCallReport: annotatedReport
-      ? finalizeGeneratedReport(requireCompleteReportExamples(await ensureReportExampleQuality(annotatedReport, input.transcript, input.scenarioContext)))
+    unifiedCallReport: checkedReport
+      ? finalizeGeneratedReport(requireCompleteReportExamples(checkedReport))
       : null,
   };
 }

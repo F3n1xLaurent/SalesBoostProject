@@ -10,6 +10,14 @@ export function isConnectionCheck(text: string): boolean {
 
 export function isConnectionCheckTurn(transcript: readonly TranscriptTurn[], index: number): boolean {
   const text = transcript[index]?.text ?? '';
+  // «Алло. Дмитрий.» is an attempt to regain the known customer's attention,
+  // not a new sales answer requiring another mark/example repair request.
+  if (transcript[index]?.role === 'manager' && index > 0 && transcript[index - 1]?.role === 'manager'
+    && isConnectionCheck(transcript[index - 1].text) && /^[А-ЯЁ][а-яё-]{1,30}[.!?…]*$/u.test(text.trim())) {
+    const name = text.trim().replace(/[.!?…]+$/u, '');
+    const addressed = new RegExp(`(?:^|[.!?]\\s*)${name}(?=[,!])`, 'iu');
+    if (transcript.slice(0, index - 1).some(turn => turn.role === 'manager' && addressed.test(turn.text))) return true;
+  }
   if (!isConnectionCheck(text)) return false;
   // Initial «Алло» can be an incomplete greeting under the configured
   // checklist. A repeated «Алло» during an established exchange is a check.

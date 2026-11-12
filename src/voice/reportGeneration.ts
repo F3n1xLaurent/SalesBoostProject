@@ -4,6 +4,7 @@ import { compatibleReportReasoning } from '../lib/chatReasoning';
 import { updateAuditAnalyticsStage } from '../logic/auditAnalyticsProgress';
 import { DEFAULT_CALL_REPORT_PROBLEMS, problemByTitle } from './problemCatalog';
 import { createReportCompletion } from './reportExecution';
+import { isReportCheckpointError, saveReportDraft } from './reportCheckpoint';
 
 /** Do not publish a factual-error label whose own explanation explicitly denies that error. */
 export function reportGenerationIssues(report: Record<string, unknown>): string[] {
@@ -34,8 +35,9 @@ export async function requestReportJson(params: OpenAI.Chat.Completions.ChatComp
       if (!Array.isArray((parsed as any).dialog) || !Array.isArray((parsed as any).keyFindings) || typeof (parsed as any).summary !== 'string') throw new Error('Incomplete report JSON schema');
       const issues = reportGenerationIssues(parsed as Record<string, unknown>);
       if (issues.length) throw new Error(issues.join(' '));
+      await saveReportDraft(parsed);
       return parsed as Record<string, unknown>;
-    } catch (error) { lastError = error; }
+    } catch (error) { if (isReportCheckpointError(error)) throw error; lastError = error; }
   }
   throw new Error(`Report generation did not return complete JSON: ${lastError instanceof Error ? lastError.message : String(lastError)}`, { cause: lastError });
 }

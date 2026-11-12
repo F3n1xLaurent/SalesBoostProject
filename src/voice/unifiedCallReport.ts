@@ -9,7 +9,8 @@ import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { isConnectionCheckTurn, isUnreliableManagerUtterance } from './transcriptReliability';
 import { groundReportTurnComment, hasGroundedProductAnswer } from './reportTurnGrounding';
-import { createReportCompletion, withReportGenerationBudget } from './reportExecution';
+import { createReportCompletion, mapReportBatches, withReportGenerationBudget } from './reportExecution';
+import { isReportCheckpointError, rememberReportRejection, savedReportDraft, savedReportRejections, saveReportDraft, withReportCheckpoint } from './reportCheckpoint';
 import { buildEvaluationHighlights, normalizeManagerNarrationGender } from '../logic/evaluationHighlights';
 import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
 import { isUncertainFactClaim, type TranscriptionUncertainty } from '../logic/transcriptionUncertainty';
@@ -517,7 +518,17 @@ function fullTurnExample(value: unknown, turnIndex: number, findings: UnifiedCal
     return `${match[1]?.toLocaleLowerCase('ru-RU') ?? ''}:${number}`;
   });
   const preserved = new Set(numbers(example));
-  const lost = !correctsFacts ? numbers(transcript[turnIndex].text).filter((number) => !uncertain.some((hint) => number.endsWith(`:${hint.token}`))).filter((number) => !preserved.has(number)) : [];
+  const original = transcript[turnIndex].text;
+  const addressSpans = (text: string) => [...text.matchAll(/адрес[уыа]?\s*[:—-]?\s*([^!?;\n]{1,140}?\d+\s*[а-яёa-z]?(?=[.,;\s]|$))/giu)];
+  const addressKey = (text: string) => text.toLocaleLowerCase('ru-RU').replace(/ё/gu, 'е').replace(/[^\p{L}\p{N}]/gu, '');
+  const correctingAddress = findings.some(finding => /(?:неверн|неправильн|ошибочн)[^.!?]{0,30}адрес|адрес[^.!?]{0,30}(?:неверн|неправильн|ошибочн)/iu.test(finding.comment))
+    && addressSpans(example).some(match => scenarioContext && addressKey(scenarioContext).includes(addressKey(match[1])));
+  const oldAddresses = correctingAddress ? addressSpans(original) : [];
+  const outsideAddress = oldAddresses.reduce((text, match) => text.replace(match[0], ''), original);
+  const protectedNumbers = new Set(numbers(outsideAddress));
+  const correctedAddressNumbers = new Set(oldAddresses.flatMap(match => numbers(match[1])).filter(number => !protectedNumbers.has(number)));
+  const lost = !correctsFacts ? numbers(original).filter((number) => !uncertain.some((hint) => number.endsWith(`:${hint.token}`)))
+    .filter((number) => !preserved.has(number) && !correctedAddressNumbers.has(number)) : [];
   if (lost.length) { issues?.push(`Потеряны или изменены исходные числа/ограничения: ${lost.join(', ')}.`); return ''; }
   const lostActions = correctsFacts ? [] : preservedActionIssues(transcript[turnIndex].text, example);
   if (lostActions.length) { issues?.push(...lostActions); return ''; }
@@ -1062,7 +1073,7 @@ export async function ensureRecommendationFindingCoverage(
       catalog,
     ) ?? report;
   } catch (error) {
-    if ([401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
+    if (isReportCheckpointError(error) || [401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
     console.warn('[unified-report] finding coverage repair failed:', error instanceof Error ? error.message : error);
     return report;
   }
@@ -1086,8 +1097,9 @@ export async function ensureReportDialogCoverage(report: UnifiedCallReport, tran
         if (!mark || !comment || (dialog[item.index].mark && dialog[item.index].mark !== mark) || isUncertainFactClaim(comment, report.transcriptionUncertainties ?? [])) continue;
         dialog[item.index] = { ...dialog[item.index], mark: dialog[item.index].mark ?? mark, comment };
       }
+      await saveReportDraft({ ...report, dialog });
     } catch (error) {
-      if ([401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
+      if (isReportCheckpointError(error) || [401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
       console.warn('[unified-report] dialog annotation repair failed:', error instanceof Error ? error.message : error); break;
     }
   }
@@ -1139,70 +1151,83 @@ export async function ensureFindingBetterExamples(
   if (items.length === 0) return { ...report, dialog };
 
   let repaired = report.keyFindings.map((finding) => ({ ...finding }));
+  const applyBatch = async (batch: typeof items, candidates: Array<{ index?: unknown; betterExample?: unknown }>) => {
+    const stillMissing: typeof items = [];
+    for (const item of batch) {
+      const candidate = candidates.find((value) => Number(value.index) === item.index);
+      const structuralIssues: string[] = [];
+      const betterExample = fullTurnExample(
+        candidate?.betterExample,
+        item.quoteIndex,
+        item.indices.map((index) => repaired[index]),
+        transcript,
+        scenarioContext,
+        report.transcriptionUncertainties,
+        structuralIssues,
+      );
+      if (betterExample) {
+        item.indices.forEach((index) => { repaired[index] = { ...repaired[index], betterExample }; });
+        dialog[item.quoteIndex].betterExample = betterExample;
+      } else {
+        if (typeof candidate?.betterExample === 'string' && candidate.betterExample.trim()) onRejected?.(item.quoteIndex, candidate.betterExample,
+          structuralIssues);
+        stillMissing.push({ ...item, previousReviewIssues: [...item.previousReviewIssues, ...structuralIssues],
+          ...({ previousRejectedExample: typeof candidate?.betterExample === 'string' ? candidate.betterExample : '' }) });
+      }
+    }
+    await saveReportDraft({ ...report, keyFindings: repaired, dialog });
+    return stillMissing;
+  };
   let pending = items;
   for (let attempt = 1; attempt <= 2 && pending.length > 0; attempt += 1) {
     try {
-      const response = await createReportCompletion({
-        model: config.openaiChatModel,
-        messages: [
-          {
-            role: 'system',
-            content: 'Ты редактор учебных примеров для менеджеров. Отвечай только валидным JSON.',
-          },
-          {
-            role: 'user',
-            content: [
-              'Для каждой группы problems создай ОДИН полный вариант «Как лучше» для всей исходной реплики менеджера.',
-              'Он должен одновременно устранить ВСЕ замечания problems, а не только первое. Сохрани все правильные ответы и факты исходной реплики; добавь недостающее, не заменяй весь ответ уточняющим вопросом. Числа сохраняй цифрами.',
-              REPORT_QUALITY_RULES,
-              REPORT_EXAMPLE_ACCEPTANCE_RULES,
-              'Используй только сведения из knownDialog и scenarioFacts: факты сценария были известны менеджеру до звонка. Нельзя использовать факты, которые клиент сообщил позднее.',
-              'Если клиент спросил, что входит в проверку, работы или услугу, перечисли подтверждённые пункты из scenarioFacts. Не заменяй ответ встречным вопросом. Если перечень неизвестен, честно предложи уточнить его и вернуться с прямым ответом.',
-              'Не придумывай цены, сроки, характеристики, наличие или обещания. Уточняющий вопрос допустим только если он помогает ответить на вопрос клиента, а не подменяет прямой ответ.',
-              'Исправляй все previousReviewIssues одновременно, учитывай previousRejectedCandidates: не возвращайся к ранее отклонённому варианту, исправляя только последнее замечание. Если нужны и вопрос о приоритете, и следующий шаг, задай один вопрос о приоритете и отдельно предложи конкретный слот визита как предложение, а не как уже согласованный факт. Не используй пустые [дата]/[время] вместо предложения слота; не меняй уже известное время клиента.',
-              attempt > 1 ? 'Это повторная попытка: предыдущие варианты не прошли проверку. Сделай их содержательно лучше исходной реплики.' : '',
-              '',
-              JSON.stringify({ items: pending }, null, 2),
-              '',
-              'Верни JSON: {"items":[{"index":0,"betterExample":"готовая реплика менеджера"}]}',
-            ].filter(Boolean).join('\n'),
-          },
-        ],
-        response_format: { type: 'json_object' },
-        ...compatibleChatTemperature(config.openaiChatModel, attempt === 1 ? 0.2 : 0.1),
-        ...compatibleChatMaxTokens(config.openaiChatModel, 6000),
-        ...compatibleReportReasoning(config.openaiChatModel, 'exampleRepair'),
-      }, 'exampleRepair');
-      const content = response.choices[0]?.message?.content?.trim();
-      if (!content) throw new Error('Empty better-example repair response');
-      const parsed = JSON.parse(content) as { items?: Array<{ index?: unknown; betterExample?: unknown }> };
-      const candidates = Array.isArray(parsed.items) ? parsed.items : [];
-      const stillMissing: typeof pending = [];
-      for (const item of pending) {
-        const candidate = candidates.find((value) => Number(value.index) === item.index);
-        const structuralIssues: string[] = [];
-        const betterExample = fullTurnExample(
-          candidate?.betterExample,
-          item.quoteIndex,
-          item.indices.map((index) => repaired[index]),
-          transcript,
-          scenarioContext,
-          report.transcriptionUncertainties,
-          structuralIssues,
-        );
-        if (betterExample) {
-          item.indices.forEach((index) => { repaired[index] = { ...repaired[index], betterExample }; });
-          dialog[item.quoteIndex].betterExample = betterExample;
-        } else {
-          if (typeof candidate?.betterExample === 'string' && candidate.betterExample.trim()) onRejected?.(item.quoteIndex, candidate.betterExample,
-            structuralIssues);
-          stillMissing.push({ ...item, previousReviewIssues: [...item.previousReviewIssues, ...structuralIssues],
-            ...({ previousRejectedExample: typeof candidate?.betterExample === 'string' ? candidate.betterExample : '' }) });
+      pending = (await mapReportBatches(pending, 3, 2, async batch => {
+        try {
+          const response = await createReportCompletion({
+            model: config.openaiChatModel,
+            messages: [
+              {
+                role: 'system',
+                content: 'Ты редактор учебных примеров для менеджеров. Отвечай только валидным JSON.',
+              },
+              {
+                role: 'user',
+                content: [
+                  'Для каждой группы problems создай ОДИН полный вариант «Как лучше» для всей исходной реплики менеджера.',
+                  'Он должен одновременно устранить ВСЕ замечания problems, а не только первое. Сохрани все правильные ответы и факты исходной реплики; добавь недостающее, не заменяй весь ответ уточняющим вопросом. Числа сохраняй цифрами.',
+                  REPORT_QUALITY_RULES,
+                  REPORT_EXAMPLE_ACCEPTANCE_RULES,
+                  'Используй только сведения из knownDialog и scenarioFacts: факты сценария были известны менеджеру до звонка. Нельзя использовать факты, которые клиент сообщил позднее.',
+                  'Если клиент спросил, что входит в проверку, работы или услугу, перечисли подтверждённые пункты из scenarioFacts. Не заменяй ответ встречным вопросом. Если перечень неизвестен, честно предложи уточнить его и вернуться с прямым ответом.',
+                  'Не придумывай цены, сроки, характеристики, наличие или обещания. Уточняющий вопрос допустим только если он помогает ответить на вопрос клиента, а не подменяет прямой ответ.',
+                  'Исправляй все previousReviewIssues одновременно, учитывай previousRejectedCandidates: не возвращайся к ранее отклонённому варианту, исправляя только последнее замечание. Если нужны и вопрос о приоритете, и следующий шаг, задай один вопрос о приоритете и отдельно предложи конкретный слот визита как предложение, а не как уже согласованный факт. Не используй пустые [дата]/[время] вместо предложения слота; не меняй уже известное время клиента.',
+                  attempt > 1 ? 'Это повторная попытка: предыдущие варианты не прошли проверку. Сделай их содержательно лучше исходной реплики.' : '',
+                  '',
+                  JSON.stringify({ items: batch }, null, 2),
+                  '',
+                  'Верни JSON: {"items":[{"index":0,"betterExample":"готовая реплика менеджера"}]}',
+                ].filter(Boolean).join('\n'),
+              },
+            ],
+            response_format: { type: 'json_object' },
+            ...compatibleChatTemperature(config.openaiChatModel, attempt === 1 ? 0.2 : 0.1),
+            ...compatibleChatMaxTokens(config.openaiChatModel, 6000),
+            ...compatibleReportReasoning(config.openaiChatModel, 'exampleRepair'),
+          }, 'exampleRepair');
+          if (response.choices[0]?.finish_reason === 'length') throw new SyntaxError('Better-example batch exceeded the token limit');
+          const content = response.choices[0]?.message?.content?.trim();
+          if (!content) throw new Error('Empty better-example repair response');
+          const parsed = JSON.parse(content) as { items?: Array<{ index?: unknown; betterExample?: unknown }> };
+          return applyBatch(batch, Array.isArray(parsed.items) ? parsed.items.filter(item => batch.some(target => target.index === Number(item.index))) : []);
+        } catch (error) {
+          if (isReportCheckpointError(error) || [401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
+          console.warn('[unified-report] better-example batch failed:', error instanceof Error ? error.message : error);
+          return batch;
         }
-      }
-      pending = stillMissing;
+      })).flat();
+
     } catch (error) {
-      if ([401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
+      if (isReportCheckpointError(error) || [401, 402, 403, 404].includes(Number((error as { status?: unknown })?.status))) throw error;
       console.warn('[unified-report] better examples repair failed:', error instanceof Error ? error.message : error);
       break;
     }
@@ -1216,12 +1241,15 @@ export async function ensureFindingBetterExamples(
 export async function ensureReportExampleQuality(
   report: UnifiedCallReport, transcript: TranscriptTurn[], scenarioContext = '',
 ): Promise<UnifiedCallReport> {
-  const rejected = new Map<number, NonNullable<ReportExampleReview['rejectedCandidates']>>();
+  const rejected = new Map<number, NonNullable<ReportExampleReview['rejectedCandidates']>>(savedReportRejections());
   const rememberRejected = (index: number, text: string, issues: string[]) => {
     const previous = rejected.get(index) ?? [];
     if (!previous.some((item) => item.text === text && JSON.stringify(item.issues) === JSON.stringify(issues))) rejected.set(index, [...previous, { text, issues }]);
+    rememberReportRejection(index, text, issues);
   };
-  let candidate = await ensureFindingBetterExamples(report, transcript, scenarioContext, {}, rememberRejected);
+  const previousFeedback = Object.fromEntries([...rejected].map(([index, items]) => [index, [...new Set(items.flatMap(item => item.issues))]]));
+  let candidate = await ensureFindingBetterExamples(report, transcript, scenarioContext, previousFeedback, rememberRejected, rejected);
+  await saveReportDraft(candidate);
   let reviews: ReportExampleReview[] = [];
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const groups = reportFindingGroups(candidate, transcript);
@@ -1250,6 +1278,7 @@ export async function ensureReportExampleQuality(
       for (const index of groups.get(review.turnIndex) ?? []) keyFindings[index].betterExample = '';
     }
     candidate = { ...candidate, keyFindings, dialog };
+    await saveReportDraft(candidate);
     if (attempt < 2) {
       const repaired = await ensureFindingBetterExamples(candidate, transcript, scenarioContext, feedback, rememberRejected, rejected);
       // A repeated rejected candidate is not progress. Do not regrade the
@@ -1274,7 +1303,10 @@ export function requireCompleteReportExamples(report: UnifiedCallReport): Unifie
 }
 
 export async function generateUnifiedCallReport(input: Parameters<typeof generateUnifiedCallReportWithinBudget>[0]): Promise<UnifiedCallReport> {
-  return withReportGenerationBudget(() => generateUnifiedCallReportWithinBudget(input));
+  return withReportCheckpoint(input, effective => withReportGenerationBudget(() => {
+    const draft = savedReportDraft();
+    return draft ? completeGeneratedUnifiedCallReport(draft, effective) : generateUnifiedCallReportWithinBudget(effective);
+  }));
 }
 
 async function generateUnifiedCallReportWithinBudget(input: {
@@ -1393,7 +1425,8 @@ async function generateUnifiedCallReportWithinBudget(input: {
 
 /** Resume a saved draft through the same normalization and quality gates as a fresh report. */
 export async function completeGeneratedUnifiedCallReport(parsed: unknown, input: Parameters<typeof generateUnifiedCallReportWithinBudget>[0]): Promise<UnifiedCallReport> {
-  return withReportGenerationBudget(async () => {
+  return withReportCheckpoint(input, effective => withReportGenerationBudget(async () => {
+    input = effective;
     const source = input.source ?? 'call';
     const totalScore = clampScore(input.totalScore ?? input.evaluation.overall_score_0_100 ?? 0);
     const catalog = withReportProblemVariants(await getCallReportProblemCatalog(prisma));
@@ -1406,10 +1439,15 @@ export async function completeGeneratedUnifiedCallReport(parsed: unknown, input:
       catalog,
     );
     if (!normalized) throw new Error('Invalid unified report JSON');
+    await saveReportDraft(normalized);
     const covered = await ensureRecommendationFindingCoverage(normalized, input.transcript, catalog, input.evaluation, input.scenarioContext);
+    await saveReportDraft(covered);
     const annotated = await ensureReportDialogCoverage(covered, input.transcript, input.evaluation);
-    return finalizeGeneratedReport(requireCompleteReportExamples(await ensureReportExampleQuality(annotated, input.transcript, input.scenarioContext)));
-  });
+    await saveReportDraft(annotated);
+    const checked = await ensureReportExampleQuality(annotated, input.transcript, input.scenarioContext);
+    await saveReportDraft(checked);
+    return finalizeGeneratedReport(requireCompleteReportExamples(checked));
+  }));
 }
 
 export async function generateUnifiedTrainerReport(input: {

@@ -659,6 +659,7 @@ model TrainerSession {
   caseContextJson        String    @default("{}")
   transcriptJson         String    @default("[]")
   evaluationJson         String?
+  reportCheckpointJson   String?   // private resumable report draft, never a published report
   dimensionsJson         String?
   checklistResultsJson   String?
   objectionsAnalysisJson String?
@@ -873,6 +874,7 @@ model VoiceCallSession {
   originalTranscriptJson String? // original realtime ASR, when a recording was retranscribed
   retranscriptionJson String? // JSON: second-pass model and result status
   evaluationJson   String?   // same shape as TrainingSession.evaluationJson (V2)
+  reportCheckpointJson String? // private resumable report draft, cleared after publication
   dimensionsJson   String?   // JSON: 4 dimension scores extracted from evaluationJson
   checklistResultsJson String? // JSON: checklist results extracted from evaluationJson
   caseContextJson  String?   // JSON: scenario/profile/item context used for the call

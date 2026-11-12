@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { filterUnreliableManagerTurns, isUnreliableManagerUtterance } from '../voice/transcriptReliability';
+import { filterUnreliableManagerTurns, isConnectionCheckTurn, isUnreliableManagerUtterance } from '../voice/transcriptReliability';
 
 describe('analysis transcript reliability', () => {
+  it('1147: treats a known customer name after an audibility check as a connection check', () => {
+    const transcript = [{ role: 'manager' as const, text: 'Дмитрий, давайте обсудим визит.' },
+      { role: 'client' as const, text: 'Хорошо.' }, { role: 'manager' as const, text: 'Алло.' }, { role: 'manager' as const, text: 'Дмитрий.' }];
+    expect(isConnectionCheckTurn(transcript, 3)).toBe(true);
+    expect(isConnectionCheckTurn([...transcript.slice(0, 3), { role: 'manager', text: 'Автомат.' }], 3)).toBe(false);
+    expect(isConnectionCheckTurn([{ role: 'manager', text: 'Дмитрий.' }], 0)).toBe(false);
+  });
   it('does not score visibly broken ASR as manager answers', () => {
     const transcript = [
       { role: 'client' as const, text: 'На что обращать внимание?' },

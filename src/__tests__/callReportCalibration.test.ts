@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureFindingBetterExamples, normalizeStoredUnifiedCallReport, normalizeUnifiedCallReport, requireCompleteReportExamples } from '../voice/unifiedCallReport';
-import { reportExampleHash } from '../voice/reportExampleReview';
+import { ensureFindingBetterExamples, normalizeStoredUnifiedCallReport, normalizeUnifiedCallReport, reportExampleStructuralIssues, requireCompleteReportExamples } from '../voice/unifiedCallReport';
+import { localExampleIssues, reportExampleHash } from '../voice/reportExampleReview';
 import { checklistCategoryScores, clientAction, confirmedTimeInDialog, deduplicateReportStrengths, reportCriterionCode } from '../voice/reportAssessment';
 import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logic/transcriptionUncertainty';
 import { computeCustomChecklistResult, evaluateSessionV2 } from '../llm/evaluatorV2';
@@ -11,6 +11,26 @@ const manager = (text: string) => ({ role: 'manager' as const, text });
 const client = (text: string) => ({ role: 'client' as const, text });
 
 describe('production call report calibration', () => {
+  it('1147: accepts a natural named introduction before independent semantic review', () => {
+    const task = { turnIndex: 0, example: 'Добрый день, Дмитрий! Это Алина [фамилия], эксперт по автомобилям EXEED в «МореАвто», официальном дилере EXEED.',
+      problems: [{ id: 'finding:0', code: 'NO_INTRO_COMPANY', title: 'Представление', comment: 'Не назвал фамилию и роль.' }],
+      knownDialog: [manager('Алина. Добрый день, Дмитрий. Мориавто, официальный дилер Exeed.')], scenarioFacts: '' };
+    expect(localExampleIssues(task)).toEqual([]);
+    expect(localExampleIssues({ ...task, example: 'Дмитрий, здравствуйте, автосалон «МореАвто».' }).join(' ')).toContain('имя менеджера');
+    expect(localExampleIssues({ ...task, example: 'Это Алина [фамилия], эксперт по автомобилям.' }).join(' ')).toContain('компания');
+  });
+  it('1147: corrects an explicitly wrong address using scenario evidence without changing other numbers', () => {
+    const original = 'Ждём вас сегодня в 16 часов по адресу Московский проспект, 271. На этот номер могу отправить СМС с адресом.';
+    const transcript = [client('Приеду сегодня в 16 часов.'), manager(original)];
+    const context = 'Адрес ДЦ: Московский проспект, 250А.';
+    const report = normalizeUnifiedCallReport({ keyFindings: [{ problemTitle: 'Следующий шаг без конкретики (нет даты/времени)', quote: original,
+      comment: 'Назван неверный адрес, не закреплена цель визита.' }], dialog: [{}, { mark: 'normal' }] }, { totalScore: 70, transcript })!;
+    const corrected = 'Ждём вас сегодня в 16 часов на тест-драйв по адресу Московский проспект, 250А. На этот номер отправлю СМС с адресом.';
+    expect(reportExampleStructuralIssues(corrected, 1, report, transcript, context)).toEqual([]);
+    expect(reportExampleStructuralIssues(corrected.replace('250А', '999'), 1, report, transcript, context).join(' ')).toContain('271');
+    expect(reportExampleStructuralIssues(corrected.replace('16 часов', '17 часов'), 1, report, transcript, context).join(' ')).toContain('16');
+    expect(reportExampleStructuralIssues(corrected, 1, report, transcript, '').join(' ')).toContain('271');
+  });
   it.each(['Не знаю, автомат или механика.', 'Автоматическая коробка? Уточню позже.', 'Возможно, установлен автомат.'])('does not treat %s as a grounded useful answer', answer => {
     const transcript = [client('Какая коробка передач?'), manager(answer)];
     const report = normalizeUnifiedCallReport({ keyFindings: [{ problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа',

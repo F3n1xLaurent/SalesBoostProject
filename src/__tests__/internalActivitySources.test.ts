@@ -16,8 +16,9 @@ beforeAll(async () => {
   writeFileSync(join(directory, 'test.db'), '');
   execFileSync(process.execPath, ['node_modules/prisma/build/index.js', 'db', 'push', '--skip-generate', '--schema', 'prisma/schema.prisma'], { env: { ...process.env, DATABASE_URL: url }, stdio: 'pipe' });
   state.db = new PrismaClient({ datasources: { db: { url } } });
-  await state.db.holding.createMany({ data: [{ id: 'c', name: 'Клиент' }, { id: 'test', name: 'Тест', isTest: true }, { id: 'deleted', name: 'Удалённая', isDeleted: true }] });
-  await state.db.dealership.createMany({ data: [{ id: 'b', name: 'Точка', holdingId: 'c' }, { id: 'tb', name: 'Тестовая точка', holdingId: 'test' }] });
+  const createdAt = new Date('2026-08-01T00:00:00Z');
+  await state.db.holding.createMany({ data: [{ id: 'c', name: 'Клиент' }, { id: 'test', name: 'Тест', isTest: true }, { id: 'deleted', name: 'Удалённая', isDeleted: true }].map(row => ({ ...row, createdAt })) });
+  await state.db.dealership.createMany({ data: [{ id: 'b', name: 'Точка', holdingId: 'c' }, { id: 'tb', name: 'Тестовая точка', holdingId: 'test' }].map(row => ({ ...row, createdAt })) });
   for (const [id, role, branch] of [['employee', 'manager', 'b'], ['admin', 'dealership_admin', 'b'], ['team', 'platform_superadmin', 'b'], ['test-user', 'manager', 'tb']] as const) {
     await state.db.account.create({ data: { id, email: `${id}@example.test`, passwordHash: 'unused', memberships: { create: { role, dealershipId: branch } } } });
     await state.db.managerProfile.create({ data: { id: `profile-${id}`, accountId: id, fullName: id, dealershipId: branch } });
