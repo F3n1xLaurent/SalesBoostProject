@@ -20,6 +20,7 @@
     "auth:create-admin": "tsx scripts/create-admin-account.ts",
     "org:sync-mock": "tsx scripts/sync-mock-organization.ts",
     "regenerate": "tsx scripts/regenerate-evaluations.ts",
+    "report:prod": "node --import tsx scripts/production-report.ts",
     "backfill-training": "tsx scripts/backfill-training-assessments.ts",
     "generate-mock": "tsx scripts/generate-mock-data.ts",
     "delete-mock": "tsx scripts/delete-mock-data.ts",

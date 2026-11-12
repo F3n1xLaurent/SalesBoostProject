@@ -17,6 +17,7 @@ import { WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { startCallAnalysisRecovery } from './voice/callAnalysisJobs';
 import { handleGetDiagnosticCase } from './diagnostics/http';
+import { handleDiagnosticReportReplacement } from './diagnostics/reportReplacementHttp';
 import { createHttpPerformanceMiddleware } from './diagnostics/httpPerformance';
 import { config } from './config';
 import { compatibleChatTemperature, openai } from './lib/openaiClient';
@@ -3436,7 +3437,13 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, message: 'Sales Boost server is running' });
 });
 
-// Read-only, token-gated production diagnostics. Never expose through browser admin auth.
+// Narrow maintenance endpoints use only the independent diagnostic bearer.
+app.get('/api/internal/diagnostics/reports/:kind/:id', (req, res) => { void handleDiagnosticReportReplacement('fetch', req, res); });
+app.post('/api/internal/diagnostics/reports/:kind/:id', (req, res) => { void handleDiagnosticReportReplacement('publish', req, res); });
+app.get('/api/internal/diagnostics/report-operations/:operationId', (req, res) => { void handleDiagnosticReportReplacement('status', req, res); });
+app.post('/api/internal/diagnostics/report-operations/:operationId/rollback', (req, res) => { void handleDiagnosticReportReplacement('rollback', req, res); });
+
+// The original download endpoint remains read-only.
 app.get('/api/internal/diagnostics/:kind/:id', (req, res) => {
   void handleGetDiagnosticCase(req, res);
 });

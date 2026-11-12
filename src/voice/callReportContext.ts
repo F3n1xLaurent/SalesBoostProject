@@ -9,9 +9,17 @@ function json(value: string | null | undefined, fallback: unknown): any {
 export async function loadCallReportScenarioContext(callId: string, caseContextJson: string | null): Promise<string | undefined> {
   const context = json(caseContextJson, {});
   if (typeof context.prompt === 'string' && context.prompt.trim() && Array.isArray(context.criteria)) {
-    return JSON.stringify({ assessmentCriteria: context.criteria, scenario: context.prompt });
+    return buildCallReportScenarioContext(caseContextJson, null);
   }
   const snapshot = await prisma.callPlanCall.findUnique({ where: { callId }, select: { promptText: true, criteriaJson: true } });
+  return buildCallReportScenarioContext(caseContextJson, snapshot);
+}
+
+export function buildCallReportScenarioContext(caseContextJson: string | null, snapshot: { promptText: string; criteriaJson: string } | null): string | undefined {
+  const context = json(caseContextJson, {});
+  if (typeof context.prompt === 'string' && context.prompt.trim() && Array.isArray(context.criteria)) {
+    return JSON.stringify({ assessmentCriteria: context.criteria, scenario: context.prompt });
+  }
   const prompt = snapshot?.promptText?.trim() || (typeof context.prompt === 'string' ? context.prompt.trim() : '');
   const criteria = snapshot ? json(snapshot.criteriaJson, []) : context.criteria;
   if (!prompt && (!Array.isArray(criteria) || criteria.length === 0)) return undefined;

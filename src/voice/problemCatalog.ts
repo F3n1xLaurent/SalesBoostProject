@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 export type ProblemCatalogCategory = 'Контакт' | 'Диагностика' | 'Продукт' | 'Закрытие' | 'Коммуникация';
 
@@ -8,6 +9,13 @@ export type ProblemCatalogItem = {
   category: ProblemCatalogCategory;
   sortOrder: number;
 };
+
+const catalogContext = new AsyncLocalStorage<ProblemCatalogItem[]>();
+/** Offline report repairs use the exported production catalog, without
+ * reading or seeding the local application database. */
+export function withCallReportProblemCatalog<T>(catalog: ProblemCatalogItem[], task: () => T): T {
+  return catalogContext.run(catalog, task);
+}
 
 // A display variant of the existing code, not a new scoring criterion.
 export const UNCONFIRMED_NEXT_STEP_TITLE = 'Не закрепил детали следующего шага';
@@ -55,6 +63,8 @@ export async function seedCallReportProblemCatalog(prisma: PrismaClient): Promis
 }
 
 export async function getCallReportProblemCatalog(prisma: PrismaClient): Promise<ProblemCatalogItem[]> {
+  const supplied = catalogContext.getStore();
+  if (supplied) return supplied;
   const rows = await prisma.callReportProblem.findMany({
     where: { isActive: true },
     orderBy: [{ sortOrder: 'asc' }, { title: 'asc' }],
