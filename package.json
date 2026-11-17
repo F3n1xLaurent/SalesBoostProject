@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:admin": "vite dev --config admin-frontend/vite.config.ts",
-    "build": "tsc && vite build --config admin-frontend/vite.config.ts",
+    "build": "tsc -p tsconfig.build.json && vite build --config admin-frontend/vite.config.ts",
     "admin:fresh": "npm run build && vite dev --config admin-frontend/vite.config.ts",
     "admin:serve": "npm run build && PORT=8080 tsx watch src/index.ts",
     "start": "node dist/src/index.js",

@@ -37,7 +37,7 @@ COPY prisma ./prisma/
 RUN npx prisma generate
 
 # Build TypeScript + admin frontend
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src/
 COPY public ./public/
 COPY data ./data/
