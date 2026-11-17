@@ -4,6 +4,7 @@ import { fetchCallPlans, fetchHoldings, type CallPlanItem, type HoldingItem } fr
 import { useGlobalHoldingFilter } from '../../../shared/lib/global-holding-filter/useGlobalHoldingFilter';
 import { HoldingSelectPicker } from '../../../shared/ui/filter-picker/HoldingSelectPicker';
 import { YandexRealtimeTestPage } from './YandexRealtimeTestPage';
+import { PipecatHypothesisPanel } from './PipecatHypothesisPanel';
 import { AutoTestingPage } from './AutoTestingPage';
 import { parseTestingTab, testingTabSearch } from '../model/testingTabs';
 import './testing-page.css';
@@ -77,6 +78,8 @@ export function TestingPage() {
       </div>
       {error && <div className="sa-batch-live-error" style={{ marginBottom: 12 }} role="alert">{error}</div>}
       <section role="tabpanel" id="testing-panel-hypotheses" aria-labelledby="testing-tab-hypotheses" hidden={tab !== 'hypotheses'}>
+        <PipecatHypothesisPanel plans={currentPlans ? planState.plans : []}
+          loading={holdingsLoading || (hasHolding && (!currentPlans || planState.loading))} />
         <YandexRealtimeTestPage plans={currentPlans ? planState.plans : []}
           loading={holdingsLoading || (hasHolding && (!currentPlans || planState.loading))} />
       </section>

@@ -3,6 +3,7 @@ const mocks = vi.hoisted(() => ({
   voiceFind: vi.fn(), voiceUpdate: vi.fn(), voiceUpsert: vi.fn(), planFind: vi.fn(), planUpdate: vi.fn(),
   scriptFind: vi.fn(), evaluate: vi.fn(), bundle: vi.fn(), criteria: vi.fn(), recording: vi.fn(), retranscribe: vi.fn(),
   durable: vi.fn(), finish: vi.fn(), attribution: vi.fn(), deleted: vi.fn(),
+  pipecat: vi.fn(),
   jobs: new Map<string, any>(),
 }));
 vi.mock('../db', () => ({ prisma: {
@@ -39,6 +40,7 @@ vi.mock('@sentry/node', () => ({ captureMessage: vi.fn(), captureException: vi.f
 vi.mock('../analytics/productAnalytics', () => ({ recordProductEvent: vi.fn() }));
 vi.mock('../voice/productionRealtimeState', () => ({ flushProductionRealtimeState: mocks.durable }));
 vi.mock('../voice/callPlanTelephony', () => ({ finishProductionCallPlanTelephony: mocks.finish }));
+vi.mock('../voice/productionPipecat', () => ({ readPipecatState: mocks.pipecat }));
 import { finalizeVoiceCallSession, recordVoiceCallConnected } from '../voice/voiceCallSession';
 import { scheduleAuditReportBackfill, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
 import { analyticsQueue } from '../logic/analyticsQueue';
@@ -60,6 +62,7 @@ function patch(target: Record<string, any>, data: Record<string, any>) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.jobs.clear();
+  mocks.pipecat.mockResolvedValue(null);
   mocks.deleted.mockResolvedValue(null);
   session = { callId: 'call-production', to: '+79507503215', scenario: 'openai_realtime', source: 'scheduled',
     startedAt: new Date('2026-10-29T10:00:00Z'), connectedAt: new Date('2026-10-29T10:00:05Z'),
@@ -88,6 +91,22 @@ beforeEach(() => {
 });
 const finalEvent = { call_id: 'call-production', event: 'disconnected', ts: '2026-10-29T10:02:00Z' };
 describe('production hypothesis 2 through the existing recording and report pipeline', () => {
+  it('processes durable Pipecat output through recording, evaluation and the same plan report without duplicate analysis', async () => {
+    session.scenario = 'pipecat';
+    session.caseContextJson = JSON.stringify({ telephony: { provider: 'pipecat', voiceId: 'profile-voice' }, pipecat: { diagnosticId: 'pc-call-production' } });
+    mocks.pipecat.mockResolvedValue({ transcript, voxSessionId: '789', recordingStarted: true, ivrDetected: true, ivrPath: ['1','2'] });
+    await finalizeVoiceCallSession(finalEvent);
+    await finalizeVoiceCallSession(finalEvent);
+    expect(mocks.recording).toHaveBeenCalledWith('call-production', '789');
+    expect(mocks.retranscribe).toHaveBeenCalledWith('/private/recording.mp3', transcript);
+    expect(mocks.evaluate).toHaveBeenCalledOnce();
+    expect(planCall.status).toBe('completed');
+    expect(planCall.evaluationJson).toBe(session.evaluationJson);
+    expect(planCall.transcriptJson).toBe(session.transcriptJson);
+    expect(JSON.parse(session.caseContextJson).pipecat.diagnosticId).toBe('pc-call-production');
+    expect(mocks.finish).not.toHaveBeenCalled();
+    expect(session.ivrDetected).toBe(true);expect(JSON.parse(session.ivrPathJson)).toEqual(['1','2']);
+  });
   it('saves hangup and frees telephony before waiting, without starting recording or paid analysis outside its slot', async () => {
     const releases: Array<() => void> = [];
     const blockers = Array.from({ length: analyticsQueue.concurrency }, (_, index) => withAuditAnalyticsProgress(`finalize-blocker-${index}`, 'report',

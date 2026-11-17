@@ -1,0 +1,1 @@
+const O=100,E=/^[\p{L}\p{M}\p{N} .,:+'"«»„“№&()/\-–—]+$/u,T=/[\p{L}\p{N}]/u;function I(t,n){const N=t.normalize("NFKC").replace(/\s+/gu," ").trim(),A=Array.from(N).length,_=n==="holding"?"компании":"точки";return A<2||A>100?`Название ${_} должно содержать от 2 до 100 символов.`:!T.test(N)||!E.test(N)?`Название ${_} содержит недопустимые символы.`:null}export{O,I as v};

@@ -1,0 +1,209 @@
+{
+  "date": "2026-11-12",
+  "pipecatCommit": "7cf75afc37f321ecce1822901351bc5fdc372e0b",
+  "results": [
+    {
+      "scope": "full_api_preflight",
+      "checks": [
+        {
+          "status": "blocked",
+          "provider": "openai",
+          "ttsModel": "eleven_v3",
+          "reason": "TimeoutError"
+        },
+        {
+          "status": "blocked",
+          "provider": "openai",
+          "ttsModel": "eleven_v4",
+          "reason": "TimeoutError"
+        },
+        {
+          "status": "passed",
+          "provider": "openai",
+          "model": "gpt-realtime-2.1",
+          "ttsModel": "eleven_v4_turbo",
+          "audio": "PCM16 little-endian mono 16000 Hz; OpenAI resampled to 24000 Hz",
+          "nativeTts": false,
+          "serverVad": false,
+          "checks": [
+            "elevenlabs_model_and_voice_access",
+            "openai_realtime_text_only_vad_disabled",
+            "elevenlabs_ttd_pcm16000_first_audio"
+          ],
+          "synthesisProbed": true,
+          "ttsFirstAudioMs": 455.01
+        }
+      ],
+      "phoneCallsMade": 0
+    },
+    {
+      "scope": "tts_only_retry",
+      "checks": [
+        {
+          "status": "blocked",
+          "provider": "openai",
+          "ttsModel": "eleven_v3",
+          "reason": "TimeoutError"
+        },
+        {
+          "status": "blocked",
+          "provider": "openai",
+          "ttsModel": "eleven_v4",
+          "reason": "TimeoutError"
+        },
+        {
+          "status": "blocked",
+          "provider": "openai",
+          "ttsModel": "eleven_v4_turbo",
+          "reason": "TimeoutError"
+        }
+      ],
+      "phoneCallsMade": 0
+    },
+    {
+      "scope": "live_pipecat_tts_service",
+      "checks": [
+        {
+          "status": "passed",
+          "provider": "openai",
+          "model": "gpt-realtime-2.1",
+          "ttsModel": "eleven_v4_turbo",
+          "audio": "PCM16 little-endian mono 16000 Hz; OpenAI resampled to 24000 Hz",
+          "nativeTts": null,
+          "serverVad": null,
+          "checks": [
+            "elevenlabs_model_and_voice_access",
+            "elevenlabs_ttd_pcm16000_first_audio"
+          ],
+          "synthesisProbed": true,
+          "ttsFirstAudioMs": 292.02,
+          "scope": "tts_only",
+          "pipecatTts": {
+            "audioBytes": 128000,
+            "firstAudioMs": 1392.8,
+            "sampleRate": 16000
+          }
+        }
+      ],
+      "phoneCallsMade": 0
+    },
+    {
+      "scope": "socks5_recheck_tts_and_pipecat",
+      "checks": [
+        {
+          "status": "passed",
+          "provider": "openai",
+          "model": "gpt-realtime-2.1",
+          "ttsModel": "eleven_v3",
+          "audio": "PCM16 little-endian mono 16000 Hz; OpenAI resampled to 24000 Hz",
+          "nativeTts": null,
+          "serverVad": null,
+          "checks": [
+            "elevenlabs_model_and_voice_access",
+            "elevenlabs_ttd_pcm16000_first_audio"
+          ],
+          "synthesisProbed": true,
+          "ttsFirstAudioMs": 1036.43,
+          "scope": "tts_only",
+          "pipecatTts": {
+            "audioBytes": 112640,
+            "firstAudioMs": 3046.85,
+            "sampleRate": 16000
+          }
+        },
+        {
+          "status": "passed",
+          "provider": "openai",
+          "model": "gpt-realtime-2.1",
+          "ttsModel": "eleven_v4",
+          "audio": "PCM16 little-endian mono 16000 Hz; OpenAI resampled to 24000 Hz",
+          "nativeTts": null,
+          "serverVad": null,
+          "checks": [
+            "elevenlabs_model_and_voice_access",
+            "elevenlabs_ttd_pcm16000_first_audio"
+          ],
+          "synthesisProbed": true,
+          "ttsFirstAudioMs": 1251.49,
+          "scope": "tts_only",
+          "pipecatTts": {
+            "audioBytes": 130560,
+            "firstAudioMs": 2731.37,
+            "sampleRate": 16000
+          }
+        },
+        {
+          "status": "passed",
+          "provider": "openai",
+          "model": "gpt-realtime-2.1",
+          "ttsModel": "eleven_v4_turbo",
+          "audio": "PCM16 little-endian mono 16000 Hz; OpenAI resampled to 24000 Hz",
+          "nativeTts": null,
+          "serverVad": null,
+          "checks": [
+            "elevenlabs_model_and_voice_access",
+            "elevenlabs_ttd_pcm16000_first_audio"
+          ],
+          "synthesisProbed": true,
+          "ttsFirstAudioMs": 327.92,
+          "scope": "tts_only",
+          "pipecatTts": {
+            "audioBytes": 130560,
+            "firstAudioMs": 2061.1,
+            "sampleRate": 16000
+          }
+        }
+      ],
+      "phoneCallsMade": 0
+    },
+    {
+      "scope": "socks5_recheck_combined_preflight",
+      "checks": [
+        {
+          "status": "blocked",
+          "provider": "openai",
+          "ttsModel": "eleven_v4_turbo",
+          "reason": "TimeoutError"
+        }
+      ],
+      "phoneCallsMade": 0
+    },
+    {
+      "scope": "openai_session_recheck_independent",
+      "provider": "openai",
+      "model": "gpt-realtime-2.1",
+      "phase": "session_confirmed",
+      "status": "passed",
+      "phoneCallsMade": 0,
+      "nativeTts": false,
+      "serverVad": false
+    },
+    {
+      "scope": "docker_live_pipecat_tts_service",
+      "checks": [
+        {
+          "status": "passed",
+          "provider": "openai",
+          "model": "gpt-realtime-2.1",
+          "ttsModel": "eleven_v4_turbo",
+          "audio": "PCM16 little-endian mono 16000 Hz; OpenAI resampled to 24000 Hz",
+          "nativeTts": null,
+          "serverVad": null,
+          "checks": [
+            "elevenlabs_model_and_voice_access",
+            "elevenlabs_ttd_pcm16000_first_audio"
+          ],
+          "synthesisProbed": true,
+          "ttsFirstAudioMs": 376.27,
+          "scope": "tts_only",
+          "pipecatTts": {
+            "audioBytes": 128000,
+            "firstAudioMs": 1839.07,
+            "sampleRate": 16000
+          }
+        }
+      ],
+      "phoneCallsMade": 0
+    }
+  ]
+}

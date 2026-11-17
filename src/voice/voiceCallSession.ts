@@ -33,6 +33,7 @@ import * as Sentry from '@sentry/node';
 import { recordCallEvent as recordCallProductEvent } from '../analytics/callEvents';
 import { flushProductionRealtimeState } from './productionRealtimeState';
 import { finishProductionCallPlanTelephony } from './callPlanTelephony';
+import { readPipecatState } from './productionPipecat';
 import { assertAuditAnalyticsCurrent, updateAuditAnalyticsStage, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
 import { saveCallAnalysisJob, runCallAnalysisJob } from './callAnalysisJobs';
 
@@ -408,6 +409,20 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload, options:
       totalScore: existingSession.totalScore, failureReason: existingSession.failureReason,
     });
     return;
+  }
+  if (existingSession?.scenario === 'pipecat') {
+    const snapshot = await readPipecatState(callId);
+    if (snapshot) {
+      if (snapshot.connectedAt && !existingSession.connectedAt) {
+        await recordVoiceCallConnected({ call_id: callId, to: snapshot.to, ts: snapshot.connectedAt });
+        existingSession.connectedAt = new Date(snapshot.connectedAt);
+      }
+      payload = { ...payload, transcript: snapshot.transcript.length ? snapshot.transcript : payload.transcript,
+        ivr: payload.ivr || snapshot.ivrDetected,
+        ivr_path: snapshot.ivrPath?.length ? snapshot.ivrPath : payload.ivr_path,
+        vox_session_id: snapshot.voxSessionId ?? payload.vox_session_id,
+        recording_started: snapshot.recordingStarted || payload.recording_started === true };
+    }
   }
   if (existingSession?.scenario === 'openai_realtime') {
     await finishProductionCallPlanTelephony(callId, event, payload.ts ?? new Date().toISOString());

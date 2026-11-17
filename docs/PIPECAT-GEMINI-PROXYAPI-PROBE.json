@@ -1,0 +1,23 @@
+{
+  "date": "2026-11-12",
+  "environment": "docker",
+  "provider": "gemini_proxyapi",
+  "model": "gemini-3.8-flash",
+  "status": "passed",
+  "phoneCallsMade": 0,
+  "stt": {
+    "text": "Здравствуйте. Проверяем качество голоса и задержку ответа.",
+    "requestMs": 3382.13
+  },
+  "llm": {
+    "toolCalled": true,
+    "firstTextMs": 5615.01,
+    "text": "Проверка пройдена. Спасибо, до свидания.",
+    "totalMs": 5726.93
+  },
+  "outputTts": {
+    "audioBytes": 94720,
+    "firstAudioMs": 2016.02,
+    "sampleRate": 16000
+  }
+}

@@ -14,7 +14,8 @@ export function callPlanAutoTestConfiguration() {
     transcriptionModel: config.openaiRealtimeTranscriptionModel,
     voiceSource: 'call_plan',
     available: provider === 'openai_realtime' && Boolean(config.openaiRealtimeApiKey && config.elevenLabsApiKey),
-    reason: provider !== 'openai_realtime' ? 'Основная телефония переключена на ElevenLabs Agent. Этот стенд проверяет цепочку OpenAI Realtime + ElevenLabs.'
+    reason: provider === 'pipecat' ? 'Основные звонки используют Pipecat. Этот стенд проверяет прямую цепочку Realtime; автопроверка Pipecat здесь пока недоступна.'
+      : provider !== 'openai_realtime' ? 'Основная телефония переключена на ElevenLabs Agent. Этот стенд проверяет цепочку OpenAI Realtime + ElevenLabs.'
       : !config.openaiRealtimeApiKey || !config.elevenLabsApiKey ? 'На сервере не настроены ключи OpenAI Realtime и ElevenLabs.' : null,
   };
 }

@@ -1,0 +1,65 @@
+name: salesboost-pipecat
+
+services:
+  pipecat:
+    build:
+      context: ./apps/pipecat-hypothesis
+      dockerfile: Dockerfile
+    image: salesboost-pipecat:${PIPECAT_IMAGE_TAG:-local}
+    restart: unless-stopped
+    init: true
+    environment:
+      PIPECAT_HYPOTHESIS_TOKEN: ${PIPECAT_HYPOTHESIS_TOKEN:?Configure the shared Pipecat token in the root .env}
+      PIPECAT_HYPOTHESIS_PUBLIC_URL: ${PIPECAT_HYPOTHESIS_PUBLIC_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      PROXYAPI_API_KEY: ${PROXYAPI_API_KEY:-}
+      PIPECAT_GEMINI_PROXYAPI_BASE_URL: ${PIPECAT_GEMINI_PROXYAPI_BASE_URL:-https://api.proxyapi.ru}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_AGENT_ID: ${ELEVENLABS_AGENT_ID:-}
+      ELEVENLABS_PROXY_URL: ${PIPECAT_ELEVENLABS_PROXY_URL-${ELEVENLABS_PROXY_URL:-}}
+      VOX_ACCOUNT_ID: ${VOX_ACCOUNT_ID:-}
+      VOX_API_KEY: ${VOX_API_KEY:-}
+      VOX_APP_ID: ${VOX_APP_ID:-}
+      VOX_CALLER_ID: ${VOX_CALLER_ID:-}
+      PIPECAT_VOX_RULE: ${PIPECAT_VOX_RULE:-voice_pipecat_hypothesis_rule}
+      PIPECAT_PRODUCTION_VOX_RULE: ${PIPECAT_PRODUCTION_VOX_RULE:-voice_pipecat_rule}
+      PIPECAT_VOX_PROXY_URL: ${PIPECAT_VOX_PROXY_URL:-}
+      PIPECAT_LOG_DIR: /data/logs
+      PIPECAT_BACKGROUND_DIR: /data/background
+      PIPECAT_BACKGROUND_ENABLED: ${PIPECAT_BACKGROUND_ENABLED:-true}
+      PIPECAT_BACKGROUND_VOLUME: ${PIPECAT_BACKGROUND_VOLUME:-0.2}
+      PIPECAT_BREATH_EXPERIMENT: ${PIPECAT_BREATH_EXPERIMENT:-false}
+      PIPECAT_BREATH_VOLUME: ${PIPECAT_BREATH_VOLUME:-0.18}
+      LOGURU_LEVEL: INFO
+      PIPECAT_THINKING_DELAY_MS: ${PIPECAT_THINKING_DELAY_MS:-1600}
+      PIPECAT_THINKING_COOLDOWN_SECONDS: ${PIPECAT_THINKING_COOLDOWN_SECONDS:-25}
+      PIPECAT_SEMANTIC_MODEL: ${PIPECAT_SEMANTIC_MODEL:-microsoft/microsoft-decision-1}
+      PIPECAT_MAX_CALL_SECONDS: ${PIPECAT_MAX_CALL_SECONDS:-900}
+      PIPECAT_LINE_WAIT_SECONDS: ${PIPECAT_LINE_WAIT_SECONDS:-180}
+      PIPECAT_INTERRUPTION_MS: ${PIPECAT_INTERRUPTION_MS:-850}
+      PIPECAT_SPEECH_MODE: ${PIPECAT_SPEECH_MODE:-fast_sentence}
+    ports:
+      - "127.0.0.1:${PIPECAT_PORT:-8093}:8093"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - pipecat_logs:/data/logs
+      - ./call-background:/data/background:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
+
+volumes:
+  pipecat_logs:

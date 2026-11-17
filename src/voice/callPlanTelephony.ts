@@ -9,12 +9,13 @@ import { prepareProductionOpenAiRealtimeCall, updateProductionRealtimeLifecycle 
 import type { RealtimeTestPlanConfiguration } from './callSettingsManagement';
 import { startVoiceCall, type StartVoiceCallResult } from './startVoiceCall';
 import { flushProductionRealtimeState, registerProductionRealtimeState, realtimeWebhookTokenHash, unregisterProductionRealtimeState } from './productionRealtimeState';
+import { PIPECAT_PROFILE, prepareProductionPipecatCall } from './productionPipecat';
 
-export type CallPlanTelephonyProvider = 'openai_realtime' | 'elevenlabs_agent';
+export type CallPlanTelephonyProvider = 'pipecat' | 'openai_realtime' | 'elevenlabs_agent';
 export function resolveCallPlanTelephonyProvider(value = process.env.CALL_PLAN_TELEPHONY_PROVIDER): CallPlanTelephonyProvider {
-  const normalized = value?.trim().toLowerCase() || 'openai_realtime';
-  if (normalized !== 'openai_realtime' && normalized !== 'elevenlabs_agent') {
-    throw new Error('CALL_PLAN_TELEPHONY_PROVIDER должен быть openai_realtime или elevenlabs_agent.');
+  const normalized = value?.trim().toLowerCase() || 'pipecat';
+  if (normalized !== 'pipecat' && normalized !== 'openai_realtime' && normalized !== 'elevenlabs_agent') {
+    throw new Error('CALL_PLAN_TELEPHONY_PROVIDER должен быть pipecat, openai_realtime или elevenlabs_agent.');
   }
   return normalized;
 }
@@ -37,6 +38,28 @@ async function prepareTelephony(phone: string, plan: RealtimeTestPlanConfigurati
   provider: CallPlanTelephonyProvider, authorize: () => Promise<void>) {
   await authorize();
   const callId = randomUUID();
+  if (provider === 'pipecat') {
+    const pipecat = await prepareProductionPipecatCall(callId, phone, plan);
+    const startedAt = new Date().toISOString();
+    let started = false;
+    let disposed = false;
+    return { callId, startedAt, scenario: 'pipecat' as const,
+      telephony: { ...PIPECAT_PROFILE, provider: 'pipecat' as const, scenario: 'pipecat' as const,
+        voiceId: pipecat.voiceId, diagnosticId: pipecat.diagnosticId },
+      dispose: async () => { disposed = true; await pipecat.dispose(); },
+      start: async (): Promise<StartVoiceCallResult> => {
+        if (disposed) throw new Error('Подготовка звонка уже закрыта.');
+        if (started) throw new Error('Этот звонок уже был запущен.');
+        started = true;
+        await authorize();
+        recordCallEvent(callId, 'call_attempted', {}, new Date(startedAt));
+        addCall(callId, phone, startedAt);
+        const result = await pipecat.start();
+        if (result.callSessionHistoryId) setVoxSessionId(callId, result.callSessionHistoryId);
+        return { ...result, startedAt };
+      },
+    };
+  }
   const realtime = provider === 'openai_realtime'
     ? await prepareProductionOpenAiRealtimeCall({ callId, phone, plan }) : null;
   const webhookToken = realtime ? randomUUID() : null;

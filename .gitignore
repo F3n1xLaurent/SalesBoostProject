@@ -12,6 +12,8 @@ out/
 cert.pem
 key.pem
 .cursor/
+apps/pipecat-hypothesis/.venv/
+apps/pipecat-hypothesis/__pycache__/
 
 # Local env snapshots (secrets; never commit)
 backups/

@@ -1,0 +1,21 @@
+# Pipecat production: docker compose -f compose.prod.yaml -f compose.pipecat.prod.yaml up -d --build app pipecat
+services:
+  app:
+    environment:
+      PIPECAT_HYPOTHESIS_URL: http://pipecat:8093
+      PIPECAT_HYPOTHESIS_TOKEN: ${PIPECAT_HYPOTHESIS_TOKEN:?Configure the shared Pipecat token}
+    depends_on:
+      pipecat:
+        condition: service_healthy
+    volumes:
+      - salesboost_voice_pipecat:/app/storage/voice-pipecat
+  pipecat:
+    extends:
+      file: compose.pipecat.yaml
+      service: pipecat
+    ports: !reset []
+
+volumes:
+  pipecat_logs:
+  salesboost_voice_pipecat:
+    name: salesboost_voice_pipecat

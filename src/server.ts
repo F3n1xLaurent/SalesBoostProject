@@ -56,7 +56,10 @@ import {
 import { handleStartRealtimeRegression, handleGetRealtimeRegression, handleCancelRealtimeRegression, handleRegressionAudio, handleListRealtimeRegressions, handleCompareRealtimeRegressions,
   handleStartCallPlanAutoTest, handleAutoTestingCatalog, handleAutoTestingLiveTicket, loadOwnedRegressionRun } from './voice/realtimeRegression';
 import { createAutoTestingUpgradeHandler } from './testing/autoTestingLive';
+import { createCallPlanHistoryUpgradeHandler, handleCallPlanHistoryTicket } from './voice/callPlanHistoryLive';
 import { requireTestingSuperadmin } from './testing/access';
+import { createPipecatHypothesisRouter } from './testing/pipecatHypothesis';
+import { createPipecatPublicRouter, handlePipecatPublicUpgrade } from './testing/pipecatPublicGateway';
 import { createTrainerAutoTesting, type TrainerTestSource, type TrainerTestTurn } from './testing/trainerAutoTesting';
 import { createReportAutoTesting } from './testing/reportAutoTesting';
 import { synthesizeTrainerFixture } from './testing/trainerTestFixtures';
@@ -64,6 +67,8 @@ import { handleProductionRealtimeWebhook } from './voice/productionRealtimeWebho
 import { addCall, getCallHistory, getTestNumbers, setVoxSessionId } from './voice/callHistory';
 import { resolveVoiceCallUrls, startVoiceCall } from './voice/startVoiceCall';
 import { finalizeVoiceCallSession, recordVoiceCallConnected, isVoiceCallFinalizing } from './voice/voiceCallSession';
+import { startProductionPipecatRecovery } from './voice/productionPipecat';
+import { resolveCallPlanTelephonyProvider } from './voice/callPlanTelephony';
 import { createDeleteAuditHandler } from './audits/deleteAudit';
 import { createDemoCallStartHandler } from './voice/demoCallLaunch';
 import { normalizeVoxWebhookEvent } from './voice/voxCallOutcome';
@@ -3434,7 +3439,7 @@ function buildVoiceCallDetailResponse(session: {
 
 // Health check: verify server is running (e.g. curl http://localhost:3000/health)
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, message: 'Sales Boost server is running' });
+  res.json({ ok: true, message: 'Sales Boost server is running', callPlanTelephonyProvider: resolveCallPlanTelephonyProvider() });
 });
 
 // Narrow maintenance endpoints use only the independent diagnostic bearer.
@@ -3854,6 +3859,7 @@ app.use('/api/admin', (req, res, next) => {
 app.use('/api/admin/billing', billingRouter);
 
 app.use(['/api/admin/auto-testing', '/api/admin/realtime-test'], requireTestingSuperadmin);
+app.use('/api/admin/realtime-test/pipecat', createPipecatHypothesisRouter());
 
 app.use('/api/imports', (req, res, next) => {
   adminApiAuthMiddleware(req, res, next).catch((error) => {
@@ -4933,6 +4939,13 @@ app.get('/api/admin/call-settings/plans/:id/calls', (req, res) => {
   handleListCallPlanCalls(req, res).catch((error) => {
     reportError(error, { task: 'List call plan calls error' });
     res.status(500).json({ error: 'Не удалось загрузить историю прозвона.' });
+  });
+});
+
+app.post('/api/admin/call-settings/plans/:id/calls/live-ticket', (req, res) => {
+  void handleCallPlanHistoryTicket(req, res).catch((error) => {
+    reportError(error, { task: 'Call plan history ticket error' });
+    res.status(500).json({ error: 'Не удалось подключить историю прозвона.' });
   });
 });
 
@@ -7381,6 +7394,7 @@ function safeVoxPayloadPreview(value: unknown, maxLen = 4000): string {
 }
 
 app.post('/webhooks/vox-yandex-realtime-test', handleYandexRealtimeTestWebhook);
+app.use('/pipecat', createPipecatPublicRouter());
 app.post('/webhooks/vox-comet-realtime-test', handleCometRealtimeTestWebhook);
 
 app.use('/webhooks/vox', (req, _res, next) => {
@@ -7603,7 +7617,7 @@ app.post('/webhooks/vox', async (req, res) => {
   try {
     const callId = typeof payload.call_id === 'string' ? payload.call_id : '';
     const session = callId ? await prisma.voiceCallSession.findUnique({ where: { callId }, select: { scenario: true } }) : null;
-    if (session?.scenario === 'openai_realtime') {
+    if (session?.scenario === 'openai_realtime' || session?.scenario === 'pipecat') {
       res.status(403).json({ error: 'Use the authenticated realtime lifecycle endpoint.' }); return;
     }
   } catch (error) {
@@ -10229,6 +10243,7 @@ export function startServer(): Promise<void> {
 
     const onListen = () => {
       startCallAnalysisRecovery(finalizeVoiceCallSession, isVoiceCallFinalizing);
+      startProductionPipecatRecovery(processVoxWebhookPayload);
       startCallBatchOrchestrator();
       startCallPlanScheduler();
       startImportScheduler();
@@ -10278,7 +10293,10 @@ export function startServer(): Promise<void> {
         console.log('[voice/stream] Client connected, waiting for message');
         ws.on('message', (data: Buffer | string) => handleVoiceStreamMessage(ws, data.toString()));
       });
+      const upgradeCallPlanHistory = createCallPlanHistoryUpgradeHandler();
       server.on('upgrade', (request, socket, head) => {
+        if (upgradeCallPlanHistory(request, socket, head)) return;
+        if (handlePipecatPublicUpgrade(request, socket, head)) return;
         if (upgradeAutoTesting(request, socket, head)) return;
         if (
           request.url?.startsWith('/voice/stream')

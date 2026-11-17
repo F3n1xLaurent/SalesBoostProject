@@ -4,6 +4,8 @@ import { assertCompanyModule, BillingAccessError } from '../billing/access';
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../db';
+import { randomUUID } from 'node:crypto';
+import { PipecatCapacityError, PipecatLaunchUncertainError } from './productionPipecat';
 import { markCallPlanLaunchFailed, prepareCallPlanTelephony, resolveCallPlanTelephonyProvider } from './callPlanTelephony';
 import { resolveCustomerVoiceForProfile } from './customerVoiceSelection';
 import {
@@ -1348,7 +1350,7 @@ export function buildRealtimeCallPrompt(input: {
 async function resolvePlanCustomerVoiceForProfile(
   profile: Pick<Prisma.CallCustomerProfileGetPayload<{}>, 'voiceId'> | null,
 ) {
-  return resolveCustomerVoiceForProfile(profile, resolveCallPlanTelephonyProvider() === 'openai_realtime');
+  return resolveCustomerVoiceForProfile(profile, resolveCallPlanTelephonyProvider() !== 'elevenlabs_agent');
 }
 
 async function resolveScheduledCallCustomerVoice(
@@ -1438,6 +1440,7 @@ async function createScheduledPlanCall(
   dayKey: string,
   minMinutes: number,
   toMinutes: number,
+  immediate = false,
 ): Promise<Prisma.CallPlanCallGetPayload<{}>> {
   const profile = pickRandom(context.profiles);
   const customerVoice = await resolvePlanCustomerVoiceForProfile(profile);
@@ -1453,11 +1456,11 @@ async function createScheduledPlanCall(
       address: target.dealershipAddress,
     },
   });
-  const scheduledAt = timezoneDateTime(dayKey, randomIntInclusive(minMinutes, toMinutes), plan.timezoneOffsetMinutes ?? DEFAULT_TIMEZONE_OFFSET_MINUTES);
+  const scheduledAt = immediate ? new Date() : timezoneDateTime(dayKey, randomIntInclusive(minMinutes, toMinutes), plan.timezoneOffsetMinutes ?? DEFAULT_TIMEZONE_OFFSET_MINUTES);
   return prisma.callPlanCall.create({
     data: {
       planId: plan.id,
-      callId: scheduledCallId(plan.id, target.phoneNumber.id, dayKey),
+      callId: immediate ? 'manual-pipecat-' + randomUUID() : scheduledCallId(plan.id, target.phoneNumber.id, dayKey),
       employeeId: target.employee?.id ?? null,
       employeeName: target.employee?.fullName ?? null,
       dealershipId: target.dealershipId,
@@ -1492,7 +1495,7 @@ async function rebuildPendingCallPlanSchedule(plan: Prisma.CallPlanGetPayload<{}
   await ensureCallPlanScheduleForDate(plan, now);
 }
 
-async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ include: { plan: true } }>): Promise<void> {
+async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ include: { plan: true } }>): Promise<void | false> {
   console.log('[call-plan-scheduler] launch scheduled call', {
     callPlanCallId: call.id,
     planId: call.planId,
@@ -1605,6 +1608,15 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
       elevenLabsVoiceConfigured: Boolean(elevenLabsVoiceId),
     });
   } catch (error) {
+    if (error instanceof PipecatLaunchUncertainError && prepared) {
+      console.warn('[call-plan-scheduler] Pipecat launch pending recovery', { callId: prepared.callId });
+      return;
+    }
+    if (error instanceof PipecatCapacityError && !prepared) {
+      await prisma.callPlanCall.updateMany({ where: { id: call.id, status: 'running' },
+        data: { status: 'scheduled', failureReason: null } });
+      return false;
+    }
     if (prepared) {
       await prepared.dispose().catch(() => undefined);
       await markCallPlanLaunchFailed(prepared.callId, error);
@@ -1632,7 +1644,7 @@ async function validateScheduledPlanCall(
 ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
   const currentPlan = await prisma.callPlan.findUnique({ where: { id: call.planId } });
   if (!currentPlan) return { allowed: false, reason: 'План прозвона удалён.' };
-  if (currentPlan.frequency !== 'daily' && currentPlan.frequency !== 'weekly') {
+  if (!call.callId.startsWith('manual-pipecat-') && currentPlan.frequency !== 'daily' && currentPlan.frequency !== 'weekly') {
     return { allowed: false, reason: 'Автоматический запуск плана отключён.' };
   }
   if (!call.phoneNumberId) return { allowed: false, reason: 'У задания отсутствует привязка к актуальному номеру.' };
@@ -1706,7 +1718,7 @@ async function runCallPlanDueRunner(): Promise<void> {
       });
     }
     for (const call of due) {
-      await launchScheduledPlanCall(call);
+      if (await launchScheduledPlanCall(call) === false) break;
     }
   } catch (error) {
     reportError(error, { task: '[call-plan-scheduler] due runner failed' });
@@ -1720,6 +1732,10 @@ async function launchManualPlanTarget(
   target: Awaited<ReturnType<typeof buildCallPlanTargets>>[number],
   context: Awaited<ReturnType<typeof buildScheduledCallContext>>,
 ): Promise<string> {
+  if (resolveCallPlanTelephonyProvider() === 'pipecat') {
+    const call = await createScheduledPlanCall(plan, target, context, dateKey(new Date()), 0, 0, true);
+    return call.callId;
+  }
   const profile = pickRandom(context.profiles);
   const customerVoice = await resolvePlanCustomerVoiceForProfile(profile);
   const elevenLabsVoiceId = customerVoice?.elevenLabsCode?.trim() || null;
@@ -1807,6 +1823,7 @@ async function launchManualPlanTarget(
 
 export function startCallPlanScheduler(): void {
   if (callPlanDueRunnerTimer || callPlanScheduleCheckerTimer) return;
+  const dueInterval = resolveCallPlanTelephonyProvider() === 'pipecat' ? 5_000 : CALL_PLAN_DUE_RUNNER_INTERVAL_MS;
   void runCallPlanScheduleChecker();
   void runCallPlanDueRunner();
   callPlanScheduleCheckerTimer = setInterval(() => {
@@ -1814,10 +1831,10 @@ export function startCallPlanScheduler(): void {
   }, CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS);
   callPlanDueRunnerTimer = setInterval(() => {
     void runCallPlanDueRunner();
-  }, CALL_PLAN_DUE_RUNNER_INTERVAL_MS);
+  }, dueInterval);
   console.log('[call-plan-scheduler] started', {
     scheduleCheckIntervalMs: CALL_PLAN_SCHEDULE_CHECK_INTERVAL_MS,
-    dueRunnerIntervalMs: CALL_PLAN_DUE_RUNNER_INTERVAL_MS,
+    dueRunnerIntervalMs: dueInterval,
   });
 }
 
@@ -1864,9 +1881,11 @@ export async function handleInitiateCallPlan(req: Request, res: Response): Promi
       callIds: successes,
       batchId: successes[0],
       totalJobs: successes.length,
+      queuedJobs: resolveCallPlanTelephonyProvider() === 'pipecat' ? successes.length : 0,
       failedJobs: failures.length,
       failures: failures.slice(0, 20),
     });
+    if (resolveCallPlanTelephonyProvider() === 'pipecat') void runCallPlanDueRunner();
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось инициировать прозвон.';
     res.status(error instanceof BillingAccessError ? 403 : message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });
@@ -1973,43 +1992,47 @@ export async function resolveRealtimeTestPlanConfiguration(
   };
 }
 
+export async function loadCallPlanHistory(req: Request, id: string) {
+  await assertCanAccessPlan(req, id);
+  const items = await prisma.callPlanCall.findMany({
+    where: { planId: id },
+    orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
+    take: 100,
+  });
+  const voiceSessions = await prisma.voiceCallSession.findMany({
+    where: { callId: { in: items.map((item) => item.callId) } },
+    select: {
+      id: true,
+      callId: true,
+      outcome: true,
+      failureReason: true,
+      answerTimeSec: true,
+      talkDurationSec: true,
+      durationSec: true,
+      ivrDetected: true,
+      ivrPathJson: true,
+    },
+  });
+  const auditIds = new Map(voiceSessions.map((session) => [session.callId, `call-${session.id}`]));
+  const timings = new Map(voiceSessions.map((session) => [
+    session.callId,
+    {
+      outcome: session.outcome,
+      failureReason: session.failureReason,
+      answerTimeSec: session.answerTimeSec,
+      talkDurationSec: session.talkDurationSec,
+      durationSec: session.durationSec,
+      ivrDetected: session.ivrDetected,
+      ivrPathJson: session.ivrPathJson,
+    },
+  ]));
+  return items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null, timings.get(item.callId) ?? null));
+}
+
 export async function handleListCallPlanCalls(req: Request, res: Response): Promise<void> {
   try {
     const id = String(req.params.id || '').trim();
-    await assertCanAccessPlan(req, id);
-    const items = await prisma.callPlanCall.findMany({
-      where: { planId: id },
-      orderBy: { startedAt: 'desc' },
-      take: 100,
-    });
-    const voiceSessions = await prisma.voiceCallSession.findMany({
-      where: { callId: { in: items.map((item) => item.callId) } },
-      select: {
-        id: true,
-        callId: true,
-        outcome: true,
-        failureReason: true,
-        answerTimeSec: true,
-        talkDurationSec: true,
-        durationSec: true,
-        ivrDetected: true,
-        ivrPathJson: true,
-      },
-    });
-    const auditIds = new Map(voiceSessions.map((session) => [session.callId, `call-${session.id}`]));
-    const timings = new Map(voiceSessions.map((session) => [
-      session.callId,
-      {
-        outcome: session.outcome,
-        failureReason: session.failureReason,
-        answerTimeSec: session.answerTimeSec,
-        talkDurationSec: session.talkDurationSec,
-        durationSec: session.durationSec,
-        ivrDetected: session.ivrDetected,
-        ivrPathJson: session.ivrPathJson,
-      },
-    ]));
-    res.json({ items: items.map((item) => normalizePlanCall(item, auditIds.get(item.callId) ?? null, timings.get(item.callId) ?? null)) });
+    res.json({ items: await loadCallPlanHistory(req, id) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Не удалось загрузить историю прозвона.';
     res.status(message.includes('не найден') ? 404 : message.includes('доступ') ? 403 : 400).json({ error: message });

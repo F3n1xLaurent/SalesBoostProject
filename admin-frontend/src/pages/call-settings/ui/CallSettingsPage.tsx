@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import { useLocation, useNavigate } from 'react-router';
+import { watchCallPlanHistory } from '../../../shared/api/callPlanHistory';
 import {
   createCallCustomerProfile,
   createCallCustomerVoice,
@@ -2321,6 +2322,10 @@ export function CallSettingsPage() {
   const [planCalls, setPlanCalls] = useState<CallPlanCallItem[]>([]);
   const [planCallsLoading, setPlanCallsLoading] = useState(false);
   const [planCallsRefreshing, setPlanCallsRefreshing] = useState(false);
+  const historyPlanRef = useRef<string | null>(null);
+  const historyRequestRef = useRef(0);
+  const historyRevisionRef = useRef(0);
+  historyPlanRef.current = route.tab === 'plan' && !route.edit && !route.create ? route.planId ?? null : null;
   const [initiatingPlanId, setInitiatingPlanId] = useState<string | null>(null);
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [schedulePlan, setSchedulePlan] = useState<CallPlan | null>(null);
@@ -2471,6 +2476,8 @@ export function CallSettingsPage() {
     }
   }, [loading, navigate, plans, route, selectedPlan?.id, selectedPlan?.updatedAt]);
 
+  // Other calls changing status must not reload the currently open report.
+  const reportHistoryVersion = JSON.stringify(planCalls.find((item) => item.callId === reportCallId));
   useEffect(() => {
     if (!reportCallId) {
       resetAnalyticsDrawer();
@@ -2488,7 +2495,18 @@ export function CallSettingsPage() {
     }
 
     void loadCallAnalyticsDrawer(call);
-  }, [planCalls, planCallsLoading, reportCallId, route, selectedPlan?.id]);
+  }, [reportHistoryVersion, planCallsLoading, reportCallId, route, selectedPlan?.id]);
+
+  useEffect(() => {
+    if (route.tab !== 'plan' || !route.planId || route.edit || route.create || selectedPlan?.id !== route.planId) return;
+    const planId = route.planId;
+    return watchCallPlanHistory(planId, (items) => {
+      if (historyPlanRef.current !== planId) return;
+      historyRevisionRef.current++;
+      setPlanCalls((current) => JSON.stringify(current) === JSON.stringify(items) ? current : items);
+      setPlanCallsLoading(false);
+    });
+  }, [route.tab, route.planId, route.edit, route.create, selectedPlan?.id]);
 
   const sortedProfiles = useMemo(
     () => [...profiles].sort((a, b) => a.name.localeCompare(b.name, 'ru')),
@@ -2708,7 +2726,7 @@ export function CallSettingsPage() {
         title: result.failedJobs > 0 ? 'Прозвон запущен частично' : 'Прозвон инициирован',
         description: result.failedJobs > 0
           ? `Запущено: ${result.totalJobs}, ошибок: ${result.failedJobs}`
-          : `Запущено звонков: ${result.totalJobs}`,
+          : result.queuedJobs ? `В очереди на звонок: ${result.queuedJobs}` : `Запущено звонков: ${result.totalJobs}`,
       });
       if (selectedPlan?.id === plan.id || route.planId === plan.id) await openPlanHistory(result.item, { skipNavigate: true });
     } catch (initError) {
@@ -2722,15 +2740,23 @@ export function CallSettingsPage() {
   async function openPlanHistory(plan: CallPlan, options?: { skipNavigate?: boolean; background?: boolean }) {
     if (!options?.skipNavigate) navigate(`/call-settings/plans/${encodeURIComponent(plan.id)}`);
     setSelectedPlan(plan);
-    if (options?.background) setPlanCallsRefreshing(true);
-    else setPlanCallsLoading(true);
+    const background = options?.background || selectedPlan?.id === plan.id;
+    const request = ++historyRequestRef.current;
+    const revision = historyRevisionRef.current;
+    if (background) setPlanCallsRefreshing(true);
+    else { setPlanCalls([]); setPlanCallsLoading(true); }
     try {
-      setPlanCalls(await fetchCallPlanCalls(plan.id));
+      const items = await fetchCallPlanCalls(plan.id);
+      if (request === historyRequestRef.current && historyPlanRef.current === plan.id && revision === historyRevisionRef.current) {
+        setPlanCalls((current) => JSON.stringify(current) === JSON.stringify(items) ? current : items);
+      }
     } catch (historyError) {
-      setError(historyError instanceof Error ? historyError.message : 'Не удалось загрузить историю прозвона.');
+      if (request === historyRequestRef.current && historyPlanRef.current === plan.id) setError(historyError instanceof Error ? historyError.message : 'Не удалось загрузить историю прозвона.');
     } finally {
-      if (options?.background) setPlanCallsRefreshing(false);
-      else setPlanCallsLoading(false);
+      if (request === historyRequestRef.current) {
+        setPlanCallsRefreshing(false);
+        setPlanCallsLoading(false);
+      }
     }
   }
 

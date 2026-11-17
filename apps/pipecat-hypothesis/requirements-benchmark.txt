@@ -1,0 +1,2 @@
+# Only for the standalone benchmark environment; not a production dependency.
+deepgram-sdk==7.17.0

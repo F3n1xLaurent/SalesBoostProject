@@ -1,0 +1,15 @@
+[project]
+name = "salesboost-pipecat-hypothesis"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "pipecat-ai[openai,google,elevenlabs,silero,websocket] @ git+https://github.com/pipecat-ai/pipecat.git@7cf75afc37f321ecce1822901351bc5fdc372e0b",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.34,<1",
+  "httpx[socks]>=0.28,<1",
+  "python-socks[asyncio]>=2.7,<3",
+  "websockets>=15,<18",
+]
+
+[tool.uv]
+package = false

@@ -30,7 +30,7 @@ function isPublicHttpUrl(value: string): boolean {
   }
 }
 
-export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure' | 'yandex_realtime_test' | 'comet_realtime_test' | 'openai_realtime';
+export type VoiceCallScenario = 'dialog' | 'realtime' | 'realtime_pure' | 'yandex_realtime_test' | 'comet_realtime_test' | 'openai_realtime' | 'pipecat';
 
 export interface StartVoiceCallOptions {
   /** 'dialog' = our LLM (voice_dialog), 'realtime' = OpenAI Realtime. Default: 'dialog'. */
@@ -105,6 +105,7 @@ export async function startVoiceCall(
   options: StartVoiceCallOptions = {}
 ): Promise<StartVoiceCallResult | StartVoiceCallError> {
   const { scenario = 'dialog' } = options;
+  if (scenario === 'pipecat') return { error: 'Pipecat запускается через двухфазный модуль звонков по плану.' };
   const accountId = process.env.VOX_ACCOUNT_ID;
   const apiKey = process.env.VOX_API_KEY;
   const appId = process.env.VOX_APP_ID;

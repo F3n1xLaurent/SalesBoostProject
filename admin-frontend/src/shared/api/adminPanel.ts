@@ -2101,6 +2101,7 @@ export async function deleteCallPlan(id: string): Promise<void> {
 }
 
 export type CallPlanInitiateResult = {
+  queuedJobs?: number;
   item: CallPlanItem;
   callId: string;
   callIds: string[];
@@ -2124,8 +2125,8 @@ export async function previewCallPlanPrompt(id: string): Promise<CallPlanPromptP
   return data as CallPlanPromptPreview;
 }
 
-export async function fetchCallPlanCalls(id: string): Promise<CallPlanCallItem[]> {
-  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${id}/calls`);
+export async function fetchCallPlanCalls(id: string, signal?: AbortSignal): Promise<CallPlanCallItem[]> {
+  const res = await apiFetch(`${API_BASE}/api/admin/call-settings/plans/${encodeURIComponent(id)}/calls`, { signal });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Не удалось загрузить историю прозвона.');
   return Array.isArray(data.items) ? data.items as CallPlanCallItem[] : [];

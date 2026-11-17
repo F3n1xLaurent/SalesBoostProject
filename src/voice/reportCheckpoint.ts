@@ -59,6 +59,7 @@ export function databaseReportCheckpointStore(key: string, db: PrismaClient = pr
       let caseContext: any;
       try { caseContext = JSON.parse(row.caseContextJson ?? '{}'); } catch { caseContext = row.caseContextJson; }
       if (caseContext && typeof caseContext === 'object') delete caseContext.realtime;
+      if (caseContext && typeof caseContext === 'object') delete caseContext.pipecat;
       return { payload: row.reportCheckpointJson ?? null, caseContextHash: reportCheckpointHash(caseContext) };
     },
     async save(expected, payload) {

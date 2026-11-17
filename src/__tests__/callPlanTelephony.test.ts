@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   billing: vi.fn(), plan: vi.fn(), prepare: vi.fn(), start: vi.fn(), lifecycle: vi.fn(), snapshot: vi.fn(), dispose: vi.fn(), markDialing: vi.fn(),
   register: vi.fn(), flush: vi.fn(), unregister: vi.fn(), update: vi.fn(), add: vi.fn(), voxId: vi.fn(),
+  pipecat: vi.fn(), pipecatStart: vi.fn(), pipecatDispose: vi.fn(),
 }));
+vi.mock('../voice/productionPipecat', () => ({ PIPECAT_PROFILE: { model: 'gpt-realtime-2.1', ttsModel: 'eleven_v4_turbo', dialogueMode: 'semantic', backchannel: true, reasoningEffort: 'low', trimIdleAudio: false }, prepareProductionPipecatCall: mocks.pipecat }));
 vi.mock('../voice/cometRealtimeTest', () => ({ prepareProductionOpenAiRealtimeCall: mocks.prepare, updateProductionRealtimeLifecycle: mocks.lifecycle }));
 vi.mock('../voice/startVoiceCall', () => ({ startVoiceCall: mocks.start }));
 vi.mock('../voice/callHistory', () => ({ addCall: mocks.add, setVoxSessionId: mocks.voxId }));
@@ -17,7 +19,9 @@ const plan = { planId: 'plan', planName: 'Тест', prompt: 'Сценарий',
 let prepared: Awaited<ReturnType<typeof prepareCallPlanTelephony>> | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.stubEnv('CALL_PLAN_TELEPHONY_PROVIDER', '');
+  vi.stubEnv('CALL_PLAN_TELEPHONY_PROVIDER', 'openai_realtime');
+  mocks.pipecat.mockResolvedValue({ voiceId: 'profile-voice', diagnosticId: 'pc-linked', start: mocks.pipecatStart, dispose: mocks.pipecatDispose });
+  mocks.pipecatStart.mockResolvedValue({ callId: 'same-id', scenario: 'pipecat', callSessionHistoryId: 456 });
   mocks.plan.mockResolvedValue({ holdingId: 'company' });
   mocks.billing.mockResolvedValue(undefined);
   mocks.prepare.mockResolvedValue({ streamToken: 'media-secret', voiceId: 'profile-voice', snapshot: mocks.snapshot, dispose: mocks.dispose, markDialing: mocks.markDialing });
@@ -40,10 +44,23 @@ describe('call plan telephony selection and dispatch', () => {
     }));
     expect(mocks.billing).not.toHaveBeenCalled();
   });
-  it('defaults to direct OpenAI and rejects typos', () => {
-    expect(resolveCallPlanTelephonyProvider()).toBe('openai_realtime');
+  it('defaults new plan calls to Pipecat and rejects typos', () => {
+    expect(resolveCallPlanTelephonyProvider('')).toBe('pipecat');
     expect(resolveCallPlanTelephonyProvider(' elevenlabs_agent ')).toBe('elevenlabs_agent');
     expect(() => resolveCallPlanTelephonyProvider('comet')).toThrow();
+  });
+  it('uses two-phase Pipecat with the exact selected profile and the plan voice', async () => {
+    vi.stubEnv('CALL_PLAN_TELEPHONY_PROVIDER', 'pipecat');
+    prepared = await prepareCallPlanTelephony('+79507503215', plan);
+    expect(mocks.pipecat).toHaveBeenCalledWith(prepared.callId, '+79507503215', plan);
+    expect(mocks.pipecatStart).not.toHaveBeenCalled();
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(prepared.telephony).toMatchObject({ provider: 'pipecat', model: 'gpt-realtime-2.1',
+      ttsModel: 'eleven_v4_turbo', dialogueMode: 'semantic', backchannel: true, reasoningEffort: 'low', trimIdleAudio: false, voiceId: 'profile-voice' });
+    await prepared.start();
+    expect(mocks.pipecatStart).toHaveBeenCalledOnce();
+    await expect(prepared.start()).rejects.toThrow();
+    expect(mocks.prepare).not.toHaveBeenCalled();
   });
   it('prepares durable state before dialing and fixes the plan voice and id', async () => {
     prepared = await prepareCallPlanTelephony('+79507503215', plan);
