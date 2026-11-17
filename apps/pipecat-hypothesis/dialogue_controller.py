@@ -25,6 +25,12 @@ def normalized(text):
     return " ".join(re.sub(r"[^\wа-яё ]"," ",text.lower()).split())
 
 
+def context_string(session, key, default=""):
+    """Optional plan text may be absent, blank or explicitly null in JSON."""
+    value = session.context.get(key)
+    return value.strip() if isinstance(value, str) and value.strip() else default
+
+
 def explicit_polar_answer(question,text):
     """Grammatical yes/no evidence, never an answer to a quantity/open question."""
     q=normalized(question)
@@ -48,8 +54,8 @@ def controller_prompt(session):
         "Не представляйся и не называй своё имя, пока собеседник сам не спросит, как тебя зовут. "
         "Контроллер управляет вопросами и завершением. Выполни только CURRENT_TASK из CONTROLLER_STATE, "
         "сначала ответь на встречный вопрос. "+unknown+"После прерывания завершения продолжай разговор. "
-        f"Контекст потребности: {need}\nОбъект: {session.context.get('subjectTitle','выбранный автомобиль')}. "
-        f"Описание: {session.context.get('subjectDescription','')}")
+        f"Контекст потребности: {need}\nОбъект: {context_string(session,'subjectTitle','выбранный автомобиль')}. "
+        f"Описание: {context_string(session,'subjectDescription')}")
 
 
 class DialogueController:
@@ -98,7 +104,7 @@ class DialogueController:
             "bc_listen":"Мгм.","think_reply_0":"Хм…","think_reply_1":"Секунду…",
             "think_visit_0":"Дайте подумать…","think_visit_1":"Сейчас прикину…"}
         self.texts.update({r['key']:r['question'] for r in questions} if derived else await prepare_questions(self.s,questions,self.http))
-        subject=re.sub(r'\([^)]*\)|\b[IVX]+\b','',self.s.context.get('subjectTitle','')).strip(' ,')
+        subject=re.sub(r'\([^)]*\)|\b[IVX]+\b','',context_string(self.s,'subjectTitle')).strip(' ,')
         subject=' '.join(subject.replace(',',' ').split())
         if subject:
             self.texts['subject']='По '+subject+' из объявления.'

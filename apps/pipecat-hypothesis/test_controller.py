@@ -11,7 +11,7 @@ from controller_audio import PreparedAudioPlayer,PreparedSpeechFrame,quiet_clip
 from controller_visit import VisitProposal,affirmative,goodbye
 from speech_filter import SpeechFilter
 from controller_wording import spoken_question
-from dialogue_controller import DialogueController,explicit_polar_answer
+from dialogue_controller import DialogueController,explicit_polar_answer,controller_prompt
 from pipeline import Turn,VoxSerializer,GatedRealtime,OutputEvidence
 from policy import Evidence,Playback
 from pipecat.frames.frames import BotBackchannelFrame,OutputAudioRawFrame,TTSStartedFrame,TTSStoppedFrame
@@ -38,6 +38,29 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         c.choose=AsyncMock(return_value="answer")
 
     async def asyncTearDown(self):await self.c.close()
+
+    async def test_optional_plan_text_does_not_break_audio_preparation(self):
+        wording={r['key']:spoken_question(r['question']) for r in self.s.evidence.memory.topics.required}
+        for context in ({},{'subjectTitle':None,'subjectDescription':None},
+                        {'subjectTitle':'   ','subjectDescription':''},
+                        {'subjectTitle':42,'subjectDescription':{}}):
+            with self.subTest(context=context):
+                self.s.context=context
+                with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+                    await self.c.prepare()
+                self.assertEqual(self.c.texts['opening'],'Здравствуйте! Звоню по объявлению, машина ещё продаётся?')
+                self.assertTrue(self.c.clips['opening'])
+                prompt=controller_prompt(self.s)
+                self.assertIn('Объект: выбранный автомобиль.',prompt)
+                self.assertNotIn('None',prompt)
+
+    async def test_supplied_subject_is_preserved_in_prepared_opening(self):
+        self.s.context={'subjectTitle':'  Toyota Camry (седан) VII  ','subjectDescription':'Описание'}
+        wording={r['key']:spoken_question(r['question']) for r in self.s.evidence.memory.topics.required}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+            await self.c.prepare()
+        self.assertEqual(self.c.texts['opening'],'Здравствуйте! Меня интересует Toyota Camry. Машина ещё продаётся?')
+        self.assertIn('Описание: Описание',controller_prompt(self.s))
 
     def test_customer_name_request_variants_and_other_people(self):
         from dialogue_topics import requests_customer_name
