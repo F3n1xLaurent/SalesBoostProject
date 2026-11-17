@@ -14,7 +14,7 @@ VoxEngine.addEventListener(AppEvents.Started, function (startedEvent) {
   var finished = false;
   var connected = false;
   var recordingStarted = false;
-  var voxSessionId = startedEvent && startedEvent.sessionId;
+  var voxSessionId = startedEvent && (startedEvent.sessionID || startedEvent.sessionId);
   var allowedTags = {};
   var speechEnabled = !data.line_gate;
   var ivrPath = [];

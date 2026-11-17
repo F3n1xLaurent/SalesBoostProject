@@ -79,6 +79,32 @@ class ServiceTests(unittest.TestCase):
 
 
 class DialTests(unittest.IsolatedAsyncioTestCase):
+    async def test_production_dial_requests_recording_and_preserves_start_scenarios_session_id(self):
+        for payload,expected in [
+            ({'result':1,'call_session_history_id':123},123),
+            ({'result':[{'call_session_history_id':456}]},456),
+            ({'result':{'call_session_history_id':789}},789),
+            ({'result':1},999),
+        ]:
+            with self.subTest(payload=payload):
+                session=SimpleNamespace(id='test',to='+79990000000',token='test',production=True,
+                    max_call_seconds=900,dialogue_mode='semantic',production_vox_id=999,
+                    evidence=MagicMock(),persist=MagicMock())
+                client=AsyncMock()
+                client.post.return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:payload)
+                with patch.dict(os.environ,{'VOX_ACCOUNT_ID':'test','VOX_API_KEY':'test','VOX_APP_ID':'test'}), \
+                     patch('service.select_background',new=AsyncMock(return_value=None)), \
+                     patch('service.select_breath',new=AsyncMock(return_value=None)), \
+                     patch('service.voximplant_http_options',return_value={}), \
+                     patch('service.httpx.AsyncClient') as constructor:
+                    constructor.return_value.__aenter__=AsyncMock(return_value=client)
+                    constructor.return_value.__aexit__=AsyncMock(return_value=False)
+                    await service.dial_pipecat(session,'https://test.invalid/pipecat')
+                data=client.post.call_args.kwargs['data']
+                self.assertTrue(json.loads(data['script_custom_data'])['record_call'])
+                self.assertEqual(data['script_name'],'voice_pipecat')
+                self.assertEqual(session.production_vox_id,expected)
+
     async def test_preflight_names_websocket_provider_and_status_without_retrying_auth_failure(self):
         from websockets.exceptions import InvalidStatus
         from websockets.http11 import Response

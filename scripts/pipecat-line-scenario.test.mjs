@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
-function fixture(file,withBreath=false) {
+function fixture(file,withBreath=false,recordCall=false) {
   let start;const digits=[],events=[];
-  const call={handlers:{},addEventListener(name,fn){this.handlers[name]=fn;},sendMediaTo(){},sendDigits(d){digits.push(d);},hangup(){this.handlers.disconnected?.();}};
+  const recordings=[];
+  const call={handlers:{},addEventListener(name,fn){this.handlers[name]=fn;},record(options){recordings.push(options);this.handlers.recorded?.();},sendMediaTo(){},sendDigits(d){digits.push(d);},hangup(){this.handlers.disconnected?.();}};
   const socket={sent:[],targets:[],clears:0,send(raw){this.sent.push(JSON.parse(raw));},sendMediaTo(...args){this.targets.push(args);},stopMediaTo(){},clearMediaBuffer(){this.clears++;},close(){}};
   const players=[];
   const createPlayer=()=>{const p={handlers:{},paused:true,stopped:false,addEventListener(name,fn){this.handlers[name]=fn;},sendMediaTo(){},resume(){this.paused=false;},pause(){this.paused=true;},stop(){this.stopped=true;}};players.push(p);return p;};
   const data={to:'+79990000000',call_id:'synthetic',stream_url:'wss://test/media',event_url:'https://test/events',line_gate:true,
-    background_audio:{url:'https://test/background.wav'}};
+    background_audio:{url:'https://test/background.wav'},record_call:recordCall};
   if(withBreath)data.breath_audio={url:'https://test/breath.wav'};
   const context={require(){},Modules:{WebSocket:'ws',Conference:'conference'},
     AppEvents:{Started:'started'},CallEvents:{Connected:'connected',Disconnected:'disconnected',Failed:'failed',RecordStarted:'recorded'},
@@ -19,9 +20,19 @@ function fixture(file,withBreath=false) {
     Net:{httpRequest(url,callback,options){events.push(JSON.parse(options.postData));callback({code:200});}},
     VoxEngine:{customData:()=>JSON.stringify(data),addEventListener(name,fn){start=fn;},callPSTN:()=>call,
       createWebSocket:()=>socket,createURLPlayer:createPlayer,createConference:()=>({sendMediaTo(){},stop(){}}),terminate(){}}};
-  vm.runInNewContext(fs.readFileSync(file,'utf8'),context);start({sessionId:123});call.handlers.connected();socket.onopen();
-  return {digits,events,call,socket,players,player:players[0],command(action,values={}){socket.onmessage({text:JSON.stringify({customEvent:'control',action,...values})});}};
+  vm.runInNewContext(fs.readFileSync(file,'utf8'),context);start({sessionID:123});call.handlers.connected();socket.onopen();
+  return {digits,events,recordings,call,socket,players,player:players[0],command(action,values={}){socket.onmessage({text:JSON.stringify({customEvent:'control',action,...values})});}};
 }
+
+test('production records stereo at connection and sends the official Vox sessionID',()=>{
+  const s=fixture('voximplant/scenario_voice_pipecat.js',false,true);
+  assert.equal(s.recordings.length,1);assert.equal(s.recordings[0].stereo,true);
+  const started=s.events.find(e=>e.event==='recording_started');
+  assert.equal(started.recording_started,true);assert.equal(started.vox_session_id,123);
+  s.call.hangup();
+  const terminal=s.events.find(e=>e.event==='disconnected');
+  assert.equal(terminal.recording_started,true);assert.equal(terminal.vox_session_id,123);
+});
 
 for(const file of ['voximplant/scenario_voice_pipecat.js','voximplant/scenario_voice_pipecat_hypothesis.js']) {
   test(file+': breath survives manager barge-in and stops when agent starts',()=>{

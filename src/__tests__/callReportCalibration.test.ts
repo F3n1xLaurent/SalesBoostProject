@@ -207,6 +207,38 @@ describe('production call report calibration', () => {
     expect(confirmedTimeInDialog([turn('manager', 'Приезжайте завтра в 12:00.'), turn('client', 'В двенадцать не подходит.'), turn('manager', 'Хорошо, пришлю расчёт.')])).toBe(false);
     expect(confirmedTimeInDialog([turn('manager', 'Приезжайте завтра в 12:00.'), turn('client', 'Хорошо, приеду.'), turn('client', 'Отменяю визит.')])).toBe(false);
   });
+  it.each(['Покупку рассматриваете за наличные или в кредит?', 'Нужен автомат или механика?',
+    'Автомобиль с пробегом или новый?'])('preserves an accepted appointment across an unrelated alternative: %s', question => {
+    expect(confirmedTimeInDialog([
+      { role: 'client', content: 'Могу подъехать сегодня, в 18:00. Подойдёт?' },
+      { role: 'manager', content: 'Да, отлично, мы будем вас ждать сегодня в 18:00.' },
+      { role: 'manager', content: question },
+      { role: 'client', content: 'Готов обсудить условия на месте.' },
+    ])).toBe(true);
+  });
+  it('invalidates a confirmed appointment when the visit is explicitly reopened', () => {
+    const agreed = [{ role: 'manager', content: 'Приезжайте завтра в 12:00.' }, { role: 'client', content: 'Хорошо, приеду.' }];
+    for (const content of ['Отменяю визит.', 'Давайте лучше завтра или послезавтра приеду.']) {
+      expect(confirmedTimeInDialog([...agreed, { role: 'client', content }])).toBe(false);
+    }
+  });
+  it('accepts a complete checklist after payment discussion without wasting evaluator retries', async () => {
+    const dialog = [
+      { role: 'client' as const, content: 'Могу подъехать сегодня, в 18:00. Подойдёт?' },
+      { role: 'manager' as const, content: 'Да, отлично, мы будем вас ждать сегодня в 18:00.' },
+      { role: 'manager' as const, content: 'Покупку рассматриваете за наличные или в кредит?' },
+      { role: 'client' as const, content: 'Рассматриваю кредит.' },
+    ];
+    const create = vi.spyOn(openai.chat.completions, 'create').mockResolvedValue({ choices: [{ finish_reason: 'stop', message: {
+      content: JSON.stringify({ checklist: [{ code: 'date', status: 'YES', evidence: [dialog[1].content], comment: 'Дата и время согласованы.' }], extra_signals: {}, recommendations: [] }),
+    } }] } as any);
+    const { evaluation } = await evaluateSessionV2({ dialogHistory: dialog, car: {} as any, state: getDefaultState(), earlyFail: false,
+      evaluationChecklist: { id: 'test', name: 'Контроль времени', items: [
+        { id: 'date', title: 'Зафиксировал дату и время', instruction: 'Принятое обеими сторонами время.', category: 'Закрытие', points: 100, allowNa: false },
+      ] } });
+    expect(create).toHaveBeenCalledOnce();
+    expect(evaluation.checklist[0].status).toBe('YES');
+  });
   it('reclassifies an unsupported perfect closing before calculating the score, without a report-layer penalty', async () => {
     const dialog = [{ role: 'manager' as const, content: 'Меня зовут Алексей. Приезжайте завтра до 12:00.' }, { role: 'client' as const, content: 'Хорошо, постараюсь подъехать.' }];
     const classification = (status: string) => ({ checklist: [

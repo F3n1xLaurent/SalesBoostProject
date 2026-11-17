@@ -122,7 +122,12 @@ export function confirmedTimeInDialog(turns: Array<{ role: string; content: stri
     if (slot) {
       if (pending && !sameVisitTime(pending.text, turn.content)) confirmed = false;
       pending = { role: turn.role, text: turn.content };
-    } else if (/или|либо|занят|не\s+получится/iu.test(turn.content)) { pending = null; confirmed = false; }
+    } else if (/(?:^|\s)(?:или|либо)(?=\s|[,.]|$)|занят|не\s+получится/iu.test(turn.content)
+      && /визит|встреч|прие[хд]|подъе[хд]|тест.?драйв|врем|сегодня|завтра|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресенье/iu.test(turn.content)) {
+      // Alternatives in an unrelated topic (cash or credit, for example)
+      // cannot revoke an appointment already accepted by both parties.
+      pending = null; confirmed = false;
+    }
   }
   return confirmed;
 }

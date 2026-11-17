@@ -405,7 +405,8 @@ async def dial_pipecat(s,public):
     if s.production:
         result=payload.get("result")
         row=result[0] if isinstance(result,list) and result else result if isinstance(result,dict) else {}
-        s.production_vox_id=row.get("call_session_history_id")
+        identifier=payload.get("call_session_history_id") or row.get("call_session_history_id")
+        if identifier is not None:s.production_vox_id=identifier
         s.persist()
 
 
@@ -531,6 +532,9 @@ async def lifecycle(session_id: str, token: str, event: dict):
         s.persist()
     if name in {'background_started','background_failed','background_restarted','background_stopped'}:
         s.evidence.event('background_playback',state=name,reason=str(event.get('reason') or '')[:160])
+        return {'ok':True}
+    if name in {'recording_started','recording_failed'}:
+        s.evidence.event('vox_recording',state=name,reason=str(event.get('reason') or '')[:160])
         return {'ok':True}
     if name in {"connected", "disconnected", "failed", "busy", "no_answer", "cancelled"}:
         s.status = getattr(s,'line_outcome',None) or name

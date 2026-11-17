@@ -86,6 +86,15 @@ class ProductionTests(unittest.TestCase):
         self.assertTrue(snapshot(s)['recordingStarted']);self.assertEqual(snapshot(s)['voxSessionId'],123)
         self.assertIsNotNone(snapshot(s)['connectedAt'])
 
+    def test_record_started_event_preserves_recording_for_final_snapshot(self):
+        self.prepare();s=service.sessions[self.identifier]
+        url=f'/events/{self.identifier}?token={s.token}'
+        self.assertEqual(self.client.post(url,json={'event':'recording_started','vox_session_id':123,'recording_started':True}).status_code,200)
+        self.assertEqual(self.client.post(url,json={'event':'disconnected','vox_session_id':123}).status_code,200)
+        result=snapshot(s)
+        self.assertTrue(result['recordingStarted']);self.assertEqual(result['voxSessionId'],123)
+        self.assertTrue(any(e['event']=='vox_recording' for e in s.evidence.events))
+
     def test_discard_preparation_never_cancels_already_started_call(self):
         self.prepare()
         self.client.post('/production/sessions/'+self.identifier+'/start',json={},headers=self.headers)

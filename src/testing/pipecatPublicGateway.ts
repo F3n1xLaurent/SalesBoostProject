@@ -7,6 +7,25 @@ import { pipeline } from 'node:stream/promises';
 
 const ID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
+/** Preserve bounded call metadata without allowing arbitrary upstream fields. */
+export function pipecatLifecycleEvent(body: unknown): Record<string, unknown> | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const input = body as Record<string, unknown>;
+  if (typeof input.event !== 'string' || !['connected', 'disconnected', 'failed', 'busy', 'no_answer', 'cancelled',
+    'recording_started', 'recording_failed', 'ivr_selected',
+    'background_started', 'background_failed', 'background_restarted', 'background_stopped'].includes(input.event)) return null;
+  const result: Record<string, unknown> = { event: input.event };
+  if (typeof input.reason === 'string') result.reason = input.reason.slice(0, 160);
+  const id = input.vox_session_id;
+  if ((typeof id === 'number' && Number.isSafeInteger(id) && id > 0)
+    || (typeof id === 'string' && /^[1-9]\d{0,19}$/u.test(id))) result.vox_session_id = id;
+  if (typeof input.recording_started === 'boolean') result.recording_started = input.recording_started;
+  if (typeof input.ivr === 'boolean') result.ivr = input.ivr;
+  if (Array.isArray(input.ivr_path) && input.ivr_path.length <= 6
+    && input.ivr_path.every(digit => typeof digit === 'string' && /^[0-9*#]$/u.test(digit))) result.ivr_path = input.ivr_path;
+  return result;
+}
+
 /** Public surface: per-call events/media and signed immutable background audio. */
 export function pipecatPublicTarget(raw: string, kind: 'media' | 'events' | 'background', base = process.env.PIPECAT_HYPOTHESIS_URL): URL | null {
   if (!base) return null;
@@ -39,12 +58,11 @@ export function createPipecatPublicRouter(): Router {
   router.post('/events/:id', async (req, res) => {
     const target = pipecatPublicTarget(req.originalUrl, 'events');
     if (!target) { res.status(403).json({ ok: false }); return; }
-    const event = req.body?.event;
-    if (!['connected', 'disconnected', 'failed', 'busy', 'no_answer',
-      'background_started', 'background_failed', 'background_restarted', 'background_stopped'].includes(event)) { res.status(400).json({ ok: false }); return; }
+    const event = pipecatLifecycleEvent(req.body);
+    if (!event) { res.status(400).json({ ok: false }); return; }
     try {
       const response = await fetch(target, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event, reason: typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 160) : undefined }), signal: AbortSignal.timeout(5000), redirect: 'error' });
+        body: JSON.stringify(event), signal: AbortSignal.timeout(5000), redirect: 'error' });
       res.status(response.ok ? 200 : response.status === 403 ? 403 : 502).json({ ok: response.ok });
     } catch { res.status(502).json({ ok: false }); }
   });
