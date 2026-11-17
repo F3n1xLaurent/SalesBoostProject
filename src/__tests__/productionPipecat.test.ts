@@ -52,6 +52,14 @@ describe('production Pipecat integration', () => {
     await expect(prepared.start()).rejects.toBeInstanceOf(PipecatLaunchUncertainError);
     expect(request).toHaveBeenCalledTimes(2);
   });
+  it('passes the script need independently when no imported row was selected', async () => {
+    request.mockResolvedValueOnce(response(snapshot));
+    await prepareProductionPipecatCall(id, '+79990000000', { planId: 'p', planName: 'План', prompt: 'Сценарий',
+      elevenLabsVoiceId: 'v', customerVoiceId: null, subjectTitle: null, subjectDescription: null,
+      customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.' });
+    expect(JSON.parse(request.mock.calls[0][1].body).context).toMatchObject({ subjectTitle: null,
+      subjectDescription: null, customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.' });
+  });
   it('recovers a terminal call from the database queue and forwards actual transcript and recording evidence', async () => {
     snapshot = { ...snapshot, status: 'disconnected', finalized: true, recordingStarted: true,
       ivrDetected: true, ivrPath: ['1','2'], lineState: 'live',

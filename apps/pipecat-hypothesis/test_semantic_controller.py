@@ -49,6 +49,40 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):await self.c.close()
 
+    async def test_subject_question_without_selection_is_answered_from_need_before_advancing(self):
+        self.s.context={'subjectTitle':None,'subjectDescription':None,'customerNeed':'Интересует Volkswagen Touareg 2019, пробег 104 060 км.'}
+        self.c.texts.pop('subject',None)
+        self.c.started=True
+        await self.run_turn('Как к вам обращаться и какой автомобиль вас интересует?',name=True,subject=True)
+        self.assertTrue(self.c.last_meaning['other_questions'])
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertEqual(state['buyer_information']['provided_need'],self.s.context['customerNeed'])
+        self.assertEqual(state['buyer_information']['selected_subject'],{})
+        self.assertIn('name',state['requested_answers'])
+        self.assertIn('selected_subject',self.c.fallback_goal)
+        self.assertIn('provided_need',self.c.fallback_goal)
+        self.c.llm.send_client_event.assert_awaited()
+        self.assertFalse(self.c.asked)
+
+    async def test_explicit_subject_repetition_allows_generated_need_answer(self):
+        self.s.context={'customerNeed':'Нужен Volkswagen Touareg 2019.'}
+        self.c.texts.pop('subject',None);self.c.last_meaning=meaning(subject=True)
+        answer='Меня интересует Volkswagen Touareg две тысячи девятнадцатого года.'
+        self.assertEqual(self.c.approve_speech_sentence(answer,'first'),answer)
+        self.assertEqual(self.c.approve_speech_sentence(answer,'repeat'),answer)
+        self.c.last_meaning=meaning()
+        self.assertEqual(self.c.approve_speech_sentence(answer,'unrequested-repeat'),'')
+
+    async def test_need_based_opening_reuses_prepared_subject_question(self):
+        self.s.context={'subjectTitle':None,'customerNeed':'Нужен Volkswagen Touareg 2019.'}
+        rows=[{'key':'availability','question':'Звоню по Volkswagen Touareg 2019. Ещё в наличии?'}]
+        self.s.evidence.memory.topics.required=rows
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value={'availability':rows[0]['question']})),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.c.prepare()
+        self.assertIn('Volkswagen Touareg 2019',self.c.texts['opening'])
+        self.assertEqual(self.c.texts['opening'].count('?'),1)
+        self.assertEqual(self.c.texts['opening'].count('Здравствуйте'),1)
+
     async def test_short_greeting_opens_from_prepared_audio_without_decisions(self):
         self.c.opening_sent=False;self.c.line.state='awaiting_person';self.c.line.ever_human=False
         with patch('semantic_controller.interpret',new=AsyncMock()) as interpret:

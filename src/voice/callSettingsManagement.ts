@@ -1757,6 +1757,7 @@ async function launchManualPlanTarget(
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title ?? null,
     subjectDescription: context.importedItem?.description ?? null,
+    customerNeed: context.script.context?.trim() || null,
   });
   try {
     const startedAt = new Date(prepared.startedAt);
@@ -1949,6 +1950,7 @@ export type RealtimeTestPlanConfiguration = {
   customerVoiceId: string | null;
   subjectTitle: string | null;
   subjectDescription: string | null;
+  customerNeed?: string | null;
   companyName?: string | null;
 };
 
@@ -1989,6 +1991,7 @@ export async function resolveRealtimeTestPlanConfiguration(
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title?.trim() || null,
     subjectDescription: context.importedItem?.description?.trim() || null,
+    customerNeed: context.script.context?.trim() || null,
   };
 }
 

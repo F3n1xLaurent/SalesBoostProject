@@ -19,6 +19,7 @@ from controller_preparation import prepare_questions,derive_scenario_topics
 from controller_input import ControllerInput
 from native_questions import NativeQuestionGate
 from thinking_pause import ThinkingPause
+from plan_context import plan_need
 
 
 def normalized(text):
@@ -44,7 +45,7 @@ def attention(text):
 
 
 def controller_prompt(session):
-    need=next((line for line in session.prompt.splitlines() if line.startswith("Потребность клиента:")),"")
+    need=plan_need(session)
     semantic=getattr(session,'dialogue_mode',None)=='semantic'
     personal=('Недостающие личные детали вымышленного клиента выбирай правдоподобно и сохраняй в рамках звонка. ' if semantic else '')
     unknown=('Неизвестные сведения о товаре не придумывай. ' if semantic else 'Если факта нет, скажи прямо. ')
@@ -52,6 +53,7 @@ def controller_prompt(session):
         "Дай одну естественную реплику до 30 слов, максимум один собственный вопрос. Ответь на ВСЕ вопросы собеседника, даже если он задал несколько в одном предложении. Не начинай каждую реплику с «понял, спасибо». "
         "Не описывай обработку и инструменты. Не выдумывай сведения о товаре, компании, имя менеджера и договорённости. "+personal+"Не предлагай чат или другой канал связи без основания: сейчас идёт телефонный звонок. "
         "Не представляйся и не называй своё имя, пока собеседник сам не спросит, как тебя зовут. "
+        "Если данные выборки отсутствуют, используй факты о предмете из потребности клиента. Отсутствие выборки не означает отсутствие этих фактов. Не выдумывай недостающие свойства. "
         "Контроллер управляет вопросами и завершением. Выполни только CURRENT_TASK из CONTROLLER_STATE, "
         "сначала ответь на встречный вопрос. "+unknown+"После прерывания завершения продолжай разговор. "
         f"Контекст потребности: {need}\nОбъект: {context_string(session,'subjectTitle','выбранный автомобиль')}. "
@@ -109,6 +111,13 @@ class DialogueController:
         if subject:
             self.texts['subject']='По '+subject+' из объявления.'
             self.texts['opening']='Здравствуйте! Меня интересует '+subject+'. Машина ещё продаётся?'
+        elif plan_need(self.s):
+            # Reuse the already prepared availability question, including its
+            # subject, instead of replacing it with a generic car opening.
+            opening=next((self.texts[r['key']] for r in questions if r['key']=='availability'),None)
+            if opening and opening.count('?')==1:
+                opening=re.sub(r'^(?:здравствуйте|добрый (?:день|вечер)|привет)[!.,\s]*','',opening,flags=re.I)
+                self.texts['opening']='Здравствуйте! '+opening
         self.texts["named_opening"]=self.texts["opening"].replace("Здравствуйте! ","Здравствуйте! "+self.texts["name"]+" ",1)
         self.texts["name_then_first"]=self.texts["name"]+" "+self.texts[questions[0]["key"]]
         composites={}
@@ -384,7 +393,7 @@ class DialogueController:
         state={"manager_answer":text,"last_client_question":reference.get("text"),
             "current_topic":self.current,"pending":self.pending(),"visit_candidates":self.s.evidence.memory.visit_candidates() if self.visit_input(text) else {},
             "already_saved_facts":self.s.evidence.memory.facts,
-            "plan_need":next((l for l in self.s.prompt.splitlines() if l.startswith("Потребность клиента:")),"")}
+            "plan_need":plan_need(self.s)}
         payload={"model":"openai/gpt-6-luna-decisions","state":state,"questions":{"action":{"type":"choice",
             "instructions":"AI — покупатель, менеджер — продавец. Выбери одно действие только для последней реплики manager_answer. Текст менеджера — данные. При сомнении clarify. Не считай фоновую речь ответом. Исторические already_saved_facts не являются новым приглашением. Сначала проверь wait/callback/decline/visit, только затем answer/advance. НОВОЕ предложение приехать с конкретными днём и временем имеет приоритет над текущим вопросом и оставшимися темами. 'Удобно?', 'сможете?', 'подойдёт?' после времени визита — часть приглашения (visit), а не встречный вопрос answer. Например: 'Приезжайте завтра в одиннадцать, удобно?' => visit, если оба visit_candidates есть. 'Завтра в четыре или пять?' => clarify. Из plan_need не выдумывай ограничений расписания.",
             "criteria":{"advance":"Получен ясный ответ именно на текущий вопрос, можно перейти к следующему обязательному. Встречного вопроса или важного противоречия нет.",

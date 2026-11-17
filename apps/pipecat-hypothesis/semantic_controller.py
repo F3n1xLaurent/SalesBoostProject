@@ -16,6 +16,7 @@ from speech_ledger import SpeechLedger,fingerprint
 from customer_legend import choose_name
 from line_gate import LineGate,greeting_only
 from breath import BreathCue
+from plan_context import plan_need,selected_subject
 
 
 class SemanticController(DialogueController):
@@ -118,6 +119,10 @@ class SemanticController(DialogueController):
             allowed={'identity:customer_name','text:'+fingerprint('Меня зовут '+name),'text:'+fingerprint('Я '+name)}
         if (self.last_meaning or {}).get('subject') and 'subject' in self.texts:
             for sentence in self.speech.sentences(self.texts['subject']):allowed.update(self.speech.keys(sentence))
+        elif (self.last_meaning or {}).get('subject') and (plan_need(self.s) or selected_subject(self.s)):
+            # An explicit request to repeat the subject also applies to a
+            # generated answer grounded in the need, without a cached clip.
+            allowed.update(self.speech.keys(text) & (self.speech.queued.keys() | self.speech.reserved.keys()))
         recalled=(self.last_meaning or {}).get('legend_recall')
         previous=next((row for row in self.customer_legend if row['response_id']==recalled),None)
         if previous:
@@ -171,7 +176,7 @@ class SemanticController(DialogueController):
             'controlled_fields':['visit_day','visit_time','visit_availability','received_information','company_address'],
             'buyer_information':{'customer_name':self.s.evidence.memory.name,
                 'chosen_personal_statements':self.customer_legend,
-                'provided_need':next((line for line in self.s.prompt.splitlines() if line.startswith('Потребность клиента:')),'')},
+                'provided_need':plan_need(self.s),'selected_subject':selected_subject(self.s)},
             'question_policy':getattr(self,'native_question_policy','answer_only')},ensure_ascii=False)
 
     def cancel_continuation(self):
@@ -422,6 +427,11 @@ class SemanticController(DialogueController):
             ('identity:customer_name' in self.speech.queued or 'identity:customer_name' in self.speech.reserved))
         self.identity_confirmation_requested=meaning.get('name_confirmation',False)
         if meaning['subject'] and not meaning['next_question'] and 'subject' in self.texts and 'subject' not in self.pending_answer_keys:self.pending_answer_keys.append('subject')
+        if meaning['subject'] and 'subject' not in self.texts:
+            # A subject question is still a real question when the imported
+            # row is empty. Answer it from the need before advancing the plan.
+            meaning['other_questions']=True
+            self.s.evidence.event('semantic_subject_from_context',source='selection' if selected_subject(self.s) else 'need' if plan_need(self.s) else 'unspecified')
         self.requested_answers={key:self.texts[key] for key in self.pending_answer_keys}
         relation=meaning['visit'];action=None
         previous_visit=self.visit.offered or self.confirmed_visit()
@@ -703,6 +713,7 @@ class SemanticController(DialogueController):
         self.fallback_turn=self.s.evidence.turn;self.fallback_empty_recovered=False
         self.fallback_goal=('Ответь от первого лица на ВСЕ дополнительные вопросы менеджера, до 25 слов.\n'
             '- Имя и объект бери из requested_answers и buyer_information; сохраняй заданную потребность. Новые личные детали добавляй только по правилам легенды ниже.\n'
+            '- Для предмета обращения сначала используй selected_subject. Если выборка пуста, назови предмет и известные факты из provided_need. Не заменяй известную модель общими словами. Не путай предмет покупки с нынешней машиной клиента из легенды. Если предмет не задан нигде, попроси уточнить без выдуманной модели.\n'
             '- Если факта нет, отвечай как человек: что ещё не решил или предпочитаешь пока обсудить саму покупку. Не говори «я не указал», «я не сообщал», «этой информации у меня нет».\n'
             '- Ты вымышленный клиент тестового звонка. Если личная деталь ещё не задана в потребности или chosen_personal_statements, выбери правдоподобную деталь по контексту и голосу, ответь от первого лица. Не объясняй, что составляешь легенду.\n'
             '- Назови конкретное значение запрошенного личного свойства, а не общую категорию: например, на вопрос о текущем автомобиле нужны марка и модель, а не просто «какой-то седан». Если раньше назвал только категорию, можешь уточнить её без противоречия.\n'
