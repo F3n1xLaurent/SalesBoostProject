@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import { Navigate, useLocation } from 'react-router';
-import { $auth, apiFetch, logout, type FrontendRole } from '../../../entities/session';
+import { $auth, apiFetch, authAccessKey, logout, type FrontendRole } from '../../../entities/session';
 import { SystemLayout } from '../../../widgets/system-layout/ui/SystemLayout';
 import { readStoredRole, writeStoredRole } from '../../../entities/session/lib/roleStorage';
 import { AUDITS_CHANGED_EVENT } from '../../../shared/api/adminPanel';
@@ -39,13 +39,20 @@ const API_BASE = '';
 export function SystemPage() {
   const auth = useUnit($auth);
   const location = useLocation();
-  const [role, setRole] = useState<FrontendRole>(() => getRoleFromPath(window.location.pathname) || 'super');
+  const [preferredRole, setRole] = useState<FrontendRole>(() => getRoleFromPath(window.location.pathname) || 'super');
   const [teamSummary, setTeamSummary] = useState<TeamSummary | null>(null);
   const [teamLoading, setTeamLoading] = useState(false);
   const [voiceDashboard, setVoiceDashboard] = useState<VoiceDashboard | null>(null);
 
   const allowedRoles = auth.status === 'authenticated' ? auth.user.allowedRoles : [];
   const defaultRole = auth.status === 'authenticated' ? auth.user.defaultRole : 'super';
+  const role = allowedRoles.includes(preferredRole) ? preferredRole : defaultRole;
+  const accessKey = auth.status === 'authenticated' ? authAccessKey(auth.user) : 'guest';
+  const viewKey = accessKey + ':' + role;
+  const currentView = useRef(viewKey);
+  currentView.current = viewKey;
+  const summaryRequest = useRef(0);
+  const [summaryView, setSummaryView] = useState<string | null>(null);
   const dealerDealershipId = auth.status === 'authenticated'
     ? auth.user.memberships.find((membership) => membership.role === 'dealership_admin' && membership.dealershipId)?.dealershipId ?? null
     : null;
@@ -74,7 +81,7 @@ export function SystemPage() {
     setTeamSummary(null);
     setVoiceDashboard(null);
     setTeamLoading(false);
-  }, [role, auth.status]);
+  }, [role, auth.status, accessKey]);
 
   useEffect(() => {
     if (auth.status !== 'authenticated' || (role !== 'super' && role !== 'company')) return;
@@ -90,6 +97,9 @@ export function SystemPage() {
   }, [auth, role]);
 
   async function loadTeamSummary() {
+    const view = currentView.current;
+    const request = ++summaryRequest.current;
+    const current = () => currentView.current === view && summaryRequest.current === request;
     setTeamLoading(true);
     try {
       const safeParse = async (r: Response | null) => {
@@ -106,6 +116,9 @@ export function SystemPage() {
         apiFetch(`${API_BASE}/api/admin/voice-dashboard`).catch(() => null),
       ]);
       const data = await safeParse(summaryRes);
+      if (!current()) return;
+      setTeamSummary(null);
+      setVoiceDashboard(null);
       if (data) {
         setTeamSummary({
           totalAttempts: data.totalAttempts ?? 0,
@@ -117,6 +130,7 @@ export function SystemPage() {
         });
       }
       const v = await safeParse(voiceRes);
+      if (!current()) return;
       if (v) {
         setVoiceDashboard({
           totalCalls: v?.totalCalls ?? 0,
@@ -133,10 +147,11 @@ export function SystemPage() {
         });
       }
     } catch {
+      if (!current()) return;
       setTeamSummary(null);
       setVoiceDashboard(null);
     } finally {
-      setTeamLoading(false);
+      if (current()) { setSummaryView(view); setTeamLoading(false); }
     }
   }
 
@@ -146,8 +161,9 @@ export function SystemPage() {
 
   return (
     <SystemLayout
-      summary={teamSummary}
-      voice={voiceDashboard}
+      key={accessKey}
+      summary={summaryView === viewKey ? teamSummary : null}
+      voice={summaryView === viewKey ? voiceDashboard : null}
       loadingSummary={teamLoading}
       role={role}
       dealerDealershipId={dealerDealershipId}

@@ -17,7 +17,9 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     headers,
   });
 
-  if (response.status === 401) {
+  // An old request must not clear a different session opened in the meantime.
+  const sameSession = Boolean(stored?.token && readStoredAuth()?.token === stored.token);
+  if (response.status === 401 && sameSession) {
     clearStoredAuth();
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('auth:unauthorized'));

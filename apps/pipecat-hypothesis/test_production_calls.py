@@ -78,6 +78,18 @@ class ProductionTests(unittest.TestCase):
         s.evidence.event('response_phone_confirmed',response_id='heard')
         self.assertEqual(snapshot(s)['transcript'],[{'role':'manager','text':'Здравствуйте'},{'role':'client','text':'Озвучено'}])
 
+    def test_full_transcript_survives_more_than_a_thousand_technical_events(self):
+        self.prepare();s=service.sessions[self.identifier]
+        s.evidence.event('user_transcript',text='Начало разговора',turn=1,item_id='first')
+        s.evidence.assistant('first-reply','Первый ответ')
+        s.evidence.event('response_phone_confirmed',response_id='first-reply')
+        for _ in range(1100):s.evidence.event('audio_window',bytes=32000)
+        s.evidence.event('user_transcript',text='Конец разговора',turn=2,item_id='last')
+        self.assertEqual(len(s.evidence.events),1000)
+        self.assertEqual(snapshot(s)['transcript'],[
+            {'role':'manager','text':'Начало разговора'},{'role':'client','text':'Первый ответ'},
+            {'role':'manager','text':'Конец разговора'}])
+
     def test_long_call_lifecycle_and_recording_evidence_survive_six_minutes(self):
         self.prepare();s=service.sessions[self.identifier];s.created=time.time()-420
         url=f'/events/{self.identifier}?token={s.token}'

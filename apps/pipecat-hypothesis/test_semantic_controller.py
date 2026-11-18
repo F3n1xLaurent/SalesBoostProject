@@ -64,6 +64,35 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.c.llm.send_client_event.assert_awaited()
         self.assertFalse(self.c.asked)
 
+    async def test_native_answer_receives_subject_from_script_even_when_need_has_only_payment(self):
+        self.s.context={'subjectTitle':None,'subjectDescription':None,'customerNeed':'Покупка в кредит. Цвет чёрный.'}
+        self.s.evidence.memory.topics.required=[{'key':'custom:0','question':'Toyota RAV4 2018года ещё в продаже?'}]
+        self.c.texts.pop('subject',None)
+        await self.run_turn('Автомобиль новый? Какую модель рассматриваете?',subject=True,other_questions=True)
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertIn('Toyota RAV4 2018',state['SCENARIO_SCOPE']['script_references'][0])
+        self.assertIn('Цвет чёрный',state['SCENARIO_SCOPE']['need'])
+        self.assertIn('SCENARIO_SCOPE имеет приоритет',self.c.fallback_goal)
+
+    async def test_verified_script_subject_is_prepared_for_opening_and_direct_replies(self):
+        self.s.context={'subjectTitle':None,'subjectDescription':None}
+        async def prepared(*args,**kwargs):
+            self.s.prepared_subject='Toyota RAV4 2018'
+            return {r['key']:r['question'] for r in self.s.evidence.memory.topics.required}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(side_effect=prepared)),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.c.prepare()
+        self.assertIn('Toyota RAV4 2018',self.c.texts['opening'])
+        self.assertIn('Toyota RAV4 2018',self.c.texts['subject'])
+
+    async def test_named_sale_question_opens_with_the_model_even_without_extraction(self):
+        self.s.prompt='Потребность клиента: Покупка в кредит\n\n1. Toyota RAV4 2018года ещё в продаже? [обязательная тема]'
+        self.s.context={};self.s.evidence.memory=ConversationMemory(self.s.prompt)
+        self.assertEqual(self.s.evidence.memory.topics.required[0]['key'],'availability')
+        wording={'availability':'Подскажите, Toyota RAV4 2018года ещё в продаже?'}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.c.prepare()
+        self.assertIn('Toyota RAV4 2018',self.c.texts['opening'])
+
     async def test_explicit_subject_repetition_allows_generated_need_answer(self):
         self.s.context={'customerNeed':'Нужен Volkswagen Touareg 2019.'}
         self.c.texts.pop('subject',None);self.c.last_meaning=meaning(subject=True)
@@ -428,6 +457,43 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.player.queue_frame.await_count,2)
         self.assertEqual(self.c.asked[topic],1)
 
+    async def interrupted_preamble(self):
+        topic=self.keys[-1]
+        self.s.evidence.memory.topics.required[-1]['question']='Нас пятеро, иногда с бабушкой. Машина просторная?'
+        self.c.texts[topic]='Скажите, для пятерых и иногда с бабушкой места хватает?'
+        await self.interrupted_plan()
+        delivery=self.s.evidence.delivery
+        delivery.segment('native-tag','native-answer');delivery.ack('native-tag')
+        delivery.response('native-answer').update(generated_done=True,tts_done=True)
+        self.c.native_resume_context={'response_id':'native-answer','epoch':self.c.epoch,
+            'text':'Для семьи: нас пятеро, иногда ездим с бабушкой.'}
+        return topic
+
+    async def test_auto_resume_omits_approved_personal_preamble_already_answered(self):
+        topic=await self.interrupted_preamble()
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,
+            json=lambda:{'answers':{'shorten':{'choice':'short','probabilities':{'short':.99,'full':.01}}}}))
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)) as synthesize:
+            await self.c.replay_question('plan:'+topic,explicit=False)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Машина просторная?')
+        synthesize.assert_awaited_once_with(self.s,'Машина просторная?')
+        self.assertEqual(self.c.asked[topic],1)
+
+    async def test_auto_resume_keeps_conditions_when_shortening_is_not_approved(self):
+        topic=await self.interrupted_preamble()
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,
+            json=lambda:{'answers':{'shorten':{'choice':'full','probabilities':{'short':.01,'full':.99}}}}))
+        await self.c.replay_question('plan:'+topic,explicit=False)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[topic])
+
+    async def test_auto_resume_never_omits_preamble_based_on_interrupted_native_answer(self):
+        topic=await self.interrupted_preamble()
+        self.s.evidence.delivery.response('native-answer')['interrupted']=True
+        self.c.http.post=AsyncMock()
+        await self.c.replay_question('plan:'+topic,explicit=False)
+        self.c.http.post.assert_not_awaited()
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[topic])
+
     async def test_recall_does_not_override_explicit_callback(self):
         topic,_=await self.interrupted_plan()
         await self.run_turn('Перезвоните позже.',control='callback',question_recall='plan:'+topic)
@@ -496,6 +562,84 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
             clock.now.return_value=datetime(2026,11,16,20,10,tzinfo=ZoneInfo('Europe/Moscow'))
             candidate=self.c.choose_visit_preference(self.c.candidate('Сегодня или завтра?',1),1)
         self.assertEqual(candidate.time['value'],'в 21:00')
+
+    async def test_inherited_opening_hour_is_replaced_with_a_future_proposal(self):
+        self.c.visit.update('Работаем с девяти до девятнадцати.',1)
+        self.c.visit.update('Можно подъехать сегодня.',2)
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,18,10,14,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.c.propose([])
+        self.assertIn('в 11:00',self.c.player.queue_frame.call_args.args[0].text)
+        self.assertFalse(self.c.visit_confirmed)
+
+    async def test_past_hour_does_not_produce_a_proposal_after_closing_hours(self):
+        self.c.visit.update('Сегодня с девяти до девятнадцати.',1)
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,18,19,14,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.c.propose([])
+        self.assertIsNone(self.c.visit.offered)
+        self.assertIn('уже прошло',self.c.player.queue_frame.call_args.args[0].text)
+
+    async def test_direct_acceptance_followed_by_documents_preserves_booking(self):
+        await self.offer()
+        await self.run_turn('Да, конечно. С собой водительское удостоверение необходимо будет взять. Паспорт.',visit='none',acceptance_scope='other')
+        self.assertTrue(self.c.visit_confirmed)
+        facts=dict(self.s.evidence.memory.facts)
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Напомните, во сколько вы приедете?',visit='change',visit_request='details')
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertEqual(self.s.evidence.memory.facts,facts)
+
+    async def test_unanswered_slot_does_not_reopen_a_generic_visit_question(self):
+        await self.offer()
+        self.c.asked.update({row['key']:1 for row in self.s.evidence.memory.topics.required})
+        self.c.player.queue_frame.reset_mock()
+        await self.c.perform('advance','Возьмите паспорт.',self.c.epoch)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertIsNotNone(self.c.visit.offered)
+
+    async def test_direct_acceptance_survives_cancellation_of_interpretation(self):
+        await self.offer()
+        with patch('semantic_controller.interpret',new=AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.c.handle('Да, конечно.',self.s.evidence.turn,self.c.epoch)
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertIn('visit_time',self.s.evidence.memory.facts)
+
+    async def test_confirmed_booking_requires_independent_evidence_before_reset(self):
+        self.c.visit_confirmed=True
+        self.s.evidence.memory.facts={'visit_day':{'value':'завтра'},'visit_time':{'value':'в 10:00'}}
+        text='С собой водительское удостоверение и паспорт.'
+        body=payload(self.c,text)
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        answers['visit']={'choice':'change','probabilities':{'change':.99}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,text)
+        self.assertNotIn(result['visit'],('change','cancel'))
+        self.assertTrue(any(e['event']=='semantic_booking_revision_blocked' for e in self.s.evidence.events))
+
+
+    async def test_independent_question_parts_retain_a_payment_question(self):
+        text='Для кого подбираете автомобиль? Планируете кредит с первоначальным взносом?'
+        body=payload(self.c,text)
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        answers['other_questions']={'choice':'no','probabilities':{'no':.95}}
+        answers['buyer_part:1']={'choice':'yes','probabilities':{'yes':.98,'no':.02}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,text)
+        self.assertTrue(result['other_questions'])
+        self.assertIn('Планируете кредит с первоначальным взносом?',result['buyer_question_parts'])
+
+    async def test_visit_preference_question_is_not_lost_after_a_long_invitation(self):
+        text='Мы проведём пробную поездку всей семьёй. Подберём кредит. Вы подъедете сегодня или завтра?'
+        body=payload(self.c,text)
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        answers['visit_request']={'choice':'none','probabilities':{'none':.99}}
+        answers['buyer_part:2']={'choice':'visit','probabilities':{'visit':.99,'no':.01,'yes':0}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,text)
+        self.assertEqual(result['visit_request'],'details')
+
 
     async def test_specific_object_repair_does_not_repeat_name(self):
         self.c.started=True

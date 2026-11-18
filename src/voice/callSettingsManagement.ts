@@ -943,13 +943,15 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
   return targets;
 }
 
-async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{}>) {
+export async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{}>) {
   const dataCondition = safeJsonParse<{ holdingId?: string | null; tags?: string[] }>(script.dataConditionJson, { holdingId: script.holdingId, tags: [] });
   const tags = Array.isArray(dataCondition.tags) ? dataCondition.tags.map(String).filter(Boolean) : [];
+  // The editor shows zero selected records when no tags are chosen. Do not
+  // inject a random company item into an otherwise need-based scenario.
+  if (tags.length === 0) return null;
   const where: Prisma.ImportedItemWhereInput = { importSource: { holdingId: script.holdingId } };
   const pageSize = 500;
   let offset = 0;
-  let fallback: Prisma.ImportedItemGetPayload<{}> | null = null;
 
   while (offset < 10000) {
     const candidates = await prisma.importedItem.findMany({
@@ -959,8 +961,6 @@ async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{
       skip: offset,
     });
     if (candidates.length === 0) break;
-    if (!fallback) fallback = candidates[0] ?? null;
-    if (tags.length === 0) return pickRandom(candidates);
 
     const matched = candidates.filter((item) => {
       const itemTags = safeJsonParse<string[]>(item.tagsJson, []);
@@ -971,7 +971,7 @@ async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{
     offset += pageSize;
   }
 
-  return tags.length === 0 ? fallback : null;
+  return null;
 }
 
 export type RealtimeCallPromptProfile = Pick<

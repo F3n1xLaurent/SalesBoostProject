@@ -73,7 +73,7 @@ async function getAccountForRequest(req: Request) {
     if (!token) return null;
     const payload = verifyAuthToken(token, tokenSecret());
     if (!payload) return null;
-    return prisma.account.findUnique({
+    const account = await prisma.account.findUnique({
       where: { id: payload.sub },
       include: {
         memberships: true,
@@ -84,6 +84,7 @@ async function getAccountForRequest(req: Request) {
         },
       },
     });
+    return account?.status === 'active' ? account : null;
   });
 }
 
@@ -159,6 +160,7 @@ export async function handleAuthLogin(req: Request, res: Response): Promise<void
 }
 
 export async function handleAuthMe(req: Request, res: Response): Promise<void> {
+  res.setHeader('Cache-Control', 'private, no-store');
   const account = await getAccountForRequest(req);
   if (!account) {
     res.status(401).json({ error: 'Требуется авторизация.' });

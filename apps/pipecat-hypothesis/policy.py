@@ -30,6 +30,8 @@ def is_overlap_fragment(text: str, duration_ms: float) -> bool:
     transcript remains in diagnostics/provider history for later context.
     """
     words=re.findall(r'[\w]+',text.casefold(),flags=re.UNICODE)
+    if (0 <= duration_ms < SUSTAINED_MS and 0<len(words)<=4 and '?' not in text
+            and set(words)<={'а','и','ну','для','кого','чего','какой','какая','какие','у','вас','вы','с','в','на','по'}):return True
     return (0 <= duration_ms < SUSTAINED_MS and 0 < len(words) <= 3 and
             all(word in {'вы','ты','я','мы','он','она','они','это','и','а','но','ну','в','на','по','к','с','если',
                          'you','i','we','the','and','but','if'} for word in words))
@@ -92,6 +94,7 @@ class Playback:
 class Evidence:
     def __init__(self, emit=lambda event: None, clock=time.monotonic):
         self.events = []
+        self.dialogue_events = []
         self.clock, self.emit = clock, emit
         self.started = clock()
         self.turn = 0
@@ -117,6 +120,8 @@ class Evidence:
                  "ms": round((self.clock() - self.started) * 1000, 2), **data})
         self.events.append(event)
         self.events = self.events[-1000:]
+        if event_name in {'user_transcript','assistant_response','response_phone_confirmed'}:
+            self.dialogue_events.append(event)
         self.emit(event)
         return event
 

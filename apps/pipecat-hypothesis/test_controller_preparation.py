@@ -34,6 +34,30 @@ class BankTests(unittest.IsolatedAsyncioTestCase):
             result=await prepare_questions(self.s,self.questions,None)
         self.assertEqual(set(result),{'accidents','mileage'})
 
+    async def test_subject_is_extracted_from_plan_questions_in_the_existing_request(self):
+        self.s.context={};self.s.prompt='Потребность клиента: Покупка в кредит'
+        rows=[{'key':'custom:0','question':'Toyota RAV4 2018года ещё в продаже?'}]
+        async def generate(*args,**kwargs):
+            self.assertIn('Toyota RAV4',kwargs['subject_data']['script_references'][0])
+            kwargs['subject_result']['value']='Toyota RAV4 2018'
+            return {'custom:0':'Скажите, Toyota RAV4 2018года ещё в продаже?'}
+        verdict={'custom:0':{'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}},
+            '__scenario_subject__':{'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}}}
+        with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)) as gen,patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)):
+            await prepare_questions(self.s,rows,None)
+        gen.assert_awaited_once()
+        self.assertEqual(self.s.prepared_subject,'Toyota RAV4 2018')
+
+    async def test_subject_invented_outside_sources_is_never_saved(self):
+        self.s.context={};self.s.prompt='Потребность клиента: Покупка в кредит'
+        rows=[{'key':'custom:0','question':'Toyota RAV4 2018года ещё в продаже?'}]
+        async def generate(*args,**kwargs):
+            kwargs['subject_result']['value']='Новый Toyota RAV4 2026'
+            return {'custom:0':'Toyota RAV4 2018года ещё в продаже?'}
+        with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value={})):
+            await prepare_questions(self.s,rows,None)
+        self.assertIsNone(self.s.prepared_subject)
+
     async def test_exact_plan_copy_is_not_used_as_a_new_variant(self):
         generated={r['key']:r['question'] for r in self.questions}
         verdict={key:{'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}} for key in generated}

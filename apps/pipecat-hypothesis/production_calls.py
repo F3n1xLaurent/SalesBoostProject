@@ -13,9 +13,10 @@ TERMINAL={'disconnected','failed','busy','no_answer','cancelled'}
 
 def snapshot(s):
     events=s.evidence.events
-    heard={e.get('response_id') for e in events if e['event']=='response_phone_confirmed'}
+    dialogue=getattr(s.evidence,'dialogue_events',events)
+    heard={e.get('response_id') for e in dialogue if e['event']=='response_phone_confirmed'}
     turns={}
-    for e in events:
+    for e in dialogue:
         if e['event']=='user_transcript' and e.get('text','').strip():
             key=('user',e.get('item_id') or e.get('turn'))
             turns[key]={'role':'manager','text':e['text'].strip(),'seq':e['seq']}

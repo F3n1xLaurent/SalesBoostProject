@@ -41,7 +41,7 @@ def same_clock(expected,actual,context):
 
 def affirmative(text):
     words=re.findall(r"[а-яё]+",text.lower())
-    allowed={"да","угу","ага","верно","всё","все","отлично","хорошо","правильно","именно","удобно","я","сказал","уже","подходит","подойдет","подойдёт","договорились","подтверждаю","согласен","согласна"}
+    allowed={"да","угу","ага","верно","всё","все","отлично","хорошо","конечно","правильно","именно","удобно","я","сказал","уже","подходит","подойдет","подойдёт","договорились","подтверждаю","согласен","согласна"}
     return bool(words and len(words)<=14 and any(w in {"да","угу","ага","верно","отлично","правильно","хорошо","подходит","подойдет","подойдёт","договорились","подтверждаю","согласен","согласна"} for w in words)
         and set(words)<=allowed and "?" not in text)
 
@@ -137,7 +137,8 @@ class VisitProposal:
             first=interval['first']
             if first.casefold() in _HOUR_VALUES and first.casefold().endswith(('и','ого','ух','ёх','ех')):
                 first=str(_HOUR_VALUES[first.casefold()])+':00'
-            self.time={"value":"в "+first,"evidence":text,"turn":turn,"source":"client_choice_from_manager_interval"}
+            self.time={"value":"в "+first,"evidence":text,"turn":turn,"source":"client_choice_from_manager_interval",
+                       "interval_start":clock_minutes(interval['first']),"interval_end":clock_minutes(interval['last'])}
         elif clock:
             # Keep the adjacent AM/PM qualifier in the quoted slot. Dropping
             # "дня" turns an unchanged 15:00 confirmation into a false change.

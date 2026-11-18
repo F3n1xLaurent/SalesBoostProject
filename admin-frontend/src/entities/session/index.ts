@@ -2,6 +2,7 @@ export {
   $auth,
   authUnauthorized,
   bootstrapAuth,
+  authAccessKey,
   loadSessionFx,
   loginFx,
   logout,

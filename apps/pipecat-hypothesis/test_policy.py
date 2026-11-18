@@ -3,6 +3,13 @@ from policy import Playback, Evidence, is_backchannel, TTS_MODELS
 
 
 class PolicyTests(unittest.TestCase):
+    def test_short_unfinished_question_prefix_is_not_a_barge_in(self):
+        from policy import is_overlap_fragment
+        for text in ('Для кого','Какой у вас','А для'):
+            self.assertTrue(is_overlap_fragment(text,400))
+        for text in ('Для кого?', 'Планируете кредит с первоначальным взносом?', 'Да, конечно.'):
+            self.assertFalse(is_overlap_fragment(text,400))
+
     def test_function_name_does_not_collide_with_event_type(self):
         evidence = Evidence()
         event = evidence.event("function_call", name="end_call")

@@ -257,7 +257,7 @@ class Session:
     def persist(self):
         self.archive.metadata(self.id, {"id": self.id, "diagnosticId": "pc-" + self.id, "schemaVersion": 2,
             "instanceId": INSTANCE_ID, "provider": self.provider, "model": PROVIDERS[self.provider],
-            "runtimeRevision": "pipecat-semantic-17" if self.dialogue_mode=="semantic" else "pipecat-controller-13" if self.dialogue_mode=="controller" else "pipecat-conversation-4", "callState": {**self.evidence.memory.snapshot(),**({"controller":self.controller.snapshot()} if getattr(self,"controller",None) else {})},
+            "runtimeRevision": "pipecat-semantic-19" if self.dialogue_mode=="semantic" else "pipecat-controller-13" if self.dialogue_mode=="controller" else "pipecat-conversation-4", "callState": {**self.evidence.memory.snapshot(),**({"controller":self.controller.snapshot()} if getattr(self,"controller",None) else {})},
             "failureReason": getattr(self, "failure_reason", None), "maxCallSeconds":self.max_call_seconds,
             "kind": "production_call" if self.production else "call" if self.to else "probe",
             "ttsModel": self.tts_model, "voiceId": self.voice_id, "status": self.status,

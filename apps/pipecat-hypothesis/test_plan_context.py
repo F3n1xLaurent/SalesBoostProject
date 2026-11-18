@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from plan_context import plan_need,selected_subject
+from plan_context import plan_need,selected_subject,subject_scope,grounded_subject
 
 
 class PlanContextTests(unittest.TestCase):
@@ -22,3 +22,18 @@ class PlanContextTests(unittest.TestCase):
         s=SimpleNamespace(context={'subjectTitle':' Товар из выборки ','subjectDescription':'Описание','customerNeed':'Другой запрос'},prompt='')
         self.assertEqual(selected_subject(s),{'subjectTitle':'Товар из выборки','subjectDescription':'Описание'})
         self.assertEqual(plan_need(s),'Другой запрос')
+
+    def test_verified_subject_is_fixed_and_not_replaced_by_other_source_references(self):
+        s=SimpleNamespace(context={'customerNeed':'Покупка в кредит'},prompt='',prepared_subject='Toyota RAV4 2018',
+            evidence=SimpleNamespace(memory=SimpleNamespace(topics=SimpleNamespace(required=[{'question':'Toyota RAV4 2018 ещё в продаже?'}]))))
+        self.assertEqual(subject_scope(s)['subject'],'Toyota RAV4 2018')
+        self.assertEqual(subject_scope(s)['script_references'],[])
+        s.context['subjectTitle']='Другая явно выбранная модель'
+        self.assertEqual(subject_scope(s)['subject'],'Другая явно выбранная модель')
+
+    def test_a_subject_must_be_a_literal_source_quote_not_a_new_preference(self):
+        sources={'selection':{},'need':'Цвет чёрный, покупка в кредит.',
+            'script_references':['Toyota RAV4 2018года ещё в продаже?']}
+        self.assertTrue(grounded_subject('Toyota RAV4 2018',sources))
+        self.assertFalse(grounded_subject('Новый Toyota RAV4 2026',sources))
+        self.assertFalse(grounded_subject('Toyota RAV4 2018?',sources))

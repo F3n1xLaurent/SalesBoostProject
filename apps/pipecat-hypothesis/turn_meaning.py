@@ -63,7 +63,7 @@ def payload(controller,text):
             'goodbye':'Однозначно завершает разговор и прощается; не временная пауза и не цитата.',
             'callback':'Предлагает закончить текущий разговор и связаться позже: просит перезвонить ИЛИ сам обещает/предлагает перезвонить покупателю.',
             'decline':'Отказывается продолжать, запрещает звонить либо объект недоступен для покупки.',
-            'fragment':'Грамматически незаконченная фраза, для смысла которой необходимо продолжение. Короткое завершённое подтверждение ответа на last_question не является fragment.'}),
+            'fragment':'Грамматически незаконченная фраза или начало вопроса, для смысла которого необходимо продолжение. Не угадывай окончание вопроса. Короткое завершённое подтверждение ответа на last_question не является fragment.'}),
         'end_permission':question(common+'Разрешает ли реплика закончить ИМЕННО ТЕКУЩИЙ ТЕЛЕФОННЫЙ РАЗГОВОР? '
             'Ограничение обсуждения отдельной темы, условие скидки, перенос обсуждения в салон, неизвестность ответа и несогласие с ценой не означают отказа от звонка или покупки. '
             'Временная проверка данных не является завершением.',{
@@ -183,6 +183,22 @@ def payload(controller,text):
                 'answered':'Есть ответ именно на этот вопрос, в том числе с условиями или уточнением.',
                 'unknown':'Прямо сообщает, что именно запрошенный факт неизвестен ему.',
                 'unanswered':'Ответа нет, он относится к другой теме или его недостаточно.'})
+    if c.visit_confirmed:
+        questions['booking_revision']=question(common+'Есть ли ЯВНОЕ намерение отменить или изменить уже подтверждённую встречу confirmed_visit? '
+            'Документы, адрес, оплата, напоминание или просьба повторить время не изменяют договорённость. '
+            'Не считай неопределённость классификатора доказательством переноса.',{
+                'keep':'Нет явного изменения: сохранить согласованные дату и время.',
+                'change':'Прямо просит перенести встречу или сообщает, что согласованное время не подходит.',
+                'cancel':'Прямо отменяет визит без нового времени.'})
+    # A compound utterance must not collapse to its first intent (for example,
+    # a family question followed by a question about the down payment).
+    for index,part in enumerate(state['utterance_parts'][:6]):
+        questions['buyer_part:'+str(index)]=question(common+f'Отдельно проверь часть {index}: {part}\n'
+            'Есть ли здесь завершённый адресованный покупателю вопрос, требующий ответа о потребности, оплате, семье или другом обстоятельстве? '
+            'Запрос назвать или выбрать день/время визита выдели как visit. Имя и повтор вопроса плана обрабатываются отдельно. Начало незаконченного вопроса не требует ответа.',{
+                'no':'Нет завершённого запроса покупателю; только сведения продавца, незаконченный фрагмент, имя или восстановление вопроса плана.',
+                'yes':'Есть самостоятельный дополнительный вопрос покупателю, кроме выбора дня/времени. Наличие других вопросов в utterance его не отменяет.',
+                'visit':'Просит покупателя назвать, повторить или выбрать удобные день/время приезда; не просто сообщает часы работы или подтверждает встречу.'})
     return {'model':MODEL,'state':state,'questions':questions}
 
 
@@ -215,6 +231,16 @@ async def interpret(controller,text):
         result['closing_intent']=pick(answers,'closing_intent','unknown',.8,.4)
     if 'visit_request' in body['questions']:
         result['visit_request']=pick(answers,'visit_request','none',.75,.3)
+    result['buyer_question_parts']=[body['state']['utterance_parts'][int(key.split(':')[1])]
+        for key in body['questions'] if key.startswith('buyer_part:') and pick(answers,key,'no',.75,.25)=='yes']
+    if result['buyer_question_parts']:result['other_questions']=True
+    if any(pick(answers,key,'no',.8,.3)=='visit' for key in body['questions'] if key.startswith('buyer_part:')):
+        result['visit_request']='details'
+    if c.visit_confirmed and result['visit'] in ('change','cancel'):
+        revision=pick(answers,'booking_revision','keep',.9,.5)
+        if revision!=result['visit']:
+            c.s.evidence.event('semantic_booking_revision_blocked',proposed=result['visit'],revision=revision)
+            result['visit']='none'
     if 'question_recall' in body['questions']:
         choice=pick(answers,'question_recall','none',.75,.25)
         if choice!='none' and pick(answers,'repeat_permission','no',.9,.4)!='yes':

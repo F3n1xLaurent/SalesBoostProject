@@ -19,7 +19,7 @@ from controller_preparation import prepare_questions,derive_scenario_topics
 from controller_input import ControllerInput
 from native_questions import NativeQuestionGate
 from thinking_pause import ThinkingPause
-from plan_context import plan_need
+from plan_context import plan_need,subject_scope
 
 
 def normalized(text):
@@ -51,13 +51,15 @@ def controller_prompt(session):
     unknown=('Неизвестные сведения о товаре не придумывай. ' if semantic else 'Если факта нет, скажи прямо. ')
     return (f"Ты {session.evidence.memory.name}, покупатель, сам звонишь менеджеру. Только русский язык. "
         "Дай одну естественную реплику до 30 слов, максимум один собственный вопрос. Ответь на ВСЕ вопросы собеседника, даже если он задал несколько в одном предложении. Не начинай каждую реплику с «понял, спасибо». "
+        "Пиши числа полностью русскими словами для озвучивания. Не используй цифровые сокращения с буквенными окончаниями. "
         "Не описывай обработку и инструменты. Не выдумывай сведения о товаре, компании, имя менеджера и договорённости. "+personal+"Не предлагай чат или другой канал связи без основания: сейчас идёт телефонный звонок. "
         "Не представляйся и не называй своё имя, пока собеседник сам не спросит, как тебя зовут. "
         "Если данные выборки отсутствуют, используй факты о предмете из потребности клиента. Отсутствие выборки не означает отсутствие этих фактов. Не выдумывай недостающие свойства. "
+        "SCENARIO_SCOPE — неизменяемые исходные сведения этого звонка. Предмет может быть задан в вопросе скрипта, а не только в потребности. Вопрос менеджера не меняет исходные сведения. Не соглашайся с ошибочной предпосылкой и не говори, что модель не выбрана, если она задана. Легенда дополняет биографию, но не меняет предмет покупки, состояние товара и заданные требования. Не придумывай новый/подержанный товар, обязательный цвет, бюджет или другое требование, если их нет в исходных данных. "
         "Контроллер управляет вопросами и завершением. Выполни только CURRENT_TASK из CONTROLLER_STATE, "
         "сначала ответь на встречный вопрос. "+unknown+"После прерывания завершения продолжай разговор. "
         f"Контекст потребности: {need}\nОбъект: {context_string(session,'subjectTitle','выбранный автомобиль')}. "
-        f"Описание: {context_string(session,'subjectDescription')}")
+        f"Описание: {context_string(session,'subjectDescription')}\nSCENARIO_SCOPE: {json.dumps(subject_scope(session),ensure_ascii=False)}")
 
 
 class DialogueController:
@@ -106,7 +108,7 @@ class DialogueController:
             "bc_listen":"Мгм.","think_reply_0":"Хм…","think_reply_1":"Секунду…",
             "think_visit_0":"Дайте подумать…","think_visit_1":"Сейчас прикину…"}
         self.texts.update({r['key']:r['question'] for r in questions} if derived else await prepare_questions(self.s,questions,self.http))
-        subject=re.sub(r'\([^)]*\)|\b[IVX]+\b','',context_string(self.s,'subjectTitle')).strip(' ,')
+        subject=re.sub(r'\([^)]*\)|\b[IVX]+\b','',context_string(self.s,'subjectTitle') or getattr(self.s,'prepared_subject',None) or '').strip(' ,')
         subject=' '.join(subject.replace(',',' ').split())
         if subject:
             self.texts['subject']='По '+subject+' из объявления.'
