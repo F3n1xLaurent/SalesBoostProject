@@ -343,6 +343,7 @@ ${REPORT_EVIDENCE_RULES}
 
   let classification: LLMClassification | null = null;
   let validationIssue = '';
+  let lastFailure: unknown;
 
   for (let attempt = 1; attempt <= 2 && !classification; attempt += 1) {
     try {
@@ -400,6 +401,7 @@ ${REPORT_EVIDENCE_RULES}
       const status = Number((err as { status?: unknown })?.status);
       if ([400, 401, 402, 403, 404].includes(status)) throw err;
       validationIssue = err instanceof Error ? err.message : String(err);
+      lastFailure = err;
       console.warn(`[evaluatorV2] attempt=${attempt} failed:`, err instanceof Error ? err.message : err);
     }
   }
@@ -408,7 +410,8 @@ ${REPORT_EVIDENCE_RULES}
     // Publishing a synthetic all-NO checklist is worse than a temporarily
     // unavailable report: it creates false weaknesses and an invalid score.
     // The caller records the processing error and the evaluation can be retried.
-    throw new Error('EVALUATOR_UNAVAILABLE: model did not return a complete checklist');
+    const reason = validationIssue.replace(/\s+/gu, ' ').trim().slice(0, 500);
+    throw new Error(`EVALUATOR_UNAVAILABLE: ${reason || 'model did not return a valid checklist'}`, { cause: lastFailure });
   }
 
   // Normalize + build typed checklist

@@ -114,14 +114,26 @@ export function confirmedTimeInDialog(turns: Array<{ role: string; content: stri
   for (const turn of turns) {
     dayKnown ||= /сегодня|завтра|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресенье|\d{1,2}[./]\d{1,2}/iu.test(turn.content);
     const slot = visitSlot(turn.content);
-    const rejected = /не\s+(?:подходит|смогу|получится|приеду|подъеду)|отменя|встреч[ау][^.!?]*отмен|слот[^.!?]*занят/iu.test(turn.content);
-    const accepted = /(?:^|[\s,.!?])(?:да|хорошо|договорились|подходит|подтверждаю|жд[её]м|приеду|подъеду|отлично)(?=[\s,.!?]|$)/iu.test(turn.content)
-      && !rejected && !turn.content.includes('?');
+    const rejected = /не\s+(?:подходит|смогу|получится|приеду|подъеду)|отменя|встреч[ау][^.!?]*отмен|слот[^.!?]*занят|не\s+(?:буду|будем)\s+(?:вас\s+)?(?:ждать|встречать)|не\s+(?:жд[её]м|ожидаем|встретим)\s+вас/iu.test(turn.content);
+    const conditional = /(?:^|[\s,.!?])(?:если|возможно|наверное|постараюсь|попробую)(?=[\s,.!?]|$)|при\s+условии|может\s+быть/iu.test(turn.content);
+    const acknowledgment = /(?:^|[\s,.!?])(?:да|хорошо|договорились|подходит|подтверждаю|жд[её]м|приеду|подъеду|отлично)(?=[\s,.!?]|$)/iu.test(turn.content);
+    const questionAboutSlot = (turn.content.match(/[^.!?]*\?/gu) ?? []).some(question =>
+      /когда|во\s+сколько|како[йе]\s+(?:день|время)|(?:вам|тебе).{0,35}(?:удоб|подойд)|(?:можете|сможете).{0,35}(?:прие|подъе)|(?:ждать|ожидать)\s*\?/iu.test(question));
+    const leadingAcceptance = /^\s*(?:да|хорошо|отлично|договорились|подходит|подтверждаю)[,;.!]/iu.test(turn.content);
+    const commitment = /(?:буду|будем)\s+(?:вас\s+(?:ждать|встречать)|(?:ждать|встречать)\s+вас)|(?:жд[её]м|ожидаем|встретим)\s+вас|(?:записал[аи]?|записываю|записываем|запишу|запишем)\s+вас/iu.test(turn.content);
+    // A follow-up about name/contact/SMS does not negate acceptance of the
+    // active appointment. A question about the slot itself still isn't consent.
+    const accepted = !rejected && !conditional && (acknowledgment && !turn.content.includes('?')
+      || !questionAboutSlot && (leadingAcceptance || commitment));
     if (rejected) { pending = null; confirmed = false; continue; }
     if (dayKnown && pending && pending.role !== turn.role && accepted && (!slot || sameVisitTime(pending.text, turn.content))) confirmed = true;
     if (slot) {
-      if (pending && !sameVisitTime(pending.text, turn.content)) confirmed = false;
-      pending = { role: turn.role, text: turn.content };
+      if (!pending || !sameVisitTime(pending.text, turn.content)) {
+        confirmed = false;
+        pending = { role: turn.role, text: turn.content };
+      }
+      // Repeating the same clock doesn't change who proposed it. A later
+      // "we'll be waiting for you" can confirm it across separate ASR fragments.
     } else if (/(?:^|\s)(?:или|либо)(?=\s|[,.]|$)|занят|не\s+получится/iu.test(turn.content)
       && /визит|встреч|прие[хд]|подъе[хд]|тест.?драйв|врем|сегодня|завтра|послезавтра|понедельник|вторник|сред[ау]|четверг|пятниц[ау]|суббот[ау]|воскресенье/iu.test(turn.content)) {
       // Alternatives in an unrelated topic (cash or credit, for example)

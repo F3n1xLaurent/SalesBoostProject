@@ -216,6 +216,30 @@ describe('production call report calibration', () => {
       { role: 'client', content: 'Готов обсудить условия на месте.' },
     ])).toBe(true);
   });
+  it('1304: accepts a slot followed by a contact question and fragmented commitment', () => {
+    const dialog = [
+      { role: 'client', content: 'Могу подъехать сегодня, в 10:00. Подойдёт?' },
+      { role: 'manager', content: 'Да, давайте, можно запишу вашу контактную информацию? Направлю вам свою SMS-визитку.' },
+      { role: 'manager', content: 'И буду ждать вас сегодня.' },
+      { role: 'manager', content: 'Понял, к десяти ноль ноль.' },
+      { role: 'manager', content: 'Могу вас к десяти часам ожидать?' },
+    ];
+    expect(confirmedTimeInDialog(dialog)).toBe(true);
+  });
+  it('keeps the proposal owner across repeated clock fragments until acceptance', () => {
+    expect(confirmedTimeInDialog([
+      { role: 'client', content: 'Могу подъехать завтра в 15:00. Подойдёт?' },
+      { role: 'manager', content: 'Завтра в 15:00.' },
+      { role: 'manager', content: 'Будем ждать вас.' },
+    ])).toBe(true);
+  });
+  it.each(['Да, если получится вас записать.', 'Хорошо, вам удобно завтра в 15:00?',
+    'Да, возможно.', 'Я буду ждать вашего звонка.', 'Я не буду ждать вас.', 'Мы не ожидаем вас.'])('does not treat conditional consent or a slot question as agreement: %s', content => {
+    expect(confirmedTimeInDialog([
+      { role: 'client', content: 'Могу приехать завтра в 15:00. Подойдёт?' },
+      { role: 'manager', content },
+    ])).toBe(false);
+  });
   it('invalidates a confirmed appointment when the visit is explicitly reopened', () => {
     const agreed = [{ role: 'manager', content: 'Приезжайте завтра в 12:00.' }, { role: 'client', content: 'Хорошо, приеду.' }];
     for (const content of ['Отменяю визит.', 'Давайте лучше завтра или послезавтра приеду.']) {
