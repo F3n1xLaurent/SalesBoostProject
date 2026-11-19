@@ -56,9 +56,11 @@ describe('production Pipecat integration', () => {
     request.mockResolvedValueOnce(response(snapshot));
     await prepareProductionPipecatCall(id, '+79990000000', { planId: 'p', planName: 'План', prompt: 'Сценарий',
       elevenLabsVoiceId: 'v', customerVoiceId: null, subjectTitle: null, subjectDescription: null,
-      customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.' });
+      customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.',
+      targetLocation: { name: 'Тестовый салон', city: 'Москва', address: 'ш. Энтузиастов, д. 12А' } });
     expect(JSON.parse(request.mock.calls[0][1].body).context).toMatchObject({ subjectTitle: null,
-      subjectDescription: null, customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.' });
+      subjectDescription: null, customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.',
+      targetLocation: { name: 'Тестовый салон', city: 'Москва', address: 'ш. Энтузиастов, д. 12А' } });
   });
   it('recovers a terminal call from the database queue and forwards actual transcript and recording evidence', async () => {
     snapshot = { ...snapshot, status: 'disconnected', finalized: true, recordingStarted: true,

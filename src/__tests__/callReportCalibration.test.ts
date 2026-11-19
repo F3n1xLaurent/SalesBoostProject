@@ -6,11 +6,32 @@ import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logi
 import { computeCustomChecklistResult, evaluateSessionV2 } from '../llm/evaluatorV2';
 import { getDefaultState } from '../state/defaultState';
 import { openai } from '../lib/openaiClient';
+import { reportKnownScenarioFacts } from '../voice/reportQualityRules';
 afterEach(() => vi.restoreAllMocks());
 const manager = (text: string) => ({ role: 'manager' as const, text });
 const client = (text: string) => ({ role: 'client' as const, text });
 
 describe('production call report calibration', () => {
+  it('1358: private scenario needs cannot bypass the future-dialog guard', () => {
+    const transcript = [client('Нас пятеро, иногда ездит бабушка.'), manager('Автомобиль достаточно просторный.'),
+      client('У меня трое детей, часто выезжаем на природу.')];
+    const scenario = 'Компания: «МореАвто».\nПотребность клиента: Семья с детьми.\nЧастые выезды на природу.\n\nОснова разговора: потребность клиента.\nДанные выборки/описание: EXEED LX.';
+    const facts = reportKnownScenarioFacts(JSON.stringify({ scenario, assessmentCriteria: ['Загородные поездки'] }));
+    expect(facts).toContain('МореАвто'); expect(facts).toContain('EXEED LX');
+    expect(facts).not.toContain('природу'); expect(facts).not.toContain('детьми'); expect(facts).not.toContain('Загородные');
+    const report = normalizeUnifiedCallReport({ dialog: [{}, { mark: 'normal', comment: 'Нужен полезный следующий шаг.' }, {}] }, { totalScore: 56, transcript })!;
+    expect(reportExampleStructuralIssues('Просторный салон пригодится для выездов на природу.', 1, report, transcript, JSON.stringify({ scenario })).join(' ')).toContain('будущей реплики');
+    expect(reportExampleStructuralIssues('Предлагаю всей семьёй оценить пространство салона при осмотре.', 1, report, transcript, JSON.stringify({ scenario }))).toEqual([]);
+  });
+
+  it.each([['Море авто', 'МореАвто'], ['Север Моторс', 'Север-Моторс']])('accepts the sourced company %s without a mandatory company keyword', (original, rendered) => {
+    const task = { turnIndex: 0, example: `${rendered}, меня зовут Ольга [фамилия], я эксперт по автомобилям.`,
+      problems: [{ id: 'finding:0', code: 'NO_INTRO_COMPANY', title: 'Представление', comment: 'Не названа фамилия.' }],
+      knownDialog: [manager(`${original}, меня зовут Ольга, специалист дилерского центра.`)], scenarioFacts: '' };
+    expect(localExampleIssues(task)).toEqual([]);
+    expect(localExampleIssues({ ...task, example: 'Меня зовут Ольга, я эксперт по автомобилям.' }).join(' ')).toContain('компания');
+  });
+
   it('1147: accepts a natural named introduction before independent semantic review', () => {
     const task = { turnIndex: 0, example: 'Добрый день, Дмитрий! Это Алина [фамилия], эксперт по автомобилям EXEED в «МореАвто», официальном дилере EXEED.',
       problems: [{ id: 'finding:0', code: 'NO_INTRO_COMPANY', title: 'Представление', comment: 'Не назвал фамилию и роль.' }],
@@ -196,6 +217,8 @@ describe('production call report calibration', () => {
   it('does not publish a finished report when any negative/normal reply lacks a safe improvement', () => {
     const report = normalizeUnifiedCallReport({ dialog: [{ mark: 'negative', comment: 'Нет прямого ответа.' }] }, { totalScore: 30, transcript: [manager('Посмотрите на сайте.')] })!;
     expect(() => requireCompleteReportExamples(report)).toThrow('полный улучшенный пример');
+    report.exampleReviews = [{ turnIndex: 0, exampleHash: 'rejected', status: 'fail', issues: ['Добавлены неподтверждённые характеристики.'] }];
+    expect(() => requireCompleteReportExamples(report)).toThrow('Причина: Добавлены неподтверждённые характеристики.');
     report.dialog[0].betterExample = 'Я уточню стоимость нужной комплектации и сообщу её вам.';
     expect(requireCompleteReportExamples(report)).toBe(report);
   });

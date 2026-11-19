@@ -107,6 +107,7 @@ async function exportCall(args: DiagnosticCaseRequest): Promise<DiagnosticBundle
     originalTranscriptJson: session.originalTranscriptJson,
     retranscriptionJson: session.retranscriptionJson,
     evaluationJson: session.evaluationJson,
+    reportCheckpointJson: session.reportCheckpointJson,
     dimensionsJson: session.dimensionsJson,
     checklistResultsJson: session.checklistResultsJson,
     ivrPathJson: session.ivrPathJson,

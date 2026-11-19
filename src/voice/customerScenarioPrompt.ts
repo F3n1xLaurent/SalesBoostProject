@@ -17,6 +17,7 @@ export type CustomerScenarioPromptInput = {
   replyLength?: string | null;
   communicationStyle?: string | null;
   context?: string | null;
+  scriptTitle?: string | null;
   itemTitle?: string | null;
   itemDescription?: string | null;
   voiceName?: string | null;
@@ -193,6 +194,7 @@ export function buildCustomerScenarioPromptCore(input: CustomerScenarioPromptInp
     targetSection,
     companyName ? `Компания: «${companyName}».` : 'Название компании не указано.',
     companyDescription ? `Описание компании: ${companyDescription}` : '',
+    asText(input.scriptTitle) ? `Название скрипта (справочный источник): ${JSON.stringify(asText(input.scriptTitle))}\nЭто служебное название: не зачитывай его. Если в нём явно назван предмет обращения, используй только этот предмет, когда он не противоречит выборке и потребности. Общие названия не задают марку или модель.` : '',
     `Потребность клиента: ${context}`,
     genericMode
       ? `Название сценария «${itemTitle}» — внутренняя служебная метка: не произноси его вслух.`

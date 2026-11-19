@@ -5,6 +5,22 @@ from controller_preparation import prepare_questions,valid_shape,varied_fallback
 from policy import Evidence
 
 class BankTests(unittest.IsolatedAsyncioTestCase):
+    async def test_subject_from_script_title_requires_both_literal_quote_and_semantic_approval(self):
+        self.s.context={}
+        self.s.prompt='Название скрипта (справочный источник): "Москвич 3, 2024 года — наличные"\nПотребность клиента: Для жены.'
+        rows=[{'key':'availability','question':'Автомобиль ещё в продаже?'}]
+        async def generate(*args,**kwargs):
+            self.assertEqual(kwargs['subject_data']['script_title'],'Москвич 3, 2024 года — наличные')
+            kwargs['subject_result']['value']='Москвич 3, 2024 года'
+            return {'availability':'Скажите, автомобиль ещё в продаже?'}
+        for approved in (True,False):
+            verdict={'availability':{'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}},
+                '__scenario_subject__':{'choice':'safe' if approved else 'unsafe',
+                    'probabilities':{'safe':.99 if approved else .01,'unsafe':.01 if approved else .99}}}
+            with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)):
+                await prepare_questions(self.s,rows,None)
+            self.assertEqual(self.s.prepared_subject,'Москвич 3, 2024 года' if approved else None)
+
     async def asyncSetUp(self):
         _last.clear()
         self.s=SimpleNamespace(id='synthetic-call',evidence=Evidence())

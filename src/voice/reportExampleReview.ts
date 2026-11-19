@@ -48,7 +48,15 @@ export function localExampleIssues(task: ReportExampleTask): string[] {
   const issues = [...preservedActionIssues(task.knownDialog.at(-1)?.text ?? '', task.example), ...clarificationRequestIssues(task.example)];
   if (task.problems.some((problem) => problem.code === 'NO_INTRO_COMPANY')) {
     if (!/(?:[Мм]еня\s+зовут|[Мм]о[её]\s+имя|\[имя(?:\s+менеджера)?\]|(?:[Ээ]то|[Гг]оворит|[Бб]еспокоит)\s+[А-ЯЁ][а-яё-]+|[Яя]\s+[А-ЯЁ][а-яё]+(?:\s*[,—-]|\s+из\s))/u.test(task.example)) issues.push('В примере не представлено имя менеджера; допустим явный заполнитель [имя].');
-    if (!/(?:компани[яию]|автоцентр|автосалон|центр[а-яё]*\s+[«"]|(?:ООО|АО|ПАО|ИП)\s*[«"][^»"\n]{2,}[»"]|(?:в|из)\s+[«"„“][^»"“”\n]{2,}[»"“”])/iu.test(task.example)) issues.push('В примере не названа компания.');
+    const compact = (text: string) => text.toLocaleLowerCase('ru-RU').replace(/ё/gu, 'е').replace(/[^\p{L}\p{N}]/gu, '');
+    const introducedCompanies = task.knownDialog.filter(turn => turn.role === 'manager').flatMap(turn => {
+      const prefix = turn.text.split(/меня\s+зовут|мо[её]\s+имя/iu)[0];
+      if (prefix === turn.text) return [];
+      const name = prefix.replace(/^(?:\s*(?:здравствуйте|добрый\s+(?:день|вечер)|доброе\s+утро|алло)[,.!\s]*)+/iu, '').trim();
+      return compact(name).length >= 3 ? [compact(name)] : [];
+    });
+    const hasKnownCompany = introducedCompanies.some(name => compact(task.example).includes(name));
+    if (!hasKnownCompany && !/(?:компани[яию]|автоцентр|автосалон|центр[а-яё]*\s+[«"]|(?:ООО|АО|ПАО|ИП)\s*[«"][^»"\n]{2,}[»"]|(?:в|из)\s+[«"„“][^»"“”\n]{2,}[»"“”])/iu.test(task.example)) issues.push('В примере не названа компания.');
   }
   const clientRequest = [...task.knownDialog.slice(0, -1)].reverse().find((turn) => turn.role === 'client')?.text ?? '';
   const conditions = [

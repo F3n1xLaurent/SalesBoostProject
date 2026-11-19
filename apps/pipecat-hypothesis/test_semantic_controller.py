@@ -6,12 +6,12 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock,patch
+from unittest.mock import AsyncMock,Mock,patch
 
 from conversation import ConversationMemory
 from dialogue_controller import DialogueController
 from semantic_controller import SemanticController
-from pipeline import Turn
+from pipeline import Turn,GatedRealtime
 from policy import Evidence,Playback
 from turn_meaning import interpret,payload,pick,acceptance_scope
 
@@ -74,6 +74,55 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Цвет чёрный',state['SCENARIO_SCOPE']['need'])
         self.assertIn('SCENARIO_SCOPE имеет приоритет',self.c.fallback_goal)
 
+    async def test_branch_address_request_uses_known_location_before_plan_questions(self):
+        self.s.context['targetLocation']={'name':'Тестовый салон','city':'Москва','address':'ш. Энтузиастов, д. 12А'}
+        await self.run_turn('Уточните номер объявления или адрес салона, где стоит автомобиль, я вас соединю.',other_questions=True)
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertEqual(state['target_location']['address'],'ш. Энтузиастов, д. 12А')
+        self.assertEqual(payload(self.c,self.c.latest_input)['state']['target_location'],state['target_location'])
+        self.assertIn('target_location.address',self.c.fallback_goal)
+        self.assertFalse(self.c.asked)
+        self.c.llm.send_client_event.assert_awaited()
+
+    async def test_geography_comes_from_target_city_not_free_customer_legend(self):
+        self.s.context['targetLocation']={'name':'Солонцы','city':'Красноярск','address':'п. Солонцы, пр-кт Котельникова, стр. 11/5'}
+        self.c.customer_legend=[{'response_id':'old','question':'Откуда вы?','text':'Я из Москвы.'}]
+        await self.run_turn('А вы сами территориально где находитесь?',other_questions=True)
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertEqual(state['target_location']['city'],'Красноярск')
+        self.assertIn('География клиента не является свободной легендой',self.c.fallback_goal)
+        self.assertIn('ранее ошибочно созданной легенды',self.c.fallback_goal)
+
+    async def test_short_opening_greetings_preserve_audio_but_real_questions_interrupt(self):
+        self.c.opening_sent=False
+        await self.c.speak('opening')
+        turn=Turn(True,400,question=dict(self.c.last_question))
+        for text in ('Алло.', 'Здрасьте', 'Здравствуйте, Андрей.'):
+            self.assertTrue(self.c.ignores_opening_greeting(text,turn))
+        for text in ('Стоп.', 'Алло, вас не слышно.', 'Новый или с пробегом?'):
+            self.assertFalse(self.c.ignores_opening_greeting(text,turn))
+        turn.interrupted=True
+        self.assertFalse(self.c.ignores_opening_greeting('Алло.',turn))
+        turn.interrupted=False;turn.overlap=False
+        self.assertFalse(self.c.ignores_opening_greeting('Алло.',turn))
+        turn.overlap=True;turn.question={'topic':'discount','response_id':'other'}
+        self.assertFalse(self.c.ignores_opening_greeting('Алло.',turn))
+
+    async def test_opening_greeting_transcript_does_not_clear_playback_or_restart_controller(self):
+        self.c.opening_sent=False
+        await self.c.speak('opening')
+        turn=Turn(True,400,number=1,question=dict(self.c.last_question))
+        self.monitor.turn=turn;self.s.playback.pending.add('opening-audio')
+        self.c.receive=Mock()
+        llm=GatedRealtime(self.s,self.monitor,api_key='test')
+        llm.items['greeting']=(turn,True)
+        llm._handle_interruption=AsyncMock();llm.broadcast_frame=AsyncMock()
+        await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='greeting',transcript='Алло.'))
+        self.c.receive.assert_not_called()
+        llm._handle_interruption.assert_not_awaited();llm.broadcast_frame.assert_not_awaited()
+        self.assertIn('opening-audio',self.s.playback.pending)
+        self.assertTrue(any(e['event']=='opening_greeting_overlap_ignored' for e in self.s.evidence.events))
+
     async def test_verified_script_subject_is_prepared_for_opening_and_direct_replies(self):
         self.s.context={'subjectTitle':None,'subjectDescription':None}
         async def prepared(*args,**kwargs):
@@ -83,6 +132,21 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
             await self.c.prepare()
         self.assertIn('Toyota RAV4 2018',self.c.texts['opening'])
         self.assertIn('Toyota RAV4 2018',self.c.texts['subject'])
+
+    async def test_1361_verified_title_subject_is_named_when_operator_asks_model(self):
+        self.s.context={}
+        self.s.prompt='Название скрипта (справочный источник): "Москвич 3, 2024 года"\nПотребность клиента: Покупка для жены, наличные.'
+        async def prepared(*args,**kwargs):
+            self.s.prepared_subject='Москвич 3, 2024 года'
+            return {r['key']:r['question'] for r in self.s.evidence.memory.topics.required}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(side_effect=prepared)),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.c.prepare()
+        self.assertIn('Москвич 3',self.c.texts['opening'])
+        self.assertIn('2024 года',self.c.texts['opening'])
+        await self.run_turn('Какую марку и модель рассматриваете?',subject=True)
+        answer=self.c.player.queue_frame.call_args.args[0].text
+        self.assertIn('Москвич 3',answer)
+        self.assertIn('2024 года',answer)
 
     async def test_named_sale_question_opens_with_the_model_even_without_extraction(self):
         self.s.prompt='Потребность клиента: Покупка в кредит\n\n1. Toyota RAV4 2018года ещё в продаже? [обязательная тема]'
@@ -136,6 +200,43 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.c.opening_sent=False
         await self.run_turn('Для чего вам автомобиль?',other_questions=True)
         self.assertEqual(self.c.pending_after_native[0],'open')
+
+    async def test_first_native_answer_greets_before_need_and_does_not_restart_opening(self):
+        self.c.opening_sent=False
+        await self.run_turn('Здравствуйте, отдел продаж. Чем могу помочь? Алло.',subject=True,other_questions=True)
+        identifier='first-answer'
+        answer=self.c.approve_speech_sentence('Меня интересует Тестовый объект.',identifier)
+        self.assertEqual(answer,'Здравствуйте! Меня интересует Тестовый объект.')
+        self.assertNotIn('Здравствуйте',self.c.approve_speech_sentence('Рассматриваю покупку в кредит.',identifier))
+        delivery=self.s.evidence.delivery
+        delivery.segment('first-tag',identifier);delivery.ack('first-tag')
+        delivery.response(identifier).update(generated_done=True,tts_done=True)
+        self.c.native_resume_context={'response_id':identifier,'text':answer,'epoch':self.c.epoch}
+        await self.c.perform('open','',self.c.epoch)
+        frame=self.c.player.queue_frame.call_args.args[0]
+        self.assertEqual(frame.text,'Машина ещё продаётся?')
+        self.assertTrue(self.c.opening_sent)
+        self.assertEqual(self.c.last_question['topic'],'availability')
+        self.assertIn('plan:availability',self.c.question_ledger)
+
+    async def test_initial_native_answer_keeps_generated_greeting_once(self):
+        self.c.opening_sent=False
+        self.assertEqual(self.c.approve_speech_sentence('Здравствуйте! Меня интересует машина.','first'),
+            'Здравствуйте! Меня интересует машина.')
+
+    async def test_initial_payment_answer_does_not_lose_subject_in_followup(self):
+        self.c.opening_sent=False
+        identifier='payment-first'
+        answer=self.c.approve_speech_sentence('Планирую покупку в кредит.',identifier)
+        delivery=self.s.evidence.delivery
+        delivery.segment('payment-tag',identifier);delivery.ack('payment-tag')
+        delivery.response(identifier).update(generated_done=True,tts_done=True)
+        self.c.native_resume_context={'response_id':identifier,'text':answer,'epoch':self.c.epoch}
+        await self.c.perform('open','',self.c.epoch)
+        frame=self.c.player.queue_frame.call_args.args[0]
+        self.assertIn('Тестовый объект',frame.text)
+        self.assertNotIn('Здравствуйте',frame.text)
+        self.assertEqual(self.c.last_question['topic'],'availability')
 
     async def test_existing_availability_answer_does_not_trigger_missing_opening(self):
         self.c.started=True;self.c.opening_sent=False;self.c.answers['availability']={'status':'answered'}

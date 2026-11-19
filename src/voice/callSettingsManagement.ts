@@ -982,7 +982,7 @@ export type RealtimeCallPromptProfile = Pick<
 export type RealtimeCallPromptScript = Pick<
   Prisma.CallScriptGetPayload<{}>,
   'context' | 'objectionsJson' | 'questionsJson' | 'successCriteriaJson'
->;
+> & { name?: string | null };
 
 export type RealtimeCallPromptItem = Pick<Prisma.ImportedItemGetPayload<{}>, 'title' | 'description'>;
 
@@ -1019,6 +1019,7 @@ export function buildRealtimeCallPrompt(input: {
     replyLength,
     communicationStyle,
     context,
+    scriptTitle: input.script.name,
     itemTitle,
     itemDescription,
     voiceName: input.customerVoiceName,
@@ -1554,6 +1555,9 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
     prepared = await prepareCallPlanTelephony(call.phone, {
       planId: call.planId, planName: call.plan.name, prompt, elevenLabsVoiceId,
       customerVoiceId: customerVoice?.id ?? null,
+      companyName: targetDealership?.name ?? call.dealershipName,
+      targetLocation: { name: targetDealership?.name ?? call.dealershipName,
+        city: targetDealership?.city ?? null, address: targetDealership?.address ?? null },
       // Scheduled calls keep their saved prompt even if the imported listing
       // was edited later. Never inject a different vehicle into entity guards.
       subjectTitle: subject?.title && prompt.includes(subject.title) ? subject.title : null,
@@ -1754,6 +1758,7 @@ async function launchManualPlanTarget(
   const prepared = await prepareCallPlanTelephony(target.phoneNumber.phone, {
     planId: plan.id, planName: plan.name, prompt, elevenLabsVoiceId,
     companyName: target.dealershipName,
+    targetLocation: { name: target.dealershipName, city: target.dealershipCity, address: target.dealershipAddress },
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title ?? null,
     subjectDescription: context.importedItem?.description ?? null,
@@ -1952,6 +1957,7 @@ export type RealtimeTestPlanConfiguration = {
   subjectDescription: string | null;
   customerNeed?: string | null;
   companyName?: string | null;
+  targetLocation?: { name: string | null; city: string | null; address: string | null } | null;
 };
 
 /**
@@ -1988,6 +1994,8 @@ export async function resolveRealtimeTestPlanConfiguration(
     prompt,
     elevenLabsVoiceId: customerVoice?.elevenLabsCode?.trim() || null,
     companyName: previewTarget?.dealershipName ?? null,
+    targetLocation: previewTarget ? { name: previewTarget.dealershipName,
+      city: previewTarget.dealershipCity, address: previewTarget.dealershipAddress } : null,
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title?.trim() || null,
     subjectDescription: context.importedItem?.description?.trim() || null,

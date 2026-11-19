@@ -65,6 +65,8 @@ describe('production diagnostic case bundle', () => {
       originalTranscriptJson: null,
       retranscriptionJson: null,
       evaluationJson: '{"overall_score_0_100":75}',
+      reportCheckpointJson: JSON.stringify({ report: { dialog: [{ betterExample: null }] },
+        rejected: { '9': [{ text: 'Отклонённый пример', issues: ['Нет прямого ответа'] }] }, apiKey: 'hidden-draft-key' }),
       dimensionsJson: '{}',
       checklistResultsJson: '[]',
       ivrPathJson: null,
@@ -78,6 +80,8 @@ describe('production diagnostic case bundle', () => {
     expect(bundle.audio).toMatchObject({ recording: { bytes: 5, base64: 'YXVkaW8=' } });
     expect(JSON.stringify(bundle)).not.toContain('Bearer hidden');
     expect(JSON.stringify(bundle)).not.toContain('+79999999999');
+    expect(bundle.related.reportCheckpoint).toMatchObject({ rejected: { '9': [{ issues: ['Нет прямого ответа'] }] } });
+    expect(JSON.stringify(bundle)).not.toContain('hidden-draft-key');
   });
 
   it('marks malformed stored JSON instead of exposing the raw value', () => {

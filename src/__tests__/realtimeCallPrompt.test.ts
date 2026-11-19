@@ -19,6 +19,24 @@ const profile = {
 };
 
 describe('buildRealtimeCallPrompt', () => {
+  it('preserves a vehicle mentioned in the script title when no sample is selected', () => {
+    const prompt = buildRealtimeCallPrompt({ script: { ...script, name: 'Москвич 3, 2024 года — наличные',
+      context: 'Пробег 29 650 км. Покупка для жены.' }, profile: null, importedItem: null,
+      holding: { name: 'Тестовый холдинг', description: '' } });
+    expect(prompt).toContain('Название скрипта (справочный источник): "Москвич 3, 2024 года — наличные"');
+    expect(prompt).toContain('Потребность клиента: Пробег 29 650 км. Покупка для жены.');
+    expect(prompt).toContain('служебное название: не зачитывай его');
+    expect(prompt).not.toContain('Предмет обращения: Москвич 3, 2024 года — наличные');
+  });
+
+  it('keeps the full multiline vehicle need as well as the script title', () => {
+    const need='Москвич 3, 2024 года\nпробег - 29 650 км;\nцена - 1 494 700 ₽\nпокупка за наличные\nпокупка для жены';
+    const prompt=buildRealtimeCallPrompt({ script: { ...script, name: 'Москвич 3, 2024 года', context: need },
+      profile: null, importedItem: null, holding: { name: 'Тестовый холдинг', description: '' } });
+    expect(prompt).toContain('Потребность клиента: '+need);
+    expect(prompt).toContain('Название скрипта (справочный источник): "Москвич 3, 2024 года"');
+  });
+
   it('собирает плановый и демо-звонок одним набором правил', () => {
     const common = {
       script,

@@ -60,7 +60,8 @@ export async function prepareProductionPipecatCall(callId: string, phone: string
   const prepared = await pipecatRequest<PipecatSnapshot>('/production/sessions', {
     callId, to: '+' + phone.replace(/\D/g, ''), voiceId, prompt: plan.prompt,
     context: { planId: plan.planId, planName: plan.planName, subjectTitle: plan.subjectTitle,
-      subjectDescription: plan.subjectDescription, customerNeed: plan.customerNeed ?? null, companyName: plan.companyName ?? null },
+      subjectDescription: plan.subjectDescription, customerNeed: plan.customerNeed ?? null, companyName: plan.companyName ?? null,
+      ...(plan.targetLocation ? { targetLocation: plan.targetLocation } : {}) },
   });
   if (prepared.callId !== callId || prepared.status !== 'prepared') throw new Error('Pipecat не подтвердил подготовку нового звонка.');
   await savePipecatState(prepared);

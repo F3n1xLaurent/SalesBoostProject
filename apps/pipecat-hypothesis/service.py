@@ -257,7 +257,7 @@ class Session:
     def persist(self):
         self.archive.metadata(self.id, {"id": self.id, "diagnosticId": "pc-" + self.id, "schemaVersion": 2,
             "instanceId": INSTANCE_ID, "provider": self.provider, "model": PROVIDERS[self.provider],
-            "runtimeRevision": "pipecat-semantic-19" if self.dialogue_mode=="semantic" else "pipecat-controller-13" if self.dialogue_mode=="controller" else "pipecat-conversation-4", "callState": {**self.evidence.memory.snapshot(),**({"controller":self.controller.snapshot()} if getattr(self,"controller",None) else {})},
+            "runtimeRevision": "pipecat-semantic-20" if self.dialogue_mode=="semantic" else "pipecat-controller-13" if self.dialogue_mode=="controller" else "pipecat-conversation-4", "callState": {**self.evidence.memory.snapshot(),**({"controller":self.controller.snapshot()} if getattr(self,"controller",None) else {})},
             "failureReason": getattr(self, "failure_reason", None), "maxCallSeconds":self.max_call_seconds,
             "kind": "production_call" if self.production else "call" if self.to else "probe",
             "ttsModel": self.tts_model, "voiceId": self.voice_id, "status": self.status,
@@ -275,7 +275,7 @@ class Session:
                 "outputSampleRate": 16000, "vadStartMs": 100, "vadStopMs": 200, "smartTurnStopMs": 1500,
                 "sustainedInterruptionMs": self.interruption_ms, "speechMode": self.speech_mode,
                 "dialogueMode": self.dialogue_mode,"backchannel": self.backchannel,"breathExperiment":breath_enabled(),
-                "promptRevision": "semantic-17" if self.dialogue_mode=="semantic" else "controller-13" if self.dialogue_mode=="controller" else self.prompt_mode, "nativeTts": False, "openaiServerVad": False},
+                "promptRevision": "semantic-20" if self.dialogue_mode=="semantic" else "controller-13" if self.dialogue_mode=="controller" else self.prompt_mode, "nativeTts": False, "openaiServerVad": False},
             "diagnosticError": self.diagnostic_error,
             **({'productionSnapshot':__import__('production_calls').snapshot(self)} if self.production else {})})
         self._saved_status = self.status
@@ -301,6 +301,12 @@ async def health():
                 ("OPENAI_API_KEY", "GEMINI_API_KEY", "PROXYAPI_API_KEY", "ELEVENLABS_API_KEY", "PIPECAT_HYPOTHESIS_PUBLIC_URL", "VOX_ACCOUNT_ID", "VOX_API_KEY", "VOX_APP_ID")}}
 
 
+def preflight_http_provider(host, fallback):
+    # Report the failing HTTP upstream, not the selected dialogue model.
+    return {"api.elevenlabs.io": "ElevenLabs", "api.proxyapi.ru": "Decisions ProxyAPI",
+            "api.openai.com": "OpenAI", "generativelanguage.googleapis.com": "Gemini"}.get(host, fallback)
+
+
 @app.post("/preflight", dependencies=[Depends(auth)])
 async def preflight(options: Options):
     identifier = "pf-" + str(uuid.uuid4())
@@ -312,12 +318,12 @@ async def preflight(options: Options):
             record["status"] = "passed"
             return {**result, "preflightId": identifier}
     except httpx.HTTPStatusError as exc:
-        provider = "ElevenLabs" if exc.request.url.host == "api.elevenlabs.io" else options.provider
+        provider = preflight_http_provider(exc.request.url.host, options.provider)
         record.update(status="failed", errorType=type(exc).__name__, httpStatus=exc.response.status_code,
             reason=f"{provider}: HTTP {exc.response.status_code}")
         raise HTTPException(503, f"{record['reason']}. Проверка {identifier}.") from None
     except httpx.RequestError as exc:
-        provider = "ElevenLabs" if exc.request.url.host == "api.elevenlabs.io" else options.provider
+        provider = preflight_http_provider(exc.request.url.host, options.provider)
         route = " через настроенный прокси" if provider == "ElevenLabs" and elevenlabs_proxy() else ""
         record.update(status="failed", errorType=type(exc).__name__,
             reason=f"{provider}: сетевая ошибка {type(exc).__name__}{route}")

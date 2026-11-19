@@ -17,7 +17,8 @@ from speech_ledger import SpeechLedger,fingerprint
 from customer_legend import choose_name
 from line_gate import LineGate,greeting_only
 from breath import BreathCue
-from plan_context import plan_need,selected_subject,subject_scope
+from policy import is_introductory_greeting
+from plan_context import plan_need,selected_subject,subject_scope,target_location
 
 
 class SemanticController(DialogueController):
@@ -36,11 +37,12 @@ class SemanticController(DialogueController):
         self.name_repeat_requested=False;self.identity_confirmation_requested=False
         self.question_replay_inflight=set();self.auto_replayed_questions=set()
         self.last_receipt_at=-1000.
+        self.native_opening_response=None
         self.s.evidence.memory.semantic_mode=True
-        self.s.evidence.event('semantic_configuration',model=MODEL,version='semantic-19')
+        self.s.evidence.event('semantic_configuration',model=MODEL,version='semantic-20')
 
     def snapshot(self):
-        return {**super().snapshot(),'understanding':'semantic-19','last_meaning':self.last_meaning,
+        return {**super().snapshot(),'understanding':'semantic-20','last_meaning':self.last_meaning,
                 'opening_pending':self.needs_opening(),
                 'semantic_failures':self.semantic_failures,'speech_ledger':self.speech.queued,
                 'line':self.line.snapshot(),
@@ -53,6 +55,14 @@ class SemanticController(DialogueController):
         # Starting a native answer is not the same as introducing the purpose
         # and asking availability. Preserve this obligation across interruption.
         return not self.opening_sent and 'availability' not in self.answers
+
+    def ignores_opening_greeting(self,text,turn):
+        if not turn.overlap or turn.interrupted:return False
+        question=turn.question or {}
+        identifier=question.get('response_id') if question.get('topic')=='availability' else (
+            self.native_opening_response if self.needs_opening() else None)
+        return bool(identifier and not self.s.evidence.delivery.complete(identifier)
+            and is_introductory_greeting(text,turn.duration_ms,self.s.evidence.memory.name))
 
     def question_history(self):
         rows=[];seen=set()
@@ -159,6 +169,15 @@ class SemanticController(DialogueController):
             for sentence in self.speech.sentences(previous['text']):
                 if 'identity:customer_name' not in self.speech.keys(sentence):allowed.update(self.speech.keys(sentence))
         spoken,blocked=self.speech.reserve(text,response_id,repeat_keys=allowed)
+        if spoken and self.needs_opening() and self.native_opening_response is None:
+            # Both the prefix and the answer pass through the same TTS stream.
+            # A separate queued clip could be cancelled/overtaken by the reply.
+            greeting=self.texts['greeting']
+            if not re.match(r'^\s*(?:здравствуйте|добрый\s+(?:день|вечер)|доброе\s+утро|привет)\b',spoken,re.I):
+                prefix,_=self.speech.reserve(greeting,response_id)
+                if prefix:spoken=prefix+' '+spoken
+            self.native_opening_response=response_id
+            self.s.evidence.event('semantic_native_opening',response_id=response_id)
         self.speech.commit(response_id,response_id)
         if spoken and allowed and 'identity:customer_name' in self.speech.keys(text):
             self.s.evidence.event('speech_repeat_authorized',response_id=response_id,reason='requested_identity',source='native')
@@ -200,6 +219,7 @@ class SemanticController(DialogueController):
             'requested_answers':self.requested_answers,'manager_utterance':self.latest_input,
             'manager_questions':(self.last_meaning or {}).get('buyer_question_parts',[]),
             'SCENARIO_SCOPE':subject_scope(self.s),
+            'target_location':target_location(self.s),
             'last_question':self.last_question,'last_assistant_reply':(self.last_clip or {}).get('text'),
             'active_visit':self.visit.offered,'facts':self.s.evidence.memory.facts,
             'confirmed_visit':self.confirmed_visit(),'visit_confirmed':self.visit_confirmed,
@@ -475,7 +495,7 @@ class SemanticController(DialogueController):
             new_information=key not in self.answers or key==self.current
             self.answers[key]={'evidence':text,'turn':turn,'status':status,'scope':'semantic turn coverage'}
             supplied=supplied or new_information
-            self.s.evidence.event('controller_answer_saved',topic=key,evidence=text,status=status,source='semantic-19')
+            self.s.evidence.event('controller_answer_saved',topic=key,evidence=text,status=status,source='semantic-20')
         m.topics.name_requested=meaning['name']
         response_seen=any(self.asked.get(key) for key in meaning.get('response_seen',[]))
         for key in meaning.get('response_seen',[]):
@@ -634,7 +654,13 @@ class SemanticController(DialogueController):
         if action=='open':
             if self.needs_opening():
                 self.current='availability'
-                await self.speak('opening')
+                native=getattr(self,'native_resume_context',None)
+                completed=(native and native['response_id']==self.native_opening_response
+                    and self.s.evidence.delivery.complete(native['response_id']))
+                subject=subject_scope(self.s).get('subject')
+                introduced=(completed and (self.last_meaning or {}).get('subject')
+                    or completed and subject and fingerprint(subject) in fingerprint(native['text']))
+                await self.speak(('opening_followup' if introduced else 'opening_body') if completed else 'opening')
             return
         if action and action.startswith('recall:'):
             await self.replay_question(action.removeprefix('recall:'),keys)
@@ -789,15 +815,18 @@ class SemanticController(DialogueController):
         self.native_question_policy='clarification' if clarify else 'answer_only'
         self.fallback_turn=self.s.evidence.turn;self.fallback_empty_recovered=False
         self.fallback_goal=('Ответь от первого лица на ВСЕ дополнительные вопросы менеджера из manager_utterance и manager_questions. Не повторяй уже данный ответ вместо ответа на новый вопрос. Краткость не должна исключать часть вопроса.\n'
+            '- На общее приглашение представиться или рассказать о цели звонка назови только предмет обращения одной короткой фразой. Не перечисляй весь контекст, цену и условия, если их не спрашивали.\n'
             '- Имя и объект бери из requested_answers и buyer_information; сохраняй заданную потребность. Новые личные детали добавляй только по правилам легенды ниже.\n'
             '- Для предмета обращения сначала используй selected_subject. Если выборка пуста, назови предмет и известные факты из provided_need. Не заменяй известную модель общими словами. Не путай предмет покупки с нынешней машиной клиента из легенды. Если предмет не задан нигде, попроси уточнить без выдуманной модели.\n'
-            '- SCENARIO_SCOPE имеет приоритет над chosen_personal_statements и предпосылками вопросов менеджера. Предмет из subject или script_references уже выбран. Не отвечай «модель не выбрал» и не проси выбрать её вместо заданной. Если менеджер спрашивает «новый?», ответь по данным о состоянии; при отсутствии состояния назови заданный предмет без выдуманного «новый». Не превращай уточняющие вопросы менеджера в новые желания клиента.\n'
+            '- SCENARIO_SCOPE имеет приоритет над chosen_personal_statements и предпосылками вопросов менеджера. Предмет из subject или script_references уже выбран. Если они не содержат конкретного предмета, проверь script_title: используй только явно названную там марку и модель, без служебных слов и без замены заданного предмета. Не отвечай «модель не выбрал» и не проси выбрать её вместо заданной. Если менеджер спрашивает «новый?», ответь по данным о состоянии; при отсутствии состояния назови заданный предмет без выдуманного «новый». Не превращай уточняющие вопросы менеджера в новые желания клиента.\n'
             '- Если факта нет, отвечай как человек: что ещё не решил или предпочитаешь пока обсудить саму покупку. Не говори «я не указал», «я не сообщал», «этой информации у меня нет».\n'
             '- Ты вымышленный клиент тестового звонка. Если личная деталь ещё не задана в потребности или chosen_personal_statements, выбери правдоподобную деталь по контексту и голосу, ответь от первого лица. Не объясняй, что составляешь легенду.\n'
             '- Назови конкретное значение запрошенного личного свойства, а не общую категорию: например, на вопрос о текущем автомобиле нужны марка и модель, а не просто «какой-то седан». Если раньше назвал только категорию, можешь уточнить её без противоречия.\n'
             '- Выбранные личные детали сохраняй: не меняй имя, текущую машину, способ оплаты и другие ответы при повторном вопросе. Заданные сведения потребности имеют приоритет. Не придумывай точные контакты, адреса, документы, факты о товаре, компании или сотруднике.\n'
+            '- География клиента не является свободной легендой: если target_location.city задан, клиент находится в этом городе и обращается в эту точку. На вопрос «где вы территориально?» назови этот город. Не подменяй его городом из описания холдинга, другого филиала, реплики продавца или ранее ошибочно созданной легенды. Не придумывай район, личный адрес, переезд, командировку или поездку из другого города. Если целевой город не задан, не выдумывай его.\n'
             '- Легенда разрешает биографию клиента, но НЕ новые ограничения приезда, занятость или удобные часы. Не выбирай время, не отказывайся от предложенного слота и не говори «вечером удобнее»: это решает только контроллер.\n'
-            '- Не выдумывай факты о ходе разговора: знаешь ли адрес, получил ли отчёт, что уже обсуждено. Источники — facts, confirmed_visit и recent_manager_quotes. Если адрес не сообщён, попроси продиктовать; не говори, что знаешь его.\n'
+            '- Адрес нужного салона бери из target_location.address, город и название — из той же target_location. Это известные данные целевой точки, их можно назвать по запросу сотрудника, в том числе для перевода в отдел продаж. Не заменяй их адресом другого филиала или личным адресом клиента. Если оператор предлагает назвать номер объявления ИЛИ адрес, достаточно известного адреса; номер объявления не выдумывай. Если адреса нет ни в target_location, ни в recent_manager_quotes, попроси его назвать. Не перечисляй адрес без запроса.\n'
+            '- Не выдумывай факты о ходе разговора: получил ли отчёт, что уже обсуждено. Источники — facts, confirmed_visit и recent_manager_quotes.\n'
             '- На предложение порядка осмотра дай короткую реакцию на его содержание; не превращай его в неопределённость о личных планах.\n'
             '- Согласованный осмотр не задаёт срок покупки. chosen_personal_statements сохраняет только легенду клиента и не подтверждает сведения продавца или договорённости.\n'
             '- Время визита, восстановление прежнего вопроса и завершение озвучит контроллер. Не включай сведения о времени в свой ответ даже при вопросе о приезде; ответь только на остальные части. Твой ответ без собственных вопросов и прощания.\n'

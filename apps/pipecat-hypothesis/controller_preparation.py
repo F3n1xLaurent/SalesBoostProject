@@ -67,7 +67,7 @@ async def generate_questions(questions,previous,call_id,scenario=None,style_cont
             if style_context:
                 instruction+=' Учитывай style_context только для тона, темперамента и разговорной манеры покупателя. Не копируй из него новые вопросы и факты; смысл каждого вопроса задаёт questions. Сохраняй естественную вежливость без анкетного чтения.'
             if subject_data is not None:
-                instruction+=' Дополнительно добавь в JSON поле subject: короткое точное название предмета обращения, если оно явно задано в subject_sources. Выборка приоритетна, затем потребность и прямые упоминания в вопросах скрипта. Верни ДОСЛОВНУЮ подстроку исходных данных, не исправляя написание и не добавляя слова. Сохрани модель и год, если они рядом в источнике. Не путай приобретаемый предмет с нынешним имуществом клиента; при неоднозначности subject=null. Не выдумывай модель, состояние, цвет или ограничения.'
+                instruction+=' Дополнительно добавь в JSON поле subject: короткое точное название предмета обращения, если оно явно задано в subject_sources. Выборка приоритетна, затем потребность, прямые упоминания в вопросах скрипта и script_title. Из script_title можно брать только явно названный товар, марку и модель: служебные метки, номера тестов, слово «автомобиль» и название компании не являются предметом. Верни ДОСЛОВНУЮ подстроку исходных данных, не исправляя написание и не добавляя слова. Сохрани модель и год, если они рядом в источнике. Не путай приобретаемый предмет с нынешним имуществом клиента; при неоднозначности subject=null. Не выдумывай модель, состояние, цвет или ограничения.'
             await ws.send(json.dumps({'type':'response.create','response':{'conversation':'none','output_modalities':['text'],
                 'instructions':instruction,'max_output_tokens':2200,'input':[{'type':'message','role':'user','content':[{'type':'input_text',
                 'text':json.dumps({'call_variant':call_id,'questions':questions,'previous':previous,**({'scenario':scenario} if scenario is not None else {}),**({'style_context':style_context} if style_context else {}),**({'subject_sources':subject_data} if subject_data is not None else {})},ensure_ascii=False)}]}]}}))
@@ -108,7 +108,7 @@ async def verify_questions(http,questions,candidates,subject=None,subject_data=N
     if subject:
         payload['state'].update(subject=subject,subject_sources=subject_data)
         payload['questions']['__scenario_subject__']={'type':'choice','instructions':
-            'Проверь subject как единственный предмет обращения покупателя. Он должен быть явно задан в subject_sources, с приоритетом selection, затем need и прямого предмета в вопросах скрипта. '
+            'Проверь subject как единственный предмет обращения покупателя. Он должен быть явно задан в subject_sources, с приоритетом selection, затем need, прямого предмета в вопросах скрипта и script_title. Служебные метки в script_title не являются названием товара: если там нет однозначного предмета покупки, выбирай unsafe. '
             'Это не ответ на вопрос о характеристике, не собственная нынешняя машина клиента и не случайная альтернатива. При неоднозначности unsafe.',
             'criteria':{'unsafe':'Предмет неверен, неоднозначен или противоречит более приоритетному источнику.',
                 'safe':'Верно выделен явно заданный предмет обращения, включая модель и год при их наличии.'}}

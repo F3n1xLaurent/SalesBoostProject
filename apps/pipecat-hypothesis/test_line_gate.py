@@ -102,6 +102,21 @@ class LineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.line.resumed)
         self.assertEqual(self.s.evidence.memory.facts['visit_day']['value'],'завтра')
 
+    async def test_transfer_prerequisite_question_stays_in_live_dialogue(self):
+        await self.line.route('Здравствуйте',1,1)
+        self.line.classify.return_value=('human',None,False)
+        text='Я вас соединю для консультации с менеджером отдела продаж. Какую марку и модель рассматриваете?'
+        self.assertEqual(await self.line.route(text,2,1),'human')
+        self.assertTrue(self.line.can_speak)
+        self.c.clear_audio.assert_not_awaited()
+        self.assertIsNone(self.line.wait_task)
+
+    async def test_transfer_question_does_not_override_real_hold(self):
+        await self.line.route('Здравствуйте',1,1)
+        self.line.classify.return_value=('hold',None,False)
+        self.assertEqual(await self.line.route('Подождите, переведу вас к коллеге, хорошо?',2,1),'human_hold')
+        self.assertFalse(self.line.can_speak)
+
     async def test_menu_digit_is_sent_once_and_path_requires_transport_confirmation(self):
         text='Для продаж нажмите один. Для сервиса нажмите два.'
         self.line.classify.return_value=('ivr','1',True)

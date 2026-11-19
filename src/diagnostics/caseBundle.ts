@@ -139,6 +139,7 @@ type CallCaseInput = {
   originalTranscriptJson: string | null;
   retranscriptionJson: string | null;
   evaluationJson: string | null;
+  reportCheckpointJson?: string | null;
   dimensionsJson: string | null;
   checklistResultsJson: string | null;
   ivrPathJson: string | null;
@@ -169,6 +170,7 @@ export function buildCallDiagnosticBundle(
       checklistResults: parseDiagnosticJson(input.checklistResultsJson),
       ivrPath: parseDiagnosticJson(input.ivrPathJson),
       planCall: redactDiagnosticSecrets(input.planCall),
+      reportCheckpoint: parseDiagnosticJson(input.reportCheckpointJson ?? null),
     },
     audio: {
       recordingStatus: options.recordingStatus ?? null,

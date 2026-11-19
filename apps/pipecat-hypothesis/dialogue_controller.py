@@ -129,6 +129,9 @@ class DialogueController:
             # that a multi-sentence synthesis can silently omit or swallow.
             self.texts['greeting']='Здравствуйте!'
             self.texts['opening_body']=self.texts['opening'].removeprefix('Здравствуйте! ')
+            # After a generated answer has introduced the buyer's need, only
+            # the availability question remains; don't restart the introduction.
+            self.texts['opening_followup']=re.findall(r'[^.!?]*\?',self.texts['opening'])[-1].strip()
             composites={'named_opening':['greeting','name','opening_body'],
                         'name_then_first':['name',questions[0]['key']]}
         if not self.s.backchannel:
@@ -254,7 +257,7 @@ class DialogueController:
     async def speak(self,key=None,text=None,kind="cached",mirror=True,closing=False,pcm=None,question_key=None,retry_of=None):
         text=self.texts[key] if key else text
         required={r['key'] for r in self.s.evidence.memory.topics.required}
-        plan_key=('availability' if key in ('opening','named_opening') else
+        plan_key=('availability' if key in ('opening','named_opening','opening_followup','opening_body') else
                   question_key if question_key in required else key if key in required else None)
         if key=='name_then_first':plan_key=self.pending()[0]['key'] if self.pending() else None
         # Stable plan identity survives wording changes, combined answers and
@@ -334,7 +337,7 @@ class DialogueController:
             if not retry_of and "?" in text:
                 required={r['key'] for r in self.s.evidence.memory.topics.required}
                 explicit=question_key if question_key in required else key if key in required else None
-                if key in ('opening','named_opening'):explicit='availability';self.opening_sent=True
+                if key in ('opening','named_opening','opening_followup','opening_body'):explicit='availability';self.opening_sent=True
                 if key=='name_then_first':explicit=self.pending()[0]['key'] if self.pending() else None
                 self.record_question(text,identifier,explicit)
         if retry_of:e.event("controller_audio_retry",response_id=identifier,retry_of=retry_of)

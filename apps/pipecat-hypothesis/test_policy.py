@@ -3,6 +3,14 @@ from policy import Playback, Evidence, is_backchannel, TTS_MODELS
 
 
 class PolicyTests(unittest.TestCase):
+    def test_introductory_greeting_is_bounded_and_not_a_real_interruption(self):
+        from policy import is_introductory_greeting
+        for text in ('Алло.', 'Здрасьте', 'Здравствуйте, Дмитрий.', 'Добрый день'):
+            self.assertTrue(is_introductory_greeting(text,400,'Дмитрий'))
+        for text in ('Алло, вас не слышно.', 'Здравствуйте, какой автомобиль?', 'Стоп', 'Подождите', 'Нет'):
+            self.assertFalse(is_introductory_greeting(text,400,'Дмитрий'))
+        self.assertFalse(is_introductory_greeting('Алло',1000,'Дмитрий'))
+
     def test_short_unfinished_question_prefix_is_not_a_barge_in(self):
         from policy import is_overlap_fragment
         for text in ('Для кого','Какой у вас','А для'):

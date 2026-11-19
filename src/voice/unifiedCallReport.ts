@@ -2,7 +2,7 @@ import { config } from '../config';
 import { prisma } from '../db';
 import { compatibleChatMaxTokens, compatibleChatTemperature } from '../lib/openaiClient';
 import { compatibleReportReasoning } from '../lib/chatReasoning';
-import { REPORT_EXAMPLE_ACCEPTANCE_RULES, REPORT_QUALITY_RULES } from './reportQualityRules';
+import { REPORT_EXAMPLE_ACCEPTANCE_RULES, REPORT_QUALITY_RULES, reportKnownScenarioFacts } from './reportQualityRules';
 import { checklistCategoryScores, clientAction, deduplicateReportStrengths, isInapplicableReportText, repeatedNameRequest, reportCriterionCode, reportStrengthActions } from './reportAssessment';
 import { reportGenerationIssues, requestReportJson } from './reportGeneration';
 import type { TranscriptTurn } from './callHistory';
@@ -366,7 +366,7 @@ function sanitizeBetterExample(
   const addedMeaning = [...exampleStems].some((word) => !quoteStems.has(word));
   if (!addedMeaning) return reject('Пример не добавляет содержательного исправления исходной реплики.');
 
-  const knownBefore = contentStems(`${knownFactsText} ${transcript.slice(0, quoteIndex + 1).map((turn) => turn.text).join(' ')}`);
+  const knownBefore = contentStems(`${reportKnownScenarioFacts(knownFactsText)} ${transcript.slice(0, quoteIndex + 1).map((turn) => turn.text).join(' ')}`);
   const futureClient = contentStems(transcript.slice(quoteIndex + 1)
     .filter((turn) => turn.role === 'client')
     .map((turn) => turn.text)
@@ -1143,7 +1143,7 @@ export async function ensureFindingBetterExamples(
       .slice(0, quoteIndex + 1)
       .map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`)
       .join('\n'),
-    scenarioFacts: scenarioContext.slice(0, 10000),
+    scenarioFacts: reportKnownScenarioFacts(scenarioContext).slice(0, 10000),
     previousReviewIssues: feedbackByTurn[quoteIndex] ?? [],
     previousRejectedCandidates: (rejectedByTurn.get(quoteIndex) ?? []).slice(-3),
     transcriptionUncertainties: report.transcriptionUncertainties?.filter((hint) => hint.turnIndex === quoteIndex),
@@ -1197,7 +1197,8 @@ export async function ensureFindingBetterExamples(
                   'Он должен одновременно устранить ВСЕ замечания problems, а не только первое. Сохрани все правильные ответы и факты исходной реплики; добавь недостающее, не заменяй весь ответ уточняющим вопросом. Числа сохраняй цифрами.',
                   REPORT_QUALITY_RULES,
                   REPORT_EXAMPLE_ACCEPTANCE_RULES,
-                  'Используй только сведения из knownDialog и scenarioFacts: факты сценария были известны менеджеру до звонка. Нельзя использовать факты, которые клиент сообщил позднее.',
+                  'Используй только сведения из knownDialog и подтверждённые сведения о товаре/компании из scenarioFacts. Нельзя использовать факты, которые клиент сообщил позднее.',
+                  'Потребности и личная легенда клиента из scenarioFacts становятся известны менеджеру только после их раскрытия в knownDialog. Comment проблемы и previousReviewIssues не разрешают использовать будущие сведения: исправляй только ту часть замечания, которая обоснована к текущей реплике. Не добавляй неизвестную потребность ради прежнего требования редактора; уточни её одним полезным вопросом, если это нужно.',
                   'Если клиент спросил, что входит в проверку, работы или услугу, перечисли подтверждённые пункты из scenarioFacts. Не заменяй ответ встречным вопросом. Если перечень неизвестен, честно предложи уточнить его и вернуться с прямым ответом.',
                   'Не придумывай цены, сроки, характеристики, наличие или обещания. Уточняющий вопрос допустим только если он помогает ответить на вопрос клиента, а не подменяет прямой ответ.',
                   'Исправляй все previousReviewIssues одновременно, учитывай previousRejectedCandidates: не возвращайся к ранее отклонённому варианту, исправляя только последнее замечание. Если нужны и вопрос о приоритете, и следующий шаг, задай один вопрос о приоритете и отдельно предложи конкретный слот визита как предложение, а не как уже согласованный факт. Не используй пустые [дата]/[время] вместо предложения слота; не меняй уже известное время клиента.',
@@ -1261,7 +1262,7 @@ export async function ensureReportExampleQuality(
           ?? problemByTitle(DEFAULT_CALL_REPORT_PROBLEMS, candidate.keyFindings[index].problemTitle)?.code ?? '',
         title: candidate.keyFindings[index].problemTitle, comment: candidate.keyFindings[index].comment }))
           : [{ id: `dialog:${turnIndex}`, code: '', title: 'Замечание к реплике', comment: line.comment ?? '' }],
-        knownDialog: transcript.slice(0, turnIndex + 1).map(({ role, text }) => ({ role, text })), scenarioFacts: scenarioContext.slice(0, 10000) }];
+        knownDialog: transcript.slice(0, turnIndex + 1).map(({ role, text }) => ({ role, text })), scenarioFacts: reportKnownScenarioFacts(scenarioContext).slice(0, 10000) }];
     });
     const unchanged = tasks.flatMap((task) => reviews.filter((review) => review.turnIndex === task.turnIndex && review.exampleHash === reportExampleHash(task.example)));
     reviews = [...unchanged, ...await reviewReportExamples(tasks.filter((task) => !unchanged.some((review) => review.turnIndex === task.turnIndex)))];
@@ -1297,7 +1298,9 @@ export function requireCompleteReportExamples(report: UnifiedCallReport): Unifie
   const missing = report.dialog.flatMap((line, index) => line.role === 'manager' && ['normal', 'negative'].includes(line.mark ?? '')
     && !line.betterExample?.trim() ? [index + 1] : []);
   if (missing.length || report.keyFindings.some(finding => !finding.betterExample.trim())) {
-    throw new Error(`Не удалось подготовить полный улучшенный пример для каждой отмеченной реплики (${missing.join(', ') || 'находки'}). Отчёт требует повторной генерации.`);
+    const review = report.exampleReviews?.find(item => item.status === 'fail' && missing.includes(item.turnIndex + 1));
+    const detail = review?.issues.filter(Boolean).join('; ').replace(/\s+/gu, ' ').trim().slice(0, 300);
+    throw new Error(`Не удалось подготовить полный улучшенный пример (${missing.join(', ') || 'находки'}). ${detail ? `Причина: ${detail}` : 'Отчёт требует повторной генерации.'}`);
   }
   return report;
 }

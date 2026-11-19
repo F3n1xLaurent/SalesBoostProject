@@ -1,9 +1,47 @@
 import unittest
 from types import SimpleNamespace
-from plan_context import plan_need,selected_subject,subject_scope,grounded_subject
+from plan_context import plan_need,selected_subject,subject_scope,grounded_subject,target_location,subject_sources
 
 
 class PlanContextTests(unittest.TestCase):
+    def test_script_title_reaches_subject_sources_without_overwriting_the_need(self):
+        s=SimpleNamespace(context={},prompt='Название скрипта (справочный источник): "Skoda Octavia — наличные"\n'
+            'Потребность клиента: Пробег 29 650 км.\n\nОснова разговора: потребность клиента.',
+            evidence=SimpleNamespace(memory=SimpleNamespace(topics=SimpleNamespace(required=[]))))
+        sources=subject_sources(s)
+        self.assertEqual(sources['script_title'],'Skoda Octavia — наличные')
+        self.assertEqual(sources['need'],'Пробег 29 650 км.')
+        self.assertTrue(grounded_subject('Skoda Octavia',sources))
+        self.assertFalse(grounded_subject('Skoda Kodiaq',sources))
+        s.prompt='Название скрипта (справочный источник): invalid json'
+        self.assertIsNone(subject_sources(s)['script_title'])
+
+    def test_1361_vehicle_and_year_survive_multiline_need_and_title(self):
+        need='Москвич 3, 2024 года\nпробег - 29 650 км;\nцена - 1 494 700 ₽\nпокупка за наличные\nпокупка для жены'
+        s=SimpleNamespace(context={},prompt='Название скрипта (справочный источник): "Москвич 3, 2024 года"\n'
+            'Потребность клиента: '+need+'\n\nОснова разговора: потребность клиента.',
+            evidence=SimpleNamespace(memory=SimpleNamespace(topics=SimpleNamespace(required=[]))))
+        self.assertEqual(plan_need(s),need)
+        self.assertEqual(subject_scope(s)['script_title'],'Москвич 3, 2024 года')
+        self.assertTrue(grounded_subject('Москвич 3, 2024 года',subject_sources(s)))
+
+
+    def test_target_location_reads_only_the_explicit_branch_block(self):
+        prompt=('Компания: адрес другого филиала: ул. Другая, 99.\n'
+            '=== ЦЕЛЕВАЯ ТОЧКА ЗВОНКА (КРИТИЧНО) ===\n'
+            'Целевая точка: Балашиха.\nЦелевой город звонка: Москва.\n'
+            'Адрес целевой точки: ш. Энтузиастов, д. 12А.\n'
+            '=== КОНЕЦ ЦЕЛЕВОЙ ТОЧКИ ===\nЛичный адрес клиента: ул. Домашняя, 1.')
+        self.assertEqual(target_location(SimpleNamespace(context={},prompt=prompt)),
+            {'name':'Балашиха','city':'Москва','address':'ш. Энтузиастов, д. 12А'})
+
+    def test_structured_location_takes_precedence_and_empty_address_stays_unknown(self):
+        s=SimpleNamespace(context={'targetLocation':{'name':'Новая точка','address':None}},prompt=
+            '=== ЦЕЛЕВАЯ ТОЧКА ЗВОНКА (КРИТИЧНО) ===\nАдрес целевой точки: Старый адрес.\n=== КОНЕЦ ЦЕЛЕВОЙ ТОЧКИ ===')
+        self.assertEqual(target_location(s),{'name':'Новая точка'})
+        s.context={};s.prompt='Компания: ул. Другая, 99.\nАдрес целевой точки: подставной адрес.'
+        self.assertEqual(target_location(s),{})
+
     def test_structured_need_takes_precedence_over_prompt_parsing(self):
         s=SimpleNamespace(context={'customerNeed':' Нужна доставка мебели. '},prompt='Потребность клиента: старые данные')
         self.assertEqual(plan_need(s),'Нужна доставка мебели.')

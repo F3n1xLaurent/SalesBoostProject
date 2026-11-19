@@ -1270,6 +1270,15 @@ class GatedRealtime(OpenAIRealtimeLLMService):
                 await self.send_client_event(events.ResponseCreateEvent())
             return
         controller=getattr(self.session,"controller",None)
+        if (controller and hasattr(controller,'ignores_opening_greeting')
+                and controller.ignores_opening_greeting(evt.transcript,turn)):
+            self.session.evidence.event('user_transcript',text=evt.transcript,turn=turn.number,item_id=evt.item_id,
+                status='non_interrupting_opening_greeting',reply_reference=self.session.evidence.reply_references.get(turn.number))
+            self.session.evidence.event('opening_greeting_overlap_ignored',text=evt.transcript,turn=turn.number,
+                speech_duration_ms=turn.duration_ms)
+            if hasattr(controller,'on_ignored_input'):await controller.on_ignored_input(turn)
+            await self.dispatch_controller_input()
+            return
         if (controller and turn.overlap and not turn.interrupted
                 and is_overlap_fragment(evt.transcript,turn.duration_ms)):
             self.session.evidence.event('user_transcript',text=evt.transcript,turn=turn.number,item_id=evt.item_id,

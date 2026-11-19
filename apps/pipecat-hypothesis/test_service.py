@@ -154,6 +154,22 @@ class DialTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("ConnectError", result.exception.detail)
             self.assertNotIn("private proxy details", result.exception.detail)
 
+    async def test_decisions_connect_timeout_is_not_mislabeled_as_openai(self):
+        import httpx
+        request = httpx.Request("POST", "https://api.proxyapi.ru/v1/decisions")
+        failures = [httpx.ConnectTimeout("private connection details", request=request),
+                    httpx.HTTPStatusError("private response", request=request, response=httpx.Response(503, request=request))]
+        for failure in failures:
+            with self.subTest(error=type(failure).__name__), tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"PIPECAT_LOG_DIR": directory}):
+                with patch("service.check_compatibility", new=AsyncMock(side_effect=failure)):
+                    with self.assertRaises(HTTPException) as result:
+                        await service.preflight(service.Options(provider="openai", voiceId="test"))
+                self.assertIn("Decisions ProxyAPI", result.exception.detail)
+                self.assertNotIn("openai", result.exception.detail)
+                self.assertNotIn("private", result.exception.detail)
+                record = json.loads(next(Path(directory).glob("pf-*.json")).read_text())
+                self.assertIn("Decisions ProxyAPI", record["reason"])
+
     async def test_dial_uses_dedicated_scenario_and_keeps_media_secret_private(self):
         response = SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"result": 1})
         client = SimpleNamespace(post=AsyncMock(return_value=response))

@@ -3,6 +3,7 @@ import os
 import time
 import math
 import re
+from plan_context import target_location
 
 MODEL=os.getenv('PIPECAT_SEMANTIC_MODEL','microsoft/microsoft-decision-1')
 
@@ -50,6 +51,7 @@ def payload(controller,text):
         'questions':[dict(r,asked=bool(c.asked.get(r['key'])),answer_status=c.answers.get(r['key'],{}).get('status')) for r in m.topics.required],
         'question_history':c.question_history(),
         'customer_legend':c.customer_legend,
+        'target_location':target_location(c.s),
         'availability_question':c.texts.get('opening'),'current_topic':c.current,
         'started':c.started,'phase':m.phase}
     common=('Продавец говорит покупателю. Оцени текущую utterance и ВСЕ её части независимо; история нужна только для ссылок. '
@@ -85,6 +87,9 @@ def payload(controller,text):
             'plan':'Предмет уже известен, приглашает спросить конкретные сведения о нём или перейти к следующему вопросу.',
             'no':'Такого запроса нет, либо спрашивает о личной потребности/использовании покупки.'}),
         'other_questions':question(common+'Определи направление запроса: продавец ждёт сведения ОТ покупателя или приглашает покупателя самому задать вопрос о товаре? '
+            'Общее приветствие с предложением помощи или просьбой назвать цель звонка не запрашивает дополнительные личные сведения. '
+            'Не выводи вопросы о бюджете, кредите или других условиях из общего приглашения: они должны быть реально заданы. '
+            'Просьба назвать адрес салона или номер объявления для соединения с менеджером требует ответа покупателя (yes), даже если предмет обращения уже известен. '
             'Просьба восстановить ранее заданный/недоговорённый вопрос из question_history относится к question_recall, а не к сведениям о покупателе. '
             'Сначала проверь ВСЕ самостоятельные запросы продавца, затем приглашение продолжить план. '
             'Сведения о намерениях, потребностях, сроках и способе покупки, опыте, бюджете и контактах покупателя требуют ответа покупателя. '

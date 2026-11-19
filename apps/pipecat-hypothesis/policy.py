@@ -23,6 +23,13 @@ def is_backchannel(text: str, duration_ms: float) -> bool:
             and all(word in {"угу", "ага", "мгм", "uh", "huh", "mhm"} for word in words))
 
 
+def is_introductory_greeting(text: str, duration_ms: float, name: str = '') -> bool:
+    if not 0 <= duration_ms < SUSTAINED_MS:return False
+    value=' '.join(re.findall(r'[\w]+',text.casefold(),flags=re.UNICODE))
+    address=(r'(?: '+re.escape(name.casefold())+r')?') if name else ''
+    return bool(re.fullmatch(r'(?:алло|здравствуйте|здрасьте|добрый день|доброе утро|добрый вечер|hello|hi)'+address,value))
+
+
 def is_overlap_fragment(text: str, duration_ms: float) -> bool:
     """A short grammatical prefix alone cannot justify clearing agent audio.
 
