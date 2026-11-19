@@ -63,6 +63,25 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         await self.c.next_question()
         self.assertEqual(self.c.last_question['topic'],rows[1]['key'])
 
+    async def test_service_request_without_question_mark_prepares_and_keeps_its_topic(self):
+        self.s.prompt=('1. Нужна диагностика электропроводки. [обязательная тема]\n'
+            '2. Сколько стоит такая работа? [обязательная тема]')
+        self.s.context={};self.s.prepared_purpose='service';self.s.dialogue_mode='semantic'
+        self.s.evidence.memory=ConversationMemory(self.s.prompt)
+        rows=self.s.evidence.memory.topics.required
+        wording={row['key']:row['question'] for row in rows}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+            await self.c.prepare()
+        self.assertIn('диагностика электропроводки',self.c.texts['opening'])
+        self.assertEqual(self.c.texts['opening_followup'],'Можете помочь с этим вопросом?')
+        self.assertNotIn('продаётся',self.c.texts['opening'])
+        self.assertTrue(self.c.clips['named_opening'])
+        await self.c.speak('opening')
+        self.assertTrue(self.c.opening_sent)
+        self.assertEqual(self.c.last_question['topic'],rows[0]['key'])
+        await self.c.next_question()
+        self.assertEqual(self.c.last_question['topic'],rows[1]['key'])
+
     async def test_unknown_purpose_fallback_does_not_invent_a_car_purchase(self):
         self.s.prepared_purpose='other';self.s.context={'subjectTitle':'Zeekr 8X'}
         wording={r['key']:r['question'] for r in self.s.evidence.memory.topics.required}

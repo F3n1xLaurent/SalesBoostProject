@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import AsyncMock,patch
 from uuid import uuid4
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
+import httpx
 import service
 from production_calls import snapshot
 
@@ -42,6 +44,40 @@ class ProductionTests(unittest.TestCase):
         self.assertTrue(prepared['profile']['backchannel']);self.assertFalse(prepared['profile']['trimIdleAudio'])
         self.dial.assert_not_awaited()
         self.prepare();self.preflight.assert_awaited_once()
+
+    def test_preflight_failure_does_not_dial_and_retains_provider_diagnostic(self):
+        self.preflight.side_effect=HTTPException(503,'ElevenLabs: ConnectTimeout. Проверка pf-test.')
+        response=self.client.post('/production/sessions',json=self.body,headers=self.headers)
+        self.assertEqual(response.status_code,503)
+        self.assertIn('pf-test',response.json()['detail'])
+        self.audio.assert_not_awaited();self.dial.assert_not_awaited()
+        self.assertTrue(service.sessions[self.identifier].finalized)
+        self.assertIn('preflight',service.sessions[self.identifier].failure_reason)
+
+    def test_audio_connect_timeout_has_safe_reason_and_never_dials_or_reprepares(self):
+        self.audio.side_effect=httpx.ConnectTimeout('private proxy password',request=httpx.Request('GET','https://api.elevenlabs.io/v1/models'))
+        response=self.client.post('/production/sessions',json=self.body,headers=self.headers)
+        self.assertEqual(response.status_code,503)
+        self.assertIn('ConnectTimeout',response.json()['detail'])
+        self.assertIn('pc-'+self.identifier,response.json()['detail'])
+        self.assertIn('Набор номера не запускался',response.json()['detail'])
+        self.assertNotIn('private',response.text)
+        self.assertEqual(self.audio.await_count,1);self.dial.assert_not_awaited()
+        second=self.client.post('/production/sessions',json=self.body,headers=self.headers)
+        self.assertEqual(second.json()['status'],'failed')
+        self.assertEqual(self.preflight.await_count,1);self.assertEqual(self.audio.await_count,1)
+
+    def test_unexpected_audio_failure_is_diagnosable_and_cleanup_cannot_mask_it(self):
+        self.audio.side_effect=ValueError('private upstream text')
+        self.release.side_effect=RuntimeError('private cleanup text')
+        response=self.client.post('/production/sessions',json=self.body,headers=self.headers)
+        self.assertEqual(response.status_code,500)
+        self.assertIn('pc-'+self.identifier,response.json()['detail'])
+        self.assertNotIn('private',response.text)
+        session=service.sessions[self.identifier]
+        self.assertIn('audio:ValueError',session.failure_reason)
+        self.assertTrue(any(e['event']=='production_preparation_cleanup_failed' for e in session.evidence.events))
+        self.dial.assert_not_awaited()
 
     def test_start_is_idempotent_with_one_actual_dial(self):
         self.prepare()

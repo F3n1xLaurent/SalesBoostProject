@@ -2,6 +2,7 @@
 import asyncio
 import time
 import uuid
+import httpx
 from datetime import datetime,timezone
 from fastapi import HTTPException,Depends
 from pydantic import BaseModel,Field
@@ -83,16 +84,28 @@ def register(service):
             s=service.Session(identifier,call.provider,call.ttsModel,call.voiceId,call.prompt,call.context,call.to,
                 reasoning_effort='low',dialogue_mode='semantic',backchannel=True,production=True)
             service.sessions[identifier]=s
+            stage='preflight'
             try:
                 result=await service.preflight(call)
                 s.evidence.event('preflight',result=result)
+                stage='audio'
                 await service.prepare_call_audio(s)
                 s.persist()
                 return snapshot(s)
-            except Exception:
-                s.status='failed';s.finalized=True;s.failure_reason='preparation_failed';s.persist()
-                await service.release_call_audio(s)
-                raise
+            except Exception as exc:
+                s.status='failed';s.finalized=True
+                s.failure_reason=f'preparation_failed:{stage}:{type(exc).__name__}'
+                s.evidence.event('production_preparation_failed',stage=stage,error_type=type(exc).__name__)
+                s.persist()
+                try:await service.release_call_audio(s)
+                except Exception as cleanup:
+                    s.evidence.event('production_preparation_cleanup_failed',error_type=type(cleanup).__name__)
+                    s.persist()
+                if isinstance(exc,HTTPException):raise
+                transient=isinstance(exc,(httpx.RequestError,TimeoutError,RuntimeError))
+                label='Проверка голосовых сервисов' if stage=='preflight' else 'Подготовка звука'
+                raise HTTPException(503 if transient else 500,
+                    f'{label} не выполнена ({type(exc).__name__}). Набор номера не запускался. Диагностика pc-{identifier}.') from None
 
     @app.post('/production/sessions/{identifier}/start',dependencies=[Depends(service.auth)])
     async def start(identifier:uuid.UUID):

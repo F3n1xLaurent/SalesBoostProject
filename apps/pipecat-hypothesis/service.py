@@ -13,7 +13,7 @@ import uuid
 from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 import httpx
 from pydantic import BaseModel, Field, StrictBool
@@ -21,7 +21,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
 from policy import OPENAI_PROVIDERS, Evidence, Playback, PROVIDERS, TTS_MODELS, REALTIME_TRANSCRIPTION_MODEL, realtime_transcription_config
-from network import elevenlabs_http_options, elevenlabs_proxy, voximplant_http_options
+from network import preflight_get, elevenlabs_http_options, elevenlabs_proxy, voximplant_http_options
 from diagnostics import TraceArchive, trace_id, transcript, ACTIVE, utc_now
 from conversation import ConversationMemory
 from conversation_tuning import interruption_default, speech_default
@@ -87,6 +87,13 @@ async def preflight_websocket(provider, uri, **kwargs):
                 await asyncio.sleep(0.2)
                 continue
             raise HTTPException(503, f"{provider}: WebSocket-подключение отклонено, HTTP {status}.") from None
+        except (TimeoutError,OSError) as exc:
+            if attempt == 1:
+                await asyncio.sleep(0.2)
+                continue
+            proxy = " через настроенный прокси" if kwargs.get("proxy") else ""
+            reason = "истекло время подключения" if isinstance(exc, TimeoutError) else type(exc).__name__
+            raise HTTPException(503, f"{provider}: {reason}{proxy}.") from None
         except Exception as exc:
             proxy = " через настроенный прокси" if kwargs.get("proxy") else ""
             reason = "истекло время подключения" if isinstance(exc, TimeoutError) else type(exc).__name__
@@ -127,11 +134,11 @@ async def check_compatibility(options, synthesize=False, provider_check=True):
                 raise HTTPException(503,"Decisions ProxyAPI: неподдерживаемый ответ")
         result["checks"].append("controller_decisions_access")
     async with httpx.AsyncClient(timeout=20, **elevenlabs_http_options()) as client:
-        response = await client.get("https://api.elevenlabs.io/v1/models", headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]})
+        response = await preflight_get(client,"https://api.elevenlabs.io/v1/models", headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]})
         response.raise_for_status()
         if options.ttsModel not in {m["model_id"] for m in response.json()}:
             raise HTTPException(503, f"ElevenLabs model not available: {options.ttsModel}")
-        response = await client.get(f"https://api.elevenlabs.io/v1/voices/{options.voiceId}", headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]})
+        response = await preflight_get(client,f"https://api.elevenlabs.io/v1/voices/{options.voiceId}", headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]})
         response.raise_for_status()
         result["checks"].append("elevenlabs_model_and_voice_access")
     if provider_check and options.provider == "gemini":
@@ -596,7 +603,7 @@ async def media(websocket: WebSocket, session_id: str, token: str = ""):
         s.persist()
         try:
             await websocket.close()
-        except RuntimeError:
+        except (RuntimeError,WebSocketDisconnect):
             pass
 
 

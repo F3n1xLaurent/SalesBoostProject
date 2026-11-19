@@ -94,6 +94,7 @@ class DialogueController:
             questions=await derive_scenario_topics(self.s)
             memory.topics.required=questions;derived=True
         if not 1<=len(questions)<=12:raise ValueError("Controller requires 1–12 marked mandatory questions")
+        self.opening_topic='availability'
         self.texts={"opening":"Здравствуйте! Звоню по объявлению, машина ещё продаётся?",
             "name":f"Меня зовут {memory.name}.","visit":"Когда можно подъехать посмотреть машину?",
             "clarify_visit":"Давайте уточним: в какое время можно подъехать?",
@@ -130,6 +131,10 @@ class DialogueController:
             self.texts['opening']='Здравствуйте! '+first
             self.texts['visit']='Когда можно записаться на обслуживание?' if call_purpose(self.s)=='service' else 'Когда можно подъехать по моему вопросу?'
             if subject:self.texts['subject']=('Звоню по обслуживанию '+subject+'.') if call_purpose(self.s)=='service' else 'Звоню по вопросу '+subject+'.'
+        # A mandatory topic may be an affirmative request, not a punctuated
+        # question. Keep its service/other purpose and ask a neutral clarification.
+        if not re.findall(r'[^.!?]*\?',self.texts['opening']):
+            self.texts['opening']=self.texts['opening'].rstrip()+' Можете помочь с этим вопросом?'
         self.texts["named_opening"]=self.texts["opening"].replace("Здравствуйте! ","Здравствуйте! "+self.texts["name"]+" ",1)
         self.texts["name_then_first"]=self.texts["name"]+" "+self.texts[questions[0]["key"]]
         composites={}
@@ -141,7 +146,8 @@ class DialogueController:
             self.texts['opening_body']=self.texts['opening'].removeprefix('Здравствуйте! ')
             # After a generated answer has introduced the buyer's need, only
             # the availability question remains; don't restart the introduction.
-            self.texts['opening_followup']=re.findall(r'[^.!?]*\?',self.texts['opening'])[-1].strip()
+            opening_questions=re.findall(r'[^.!?]*\?',self.texts['opening'])
+            self.texts['opening_followup']=opening_questions[-1].strip() if opening_questions else self.texts['opening_body']
             composites={'named_opening':['greeting','name','opening_body'],
                         'name_then_first':['name',questions[0]['key']]}
         if not self.s.backchannel:

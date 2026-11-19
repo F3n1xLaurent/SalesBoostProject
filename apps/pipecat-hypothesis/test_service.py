@@ -105,6 +105,17 @@ class DialTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(data['script_name'],'voice_pipecat')
                 self.assertEqual(session.production_vox_id,expected)
 
+    async def test_already_disconnected_media_socket_does_not_raise_during_finalization(self):
+        from fastapi import WebSocketDisconnect
+        with tempfile.TemporaryDirectory() as directory,patch.dict(os.environ,{'PIPECAT_LOG_DIR':directory}):
+            session=service.Session(id='abababab-abab-abab-abab-abababababab',provider='openai',tts_model='eleven_v4_turbo',voice_id='test',prompt='Synthetic',context={},to='')
+            websocket=SimpleNamespace(accept=AsyncMock(),close=AsyncMock(side_effect=WebSocketDisconnect(code=1006)))
+            with patch('service.media_session',return_value=session),patch('pipeline.run_pipeline',new=AsyncMock()),patch('service.release_call_audio',new=AsyncMock()):
+                await service.media(websocket,session.id,'test')
+            self.assertTrue(session.finalized)
+            self.assertEqual(session.status,'disconnected')
+            self.assertTrue(any(event['event']=='session_ended' for event in session.evidence.events))
+
     async def test_preflight_names_websocket_provider_and_status_without_retrying_auth_failure(self):
         from websockets.exceptions import InvalidStatus
         from websockets.http11 import Response
@@ -129,6 +140,15 @@ class DialTests(unittest.IsolatedAsyncioTestCase):
                         raise TimeoutError()
             self.assertEqual(opener.await_count, 2)
             socket.close.assert_awaited_once()
+
+    async def test_websocket_connect_timeout_retries_handshake_without_replaying_synthesis(self):
+        socket=SimpleNamespace(close=AsyncMock(),send=AsyncMock())
+        with patch('service.connect',new=AsyncMock(side_effect=[TimeoutError(),socket])) as opener,patch('service.asyncio.sleep',new=AsyncMock()):
+            async with service.preflight_websocket('ElevenLabs TTS','wss://example.test',proxy='socks5://test.invalid:1080') as ready:
+                await ready.send('one synthetic probe')
+        self.assertEqual(opener.await_count,2)
+        socket.send.assert_awaited_once_with('one synthetic probe')
+        socket.close.assert_awaited_once()
 
     async def test_failed_preflight_has_persistent_id_and_provider_reason(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"PIPECAT_LOG_DIR": directory}):
