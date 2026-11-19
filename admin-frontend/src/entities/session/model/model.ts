@@ -14,6 +14,7 @@ export type AuthUser = {
   };
   allowedRoles: FrontendRole[];
   defaultRole: FrontendRole;
+  unassignedCallsAccess?: { view: boolean; assign: boolean };
   permissionTemplates?: Array<{ id: string; name: string; description: string | null; permissions: string[] }>;
   memberships: Array<{
     id: string;
@@ -56,6 +57,7 @@ export const loadSessionFx = createEffect(async () => {
 export function authAccessKey(user: AuthUser): string {
   return JSON.stringify({ id: user.account.id, roles: [...user.allowedRoles].sort(), defaultRole: user.defaultRole,
     memberships: [...user.memberships].sort((a, b) => a.id.localeCompare(b.id)),
+    unassignedCallsAccess: user.unassignedCallsAccess,
     templates: [...(user.permissionTemplates ?? [])].map(template => ({ id: template.id, permissions: [...template.permissions].sort() }))
       .sort((a, b) => a.id.localeCompare(b.id)) });
 }
@@ -75,6 +77,7 @@ export const $auth = createStore<AuthState>({
       defaultRole: payload.defaultRole,
       memberships: payload.memberships,
       permissionTemplates: payload.permissionTemplates,
+      unassignedCallsAccess: payload.unassignedCallsAccess,
     },
     error: null,
   }))

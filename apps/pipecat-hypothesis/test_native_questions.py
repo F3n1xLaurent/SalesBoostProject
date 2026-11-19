@@ -18,7 +18,7 @@ class NativeQuestionTests(unittest.IsolatedAsyncioTestCase):
         evidence = Evidence()
         evidence.memory = ConversationMemory(prompt)
         evidence.turn = evidence.output_turn = 1
-        self.s = SimpleNamespace(evidence=evidence, playback=Playback(), finalized=False, backchannel=False, prompt=prompt)
+        self.s = SimpleNamespace(context={}, evidence=evidence, playback=Playback(), finalized=False, backchannel=False, prompt=prompt)
         self.monitor = SimpleNamespace(turn=Turn(False, number=1), segment_start=None)
         self.c = DialogueController(self.s, SimpleNamespace(queue_cleared_event=asyncio.Event()), self.monitor)
         self.s.controller = self.c
@@ -37,7 +37,7 @@ class NativeQuestionTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_stream_cannot_repeat_prepared_status_but_releases_new_answer(self):
         serializer=self.c.serializer;await self.c.close()
         self.c=SemanticController(self.s,serializer,self.monitor);self.s.controller=self.c
-        self.c.line.state='live';self.c.line.ever_human=True
+        self.c.line.state='live';self.c.line.ever_human=True;self.c.opening_sent=True
         self.c.llm=self.llm;self.c.player=SimpleNamespace(queue_frame=AsyncMock())
         self.c.texts={'status':'По времени пока не определились.'};self.c.clips={'status':b'\xd0\x07'*1600}
         self.llm.send_client_event=AsyncMock()

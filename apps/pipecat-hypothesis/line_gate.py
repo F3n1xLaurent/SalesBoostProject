@@ -5,6 +5,7 @@ import re
 import time
 from uuid import uuid4
 from turn_meaning import MODEL,pick,question
+from dialogue_topics import requests_customer_name
 
 
 def normalized(text):return ' '.join(text.casefold().replace('ё','е').split())
@@ -190,6 +191,11 @@ class LineGate:
         if self.can_speak:
             if (local_type(text)=='terminal' and re.match(r'\s*(?:(?:здравствуйте|алло|да)[,.!\s]+)*(?:я|это)\s+(?:голосов|виртуальн|автоматическ|телефонн)',text,re.I)):
                 await self.end('voicemail');return 'blocked'
+            if requests_customer_name(text):
+                # The operator still needs an answer before transferring the call.
+                # A future-transfer clause cannot mute the requested identity.
+                self.event('line_transfer_answer_required',text=text)
+                return 'human'
             if explicit_hold(text):
                 # A future transfer can depend on an answer requested in the
                 # same utterance. Let semantics distinguish it from real hold;
@@ -210,7 +216,9 @@ class LineGate:
                 self.history=[];self.state='ivr';await self.silence('explicit_keypad_menu')
             else:return 'human'
         self.history.append(text);self.history=self.history[-8:]
-        local=local_type(text);line=local;digit=None;complete=False
+        local=local_type(text)
+        if self.ever_human and self.state=='waiting_operator' and requests_customer_name(text):local='human'
+        line=local;digit=None;complete=False
         # Pure mailbox/hold/noise can be decided locally without a model.
         if local is None or local in ('ivr','recording'):
             try:line,digit,complete=await self.classify(text)

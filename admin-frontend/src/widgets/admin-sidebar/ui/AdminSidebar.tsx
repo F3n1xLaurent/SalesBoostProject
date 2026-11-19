@@ -85,6 +85,7 @@ type Props = {
   hasActiveBatch?: boolean;
   onLogout: () => void;
   allowedRoles: AdminRole[];
+  canViewUnassignedCalls?: boolean;
   className?: string;
   isDrawer?: boolean;
 };
@@ -98,6 +99,7 @@ export function AdminSidebar({
   hasActiveBatch = false,
   onLogout,
   allowedRoles,
+  canViewUnassignedCalls = false,
   className,
   isDrawer = false,
 }: Props) {
@@ -117,11 +119,12 @@ export function AdminSidebar({
   }, [profileOpen]);
 
   const navItems = useMemo(() => {
-    if (role === 'dealer') return DEALER_NAV;
-    if (role === 'staff') return STAFF_NAV;
-    if (role === 'company') return COMPANY_NAV;
-    return SUPER_NAV.filter((item) => 'type' in item || isTabAllowedForRole(item.id, role, devMode));
-  }, [role, devMode]);
+    const base = role === 'dealer' ? DEALER_NAV : role === 'staff' ? STAFF_NAV : role === 'company' ? COMPANY_NAV
+      : SUPER_NAV.filter((item) => 'type' in item || isTabAllowedForRole(item.id, role, devMode));
+    return canViewUnassignedCalls
+      ? [...base, { id: 'unassigned-calls' as AdminTab, label: 'Нераспределённые звонки', icon: 'phone' }]
+      : base;
+  }, [role, devMode, canViewUnassignedCalls]);
 
   const profileInitials = useMemo(() => getProfileInitials(profileName), [profileName]);
 

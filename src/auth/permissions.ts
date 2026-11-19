@@ -55,6 +55,10 @@ export const PERMISSIONS = {
     view: 'call.view',
     start: 'call.start',
   },
+  unassignedCalls: {
+    view: 'unassigned_calls.view',
+    assign: 'unassigned_calls.assign',
+  },
   callBatch: {
     view: 'call_batch.view',
     create: 'call_batch.create',
@@ -162,6 +166,8 @@ function flattenPermissions(tree: Record<string, unknown>): PermissionKey[] {
 export const ALL_PERMISSIONS: PermissionKey[] = flattenPermissions(PERMISSIONS);
 
 export const PERMISSION_DEFINITIONS: PermissionDefinition[] = [
+  { key: PERMISSIONS.unassignedCalls.view, description: 'Просмотр нераспределённых звонков точки.', scopes: ['platform', 'holding', 'dealer'] },
+  { key: PERMISSIONS.unassignedCalls.assign, description: 'Назначение ответственного за нераспределённый звонок.', scopes: ['platform', 'holding', 'dealer'] },
   { key: PERMISSIONS.dashboard.view, description: 'Просмотр платформенного дашборда и сводных KPI.', scopes: ['platform', 'holding', 'dealer'] },
   { key: PERMISSIONS.dashboard.platformView, description: 'Просмотр платформенного дашборда суперадмина.', scopes: ['platform'] },
   { key: PERMISSIONS.dashboard.holdingView, description: 'Просмотр дашборда холдинга.', scopes: ['holding'] },
@@ -253,6 +259,8 @@ const HOLDING_ADMIN_PERMISSIONS = permissionSet([
   PERMISSIONS.audit.manage,
   PERMISSIONS.call.view,
   PERMISSIONS.call.start,
+  PERMISSIONS.unassignedCalls.view,
+  PERMISSIONS.unassignedCalls.assign,
   PERMISSIONS.callBatch.view,
   PERMISSIONS.callBatch.create,
   PERMISSIONS.callBatch.manage,
@@ -294,6 +302,8 @@ const DEALERSHIP_ADMIN_PERMISSIONS = permissionSet([
   PERMISSIONS.audit.manage,
   PERMISSIONS.call.view,
   PERMISSIONS.call.start,
+  PERMISSIONS.unassignedCalls.view,
+  PERMISSIONS.unassignedCalls.assign,
   PERMISSIONS.callBatch.view,
   PERMISSIONS.callBatch.create,
   PERMISSIONS.callBatch.manage,
@@ -416,6 +426,7 @@ export const SYSTEM_PERMISSION_TEMPLATES: SystemPermissionTemplate[] = [
 ];
 
 export const SUPER_ADMIN_TAB_PERMISSIONS = {
+  'unassigned-calls': [PERMISSIONS.unassignedCalls.view],
   dashboard: [PERMISSIONS.dashboard.platformView, PERMISSIONS.dashboard.holdingView],
   holdings: [PERMISSIONS.ux.holdings.view, PERMISSIONS.holding.view],
   companies: [PERMISSIONS.ux.dealerships.list, PERMISSIONS.dealer.view],
@@ -436,6 +447,8 @@ export const SUPER_ADMIN_TAB_PERMISSIONS = {
 } as const;
 
 export const ADMIN_API_PERMISSION_MAP = {
+  '/api/admin/unassigned-calls': [PERMISSIONS.unassignedCalls.view],
+  '/api/admin/unassigned-calls/:id/assign': [PERMISSIONS.unassignedCalls.assign],
   '/api/admin/summary': [PERMISSIONS.dashboard.view],
   '/api/admin/voice-dashboard': [PERMISSIONS.dashboard.view],
   '/api/admin/expenses': [PERMISSIONS.expenses.view],

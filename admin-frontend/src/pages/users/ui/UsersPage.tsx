@@ -176,7 +176,7 @@ const PERMISSION_GROUPS = [
     id: 'calls',
     title: 'Звонки и телефония',
     description: 'История звонков, запуск звонков и диагностика voice-инфраструктуры.',
-    match: (key: string) => key.startsWith('call.') || key.startsWith('voice.'),
+    match: (key: string) => key.startsWith('call.') || key.startsWith('unassigned_calls.') || key.startsWith('voice.'),
   },
   {
     id: 'workspaces',
@@ -193,6 +193,8 @@ const PERMISSION_GROUPS = [
 ] as const;
 
 const PERMISSION_LABELS: Record<string, string> = {
+  'unassigned_calls.view': 'Просмотр нераспределённых звонков',
+  'unassigned_calls.assign': 'Назначение ответственного за звонок',
   'dashboard.view': 'Общий дашборд',
   'dashboard.platform.view': 'Дашборд платформы',
   'dashboard.holding.view': 'Дашборд компании',

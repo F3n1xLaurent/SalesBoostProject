@@ -26,6 +26,7 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         self.voice_patch.start();self.addCleanup(self.voice_patch.stop)
         self.s=SimpleNamespace(prompt=PROMPT,context={},backchannel=True,tts_model="eleven_v4_turbo",voice_id="test",
             evidence=Evidence(),playback=Playback(),finalized=False,status="connected")
+        self.s.prepared_purpose='purchase'
         self.s.evidence.memory=ConversationMemory(PROMPT);self.s.evidence.turn=self.s.evidence.output_turn=1
         self.monitor=SimpleNamespace(turn=Turn(False,number=1),segment_start=None)
         self.serializer=SimpleNamespace(queue_cleared_event=asyncio.Event())
@@ -38,6 +39,38 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
         c.choose=AsyncMock(return_value="answer")
 
     async def asyncTearDown(self):await self.c.close()
+
+    async def test_service_uses_its_first_question_and_service_visit_without_sales_templates(self):
+        self.s.prompt=('1. Хочу поставить металлическую защиту на задний двигатель у Zeekr 8X. Сможете сделать? [обязательная тема]\n'
+            '2. Что по стоимости? [обязательная тема]\n3. Лист защиты не нарушит охлаждение заднего электромотора? [обязательная тема]')
+        self.s.context={'subjectTitle':'Zeekr 8X','customerNeed':'Пробег 67 км, ранее не обслуживался.'}
+        self.s.prepared_purpose='service'
+        self.s.evidence.memory=ConversationMemory(self.s.prompt)
+        rows=self.s.evidence.memory.topics.required
+        wording={row['key']:row['question'] for row in rows}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+            await self.c.prepare()
+        self.assertIn('металлическую защиту',self.c.texts['opening'])
+        self.assertIn('обслуживание',self.c.texts['visit'])
+        self.assertIn('обслуживанию',self.c.texts['subject'])
+        for key in ('opening','opening_body','opening_followup','visit','subject'):
+            if key in self.c.texts:
+                for forbidden in ('продаётся','продается','посмотреть машину','из объявления'):
+                    self.assertNotIn(forbidden,self.c.texts[key])
+        await self.c.speak('opening')
+        self.assertEqual(self.c.last_question['topic'],rows[0]['key'])
+        self.assertEqual(self.c.asked[rows[0]['key']],1)
+        await self.c.next_question()
+        self.assertEqual(self.c.last_question['topic'],rows[1]['key'])
+
+    async def test_unknown_purpose_fallback_does_not_invent_a_car_purchase(self):
+        self.s.prepared_purpose='other';self.s.context={'subjectTitle':'Zeekr 8X'}
+        wording={r['key']:r['question'] for r in self.s.evidence.memory.topics.required}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+            await self.c.prepare()
+        self.assertNotIn('продаётся',self.c.texts['opening'])
+        self.assertNotIn('посмотреть машину',self.c.texts['visit'])
+        self.assertEqual(self.c.opening_topic,self.s.evidence.memory.topics.required[0]['key'])
 
     async def test_optional_plan_text_does_not_break_audio_preparation(self):
         wording={r['key']:spoken_question(r['question']) for r in self.s.evidence.memory.topics.required}

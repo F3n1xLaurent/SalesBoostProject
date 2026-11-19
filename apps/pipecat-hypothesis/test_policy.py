@@ -25,7 +25,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(event["name"], "end_call")
 
     def test_short_acknowledgements_do_not_interrupt(self):
-        for text in ("угу", "Ага!", "угу, ага", "мгм"):
+        for text in ("угу", "Ага!", "угу, ага", "мгм", "Да, да.", "Угу, да."):
             self.assertTrue(is_backchannel(text, 300), text)
         for text in ("ага, но цена другая", "стоп", "нет", "да", "", "ага не надо"):
             self.assertFalse(is_backchannel(text, 300), text)

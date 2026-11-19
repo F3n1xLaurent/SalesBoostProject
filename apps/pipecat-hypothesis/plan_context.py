@@ -51,7 +51,7 @@ def subject_sources(session,questions=None):
 def subject_scope(session):
     sources=subject_sources(session)
     title=sources['selection'].get('subjectTitle') or getattr(session,'prepared_subject',None)
-    return {**sources,'subject':title,
+    return {**sources,'subject':title,'purpose':call_purpose(session),
             # A verified short subject replaces the question list. On wording
             # failure keep the quoted references as a factual fallback only.
             'script_references':[] if title else sources['script_references'][:1]}
@@ -62,3 +62,9 @@ def grounded_subject(value,sources):
     normalize=lambda text:' '.join(text.casefold().split())
     quotes=[*sources['selection'].values(),sources['need'],*sources['script_references'],sources.get('script_title')]
     return any(normalize(value) in normalize(quote) for quote in quotes if quote)
+
+
+def call_purpose(session):
+    """Only preparation-verified purpose may enable purchase-specific defaults."""
+    kind=getattr(session,'prepared_purpose',None)
+    return kind if kind in ('purchase','service','other') else 'other'

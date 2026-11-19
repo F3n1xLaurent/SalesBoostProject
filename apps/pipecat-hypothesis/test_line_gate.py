@@ -111,6 +111,24 @@ class LineTests(unittest.IsolatedAsyncioTestCase):
         self.c.clear_audio.assert_not_awaited()
         self.assertIsNone(self.line.wait_task)
 
+    async def test_name_before_transfer_is_answered_even_if_transfer_classifier_would_wait(self):
+        await self.line.route('Здравствуйте',1,1)
+        self.line.classify.return_value=('hold',None,False)
+        text='Я сейчас соединю вас с отделом продаж. Уточните, пожалуйста, как могу к вам обращаться?'
+        self.assertEqual(await self.line.route(text,2,1),'human')
+        self.assertTrue(self.line.can_speak)
+        self.c.clear_audio.assert_not_awaited()
+        self.line.classify.assert_not_awaited()
+
+    async def test_repeated_name_question_restores_live_line_after_transfer_wait(self):
+        await self.line.route('Здравствуйте',1,1)
+        await self.line.route('Оставайтесь на линии, соединю с коллегой.',2,1)
+        self.assertFalse(self.line.can_speak)
+        text='Уточните, пожалуйста, как могу к вам обращаться, как вас зовут?'
+        self.assertEqual(await self.line.route(text,3,1),'human')
+        self.assertTrue(self.line.can_speak)
+        self.assertIsNone(self.line.wait_task)
+
     async def test_transfer_question_does_not_override_real_hold(self):
         await self.line.route('Здравствуйте',1,1)
         self.line.classify.return_value=('hold',None,False)

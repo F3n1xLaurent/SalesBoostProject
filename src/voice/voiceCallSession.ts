@@ -323,11 +323,11 @@ async function syncCallPlanCallFromSession(callId: string, patch: {
     data: {
       source: 'scheduled',
       planId: existing.planId,
-      managerId: existing.employeeId,
+      // Shared-number attribution is set at creation and changed only by attribution flows.
+      // A report finishing later must preserve a supervisor's assignment.
+      managerId: existing.targetKind === 'dealership' ? undefined : existing.employeeId,
       dealershipId: existing.dealershipId,
-      attributionType: existing.employeeId
-        ? 'manager'
-        : existing.targetKind === 'dealership' ? 'dealership' : 'manager',
+      attributionType: existing.targetKind === 'dealership' ? undefined : 'manager',
       ...phoneNumberSource,
       dimensionsJson: analyticsFields.dimensionsJson,
       checklistResultsJson: analyticsFields.checklistResultsJson,

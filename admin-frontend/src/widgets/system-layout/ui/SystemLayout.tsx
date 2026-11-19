@@ -1,3 +1,5 @@
+import { useUnit } from 'effector-react';
+import { $auth } from '../../../entities/session/model/model';
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { lockBodyScroll, unlockBodyScroll } from '../../../shared/lib/body-scroll-lock';
@@ -53,6 +55,7 @@ function lazyNamed<T extends React.ComponentType<any>>(
   });
 }
 
+const UnassignedCallsPage = lazyNamed(() => import('../../../pages/unassigned-calls/ui/UnassignedCallsPage'), 'UnassignedCallsPage');
 const Dashboard = lazyNamed(() => import('../../../pages/dashboard/ui/DashboardPage'), 'Dashboard');
 const BillingPage = lazyNamed(() => import('../../../pages/billing/ui/BillingPage'), 'BillingPage');
 const HoldingsPage = lazyNamed(() => import('../../../pages/holdings/ui/HoldingsPage'), 'HoldingsPage');
@@ -91,6 +94,8 @@ export type SystemLayoutProps = {
 };
 
 export function SystemLayout({ summary, voice, loadingSummary, role, dealerDealershipId = null, accountId = null, profileName, onRoleChange, onLogout, allowedRoles }: SystemLayoutProps) {
+  const auth = useUnit($auth);
+  const canViewUnassignedCalls = auth.status === 'authenticated' && Boolean(auth.user.unassignedCallsAccess?.view);
   const { devMode } = useDevMode(role);
   const location = useLocation();
   const navigate = useNavigate();
@@ -414,6 +419,7 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
   };
 
   const sidebarProps = {
+    canViewUnassignedCalls,
     activeTab,
     role,
     profileName,
@@ -477,6 +483,9 @@ export function SystemLayout({ summary, voice, loadingSummary, role, dealerDeale
               (сервер будет на порту 3000, Vite проксирует сюда запросы /api). Затем обновите страницу.
             </StatusNotice>
           )}
+
+          {activeTab === 'unassigned-calls' && (canViewUnassignedCalls
+            ? <UnassignedCallsPage /> : <StatusNotice>Нет доступа к нераспределённым звонкам.</StatusNotice>)}
 
           {/* ── Super / Company role content ── */}
           {isSuperOrCompany && (

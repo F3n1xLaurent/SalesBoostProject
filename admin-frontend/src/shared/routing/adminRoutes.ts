@@ -12,6 +12,7 @@ export type AdminRouteMatch = {
 };
 
 const SUPER_COMPANY_TABS: AdminTab[] = [
+  'unassigned-calls',
   'dashboard',
   'billing',
   'holdings',
@@ -34,8 +35,8 @@ const SUPER_COMPANY_TABS: AdminTab[] = [
 const TABS_BY_ROLE: Record<AdminRole, AdminTab[]> = {
   super: SUPER_COMPANY_TABS,
   company: SUPER_COMPANY_TABS.filter((tab) => tab !== 'billing' && tab !== 'holdings' && tab !== 'typesNumbers' && tab !== 'internalAnalytics' && tab !== 'testing' && tab !== 'dictionaries'),
-  dealer: ['dealer-companies', 'audits', 'users', 'dealer-team', 'settings'],
-  staff: ['staff-profile', 'users', 'staff-trainer', 'settings'],
+  dealer: ['unassigned-calls', 'dealer-companies', 'audits', 'users', 'dealer-team', 'settings'],
+  staff: ['unassigned-calls', 'staff-profile', 'users', 'staff-trainer', 'settings'],
 };
 
 export function getDefaultTab(role: AdminRole): AdminTab {
@@ -55,6 +56,8 @@ export function normalizeTabForRole(tab: AdminTab | undefined, role: AdminRole, 
 
 export function tabToPath(tab: AdminTab): string {
   switch (tab) {
+    case 'unassigned-calls':
+      return '/unassigned-calls';
     case 'dashboard':
       return '/dashboard';
     case 'billing':
@@ -119,6 +122,7 @@ export function parseAdminPath(pathname: string): AdminRouteMatch {
   const [section, resource, id] = parts;
 
   if (!section) return { tab: 'dashboard' };
+  if (section === 'unassigned-calls') return { tab: 'unassigned-calls' };
   if (section === 'dashboard') return { tab: 'dashboard' };
   if (section === 'billing') return { tab: 'billing' };
   if (section === 'holdings') return { tab: 'holdings', holdingId: resource };

@@ -14,6 +14,10 @@ from turn_meaning import interpret,MODEL
 
 PROMPT='Ты Андрей, мужчина.\nДоставляете по области? [обязательная тема]\nРаботаете по выходным? [обязательная тема]'
 CASES=[
+    ('buyer_prior_contact','Уточните, пожалуйста, не общались ранее с менеджером по данному автомобилю?',{'subject':False,'other_questions':True}),
+    ('buyer_condition','Вас интересует новый автомобиль или с пробегом?',{'other_questions':True}),
+    ('buyer_transfer_name','Я сейчас соединю вас с отделом продаж, вас менеджер проконсультирует по новым автомобилям. Уточните, пожалуйста, как могу к вам обращаться?',{'name':True}),
+    ('visit_time_after_ack','Отлично. Во сколько?',{'visit_request':'details','accept':False}),
     ('visit_contradiction','Почему? Вы же сказали, что мы будем в три часа с вами встречаться?',{'visit_request':'details','other_questions':False}),
     ('visit_background_and_preference','Пороги идеальные. Вы можете приехать на тест-драйв или осмотр и убедиться самостоятельно. Вам когда удобно подъехать?',{'visit_request':'details','other_questions':False}),
     ('wrongname_short','Михаил?',{'name':True,'name_confirmation':False}),

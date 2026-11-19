@@ -20,7 +20,8 @@ def realtime_transcription_config(model=REALTIME_TRANSCRIPTION_MODEL):
 def is_backchannel(text: str, duration_ms: float) -> bool:
     words = re.findall(r"[\w]+", text.lower(), flags=re.UNICODE)
     return (0 < duration_ms < SUSTAINED_MS and 0 < len(words) <= 3
-            and all(word in {"угу", "ага", "мгм", "uh", "huh", "mhm"} for word in words))
+            and all(word in {"угу", "ага", "мгм", "uh", "huh", "mhm", "да"} for word in words)
+            and (len(words)>1 or words[0]!="да"))
 
 
 def is_introductory_greeting(text: str, duration_ms: float, name: str = '') -> bool:

@@ -12,6 +12,7 @@ export type AdminTab =
   | 'users'
   | 'autodealers'
   | 'audits'
+  | 'unassigned-calls'
   | 'analytics'
   | 'callSettings'
   | 'internalAnalytics'

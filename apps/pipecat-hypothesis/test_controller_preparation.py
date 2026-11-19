@@ -26,6 +26,25 @@ class BankTests(unittest.IsolatedAsyncioTestCase):
         self.s=SimpleNamespace(id='synthetic-call',evidence=Evidence())
         self.questions=[{'key':'accidents','question':'Были ли ДТП?'},{'key':'mileage','question':'Пробег актуальный?'}]
 
+    async def test_service_purpose_is_accepted_only_with_independent_scenario_validation(self):
+        self.s.context={'customerNeed':'Zeekr 8X, ранее не обслуживался.'};self.s.prompt='Потребность клиента: обслуживание'
+        rows=[{'key':'custom:0','question':'Хочу установить защиту двигателя. Сможете сделать?'}]
+        async def generate(*args,**kwargs):
+            kwargs['subject_result']['purpose']='service'
+            return {'custom:0':'Сможете установить защиту двигателя?'}
+        for approved in (True,False):
+            verdict={'__call_purpose__':{'choice':'safe' if approved else 'unsafe',
+                'probabilities':{'safe':.99 if approved else .01,'unsafe':.01 if approved else .99}}}
+            with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)):
+                await prepare_questions(self.s,rows,None)
+            self.assertEqual(self.s.prepared_purpose,'service' if approved else 'other')
+
+    async def test_purpose_failure_does_not_default_to_purchase(self):
+        self.s.prepared_purpose='purchase'
+        with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=TimeoutError)):
+            await prepare_questions(self.s,self.questions,None)
+        self.assertEqual(self.s.prepared_purpose,'other')
+
     async def test_generation_is_per_call_and_only_verified_wording_is_used(self):
         generated={'accidents':'Скажите, ДТП у машины были?','mileage':'Пробег в объявлении актуальный?'}
         verdict={'accidents':{'choice':'safe','probabilities':{'safe':.98,'unsafe':.02}},'mileage':{'choice':'unsafe','probabilities':{'safe':.01,'unsafe':.99}}}

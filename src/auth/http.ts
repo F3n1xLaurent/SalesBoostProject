@@ -1,3 +1,4 @@
+import { unassignedCallsAccess } from '../voice/unassignedCalls';
 import type { NextFunction, Request, Response } from 'express';
 import type { AccountMembership, AccountPermissionTemplateAssignment, PermissionTemplate } from '@prisma/client';
 import { measureHttpStage } from '../diagnostics/httpPerformance';
@@ -48,6 +49,7 @@ async function accountToAuthPayload(account: AccountWithMemberships) {
       displayName: account.displayName,
       status: account.status,
     },
+    unassignedCallsAccess: unassignedCallsAccess(account),
     allowedRoles: toAllowedRoles(account.memberships),
     defaultRole: toFrontendRole(account.memberships),
     memberships: await Promise.all(account.memberships.map(async (membership) => ({

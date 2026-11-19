@@ -268,8 +268,8 @@ async function saveRejectedAttribution(
   reason: ManagerAttributionReason,
   introduction?: ManagerIntroduction | null,
 ): Promise<void> {
-  await prisma.voiceCallSession.update({
-    where: { callId },
+  await prisma.voiceCallSession.updateMany({
+    where: { callId, managerId: null },
     data: {
       attributionSource: 'post_call_self_introduction',
       attributionReason: reason,
@@ -361,11 +361,13 @@ export async function attributeCallToIntroducedManager(
     return;
   }
 
-  await prisma.$transaction([
-    prisma.voiceCallSession.update({
-      where: { callId },
+  const candidate = matched.candidate;
+  const attributed = await prisma.$transaction(async tx => {
+    // A supervisor may have assigned this call while the classifier was running.
+    const updated = await tx.voiceCallSession.updateMany({
+      where: { callId, managerId: null, attributionType: 'dealership' },
       data: {
-        managerId: matched.candidate.id,
+        managerId: candidate.id,
         attributionType: 'manager',
         attributionSource: 'post_call_self_introduction',
         attributionReason: 'matched_unique_employee',
@@ -373,15 +375,15 @@ export async function attributeCallToIntroducedManager(
         attributionIntroducedName: `${introduction.givenName} ${introduction.familyName}`.trim().slice(0, 200),
         attributionEvidence: introduction.evidence,
       },
-    }),
-    prisma.callPlanCall.updateMany({
+    });
+    if (!updated.count) return false;
+    await tx.callPlanCall.updateMany({
       where: { callId, targetKind: 'dealership', employeeId: null },
-      data: {
-        employeeId: matched.candidate.id,
-        employeeName: matched.candidate.fullName,
-      },
-    }),
-  ]);
+      data: { employeeId: candidate.id, employeeName: candidate.fullName },
+    });
+    return true;
+  });
+  if (!attributed) return;
   console.info('[voice/attribution] call attributed to manager', {
     callId,
     dealershipId: session.dealershipId,

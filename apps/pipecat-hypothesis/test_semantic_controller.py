@@ -29,6 +29,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.s=SimpleNamespace(prompt=PROMPT,context={'subjectTitle':'Тестовый объект'},backchannel=True,
             tts_model='eleven_v4_turbo',voice_id='test',evidence=Evidence(),playback=Playback(),
             finalized=False,status='connected',dialogue_mode='semantic')
+        self.s.prepared_purpose='purchase'
         self.s.evidence.memory=ConversationMemory(PROMPT);self.s.evidence.memory.semantic_mode=True
         self.s.evidence.turn=self.s.evidence.output_turn=1
         self.monitor=SimpleNamespace(turn=Turn(False,number=1),segment_start=None)
@@ -48,6 +49,15 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
             await self.c.prepare()
 
     async def asyncTearDown(self):await self.c.close()
+
+    async def test_service_context_keeps_owned_vehicle_and_disables_purchase_preference(self):
+        self.s.prepared_purpose='service';self.s.context={'subjectTitle':'Zeekr 8X','customerNeed':'Установить защиту заднего двигателя.'}
+        await self.run_turn('Вас интересует сервисное обслуживание или кузовной ремонт?',other_questions=True)
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertEqual(state['SCENARIO_SCOPE']['purpose'],'service')
+        self.assertIsNone(state['buyer_information']['default_condition_preference'])
+        self.assertIn('Не предлагай купить его',self.c.fallback_goal)
+        self.assertEqual(payload(self.c,self.c.latest_input)['state']['roles']['call_purpose'],'service')
 
     async def test_subject_question_without_selection_is_answered_from_need_before_advancing(self):
         self.s.context={'subjectTitle':None,'subjectDescription':None,'customerNeed':'Интересует Volkswagen Touareg 2019, пробег 104 060 км.'}
@@ -539,12 +549,13 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.s.playback.finish_requested)
         self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_farewell'])
 
-    async def test_ordinary_queued_question_is_not_automatically_repeated(self):
+    async def test_ordinary_queued_question_is_not_repeated_or_treated_as_delivered(self):
         self.c.started=True;await self.c.speak(self.keys[-1])
         self.c.answers={key:{} for key in self.keys[:-1]}
         await self.offer()
         await self.run_turn('Да, удобно.',visit='accept',acceptance_scope='direct_reply')
-        self.assertTrue(self.s.playback.finish_requested)
+        self.assertFalse(self.s.playback.finish_requested)
+        self.assertTrue(self.c.waiting)
 
     async def test_explicit_recall_can_repeat_again_but_automatic_retry_is_bounded(self):
         topic,_=await self.interrupted_plan()
@@ -557,6 +568,48 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         await self.c.replay_question(identity)
         self.assertEqual(self.c.player.queue_frame.await_count,2)
         self.assertEqual(self.c.asked[topic],1)
+
+    async def test_twice_interrupted_credit_question_does_not_trigger_visit_farewell(self):
+        topic,original=await self.interrupted_plan()
+        self.c.answers={key:{} for key in self.keys if key!=topic}
+        await self.c.replay_question('plan:'+topic,explicit=False)
+        retry=self.c.last_question['response_id']
+        self.s.evidence.delivery.response(retry)['interrupted']=True
+        await self.offer()
+        await self.run_turn('Да, удобно.',visit='accept',acceptance_scope='direct_reply')
+        self.assertFalse(self.s.playback.finish_requested)
+        self.assertTrue(self.c.waiting)
+        self.assertFalse(any(call.args[0].text==self.c.texts['visit_farewell'] for call in self.c.player.queue_frame.call_args_list))
+
+    async def test_excellent_then_time_question_does_not_confirm_a_visit(self):
+        await self.offer()
+        self.assertFalse(self.c.direct_slot_acceptance('Отлично. Во сколько?',1))
+        self.assertFalse(self.c.visit_confirmed)
+        self.assertNotIn('visit_time',self.s.evidence.memory.facts)
+
+    async def test_transfer_name_request_overrides_wait_without_silencing_the_buyer(self):
+        self.c.started=True
+        await self.run_turn('Я сейчас соединю вас с отделом продаж. Уточните, пожалуйста, как могу к вам обращаться?',name=True,control='wait')
+        self.assertTrue(self.c.line.can_speak)
+        self.assertIn('Меня зовут Андрей.',self.c.player.queue_frame.call_args.args[0].text)
+        self.assertFalse(self.s.playback.finish_requested)
+
+    async def test_default_visit_preference_uses_prepared_audio_not_midcall_synthesis(self):
+        self.c.visit.day={'value':'Завтра','source':'client_preference','turn':1}
+        self.c.visit.time={'value':'в 10:00','source':'client_preference','turn':1}
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(side_effect=AssertionError('unexpected mid-call TTS'))):
+            await self.c.propose([])
+        self.assertIn('Могу подъехать Завтра',self.c.player.queue_frame.call_args.args[0].text)
+        self.assertFalse(self.c.visit_confirmed)
+
+    async def test_condition_and_prior_contact_questions_keep_direct_answer_instructions(self):
+        self.c.started=True
+        await self.run_turn('Вас интересует новый автомобиль или с пробегом?',other_questions=True)
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertIn('предпочтение покупателя',state['buyer_information']['default_condition_preference'])
+        self.assertIn('не утверждая, что товар продавца действительно новый',self.c.fallback_goal)
+        await self.run_turn('Не общались ранее с менеджером по автомобилю?',other_questions=True)
+        self.assertIn('Не заменяй ответ «да/нет» повтором марки',self.c.fallback_goal)
 
     async def interrupted_preamble(self):
         topic=self.keys[-1]

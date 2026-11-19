@@ -1,3 +1,4 @@
+import { listUnassignedCalls, assignUnassignedCall, withUnassignedCallsReadScope } from './voice/unassignedCalls';
 import { regenerateVoiceReport } from './audits/regenerateVoiceReport';
 import { filterDemoCalls, parseDemoCallNumericId } from './analytics/demoCallSearch';
 import { createEmployeeImportHandlers } from './auth/employeeImport';
@@ -7750,6 +7751,19 @@ app.post('/webhooks/vox-openai-realtime', (req, res) => {
   });
 });
 
+app.get('/api/admin/unassigned-calls', (req, res) => {
+  void listUnassignedCalls(req, res).catch(error => {
+    reportError(error, { task: 'unassigned-calls list' });
+    res.status(500).json({ error: 'Не удалось загрузить звонки.' });
+  });
+});
+app.post('/api/admin/unassigned-calls/:id/assign', (req, res) => {
+  void assignUnassignedCall(req, res).catch(error => {
+    reportError(error, { task: 'unassigned-calls assign' });
+    res.status(500).json({ error: 'Не удалось назначить ответственного. Обновите список и повторите.' });
+  });
+});
+
 // Admin: call history from DB (persisted; same phone = multiple cards)
 app.get('/api/admin/call-history', async (req, res) => {
   try {
@@ -7855,7 +7869,7 @@ app.get('/api/admin/call-recordings/:callId', async (req, res) => {
     const callId = String(req.params.callId || '').trim();
     if (!callId) return res.status(400).json({ error: 'Missing callId.' });
     const session = await prisma.voiceCallSession.findFirst({
-      where: { AND: [{ callId }, buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req))] },
+      where: { AND: [{ callId }, withUnassignedCallsReadScope(req.authAccount, buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req)))] },
       select: { recordingStatus: true },
     });
     if (!session || session.recordingStatus !== 'ready') {
@@ -9731,7 +9745,7 @@ app.get('/api/admin/audits/:id', async (req, res) => {
       where: {
         AND: [
           { id: numericId },
-          buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req)),
+          withUnassignedCallsReadScope(req.authAccount, buildVoiceCallSessionScopeWhere(req.authAccount, getActiveAdminRole(req))),
         ],
       },
       include: {

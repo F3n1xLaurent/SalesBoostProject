@@ -427,8 +427,10 @@ function AuditRecording({ detail, canDownloadCall }: { detail: AuditDetailItem; 
 export function AuditAnalyticsReport({
   detail: providedDetail,
   onOpenEmployee,
+  allowRetry = true,
 }: {
   detail: AuditDetailItem;
+  allowRetry?: boolean;
   onOpenEmployee?: (id: string) => void;
 }) {
   const auth = useUnit($auth);
@@ -855,7 +857,7 @@ export function AuditAnalyticsReport({
         <>
           <AuditRecording detail={detail} canDownloadCall={canDownloadRecording} />
           <AnalyticsProgress key={`${detail.id}:${retryVersion}`} detail={detail} connectionLost={connectionErrorId === detail.id}
-            onRetry={auth.status === 'authenticated' ? retryReport : undefined}
+            onRetry={allowRetry && auth.status === 'authenticated' ? retryReport : undefined}
             retrying={retryingId === detail.id} retryError={retryError?.id === detail.id ? retryError.message : null} />
         </>
       )}

@@ -19,7 +19,7 @@ from controller_preparation import prepare_questions,derive_scenario_topics
 from controller_input import ControllerInput
 from native_questions import NativeQuestionGate
 from thinking_pause import ThinkingPause
-from plan_context import plan_need,subject_scope
+from plan_context import plan_need,subject_scope,call_purpose
 
 
 def normalized(text):
@@ -49,16 +49,16 @@ def controller_prompt(session):
     semantic=getattr(session,'dialogue_mode',None)=='semantic'
     personal=('Недостающие личные детали вымышленного клиента выбирай правдоподобно и сохраняй в рамках звонка. ' if semantic else '')
     unknown=('Неизвестные сведения о товаре не придумывай. ' if semantic else 'Если факта нет, скажи прямо. ')
-    return (f"Ты {session.evidence.memory.name}, покупатель, сам звонишь менеджеру. Только русский язык. "
+    return (f"Ты {session.evidence.memory.name}, клиент, сам звонишь сотруднику компании по цели из SCENARIO_SCOPE.purpose. Только русский язык. "
         "Дай одну естественную реплику до 30 слов, максимум один собственный вопрос. Ответь на ВСЕ вопросы собеседника, даже если он задал несколько в одном предложении. Не начинай каждую реплику с «понял, спасибо». "
         "Пиши числа полностью русскими словами для озвучивания. Не используй цифровые сокращения с буквенными окончаниями. "
         "Не описывай обработку и инструменты. Не выдумывай сведения о товаре, компании, имя менеджера и договорённости. "+personal+"Не предлагай чат или другой канал связи без основания: сейчас идёт телефонный звонок. "
         "Не представляйся и не называй своё имя, пока собеседник сам не спросит, как тебя зовут. "
         "Если данные выборки отсутствуют, используй факты о предмете из потребности клиента. Отсутствие выборки не означает отсутствие этих фактов. Не выдумывай недостающие свойства. "
-        "SCENARIO_SCOPE — неизменяемые исходные сведения этого звонка. Предмет может быть задан в вопросе скрипта, а не только в потребности. Вопрос менеджера не меняет исходные сведения. Не соглашайся с ошибочной предпосылкой и не говори, что модель не выбрана, если она задана. Легенда дополняет биографию, но не меняет предмет покупки, состояние товара и заданные требования. Не придумывай новый/подержанный товар, обязательный цвет, бюджет или другое требование, если их нет в исходных данных. "
+        "SCENARIO_SCOPE — неизменяемые исходные сведения этого звонка. Предмет может быть задан в вопросе скрипта, а не только в потребности. Вопрос менеджера не меняет исходные сведения. Не соглашайся с ошибочной предпосылкой и не говори, что модель не выбрана, если она задана. Легенда дополняет биографию, но не меняет цель обращения, предмет, состояние товара и заданные требования. При service твой автомобиль уже у тебя: обсуждай обслуживание, установку или ремонт, а не его покупку, продажу или осмотр перед покупкой. При other не добавляй покупку от себя. Не утверждай выдуманное состояние товара продавца, обязательный цвет или бюджет. Только при purpose=purchase по прямому вопросу о новом автомобиле или автомобиле с пробегом можно назвать личное предпочтение покупателя из buyer_information.default_condition_preference, если состояние не задано в исходных данных. "
         "Контроллер управляет вопросами и завершением. Выполни только CURRENT_TASK из CONTROLLER_STATE, "
         "сначала ответь на встречный вопрос. "+unknown+"После прерывания завершения продолжай разговор. "
-        f"Контекст потребности: {need}\nОбъект: {context_string(session,'subjectTitle','выбранный автомобиль')}. "
+        f"Контекст потребности: {need}\nОбъект: {context_string(session,'subjectTitle','выбранный автомобиль' if call_purpose(session)=='purchase' else 'предмет обращения из сценария')}. "
         f"Описание: {context_string(session,'subjectDescription')}\nSCENARIO_SCOPE: {json.dumps(subject_scope(session),ensure_ascii=False)}")
 
 
@@ -78,6 +78,7 @@ class DialogueController:
         self.visit_confirmed=False
         self.visit_attempts={};self.visit_clarifications=0;self.visit_deferred=False
         self.visit_reminders=set();self.visit_statuses=set();self.visit_offer_response_id=None;self.receipt_count=0;self.receipt_offset=secrets.randbelow(3)
+        self.opening_topic='availability'
         self.requested_answers={}
         self.inputs=ControllerInput();self.opening_sent=False;self.active_batch=None
         self.http=httpx.AsyncClient(timeout=1.8,limits=httpx.Limits(keepalive_expiry=60))
@@ -120,6 +121,15 @@ class DialogueController:
             if opening and opening.count('?')==1:
                 opening=re.sub(r'^(?:здравствуйте|добрый (?:день|вечер)|привет)[!.,\s]*','',opening,flags=re.I)
                 self.texts['opening']='Здравствуйте! '+opening
+        if call_purpose(self.s)!='purchase':
+            # The first mandatory service/other question owns its real identity;
+            # a vehicle model is not evidence that this is a sales inquiry.
+            self.opening_topic=questions[0]['key']
+            first=self.texts[self.opening_topic]
+            first=re.sub(r'^(?:здравствуйте|добрый (?:день|вечер)|привет)[!.,\s]*','',first,flags=re.I)
+            self.texts['opening']='Здравствуйте! '+first
+            self.texts['visit']='Когда можно записаться на обслуживание?' if call_purpose(self.s)=='service' else 'Когда можно подъехать по моему вопросу?'
+            if subject:self.texts['subject']=('Звоню по обслуживанию '+subject+'.') if call_purpose(self.s)=='service' else 'Звоню по вопросу '+subject+'.'
         self.texts["named_opening"]=self.texts["opening"].replace("Здравствуйте! ","Здравствуйте! "+self.texts["name"]+" ",1)
         self.texts["name_then_first"]=self.texts["name"]+" "+self.texts[questions[0]["key"]]
         composites={}
@@ -167,8 +177,9 @@ class DialogueController:
         return [r for r in self.s.evidence.memory.topics.required if r["key"] not in self.answers]
 
     def unasked(self):
-        # Answer coverage and the one-question budget are separate. An unanswered
-        # question cannot be asked again, nor block an already confirmed booking.
+        # Answer coverage and the one-question budget are separate. A delivered
+        # but unanswered question does not block a booking. Semantic mode checks
+        # interrupted/unfinished playback separately before closing.
         return [r for r in self.pending() if not self.asked.get(r['key'],0)]
 
     def context_text(self):
@@ -257,7 +268,7 @@ class DialogueController:
     async def speak(self,key=None,text=None,kind="cached",mirror=True,closing=False,pcm=None,question_key=None,retry_of=None):
         text=self.texts[key] if key else text
         required={r['key'] for r in self.s.evidence.memory.topics.required}
-        plan_key=('availability' if key in ('opening','named_opening','opening_followup','opening_body') else
+        plan_key=(self.opening_topic if key in ('opening','named_opening','opening_followup','opening_body') else
                   question_key if question_key in required else key if key in required else None)
         if key=='name_then_first':plan_key=self.pending()[0]['key'] if self.pending() else None
         # Stable plan identity survives wording changes, combined answers and
@@ -337,7 +348,7 @@ class DialogueController:
             if not retry_of and "?" in text:
                 required={r['key'] for r in self.s.evidence.memory.topics.required}
                 explicit=question_key if question_key in required else key if key in required else None
-                if key in ('opening','named_opening','opening_followup','opening_body'):explicit='availability';self.opening_sent=True
+                if key in ('opening','named_opening','opening_followup','opening_body'):explicit=self.opening_topic;self.opening_sent=True
                 if key=='name_then_first':explicit=self.pending()[0]['key'] if self.pending() else None
                 self.record_question(text,identifier,explicit)
         if retry_of:e.event("controller_audio_retry",response_id=identifier,retry_of=retry_of)
@@ -525,10 +536,10 @@ class DialogueController:
         if subject_requested and 'subject' in self.texts:self.requested_answers['subject']=self.texts['subject']
         force_answer=bool(self.requested_answers and re.search(r'для чего|зачем|како[йю].{0,8}цел|каком городе|какого города|откуда|в кредит|за налич|для себя|для семьи',text,re.I))
         if not self.started and m.topics.name_requested and not force_answer and not subject_requested:
-            self.started=True;self.current='availability'
+            self.started=True;self.current=self.opening_topic
             await self.speak('named_opening');return
         if self.requested_answers:
-            self.started=True;self.current=self.current or 'availability'
+            self.started=True;self.current=self.current or self.opening_topic
         if len(self.requested_answers)>1 and not force_answer:
             keys=list(self.requested_answers)
             if general_requested and self.pending():self.current=self.pending()[0]['key'];keys.append(self.current)
@@ -543,7 +554,7 @@ class DialogueController:
             await self.speak("name");return
         if not self.started:
             if re.search(r"подожд|ожидайте|соединя|нажмите|автоответ",text,re.I):return
-            self.started=True;self.current="availability"
+            self.started=True;self.current=self.opening_topic
             await self.speak("opening");return
         if 'subject' in self.texts and subject_requested and not force_answer:
             if general_requested and self.pending():

@@ -18,7 +18,7 @@ from customer_legend import choose_name
 from line_gate import LineGate,greeting_only
 from breath import BreathCue
 from policy import is_introductory_greeting
-from plan_context import plan_need,selected_subject,subject_scope,target_location
+from plan_context import plan_need,selected_subject,subject_scope,target_location,call_purpose
 
 
 class SemanticController(DialogueController):
@@ -41,6 +41,25 @@ class SemanticController(DialogueController):
         self.s.evidence.memory.semantic_mode=True
         self.s.evidence.event('semantic_configuration',model=MODEL,version='semantic-20')
 
+    async def prepare(self):
+        await super().prepare()
+        # Default visit choices should not start a slow TTS request mid-call.
+        # This caches preferences only; manager availability still needs consent.
+        from dialogue_controller import voice_clip
+        now=datetime.now(ZoneInfo('Europe/Moscow'))
+        choices=[('завтра','в 10:00')]
+        future=now+timedelta(hours=1)
+        if future.date()==now.date():choices.append(('сегодня',f'в {max(10,future.hour)}:00'))
+        self.visit_clip_cache={}
+        for day,clock in choices:
+            text=f'Могу подъехать {day}, {clock}. Подойдёт?'
+            self.visit_clip_cache[fingerprint(text)]=await voice_clip(self.s,text)
+        self.s.evidence.event('semantic_visit_clips_ready',count=len(self.visit_clip_cache))
+
+    async def _speak(self,key=None,text=None,kind='cached',mirror=True,closing=False,pcm=None,question_key=None,retry_of=None,identities=()):
+        if key is None and pcm is None:pcm=getattr(self,'visit_clip_cache',{}).get(fingerprint(text or ''))
+        return await super()._speak(key,text,kind,mirror,closing,pcm,question_key,retry_of,identities)
+
     def snapshot(self):
         return {**super().snapshot(),'understanding':'semantic-20','last_meaning':self.last_meaning,
                 'opening_pending':self.needs_opening(),
@@ -54,12 +73,12 @@ class SemanticController(DialogueController):
     def needs_opening(self):
         # Starting a native answer is not the same as introducing the purpose
         # and asking availability. Preserve this obligation across interruption.
-        return not self.opening_sent and 'availability' not in self.answers
+        return not self.opening_sent and self.opening_topic not in self.answers
 
     def ignores_opening_greeting(self,text,turn):
         if not turn.overlap or turn.interrupted:return False
         question=turn.question or {}
-        identifier=question.get('response_id') if question.get('topic')=='availability' else (
+        identifier=question.get('response_id') if question.get('topic')==self.opening_topic else (
             self.native_opening_response if self.needs_opening() else None)
         return bool(identifier and not self.s.evidence.delivery.complete(identifier)
             and is_introductory_greeting(text,turn.duration_ms,self.s.evidence.memory.name))
@@ -72,7 +91,7 @@ class SemanticController(DialogueController):
             seen.add(row['response_id'])
             topic=known['id'].removeprefix('plan:') if known['id'].startswith('plan:') else None
             text=self.texts[topic] if topic in self.texts else row['text']
-            if topic=='availability' or not topic and not known['id'].startswith('visit-'):
+            if topic==self.opening_topic or not topic and not known['id'].startswith('visit-'):
                 questions=re.findall(r'[^.!?]*\?',text)
                 if questions:text=questions[-1].strip()
             delivery=self.s.evidence.delivery.response(row['response_id'])
@@ -83,7 +102,7 @@ class SemanticController(DialogueController):
 
     def unfinished_question(self):
         return next((r for r in self.question_history() if r['topic'] and r['interrupted']
-            and not r['answered'] and r['id'] not in self.auto_replayed_questions),None)
+            and not r['answered']),None)
 
     async def replay_question(self,identity,keys=(),explicit=True):
         row=next((r for r in self.question_history() if r['id']==identity),None)
@@ -227,6 +246,7 @@ class SemanticController(DialogueController):
             'recent_manager_quotes':self.s.evidence.memory.users[-5:],
             'controlled_fields':['visit_day','visit_time','visit_availability','received_information','company_address'],
             'buyer_information':{'customer_name':self.s.evidence.memory.name,
+                'default_condition_preference':('новый автомобиль; предпочтение покупателя, не факт о товаре продавца' if call_purpose(self.s)=='purchase' else None),
                 'chosen_personal_statements':self.customer_legend,
                 'provided_need':plan_need(self.s),'selected_subject':selected_subject(self.s)},
             'question_policy':getattr(self,'native_question_policy','answer_only')},ensure_ascii=False)
@@ -385,8 +405,9 @@ class SemanticController(DialogueController):
         offer=self.visit.offered
         if (not offer or reference.get('response_id')!=self.visit_offer_response_id
                 or (self.last_clip or {}).get('response_id')!=self.visit_offer_response_id):return False
+        # An opening 'Отлично' followed by 'Во сколько?' is not slot acceptance.
         first=re.split(r'(?<=[.!?])\s+',text.strip(),maxsplit=1)[0]
-        if not confirms_slot(offer,first):return False
+        if not confirms_slot(offer,text if '?' in text else first):return False
         if re.search(r'\b(?:если|но|только|вместо|отмен\w*|позже|раньше|перен[её]с\w*|перенос\w*)\b',text,re.I):return False
         if self.changed_slot(self.candidate(text,turn),offer,turn):return False
         return self.accept_active(text,turn,{'acceptance_scope':'direct_reply'})
@@ -418,7 +439,7 @@ class SemanticController(DialogueController):
         # fragment cancels the pending interpretation task.
         accepted_directly=self.direct_slot_acceptance(text,turn)
         if not resumed and greeting_only(text) and self.needs_opening():
-            self.started=True;self.current='availability'
+            self.started=True;self.current=self.opening_topic
             self.s.evidence.event('semantic_opening_fast_path',source_turn=turn)
             await self.speak('opening');return
         if self.started:self.thinking.arm('semantic_interpretation')
@@ -432,6 +453,10 @@ class SemanticController(DialogueController):
         if epoch!=self.epoch or self.unavailable():
             self.s.evidence.event('semantic_stale_discarded',source_turn=turn);return
         if route=='human_hold':meaning['control']='wait'
+        elif meaning['name'] and meaning['control']=='wait' and self.line.can_speak:
+            # A transfer announced in the same sentence must wait for our name.
+            meaning['control']='continue'
+            self.s.evidence.event('semantic_transfer_identity_answer',source_turn=turn)
         reference=getattr(self,'input_reference',None) or self.last_question or {}
         if (meaning['control']=='fragment' and affirmative(text)
                 and reference.get('topic') and meaning['coverage'].get(reference['topic'])=='answered'):
@@ -583,7 +608,7 @@ class SemanticController(DialogueController):
             if supplied or response_seen:self.pending_answer_keys.insert(0,'receipt_0')
         if control=='audio_repair' and not recall:
             if self.needs_opening():
-                self.current='availability';self.started=True
+                self.current=self.opening_topic;self.started=True
                 await self.speak('named_opening' if meaning['name'] else 'opening');return
             if self.pending_answer_keys:
                 keys=self.pending_answer_keys;self.pending_answer_keys=[]
@@ -622,7 +647,7 @@ class SemanticController(DialogueController):
             return
         self.started=True
         if self.needs_opening() and not action:
-            self.current='availability'
+            self.current=self.opening_topic
             self.pending_answer_keys=[]
             await self.speak('named_opening' if meaning['name'] else 'opening');return
         if not action and (supplied or response_seen or meaning['next_question'] or self.visit_confirmed and not self.unasked()):action='advance'
@@ -653,7 +678,7 @@ class SemanticController(DialogueController):
         m=self.s.evidence.memory
         if action=='open':
             if self.needs_opening():
-                self.current='availability'
+                self.current=self.opening_topic
                 native=getattr(self,'native_resume_context',None)
                 completed=(native and native['response_id']==self.native_opening_response
                     and self.s.evidence.delivery.complete(native['response_id']))
@@ -743,8 +768,21 @@ class SemanticController(DialogueController):
             if self.visit_confirmed or not m.visit_pending:
                 unfinished=self.unfinished_question()
                 if unfinished:
-                    await self.replay_question(unfinished['id'],keys,explicit=False)
+                    if unfinished['id'] in self.auto_replayed_questions:
+                        # The retry can be interrupted too. A bounded replay
+                        # budget must not count its unheard tail as completed.
+                        if keys:await self.prepared(keys)
+                        self.waiting=True;self.thinking.cancel('question_delivery_incomplete')
+                        await self.stop_backchannel()
+                        self.s.evidence.event('controller_wait',reason='interrupted_question_awaits_repair',question_id=unfinished['id'])
+                    else:await self.replay_question(unfinished['id'],keys,explicit=False)
                     return
+            undelivered=[row for row in self.question_history() if row['topic'] and not row['answered'] and not row['phone_complete']]
+            if self.visit_confirmed and not remaining and undelivered:
+                self.waiting=True;self.thinking.cancel('question_delivery_incomplete')
+                await self.stop_backchannel()
+                self.s.evidence.event('controller_wait',reason='required_question_playback_pending',question_ids=[r['id'] for r in undelivered])
+                return
             if self.visit_confirmed and not remaining and all(k in m.facts for k in ('visit_day','visit_time')):
                 result=m.prepare_close('visit_agreed')
                 if result['ok']:
@@ -814,11 +852,13 @@ class SemanticController(DialogueController):
         self.started=True
         self.native_question_policy='clarification' if clarify else 'answer_only'
         self.fallback_turn=self.s.evidence.turn;self.fallback_empty_recovered=False
-        self.fallback_goal=('Ответь от первого лица на ВСЕ дополнительные вопросы менеджера из manager_utterance и manager_questions. Не повторяй уже данный ответ вместо ответа на новый вопрос. Краткость не должна исключать часть вопроса.\n'
+        self.fallback_goal=('Цель из SCENARIO_SCOPE.purpose обязательна: при service речь об обслуживании уже имеющегося автомобиля. Не предлагай купить его и не превращай запись в осмотр перед покупкой. При other не добавляй покупку от себя. Правила о выборе нового автомобиля применяются только к purchase.\n'
+            'Ответь от первого лица на ВСЕ дополнительные вопросы менеджера из manager_utterance и manager_questions. Не повторяй уже данный ответ вместо ответа на новый вопрос. Краткость не должна исключать часть вопроса.\n'
             '- На общее приглашение представиться или рассказать о цели звонка назови только предмет обращения одной короткой фразой. Не перечисляй весь контекст, цену и условия, если их не спрашивали.\n'
             '- Имя и объект бери из requested_answers и buyer_information; сохраняй заданную потребность. Новые личные детали добавляй только по правилам легенды ниже.\n'
             '- Для предмета обращения сначала используй selected_subject. Если выборка пуста, назови предмет и известные факты из provided_need. Не заменяй известную модель общими словами. Не путай предмет покупки с нынешней машиной клиента из легенды. Если предмет не задан нигде, попроси уточнить без выдуманной модели.\n'
-            '- SCENARIO_SCOPE имеет приоритет над chosen_personal_statements и предпосылками вопросов менеджера. Предмет из subject или script_references уже выбран. Если они не содержат конкретного предмета, проверь script_title: используй только явно названную там марку и модель, без служебных слов и без замены заданного предмета. Не отвечай «модель не выбрал» и не проси выбрать её вместо заданной. Если менеджер спрашивает «новый?», ответь по данным о состоянии; при отсутствии состояния назови заданный предмет без выдуманного «новый». Не превращай уточняющие вопросы менеджера в новые желания клиента.\n'
+            '- SCENARIO_SCOPE имеет приоритет над chosen_personal_statements и предпосылками вопросов менеджера. Предмет из subject или script_references уже выбран. Если они не содержат конкретного предмета, проверь script_title: используй только явно названную там марку и модель, без служебных слов и без замены заданного предмета. Не отвечай «модель не выбрал» и не проси выбрать её вместо заданной. Если менеджер спрашивает «новый?», ответь по данным о состоянии; если состояние не задано, на вопрос «новый или с пробегом» прямо назови предпочтение из buyer_information.default_condition_preference («Рассматриваю новый автомобиль»), не утверждая, что товар продавца действительно новый. Не отвечай «состояние пока не уточнял» и не уходи от выбора повтором модели. Не превращай уточняющие вопросы менеджера в новые желания клиента.\n'
+            '- На вопрос, общались ли раньше с менеджером, ответь прямо о предыдущем контакте: по истории текущего звонка либо «До этого звонка не общался», если предыдущего контакта не задано. Перевод между сотрудниками в текущем звонке не означает прошлое обращение. Не заменяй ответ «да/нет» повтором марки автомобиля.\n'
             '- Если факта нет, отвечай как человек: что ещё не решил или предпочитаешь пока обсудить саму покупку. Не говори «я не указал», «я не сообщал», «этой информации у меня нет».\n'
             '- Ты вымышленный клиент тестового звонка. Если личная деталь ещё не задана в потребности или chosen_personal_statements, выбери правдоподобную деталь по контексту и голосу, ответь от первого лица. Не объясняй, что составляешь легенду.\n'
             '- Назови конкретное значение запрошенного личного свойства, а не общую категорию: например, на вопрос о текущем автомобиле нужны марка и модель, а не просто «какой-то седан». Если раньше назвал только категорию, можешь уточнить её без противоречия.\n'
