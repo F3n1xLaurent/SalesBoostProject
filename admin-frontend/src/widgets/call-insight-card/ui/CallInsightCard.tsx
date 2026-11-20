@@ -3,6 +3,7 @@ import type { CallInsightDetail } from '../../../shared/model/call-insight/types
 import { exportReportPdf } from '../../../shared/lib/demo-report/exportPdf';
 import { ReportHeader } from '../../../shared/ui/demo-report/ReportHeader';
 import { ReportSections } from '../../../shared/ui/demo-report/ReportSections';
+import { CallError } from '../../call-error/ui/CallError';
 
 export function CallInsightCard(props: { detail: CallInsightDetail }) {
   const { detail } = props;
@@ -22,11 +23,7 @@ export function CallInsightCard(props: { detail: CallInsightDetail }) {
     <div ref={reportExportRef} className="demo-report-export-root space-y-4">
       <ReportHeader detail={detail} onExportPdf={() => void handleExportReportPdf()} />
 
-      {detail.processingError && (
-        <div className="rounded-xl admin-card-inner px-3 py-2 text-xs text-danger">
-          {detail.processingError}
-        </div>
-      )}
+      <CallError message={detail.processingError} className="rounded-xl admin-card-inner px-3 py-2 text-xs text-danger" />
 
       <ReportSections detail={detail} />
     </div>

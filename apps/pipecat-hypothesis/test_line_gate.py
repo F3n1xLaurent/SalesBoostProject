@@ -31,6 +31,12 @@ class LocalLineTests(unittest.TestCase):
         self.assertFalse(explicit_hold('Другой менеджер сказал подождите.'))
         self.assertTrue(explicit_hold('Пороги целые. Подождите, соединю с коллегой.'))
 
+    def test_transfer_after_thank_you_and_conditional_or_reported_clauses(self):
+        self.assertTrue(explicit_hold('Спасибо за обращение, оставайтесь на линии, соединяем. Хорошего вам дня.'))
+        self.assertTrue(explicit_hold('Благодарю, сейчас соединяем с сервисом.'))
+        self.assertFalse(explicit_hold('Если потребуется помощь, подождите коллегу.'))
+        self.assertFalse(explicit_hold('Он сказал: спасибо за обращение, оставайтесь на линии.'))
+
 
 class LineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -86,7 +92,8 @@ class LineTests(unittest.IsolatedAsyncioTestCase):
         await self.line.route('Алло, слушаю.',1,1)
         for text in ('[noise]','Вы робот?','Менеджер сказал: подождите.','У вас работает голосовой помощник?'):
             self.assertEqual(await self.line.route(text,2,1),'human')
-        self.assertTrue(self.line.can_speak);self.line.classify.assert_not_awaited()
+        self.assertTrue(self.line.can_speak)
+        self.line.classify.assert_awaited_once_with('Менеджер сказал: подождите.')
 
     async def test_late_explicit_assistant_identification_is_silent_terminal(self):
         await self.line.route('Алло',1,1)
@@ -134,6 +141,30 @@ class LineTests(unittest.IsolatedAsyncioTestCase):
         self.line.classify.return_value=('hold',None,False)
         self.assertEqual(await self.line.route('Подождите, переведу вас к коллеге, хорошо?',2,1),'human_hold')
         self.assertFalse(self.line.can_speak)
+
+    async def test_corrupted_echo_before_hold_uses_line_verification(self):
+        await self.line.route('Здравствуйте',1,1)
+        text='Понял. Если доставка спасибо, звонок оставайтесь на линии, общение продолжит коллега.'
+        self.assertFalse(explicit_hold(text))
+        self.line.classify.return_value=('hold',None,False)
+        self.assertEqual(await self.line.route(text,2,1),'human_hold')
+        self.assertFalse(self.line.can_speak)
+        self.assertEqual(self.line.state,'waiting_operator')
+        self.line.classify.assert_awaited_once_with(text)
+
+    async def test_reported_or_conditional_hold_does_not_mute_a_live_question(self):
+        await self.line.route('Здравствуйте',1,1)
+        self.line.classify.return_value=('human',None,False)
+        text='Если менеджер попросил подождать, вы уже обращались к нему?'
+        self.assertEqual(await self.line.route(text,2,1),'human')
+        self.assertTrue(self.line.can_speak)
+        self.c.clear_audio.assert_not_awaited()
+
+    async def test_unverified_hold_hint_does_not_force_the_line_into_waiting(self):
+        await self.line.route('Здравствуйте',1,1)
+        self.line.classify.return_value=('uncertain',None,False)
+        self.assertEqual(await self.line.route('Он сказал подождите.',2,1),'human')
+        self.assertTrue(self.line.can_speak)
 
     async def test_menu_digit_is_sent_once_and_path_requires_transport_confirmation(self):
         text='Для продаж нажмите один. Для сервиса нажмите два.'

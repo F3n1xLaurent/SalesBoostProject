@@ -275,7 +275,7 @@ class DialogueController:
         text=self.texts[key] if key else text
         required={r['key'] for r in self.s.evidence.memory.topics.required}
         plan_key=(self.opening_topic if key in ('opening','named_opening','opening_followup','opening_body') else
-                  question_key if question_key in required else key if key in required else None)
+                  question_key if question_key in required or question_key==self.opening_topic else key if key in required else None)
         if key=='name_then_first':plan_key=self.pending()[0]['key'] if self.pending() else None
         # Stable plan identity survives wording changes, combined answers and
         # concurrent recovery paths. Reserve before the first await.
@@ -353,7 +353,8 @@ class DialogueController:
             self.last_clip={"text":text,"pcm":pcm,"response_id":identifier,"question":self.last_question}
             if not retry_of and "?" in text:
                 required={r['key'] for r in self.s.evidence.memory.topics.required}
-                explicit=question_key if question_key in required else key if key in required else None
+                explicit=question_key if question_key in required or question_key==self.opening_topic else key if key in required else None
+                if question_key==self.opening_topic:self.opening_sent=True
                 if key in ('opening','named_opening','opening_followup','opening_body'):explicit=self.opening_topic;self.opening_sent=True
                 if key=='name_then_first':explicit=self.pending()[0]['key'] if self.pending() else None
                 self.record_question(text,identifier,explicit)

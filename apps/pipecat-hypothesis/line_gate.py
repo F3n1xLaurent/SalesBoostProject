@@ -12,7 +12,7 @@ def normalized(text):return ' '.join(text.casefold().replace('ё','е').split())
 
 
 MENU=re.compile(r'нажмите|наберите|выберите.{0,25}(?:пункт|цифру|клавишу|отдел)|голосов(?:ое|ого) меню',re.I)
-HOLD=re.compile(r'подожд|ожидайте|дождитесь|оставайтесь на линии|соедин(?:ю|яем|им)|перев(?:ожу|еду)|оператор ответит|вам ответит',re.I)
+HOLD=re.compile(r'подожд|ожидайте|дождитесь|оставайтесь на линии|соедин(?:ю|яю|яем|им)|перев(?:ожу|еду)|оператор ответит|вам ответит',re.I)
 TERMINAL=re.compile(r'(?:я|это)\s+(?:голосов(?:ой|ая)|виртуальн(?:ый|ая)|автоматическ(?:ий|ая)|телефонн(?:ый|ая))\s+(?:ассистент|помощни(?:к|ца))|автоответчик|(?:оставьте|запишите).{0,30}сообщение|запишу.{0,25}(?:слово в слово|сообщение)|после\s+(?:звукового\s+)?сигнала|голосов(?:ая|ой)\s+(?:почта|ящик)|(?:абонент|номер|линия).{0,45}(?:занят|недоступен|не может ответить|не отвечает|выключен)',re.I)
 LIVE=re.compile(r'(?:^|[.!?\s,])(?:алло|здравствуйте|добрый день|доброе утро|добрый вечер|слушаю|говорите|чем могу помочь|по какому вопросу|что вас интересует|кто говорит|кто звонит|кто это|повторите|не расслышал[аи]?)(?:$|[.!?\s,])|меня зовут\s+[а-я-]{2,}',re.I)
 NOISE=re.compile(r'^(?:\.{2,}|\[(?:music|noise)\]|музыка\b|фонов(?:ый|ая)\s+(?:шум|музыка))',re.I)
@@ -42,7 +42,10 @@ def local_type(text):
 def explicit_hold(text):
     for clause in re.split(r'(?<=[.!?])\s+',text):
         if re.search(r'сказал|сказала|цитир|\bесли\b|попросил',clause,re.I):continue
-        if re.match(r'\s*(?:(?:да|хорошо|пожалуйста)[,\s]+)*(?:подождите|ожидайте|дождитесь|оставайтесь|(?:я\s+)?(?:сейчас\s+)?(?:соединю|переведу|перевожу))\b',clause,re.I):return True
+        # A transfer commonly follows a thank-you in the same sentence.
+        # Keep the reported/conditional check on the whole sentence first.
+        for part in re.split(r'[,;]\s*',clause):
+            if re.match(r'\s*(?:(?:да|хорошо|пожалуйста)\s+)*(?:подождите|ожидайте|дождитесь|оставайтесь|(?:я\s+)?(?:сейчас\s+)?(?:соединю|соединяю|соединяем|соединим|переведу|перевожу))\b',part,re.I):return True
     return False
 
 
@@ -196,16 +199,17 @@ class LineGate:
                 # A future-transfer clause cannot mute the requested identity.
                 self.event('line_transfer_answer_required',text=text)
                 return 'human'
-            if explicit_hold(text):
+            literal_hold=explicit_hold(text)
+            if literal_hold or HOLD.search(text):
                 # A future transfer can depend on an answer requested in the
                 # same utterance. Let semantics distinguish it from real hold;
                 # don't silence a live caller merely on the opening clause.
-                if '?' in text:
+                if not literal_hold or '?' in text:
                     try:line,_,_=await self.classify(text)
                     except Exception as exc:
                         self.event('line_classification_failed',error_type=type(exc).__name__);line='uncertain'
                     if epoch!=self.c.epoch or self.c.unavailable():return 'blocked'
-                    if line=='human':
+                    if line=='human' or not literal_hold and line!='hold':
                         self.event('line_transfer_answer_required',text=text)
                         return 'human'
                 self.history=[text];self.state='waiting_operator';self.arm_wait();await self.silence('human_requested_hold')

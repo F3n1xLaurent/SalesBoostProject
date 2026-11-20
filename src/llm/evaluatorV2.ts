@@ -91,6 +91,26 @@ function hasCompleteChecklist(value: unknown, expectedCodes: readonly string[] =
   return normalizedExpectedCodes.every((code) => validCodes.has(code));
 }
 
+/** Keep only actual, unambiguous model assessments for a bounded repair. */
+function partialChecklist(value: unknown, expectedCodes: readonly string[]): LLMClassification['checklist'] {
+  const rows = (value as Partial<LLMClassification> | null)?.checklist;
+  if (!Array.isArray(rows)) return [];
+  const codes = new Map(expectedCodes.map(code => [code.trim().toUpperCase(), code]));
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const code = String(row?.code ?? '').trim().toUpperCase();
+    counts.set(code, (counts.get(code) ?? 0) + 1);
+  }
+  return rows.flatMap(row => {
+    const key = String(row?.code ?? '').trim().toUpperCase();
+    const status = String(row?.status ?? '').trim().toUpperCase();
+    if (!codes.has(key) || counts.get(key) !== 1 || !['YES', 'PARTIAL', 'NO', 'NA'].includes(status)
+      || !Array.isArray(row.evidence) || !row.evidence.every(quote => typeof quote === 'string')
+      || typeof row.comment !== 'string') return [];
+    return [{ ...row, code: codes.get(key)!, status: status as LLMClassification['checklist'][number]['status'] }];
+  });
+}
+
 function customEvaluatorPrompt(checklist: NonNullable<EvaluatorInput['evaluationChecklist']>): string {
   const items = checklist.items.map((item) => [
     `${item.id} (вес: ${item.points}) — ${item.title}`,
@@ -344,6 +364,7 @@ ${REPORT_EVIDENCE_RULES}
   let classification: LLMClassification | null = null;
   let validationIssue = '';
   let lastFailure: unknown;
+  let partial: Partial<LLMClassification> | null = null;
 
   for (let attempt = 1; attempt <= 2 && !classification; attempt += 1) {
     try {
@@ -356,7 +377,11 @@ ${REPORT_EVIDENCE_RULES}
             role: 'user',
             content: attempt === 1
               ? userPrompt
-              : `${userPrompt}\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ был неполным или невалидным. Причина: ${validationIssue}. Обязательно верни все ${expectedCodes.length} уникальных пунктов checklist.`,
+              : `${userPrompt}\n\nПОВТОРНАЯ ПОПЫТКА: предыдущий ответ был неполным или невалидным. Причина: ${validationIssue}. `
+                + `Допустимые code (используй точно эти значения): ${JSON.stringify(expectedCodes)}. `
+                + (partial?.checklist?.length
+                  ? `Уже полученные пункты: ${JSON.stringify(partial.checklist)}. Верни недостающие или исправленные пункты checklist с цитатами из диалога, а также extra_signals и recommendations. Не подставляй оценки без анализа.`
+                  : `Обязательно верни все ${expectedCodes.length} уникальных пунктов checklist.`),
           },
         ],
         response_format: { type: 'json_object' },
@@ -368,10 +393,19 @@ ${REPORT_EVIDENCE_RULES}
       const text = response.choices[0]?.message?.content?.trim();
       if (response.choices[0]?.finish_reason === 'length') throw new Error('Evaluator token limit reached');
       if (!text) throw new Error('Empty evaluator response');
-      const parsed = JSON.parse(text) as unknown;
-      if (!hasCompleteChecklist(parsed, expectedCodes)) {
-        throw new Error(`Incomplete evaluator checklist: expected ${expectedCodes.length} unique valid items`);
+      let parsed = JSON.parse(text) as unknown;
+      if (partial && !hasCompleteChecklist(parsed, expectedCodes)) {
+        const repaired = new Map(partial.checklist?.map(item => [item.code, item]));
+        for (const item of partialChecklist(parsed, expectedCodes)) repaired.set(item.code, item);
+        parsed = { ...partial, ...(parsed && typeof parsed === 'object' ? parsed : {}), checklist: [...repaired.values()] };
       }
+      if (!hasCompleteChecklist(parsed, expectedCodes)) {
+        const rows = partialChecklist(parsed, expectedCodes);
+        const missing = expectedCodes.filter(code => !rows.some(item => item.code === code));
+        partial = { ...(parsed && typeof parsed === 'object' ? parsed : {}), checklist: rows };
+        throw new Error(`Incomplete evaluator checklist: expected ${expectedCodes.length} unique valid items; missing or invalid codes: ${missing.join(', ')}`);
+      }
+      partial = null;
       if (parsed.checklist.some((item) => isUncertainFactClaim(String(item.comment ?? ''), transcriptionUncertainties))) {
         throw new Error('Uncertain ASR was classified as a confirmed manager error');
       }

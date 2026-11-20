@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 import { analyticsRetryDelayed } from '../model/analyticsRetry';
+import { CallError } from '../../call-error/ui/CallError';
 import './analytics-progress.css';
 
 const STEPS = [
@@ -10,7 +11,7 @@ const STEPS = [
 ] as const;
 
 export function AnalyticsProgress({ detail, connectionLost = false, onRetry, retrying = false, retryError }: {
-  detail: Pick<AuditDetailItem, 'analyticsProgress' | 'transcript'>;
+  detail: Pick<AuditDetailItem, 'analyticsProgress' | 'transcript'> & Partial<Pick<AuditDetailItem, 'failReason'>>;
   connectionLost?: boolean;
   onRetry?: () => void;
   retrying?: boolean;
@@ -70,8 +71,9 @@ export function AnalyticsProgress({ detail, connectionLost = false, onRetry, ret
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17" /></svg>
         {retrying ? 'Запускаем…' : 'Переполучить отчёт'}
       </button>
-      {retryError && <p className="sa-analytics-progress-retry-error" role="alert">{retryError}</p>}
+      {retryError && <div role="alert"><CallError message={retryError} className="sa-analytics-progress-retry-error" /></div>}
     </div>}
+    {failed && <CallError message={detail.failReason} detailsOnly className="sa-audit-fail-reason" />}
     {!failed && !unavailable && <footer className="sa-analytics-progress-foot">
       <span className="sa-analytics-progress-dot" aria-hidden="true" />
       {connectionLost ? 'Не удалось обновить статус. Повторим проверку соединения автоматически.' : 'Можно оставить страницу открытой — готовый отчёт появится автоматически. Обработка может занять несколько минут.'}

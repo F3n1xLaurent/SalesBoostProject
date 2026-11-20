@@ -11,6 +11,10 @@ from line_gate import LineGate
 
 
 CASES=[
+    ('corrupted_echo_before_transfer','Хочу узнать условия покупки.',
+     'Понял. Если доставка спасибо, звонок оставайтесь на линии, общение продолжит коллега.',('hold',None,False)),
+    ('conditional_hold_question','Хочу узнать условия покупки.',
+     'Если менеджер попросил подождать, вы уже обращались к нему?',('human_or_uncertain',None,False)),
     ('sales','Хочу купить автомобиль, звоню в отдел продаж.',
      'Для отдела продаж нажмите один. Для сервиса нажмите два. Для оператора нажмите ноль.',('ivr','1',True)),
     ('incomplete','Хочу купить автомобиль.',
@@ -43,7 +47,8 @@ async def main():
                 actual=await line.classify(text)
                 # A non-menu must never supply a navigation digit; the
                 # completeness label is irrelevant outside an IVR.
-                ok=(actual==expected if expected[0]=='ivr' else actual[:2]==expected[:2])
+                ok=(actual[0] in ('human','uncertain') and actual[1] is None if expected[0]=='human_or_uncertain'
+                    else actual==expected if expected[0]=='ivr' else actual[:2]==expected[:2])
                 results.append(dict(name=name,expected=expected,actual=actual,ok=ok,
                     elapsed_ms=round((time.monotonic()-start)*1000),events=events))
             except Exception as exc:results.append(dict(name=name,ok=False,error=type(exc).__name__,

@@ -581,6 +581,158 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.c.waiting)
         self.assertFalse(any(call.args[0].text==self.c.texts['visit_farewell'] for call in self.c.player.queue_frame.call_args_list))
 
+    async def exhausted_question(self):
+        topic,_=await self.interrupted_plan()
+        await self.c.replay_question('plan:'+topic,explicit=False)
+        self.s.evidence.delivery.response(self.c.last_question['response_id'])['interrupted']=True
+        self.c.player.queue_frame.reset_mock()
+        return topic
+
+    async def test_transfer_after_thank_you_resumes_exhausted_question_for_new_employee(self):
+        topic=await self.exhausted_question()
+        self.s.evidence.memory.facts['retained_fact']={'value':'known','turn':1}
+        await self.run_turn('Спасибо за обращение, оставайтесь на линии, соединяем. Хорошего вам дня.',control='wait')
+        self.assertEqual(self.c.line.state,'waiting_operator')
+        self.c.player.queue_frame.assert_not_awaited()
+        with patch('semantic_controller.interpret',new=AsyncMock()) as model:
+            await self.c.handle('[music]',1,self.c.epoch)
+        model.assert_not_awaited()
+        await self.run_turn('Добрый день, сервис, слушаю вас.')
+        self.assertTrue(self.c.line.can_speak)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.last_question['topic'],topic)
+        self.assertNotIn('plan:'+topic,self.c.auto_replayed_questions)
+        self.assertEqual(self.s.evidence.memory.facts['retained_fact']['value'],'known')
+        self.assertFalse(self.s.playback.finish_requested)
+
+    async def test_listening_invitation_repairs_exhausted_question_without_marking_answer(self):
+        topic=await self.exhausted_question()
+        await self.run_turn('Я вас внимательно слушаю.',listening_ready=True)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.last_question['topic'],topic)
+        self.assertNotIn(topic,self.c.answers)
+        self.assertEqual(self.c.asked[topic],1)
+        self.assertIn('plan:'+topic,self.c.auto_replayed_questions)
+        self.assertFalse(self.s.playback.finish_requested)
+
+    async def test_connection_check_after_exhausted_retry_receives_acknowledgment(self):
+        topic=await self.exhausted_question()
+        await self.run_turn('Слышно меня?',control='attention')
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['resume'])
+        self.assertIn('plan:'+topic,self.c.auto_replayed_questions)
+        self.assertNotIn(topic,self.c.answers)
+
+    async def test_ordinary_acknowledgment_does_not_reset_replay_budget(self):
+        topic=await self.exhausted_question()
+        await self.run_turn('Угу.')
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertIn('plan:'+topic,self.c.auto_replayed_questions)
+        self.assertTrue(self.c.waiting)
+
+    async def test_deduplicating_greeting_preserves_opening_identity_and_interrupted_recovery(self):
+        self.c.opening_sent=False
+        await self.c.speak('greeting')
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(side_effect=AssertionError('prepared opening must reuse cached body'))):
+            await self.c.speak('opening')
+        self.assertTrue(self.c.opening_sent)
+        self.assertEqual(self.c.last_question['topic'],self.c.opening_topic)
+        self.assertIn('plan:'+self.c.opening_topic,self.c.question_ledger)
+        self.s.evidence.delivery.response(self.c.last_question['response_id'])['interrupted']=True
+        self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Алло.',control='attention')
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.last_question['topic'],self.c.opening_topic)
+        self.assertIn('Меня интересует',self.c.player.queue_frame.call_args.args[0].text)
+
+    async def test_semantic_hold_mutes_output_even_without_literal_transfer_match(self):
+        self.c.started=True
+        await self.run_turn('Оставать на линии, вас соединяет коллега.',control='wait')
+        self.assertEqual(self.c.line.state,'waiting_operator')
+        self.assertFalse(self.c.line.can_speak)
+        self.c.player.queue_frame.assert_not_awaited()
+        await self.c.speak(self.keys[-1])
+        self.c.player.queue_frame.assert_not_awaited()
+        await self.run_turn('Алло, слушаю вас.',listening_ready=True)
+        self.assertTrue(self.c.line.can_speak)
+        self.c.player.queue_frame.assert_awaited()
+
+    async def test_confirmation_is_answered_before_new_plan_question(self):
+        self.c.started=True
+        await self.c.speak('opening')
+        self.c.player.queue_frame.reset_mock()
+        self.s.context['targetLocation']={'name':'Тестовая точка','city':'Омск','address':'Тестовая улица, 1'}
+        await self.run_turn('В город Омск обращаетесь.',confirmation_request=True,other_questions=True)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.c.llm.send_client_event.assert_awaited()
+        self.assertIsNone(self.c.pending_after_native[0])
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertTrue(state['confirmation_requested'])
+        self.assertEqual(state['target_location']['city'],'Омск')
+
+    async def test_unclassified_compound_reply_is_answered_before_advancing(self):
+        self.c.started=True
+        await self.c.speak('opening')
+        self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Товар в наличии. Впервые обратились в компанию.',
+            contextual_reply=True,coverage={self.keys[0]:'answered'})
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertEqual(self.c.pending_after_native[0],'advance')
+        self.c.llm.send_client_event.assert_awaited()
+        self.assertNotIn(self.keys[-1],self.c.asked)
+        self.assertIn('коротко попроси повторить',self.c.fallback_goal)
+
+    async def test_unclassified_noisy_subject_does_not_turn_into_silence(self):
+        self.c.started=True
+        await self.c.speak('opening')
+        self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Алло. Искажённое название интересует.',contextual_reply=True)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.c.llm.send_client_event.assert_awaited()
+        self.assertIsNone(self.c.pending_after_native[0])
+        self.assertIn('Искажённое название сверяй с SCENARIO_SCOPE',self.c.fallback_goal)
+
+    async def test_plain_acknowledgment_does_not_trigger_contextual_generation(self):
+        await self.exhausted_question()
+        self.c.llm.send_client_event.reset_mock()
+        await self.run_turn('Угу.',contextual_reply=True)
+        self.c.llm.send_client_event.assert_not_awaited()
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_invitation_after_our_slot_is_reviewed_without_repeating_the_time(self):
+        await self.offer()
+        self.s.evidence.turn=2
+        self.c.answers={key:{} for key in self.keys}
+        with patch('semantic_controller.review_acceptance',new=AsyncMock(return_value=True)) as review:
+            await self.run_turn('Приезжайте.',visit='offer')
+        review.assert_awaited_once()
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertTrue(self.s.playback.finish_requested)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_farewell'])
+
+    async def test_unverified_invitation_does_not_repeat_slot_or_confirm_it(self):
+        await self.offer()
+        self.s.evidence.turn=2
+        identifier=self.c.visit_offer_response_id
+        await self.run_turn('Приезжайте.',visit='offer')
+        self.assertFalse(self.c.visit_confirmed)
+        self.assertEqual(self.c.visit_offer_response_id,identifier)
+        self.assertFalse(any('Мне подойдёт' in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+        self.assertNotIn('visit_day',self.s.evidence.memory.facts)
+
+    async def test_duplicate_proposal_does_not_paraphrase_the_same_time(self):
+        await self.offer()
+        await self.c.propose([])
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(self.c.visit_confirmed)
+
+    async def test_listening_invitation_does_not_override_wait_or_an_answer(self):
+        topic=await self.exhausted_question()
+        await self.run_turn('Проверю информацию.',control='wait',listening_ready=True)
+        self.c.player.queue_frame.assert_not_awaited()
+        await self.run_turn('Да, работаем.',listening_ready=True,coverage={topic:'answered'})
+        self.assertIn(topic,self.c.answers)
+        self.assertFalse(any(call.args[0].text==self.c.texts[topic] for call in self.c.player.queue_frame.call_args_list))
+
     async def test_excellent_then_time_question_does_not_confirm_a_visit(self):
         await self.offer()
         self.assertFalse(self.c.direct_slot_acceptance('Отлично. Во сколько?',1))
@@ -1243,6 +1395,39 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
     def test_uncertain_or_nonfinite_scores_cannot_approve_a_transition(self):
         for scores in ({'yes':.51,'no':.49},{'yes':float('nan'),'no':0}):
             self.assertEqual(pick({'name':{'choice':'yes','probabilities':scores}},'name','no'),'no')
+
+    async def test_listening_invitation_requires_confident_semantic_decision(self):
+        body=payload(self.c,'Расскажите, с каким вопросом обращаетесь.')
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        for probability,expected in ((.96,True),(.72,False)):
+            answers['listening_ready']={'choice':'yes','probabilities':{'yes':probability,'no':1-probability}}
+            with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):
+                result=await interpret(self.c,'Расскажите, с каким вопросом обращаетесь.')
+            self.assertEqual(result['listening_ready'],expected)
+
+    async def test_confirmation_overrides_mistaken_plan_navigation(self):
+        body=payload(self.c,'Уточняете именно этот объект.')
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        answers['confirmation_request']={'choice':'yes','probabilities':{'yes':.95,'no':.05}}
+        answers['subject']={'choice':'plan','probabilities':{'plan':.95,'no':.05}}
+        answers['visit_request']={'choice':'none','probabilities':{'none':.99}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,'Уточняете именно этот объект.')
+        self.assertTrue(result['other_questions'])
+        self.assertFalse(result['next_question'])
+
+    async def test_unrecognized_continuation_requests_contextual_reply(self):
+        body=payload(self.c,'Искажённая реплика.')
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        for key in ('name','subject','other_questions','visit_accepted'):
+            answers[key]={'choice':'no','probabilities':{'no':.99}}
+        answers['subject']={'choice':'plan','probabilities':{'plan':.95,'no':.05}}
+        answers['visit_request']={'choice':'none','probabilities':{'none':.99}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,'Искажённая реплика.')
+        self.assertTrue(result['contextual_reply'])
+        self.assertFalse(result['next_question'])
 
     async def test_topic_refusal_cannot_be_used_as_permission_to_end_call(self):
         body=payload(self.c,'Ограничение обсуждения отдельной темы')

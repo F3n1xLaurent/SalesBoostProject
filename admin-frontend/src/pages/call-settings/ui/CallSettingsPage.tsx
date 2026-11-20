@@ -66,6 +66,7 @@ import { SlideOver } from '../../../shared/ui/slide-over';
 import { useToast } from '../../../shared/ui/toast/ToastProvider';
 import { UnsavedChangesModal } from '../../../shared/ui/unsaved-changes-modal';
 import { AuditAnalyticsReport } from '../../../widgets/audit-analytics-report';
+import { CallError } from '../../../widgets/call-error/ui/CallError';
 
 const PROFILE_FORM_ID = 'call-settings-profile-form';
 const VOICE_EDIT_FORM_ID = 'call-settings-voice-edit-form';
@@ -3102,7 +3103,7 @@ export function CallSettingsPage() {
                         <td>
                           <strong>{call.employeeName || 'Сотрудник'}</strong>
                           <div className="sa-meta" style={{ marginTop: 4 }}>{call.dealershipName || 'Точка не указана'}</div>
-                          {call.failureReason && <div style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }}>{call.failureReason}</div>}
+                          <CallError message={call.failureReason} detailsOnly style={{ color: '#b91c1c', fontSize: 12, marginTop: 4 }} />
                         </td>
                         <td>
                           <div>{call.phone}</div>
@@ -3152,7 +3153,7 @@ export function CallSettingsPage() {
           ) : analyticsDrawerError ? (
             <div className="sa-card" style={{ padding: 20 }}>
               <div style={{ color: '#b91c1c', fontWeight: 700 }}>Не удалось открыть аналитику</div>
-              <div className="sa-meta" style={{ marginTop: 8 }}>{analyticsDrawerError}</div>
+              <CallError message={analyticsDrawerError} className="sa-meta" style={{ marginTop: 8 }} />
             </div>
           ) : analyticsDrawerDetail ? (
             <AuditAnalyticsReport

@@ -9,6 +9,7 @@ import { TranscriptionReviewNotice } from './TranscriptionReviewNotice';
 import { ExampleReviewNotice } from './ExampleReviewNotice';
 import { AnalyticsProgress } from './AnalyticsProgress';
 import { needsAnalyticsRefresh, pollAuditAnalytics } from '../model/analyticsPolling';
+import { CallError } from '../../call-error/ui/CallError';
 
 type UnifiedReport = NonNullable<AuditDetailItem['unifiedReport']>;
 
@@ -641,7 +642,7 @@ export function AuditAnalyticsReport({
                   <small>Доля выполненных условий сценария. Общая оценка рассчитывается отдельно.</small>
                 </div>
               ) : null}
-              {detail.failReason && <div className="sa-audit-fail-reason">{detail.failReason}</div>}
+              <CallError message={detail.failReason} className="sa-audit-fail-reason" />
             </div>
           </section>
 

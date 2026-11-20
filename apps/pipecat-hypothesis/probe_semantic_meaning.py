@@ -14,6 +14,13 @@ from turn_meaning import interpret,MODEL
 
 PROMPT='Ты Андрей, мужчина.\nДоставляете по области? [обязательная тема]\nРаботаете по выходным? [обязательная тема]'
 CASES=[
+    ('buyer_first_contact_compound','Автомобиль стоит на нашей площадке. По этой машине впервые обратились в нашу компанию, Андрей.',{'reply_routed':True,'next_question':False}),
+    ('confirm_distorted_model','Тайота карола интересует.',{'reply_routed':True,'next_question':False}),
+    ('buyer_first_contact_without_question_mark','Это ваше первое обращение по этой машине.',{'other_questions':True,'next_question':False}),
+    ('confirm_city_without_question_mark','В город Омск обращаетесь.',{'confirmation_request':True,'other_questions':True,'next_question':False}),
+    ('confirm_model','Вас интересует Toyota Corolla?',{'confirmation_request':True,'other_questions':True,'next_question':False}),
+    ('confirm_department','Вам нужен отдел продаж или сервис?',{'other_questions':True,'next_question':False}),
+    ('listening_after_transfer','Я готова вас выслушать, расскажите.',{'listening_ready':True}),
     ('buyer_prior_contact','Уточните, пожалуйста, не общались ранее с менеджером по данному автомобилю?',{'subject':False,'other_questions':True}),
     ('buyer_condition','Вас интересует новый автомобиль или с пробегом?',{'other_questions':True}),
     ('buyer_transfer_name','Я сейчас соединю вас с отделом продаж, вас менеджер проконсультирует по новым автомобилям. Уточните, пожалуйста, как могу к вам обращаться?',{'name':True}),
@@ -112,6 +119,13 @@ async def main():
                 c.current='availability';c.visit.offered=None;c.visit_offer_response_id=None
                 c.last_question={'text':'Объект продаётся?','response_id':'opening','topic':'availability','kind':'plan'}
                 c.last_clip={'text':'Объект продаётся?','response_id':'opening'}
+            if name.startswith('confirm_'):
+                s.prepared_purpose='purchase'
+                s.context={'subjectTitle':'Toyota Corolla','targetLocation':{'city':'Омск','name':'Тестовая точка'}}
+                c.visit.offered=None;c.visit_offer_response_id=None
+                c.texts['subject']='Меня интересует Toyota Corolla.'
+                c.last_question={'text':'Машина в наличии?','response_id':'opening','topic':'availability','kind':'plan'}
+                c.last_clip={'text':'Меня интересует Toyota Corolla. Машина в наличии?','response_id':'opening'}
             if name=='identity_confirmation':
                 c.visit.offered=None;c.visit_offer_response_id=None
                 c.last_question={'text':'Пробег актуальный?','response_id':'intro','topic':None,'kind':'plan'}
@@ -123,6 +137,7 @@ async def main():
             try:
                 result=await interpret(c,text)
                 actual={**result,'closing_acknowledged':result.get('closing_intent')=='acknowledgment',
+                    'reply_routed':bool(result.get('other_questions') or result.get('contextual_reply')),
                     'both_covered':all(result['coverage'].get(r['key'])=='answered' for r in s.evidence.memory.topics.required),
                     'accept':result.get('visit_request')!='details' and result['visit']=='accept' and c.accept_active(text,2,result)}
                 checks={key:actual.get(key)==value for key,value in expected.items()}
