@@ -710,10 +710,14 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload, options:
         Sentry.captureException(error, { tags: { failure_stage: 'transcription' }, extra: { callId } });
         console.warn('[voice/session] recording retranscription failed; original ASR retained', {
           callId, error: error instanceof Error ? error.message : String(error),
+          errorType: error instanceof Error ? error.constructor.name : null,
+          causeCode: String((error as { cause?: { code?: unknown } })?.cause?.code ?? '').slice(0, 80) || null,
         });
         await prisma.voiceCallSession.update({
           where: { callId },
-          data: { retranscriptionJson: JSON.stringify({ status: 'failed', model: CALL_RETRANSCRIPTION_MODEL }) },
+          data: { retranscriptionJson: JSON.stringify({ status: 'failed', model: CALL_RETRANSCRIPTION_MODEL,
+            errorType: error instanceof Error ? error.constructor.name : null,
+            errorCode: String((error as { cause?: { code?: unknown } })?.cause?.code ?? '').slice(0, 80) || null }) },
         }).catch(() => undefined);
       }
     }
@@ -801,6 +805,7 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload, options:
       earlyFail: false,
       behaviorSignals: [],
       scenarioContext: evaluationScenarioContext,
+      reviewUncertainAsr: !originalTranscriptForReview && !existingSession?.originalTranscriptJson,
       transcriptionAlternatives: originalAnalysisTranscript?.length === analysisTranscript.length
         ? analysisTranscript.flatMap((turn, index) => {
           const original = originalAnalysisTranscript?.[index];

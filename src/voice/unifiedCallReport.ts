@@ -8,12 +8,12 @@ import { reportGenerationIssues, requestReportJson } from './reportGeneration';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { isConnectionCheckTurn, isUnreliableManagerUtterance } from './transcriptReliability';
-import { groundReportTurnComment, hasGroundedProductAnswer } from './reportTurnGrounding';
+import { groundReportTurnComment, hasGroundedProductAnswer, managerReplyContext } from './reportTurnGrounding';
 import { createReportCompletion, mapReportBatches, withReportGenerationBudget, reportGenerationBudgetMs } from './reportExecution';
 import { isReportCheckpointError, rememberReportRejection, savedReportDraft, savedReportRejections, saveReportDraft, withReportCheckpoint } from './reportCheckpoint';
 import { buildEvaluationHighlights, normalizeManagerNarrationGender } from '../logic/evaluationHighlights';
 import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
-import { isUncertainFactClaim, type TranscriptionUncertainty } from '../logic/transcriptionUncertainty';
+import { isUncertainFactClaim, isWholeTurnUncertain, type TranscriptionUncertainty } from '../logic/transcriptionUncertainty';
 import { CHECKLIST_REPORT_PROBLEM, mergeReportWeaknessEntries, type ReportWeaknessEntry } from './reportIssueKeys';
 import { clarificationRequestIssues, preservedActionIssues, reportExampleHash, reviewReportExamples, type ReportExampleReview, type ReportExampleTask } from './reportExampleReview';
 import {
@@ -632,6 +632,7 @@ export function normalizeUnifiedCallReport(
       const quoteIndex = findTranscriptQuoteIndex(quote, fallback.transcript);
       if (fallback.transcript.length > 0
         && (quoteIndex < 0 || isUnreliableManagerUtterance(fallback.transcript[quoteIndex].text)
+          || isWholeTurnUncertain(fallback.transcript[quoteIndex].text, uncertainties)
           || isConnectionCheckTurn(fallback.transcript, quoteIndex))) return null;
       if (problem.code === 'WRONG_CLIENT_NAME' && !repeatedNameRequest(fallback.transcript, quoteIndex)) return null;
       if (problem.code === 'NO_DIRECT_ANSWER' && hasGroundedProductAnswer(quoteIndex, fallback.transcript)) {
@@ -708,7 +709,10 @@ export function normalizeUnifiedCallReport(
         comment: 'Менеджер проверяет слышимость. Эта реплика сама по себе не свидетельствует об ошибке в работе с клиентом.', betterExample: null };
     }
     if (role === 'manager' && isUnreliableManagerUtterance(turn.text)) {
-      return { role, text: turn.text, mark: null, comment: null, betterExample: null };
+      return { role, text: turn.text, mark: null, comment: 'Фрагмент распознан ненадёжно. Для оценки нужна проверка записи.', betterExample: null };
+    }
+    if (role === 'manager' && isWholeTurnUncertain(turn.text, uncertainties)) {
+      return { role, text: turn.text, mark: null, comment: 'Фрагмент распознан ненадёжно. Для оценки нужна проверка записи.', betterExample: null };
     }
     if (role === 'manager' && isClientNameRequest(turn.text) && !repeatedNameRequest(fallback.transcript, index)) {
       return {
@@ -841,6 +845,8 @@ export function normalizeUnifiedCallReport(
       if (indices.every(index => isClientNameRequest(fallback.transcript[index].text) && repeatedNameRequest(fallback.transcript, index))) return false;
       const criterion = reportCriterionCode(fallback.evaluation, String(item.code));
       const conflictCodes = [...(conflicts[criterion] ?? []), CHECKLIST_REPORT_PROBLEM[criterion]].filter(Boolean);
+      if (indices.length && indices.every(index => isUnreliableManagerUtterance(fallback.transcript[index].text)
+        || isWholeTurnUncertain(fallback.transcript[index].text, uncertainties))) return false;
       return !findings.some((finding) => conflictCodes.includes(problemByTitle(catalog, finding.problemTitle)?.code ?? '')
         && matchingManagerTurnIndexes(finding.quote, fallback.transcript).some((index) => indices.includes(index)));
     }),
@@ -925,6 +931,8 @@ export function normalizeStoredUnifiedCallReport(
     if (!original || review.exampleHash !== reportExampleHash(original) || report.dialog[review.turnIndex]?.role !== 'manager') continue;
     const oldText = source.dialog?.[review.turnIndex]?.text;
     if (typeof oldText === 'string' && oldText.trim() !== report.dialog[review.turnIndex].text.trim()) continue;
+    if (isUnreliableManagerUtterance(report.dialog[review.turnIndex].text)
+      || isWholeTurnUncertain(report.dialog[review.turnIndex].text, report.transcriptionUncertainties ?? [])) continue;
     const indices = reportFindingGroups(report, args[1].transcript).get(review.turnIndex) ?? [];
     const example = fullTurnExample(original, review.turnIndex, indices.map(index => report.keyFindings[index]),
       args[1].transcript, args[1].scenarioContext || original, report.transcriptionUncertainties);
@@ -935,6 +943,8 @@ export function normalizeStoredUnifiedCallReport(
   // A read must not refill a semantically rejected example with an unchecked template.
   const exampleReviews = source.exampleReviews.filter((item) => item && Number.isInteger(item.turnIndex)
     && report.dialog[item.turnIndex]?.role === 'manager' && ['pass', 'fail', 'review'].includes(item.status)
+    && !isUnreliableManagerUtterance(report.dialog[item.turnIndex].text)
+    && !isWholeTurnUncertain(report.dialog[item.turnIndex].text, report.transcriptionUncertainties ?? [])
     && typeof item.exampleHash === 'string' && Array.isArray(item.issues)).map((item): ReportExampleReview => {
     const example = report.dialog[item.turnIndex].betterExample ?? '';
     const changed = item.exampleHash !== reportExampleHash(example);
@@ -1082,7 +1092,7 @@ export async function ensureRecommendationFindingCoverage(
 /** Repair missing annotations only. Never infer a negative score from an API failure. */
 export async function ensureReportDialogCoverage(report: UnifiedCallReport, transcript: TranscriptTurn[], evaluation?: EvaluationInput | Record<string, unknown> | null): Promise<UnifiedCallReport> {
   const dialog = report.dialog.map((line) => ({ ...line }));
-  let missing = () => dialog.flatMap((line, index) => line.role === 'manager' && !isUnreliableManagerUtterance(line.text) && !isConnectionCheckTurn(transcript, index) && (!line.mark || !line.comment?.trim()) ? [{ index, text: line.text, mark: line.mark }] : []);
+  let missing = () => dialog.flatMap((line, index) => line.role === 'manager' && !isUnreliableManagerUtterance(line.text) && !isWholeTurnUncertain(line.text, report.transcriptionUncertainties ?? []) && !isConnectionCheckTurn(transcript, index) && (!line.mark || !line.comment?.trim()) ? [{ index, text: line.text, mark: line.mark }] : []);
   for (let attempt = 0; attempt < 2 && missing().length; attempt += 1) {
     try {
       const response = await createReportCompletion({ model: config.openaiChatModel, response_format: { type: 'json_object' },
@@ -1139,8 +1149,7 @@ export async function ensureFindingBetterExamples(
     problems: indices.length ? indices.map((index) => ({ problemTitle: report.keyFindings[index].problemTitle, comment: report.keyFindings[index].comment }))
       : [{ problemTitle: 'Замечание к реплике', comment: dialog[quoteIndex].comment }],
     quote: transcript[quoteIndex].text,
-    knownDialog: transcript
-      .slice(0, quoteIndex + 1)
+    knownDialog: managerReplyContext(transcript, quoteIndex)
       .map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`)
       .join('\n'),
     scenarioFacts: reportKnownScenarioFacts(scenarioContext).slice(0, 10000),
@@ -1262,7 +1271,7 @@ export async function ensureReportExampleQuality(
           ?? problemByTitle(DEFAULT_CALL_REPORT_PROBLEMS, candidate.keyFindings[index].problemTitle)?.code ?? '',
         title: candidate.keyFindings[index].problemTitle, comment: candidate.keyFindings[index].comment }))
           : [{ id: `dialog:${turnIndex}`, code: '', title: 'Замечание к реплике', comment: line.comment ?? '' }],
-        knownDialog: transcript.slice(0, turnIndex + 1).map(({ role, text }) => ({ role, text })), scenarioFacts: reportKnownScenarioFacts(scenarioContext).slice(0, 10000) }];
+        knownDialog: managerReplyContext(transcript, turnIndex).map(({ role, text }) => ({ role, text })), scenarioFacts: reportKnownScenarioFacts(scenarioContext).slice(0, 10000) }];
     });
     const unchanged = tasks.flatMap((task) => reviews.filter((review) => review.turnIndex === task.turnIndex && review.exampleHash === reportExampleHash(task.example)));
     reviews = [...unchanged, ...await reviewReportExamples(tasks.filter((task) => !unchanged.some((review) => review.turnIndex === task.turnIndex)))];

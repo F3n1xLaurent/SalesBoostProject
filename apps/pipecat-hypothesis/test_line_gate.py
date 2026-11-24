@@ -5,7 +5,17 @@ import unittest
 from unittest.mock import AsyncMock,Mock
 from conversation import ConversationMemory
 from policy import Evidence,Playback
-from line_gate import LineGate,local_type,offered_digits,explicit_hold
+from line_gate import LineGate,local_type,offered_digits,explicit_hold,name_question_only
+
+
+class NameQuestionTests(unittest.TestCase):
+    def test_only_an_explicit_name_question_can_skip_semantic_generation(self):
+        for text in ('Подскажите, пожалуйста, как я могу к вам обращаться?', 'Как вас зовут?',
+                     'Алло, вас не слышно. Как к вам обращаться?', 'У меня как я могу к вам обращаться?'):
+            self.assertTrue(name_question_only(text),text)
+        for text in ('Как к вам обращаться и какой автомобиль интересует?', 'Ранее с кем-то из менеджеров общались?',
+                     'Как я могу вам помочь?', 'Я соединю вас, как к вам обращаться?', 'Не говорите: как вас зовут?'):
+            self.assertFalse(name_question_only(text),text)
 from pipeline import VoxSerializer
 from pipecat.frames.frames import OutputAudioRawFrame
 

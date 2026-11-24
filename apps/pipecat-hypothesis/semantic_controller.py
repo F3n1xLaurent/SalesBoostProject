@@ -15,12 +15,12 @@ from controller_visit import VisitProposal,same_clock,affirmative,confirms_slot,
 from turn_meaning import interpret,review_acceptance,MODEL
 from speech_ledger import SpeechLedger,fingerprint
 from customer_legend import choose_name
-from line_gate import LineGate,greeting_only
+from line_gate import LineGate,greeting_only,announces_transfer,name_question_only
 from breath import BreathCue
 from policy import is_introductory_greeting
 from plan_context import plan_need,selected_subject,subject_scope,target_location,call_purpose
 
-SEMANTIC_VERSION='semantic-25'
+SEMANTIC_VERSION='semantic-26'
 
 
 class SemanticController(DialogueController):
@@ -460,6 +460,10 @@ class SemanticController(DialogueController):
         # Save an unambiguous reply to our exact proposal before another ASR
         # fragment cancels the pending interpretation task.
         accepted_directly=self.direct_slot_acceptance(text,turn)
+        if not resumed and not self.started and self.needs_opening() and name_question_only(text):
+            self.started=True;m.topics.name_requested=True
+            self.s.evidence.event('semantic_name_fast_path',source_turn=turn)
+            await self.prepared(['greeting','name']);return
         if not resumed and greeting_only(text) and self.needs_opening():
             self.started=True;self.current=self.opening_topic
             self.s.evidence.event('semantic_opening_fast_path',source_turn=turn)
@@ -474,6 +478,13 @@ class SemanticController(DialogueController):
             await self.failed_interpretation(exc,epoch);return
         if epoch!=self.epoch or self.unavailable():
             self.s.evidence.event('semantic_stale_discarded',source_turn=turn);return
+        if meaning.get('transfer_reply') and not announces_transfer(text):
+            meaning['transfer_reply']=False
+            self.s.evidence.event('semantic_transfer_reply_blocked',reason='no_transfer_announced',source_turn=turn)
+        if (meaning.get('confirmation_request') and re.search(r'\bдля\s+кого\b|\bв\s+какой\s+срок\b|\bкако(?:й|го)\s+(?:год|пробег)',text,re.I)
+                and not re.search(r'верно|правильно|не так ли',text,re.I)):
+            meaning['confirmation_request']=False;meaning['other_questions']=True
+            self.s.evidence.event('semantic_confirmation_request_blocked',reason='open_value_question',source_turn=turn)
         if meaning.get('transfer_reply'):
             # A transfer may depend on an answer other than the caller's name.
             # Resume output for that answer, then wait after telephone playback.
@@ -567,6 +578,8 @@ class SemanticController(DialogueController):
             ('identity:customer_name' in self.speech.queued or 'identity:customer_name' in self.speech.reserved))
         self.identity_confirmation_requested=meaning.get('name_confirmation',False)
         if meaning['subject'] and not meaning['next_question'] and 'subject' in self.texts and 'subject' not in self.pending_answer_keys:self.pending_answer_keys.append('subject')
+        if meaning['subject'] and re.search(r'год|пробег|двигател|мотор|комплектац|несколько',text,re.I):
+            meaning['other_questions']=True
         if meaning['subject'] and 'subject' not in self.texts:
             # A subject question is still a real question when the imported
             # row is empty. Answer it from the need before advancing the plan.
@@ -952,6 +965,9 @@ class SemanticController(DialogueController):
         self.native_question_policy='clarification' if clarify else 'answer_only'
         self.fallback_turn=self.s.evidence.turn;self.fallback_empty_recovered=False
         self.fallback_goal=('Цель из SCENARIO_SCOPE.purpose обязательна: при service речь об обслуживании уже имеющегося автомобиля. Не предлагай купить его и не превращай запись в осмотр перед покупкой. При other не добавляй покупку от себя. Правила о выборе нового автомобиля применяются только к purchase.\n'
+            '- Если у менеджера несколько похожих автомобилей и он просит уточнить, какой нужен, назови известный год выбранной машины и цвет, при необходимости кратко двигатель. Это уточнение конкретного автомобиля, а не чтение всей модификации.\n'
+            '- На прямой вопрос о годе, пробеге, двигателе или комплектации НУЖНО назвать запрошенное значение из selected_subject, даже если краткое вступление его опускает. Год не заменяй «из объявления». Если спрашивают про машину в trade-in, отвечай про неё из chosen_personal_statements/легенды, а не про приобретаемую. Не повторяй «из объявления», если это не помогает ответу. Говори «автомобиль» или «машина», избегай слова «авто».\n'
+            '- На открытый вопрос «для кого выбираете?» прямо ответь «Для себя»; на вопрос о сроке назови срок. Не начинай такие ответы с «Да, всё верно»: подтверждение подходит только к вопросу с проверяемым предположением. Не озвучивай управление диалогом: «ждём подтверждения», «время не зафиксировано», «контроллер» и подобные статусы.\n'
             '- SCENARIO_SCOPE.spoken_subject — разговорное название для речи. Используй его, склоняя по месту: «бэха-пятёрка» → «по поводу бэхи-пятёрки». Допускаются привычные однозначные разговорные названия по манере клиента; не выдумывай прозвища и не теряй модель или серию. Не переходи к чтению полного каталожного названия.\n'
             'Ответь от первого лица на ВСЕ дополнительные вопросы менеджера из manager_utterance и manager_questions. Не повторяй уже данный ответ вместо ответа на новый вопрос. Краткость не должна исключать часть вопроса.\n'
             '- На общее приглашение представиться или рассказать о цели звонка назови только предмет обращения одной короткой фразой. Не перечисляй весь контекст, цену и условия, если их не спрашивали.\n'
@@ -987,7 +1003,8 @@ class SemanticController(DialogueController):
                 'ответь на обращённые к тебе уточнения, включая проверку предыдущего контакта и предмета обращения. '
                 'Искажённое название сверяй с SCENARIO_SCOPE. Если смысл не удаётся восстановить, '
                 'коротко попроси повторить, не выдумывай ответ и не заменяй его простым «понял».')
-        self.pending_after_native=(after,text,epoch)
+        self.native_input_epoch=epoch
+        self.pending_after_native=(after,text,epoch,list(self.active_batch or []))
         self.s.evidence.event('semantic_native_requested',after_playback=after,requested_answers=list(self.requested_answers))
         self.s.evidence.mark('llm_requested');self.thinking.arm('native_reply')
         self.llm.request_reason='controller_fallback';self.llm.request_turns.append(self.s.evidence.turn)
@@ -1009,9 +1026,9 @@ class SemanticController(DialogueController):
             return
         pending=getattr(self,'pending_after_native',None);self.pending_after_native=None
         if not pending or not self.llm.spoken_text.get(response_id,'').strip():return
-        after,text,epoch=pending
+        after,text,epoch=pending[:3]
+        batch=pending[3] if len(pending)>3 else []
         self.pending_answer_keys=[];self.requested_answers={}
-        if not after:return
         async def continue_after_playback():
             try:
                 async with asyncio.timeout(30):
@@ -1019,6 +1036,9 @@ class SemanticController(DialogueController):
                         if epoch!=self.epoch or self.unavailable():return
                         if self.s.evidence.delivery.response(response_id).get('interrupted'):return
                         await asyncio.sleep(.02)
+                self.inputs.consume(batch)
+                if getattr(self,'native_input_epoch',None)==epoch:self.native_input_epoch=None
+                if not after:return
                 if epoch==self.epoch and not getattr(self.llm,'user_speaking',False) and self.monitor.segment_start is None:
                     self.native_resume_context={'response_id':response_id,'text':self.llm.spoken_text[response_id],'epoch':epoch}
                     self.s.evidence.event('semantic_continuation_ready',response_id=response_id,action=after)

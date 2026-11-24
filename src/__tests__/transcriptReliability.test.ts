@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { filterUnreliableManagerTurns, isConnectionCheckTurn, isUnreliableManagerUtterance } from '../voice/transcriptReliability';
 
 describe('analysis transcript reliability', () => {
+  it('quarantines foreign script and isolated foreign fragments without dropping model codes', () => {
+    for (const text of ['зовут أولى', 'Three.', 'But']) expect(isUnreliableManagerUtterance(text)).toBe(true);
+    for (const text of ['BMW', 'TANK 300', 'Mercedes', 'Toyota', 'Да, Toyota в наличии.']) expect(isUnreliableManagerUtterance(text)).toBe(false);
+  });
   it('1147: treats a known customer name after an audibility check as a connection check', () => {
     const transcript = [{ role: 'manager' as const, text: 'Дмитрий, давайте обсудим визит.' },
       { role: 'client' as const, text: 'Хорошо.' }, { role: 'manager' as const, text: 'Алло.' }, { role: 'manager' as const, text: 'Дмитрий.' }];

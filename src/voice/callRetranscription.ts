@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { APIConnectionError } from 'openai';
 import { openai } from '../lib/openaiClient';
 import { config } from '../config';
 import type { TranscriptTurn } from './callHistory';
@@ -77,14 +78,21 @@ export function mergeCallRetranscription(
   if (agent.client < 0.35 || agent.client - agent.manager < 0.08
     || agent.client - agent.manager - (other.client - other.manager) < 0.2) return null;
 
-  const diarizedRoles = turns.map((turn) => turn.speaker === agent.speaker ? 'client' : 'manager');
-  const originalRoles = original.map((turn) => turn.role);
-  if (diarizedRoles.length !== originalRoles.length
-    || diarizedRoles.some((role, index) => role !== originalRoles[index])) return null;
-
-  return original.map((turn, index) => turn.role === 'manager'
-    ? { role: 'manager', text: turns[index].text }
-    : { ...turn });
+  const blocks = <T extends { role: string; text: string }>(rows: readonly T[]) => rows.reduce<Array<{ role: string; text: string; originals: T[] }>>((result, row) => {
+    const last = result.at(-1);
+    if (last?.role === row.role) { last.text += ' ' + row.text; last.originals.push(row); }
+    else result.push({ role: row.role, text: row.text, originals: [row] });
+    return result;
+  }, []);
+  const reviewed = blocks(turns.map(turn => ({ role: turn.speaker === agent.speaker ? 'client' : 'manager', text: turn.text })));
+  const source = blocks(original);
+  if (reviewed.length !== source.length || reviewed.some((turn, index) => turn.role !== source[index].role)) return null;
+  // A matching role sequence alone is insufficient: do not map a later agent
+  // answer onto an omitted/reordered one. Keep generated client text exact.
+  if (reviewed.some((turn, index) => turn.role === 'client' && similarity(turn.text, source[index].text) < 0.35)) return null;
+  return source.flatMap((turn, index) => turn.role === 'manager'
+    ? [{ role: 'manager' as const, text: reviewed[index].text }]
+    : turn.originals.map(row => ({ ...row })));
 }
 
 export async function retranscribeCallRecording(
@@ -93,11 +101,23 @@ export async function retranscribeCallRecording(
 ): Promise<TranscriptTurn[] | null> {
   const stat = await fs.promises.stat(filepath);
   if (stat.size <= 0 || stat.size > MAX_TRANSCRIPTION_BYTES) return null;
-  const result = await openai.audio.transcriptions.create({
-    file: fs.createReadStream(filepath),
-    model: CALL_RETRANSCRIPTION_MODEL,
-    response_format: 'diarized_json',
-    chunking_strategy: 'auto',
-  } as any, { timeout: 90_000 }) as unknown as { segments?: DiarizedSegment[] };
-  return Array.isArray(result.segments) ? mergeCallRetranscription(original, result.segments) : null;
+  const deadline = Date.now() + 90_000;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Multipart upload bodies are streams. A network retry must reopen the
+    // file, rather than ask the SDK to reuse an already consumed body.
+    const file = fs.createReadStream(filepath);
+    try {
+      const result = await openai.audio.transcriptions.create({ file,
+        model: CALL_RETRANSCRIPTION_MODEL, response_format: 'diarized_json', chunking_strategy: 'auto',
+      } as any, { timeout: Math.max(1, deadline - Date.now()), maxRetries: 0 }) as unknown as { segments?: DiarizedSegment[] };
+      return Array.isArray(result.segments) ? mergeCallRetranscription(original, result.segments) : null;
+    } catch (error) {
+      const failure = error as { name?: string; status?: number };
+      const transient = error instanceof APIConnectionError
+        || [408, 429].includes(failure.status ?? 0) || (failure.status ?? 0) >= 500;
+      if (attempt || !transient || deadline - Date.now() < 2000) throw error;
+    } finally { file.destroy(); }
+    await new Promise(resolve => setTimeout(resolve, 750));
+  }
+  return null;
 }

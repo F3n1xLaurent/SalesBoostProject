@@ -134,11 +134,15 @@ class VisitProposal:
         spoken_interval=re.search(r'\bс(?:о)?\s+(?P<first>'+hour+r'|одного|двух|тр[её]х|четыр[её]х)\s+до\s+(?P<last>'+hour+r'|одного|двух|тр[её]х|четыр[её]х)(?![\w:])',text,re.I)
         interval=interval or spoken_interval
         if interval:
+            start=clock_minutes(interval['first']);end=clock_minutes(interval['last'])
+            # Russian opening hours «с восьми до восьми» mean 08:00–20:00,
+            # not an empty interval ending this morning.
+            if start is not None and end is not None and start<720 and end<=start:end+=720
             first=interval['first']
             if first.casefold() in _HOUR_VALUES and first.casefold().endswith(('и','ого','ух','ёх','ех')):
                 first=str(_HOUR_VALUES[first.casefold()])+':00'
             self.time={"value":"в "+first,"evidence":text,"turn":turn,"source":"client_choice_from_manager_interval",
-                       "interval_start":clock_minutes(interval['first']),"interval_end":clock_minutes(interval['last'])}
+                       "interval_start":start,"interval_end":end}
         elif clock:
             # Keep the adjacent AM/PM qualifier in the quoted slot. Dropping
             # "дня" turns an unchanged 15:00 confirmation into a false change.

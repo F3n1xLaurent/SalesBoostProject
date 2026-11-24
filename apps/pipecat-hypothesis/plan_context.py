@@ -59,9 +59,21 @@ def subject_scope(session):
 
 def spoken_subject(session):
     """The feed title stays intact for reasoning; speech uses a verified label."""
-    return getattr(session,'prepared_spoken_subject',None) or (
-        ('авто' if call_purpose(session)=='service' else 'авто из объявления')
-        if selected_subject(session).get('subjectTitle') or getattr(session,'prepared_subject',None) else '')
+    return getattr(session,'prepared_spoken_subject',None) or catalogue_subject_fallback(session) or (
+        'автомобиль' if selected_subject(session).get('subjectTitle') or getattr(session,'prepared_subject',None) else '')
+
+
+def catalogue_subject_fallback(session):
+    """Keep the literal model prefix when verified wording is unavailable.
+
+    Only trim an explicit technical suffix, never guess a model from N words.
+    A decimal displacement, restyling or standalone transmission code ends it.
+    """
+    title=selected_subject(session).get('subjectTitle') or getattr(session,'prepared_subject',None) or ''
+    suffix=re.search(r'\b(?:рестайлинг|поколени[ея]|\d+\s+Series\b|(?:19|20)\d{2}\s*(?:года?\b|г\.)|\d[.,]\d\b|AT\b|MT\b|CVT\b|DSG\b)',title,re.I)
+    if not suffix:return ''
+    prefix=title[:suffix.start()].strip(' ,;()—-')
+    return prefix if 2<=len(prefix.split())<=8 and 3<=len(prefix)<=80 else ''
 
 
 def shorten_subject_mentions(session,text):

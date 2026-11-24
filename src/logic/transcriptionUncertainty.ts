@@ -1,4 +1,7 @@
 export type TranscriptionUncertainty = { turnIndex: number; quote: string; token: string; reason: string };
+export function isWholeTurnUncertain(text: string, hints: readonly TranscriptionUncertainty[]): boolean {
+  return hints.some(hint => hint.token === hint.quote && hint.quote.trim() === text.trim());
+}
 type Turn = { role: string; content?: string; text?: string };
 
 /** A suspicious span is a review hint, not a corrected transcript or a proven lie. */

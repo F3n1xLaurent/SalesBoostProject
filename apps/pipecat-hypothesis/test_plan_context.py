@@ -1,9 +1,17 @@
 import unittest
 from types import SimpleNamespace
-from plan_context import plan_need,selected_subject,subject_scope,grounded_subject,target_location,subject_sources
+from plan_context import plan_need,selected_subject,subject_scope,grounded_subject,target_location,subject_sources,spoken_subject
 
 
 class PlanContextTests(unittest.TestCase):
+    def test_failed_short_name_validation_keeps_a_literal_model_before_technical_suffix(self):
+        s=SimpleNamespace(context={'subjectTitle':'Toyota Land Cruiser Prado 150 Series Рестайлинг 3 4.0 AT 4WD TXL'},prepared_spoken_subject=None)
+        self.assertEqual(spoken_subject(s),'Toyota Land Cruiser Prado')
+        self.assertEqual(s.context['subjectTitle'],'Toyota Land Cruiser Prado 150 Series Рестайлинг 3 4.0 AT 4WD TXL')
+        s.context={'subjectTitle':'BMW 5-series 2.0 AT Luxury'}
+        self.assertEqual(spoken_subject(s),'BMW 5-series')
+        s.context={'subjectTitle':'Неопределённое название'}
+        self.assertEqual(spoken_subject(s),'автомобиль')
     def test_script_title_reaches_subject_sources_without_overwriting_the_need(self):
         s=SimpleNamespace(context={},prompt='Название скрипта (справочный источник): "Skoda Octavia — наличные"\n'
             'Потребность клиента: Пробег 29 650 км.\n\nОснова разговора: потребность клиента.',

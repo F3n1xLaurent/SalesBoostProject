@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openai } from '../lib/openaiClient';
+import { reportExampleHash } from '../voice/reportExampleReview';
 import {
   ensureFindingBetterExamples,
   ensureRecommendationFindingCoverage,
@@ -12,6 +13,36 @@ afterEach(() => {
 });
 
 describe('unified call report normalization', () => {
+  it('removes a stored positive mark and approved coaching example from corrupt ASR on read', () => {
+    const quote = 'зовут أولى';
+    const example = 'Меня зовут [имя], компания «Тест».';
+    const stored = { totalScore: 83, summary: 'Сохранённый отчёт.',
+      dialog: [{ role: 'manager', text: quote, mark: 'positive', comment: 'Менеджер представился по имени.', betterExample: example }],
+      exampleReviews: [{ turnIndex: 0, status: 'pass', exampleHash: reportExampleHash(example), issues: [] }],
+    };
+    const before = JSON.stringify(stored);
+    const create = vi.spyOn(openai.chat.completions, 'create').mockRejectedValue(new Error('Read must not invoke AI'));
+    const report = normalizeStoredUnifiedCallReport(stored, { totalScore: 83, transcript: [{ role: 'manager', text: quote }] });
+    expect(report?.dialog[0]).toMatchObject({ text: quote, mark: null, betterExample: null });
+    expect(report?.dialog[0].comment).toContain('распознан ненадёжно');
+    expect(report?.exampleReviews).toEqual([]);
+    expect(report?.totalScore).toBe(83);
+    expect(JSON.stringify(stored)).toBe(before);
+    expect(create).not.toHaveBeenCalled();
+  });
+  it('does not coach or grade a semantically unreliable ASR fragment', () => {
+    const quote = 'Отличные тумбы.';
+    const report = normalizeUnifiedCallReport({ totalScore: 70,
+      keyFindings: [{ problemTitle: 'Ушёл от вопроса клиента / не дал прямого ответа', importance: 'Важно', category: 'Продукт', quote,
+        comment: 'Менеджер ответил неуместным комплиментом.', betterExample: 'Понял вас.' }],
+      dialog: [{ role: 'manager', text: quote, mark: 'negative', comment: 'Неуместный комплимент.' }],
+    }, { totalScore: 70, transcript: [{ role: 'manager', text: quote }], evaluation: {
+      transcription_uncertainties: [{ turnIndex: 0, quote, token: quote, reason: 'Контекстное распознавание сомнительно.' }],
+    } });
+    expect(report?.keyFindings).toEqual([]);
+    expect(report?.dialog[0]).toMatchObject({ mark: null, betterExample: null });
+    expect(report?.dialog[0].comment).toContain('распознан ненадёжно');
+  });
   it.each([
     { source: 'call' as const, score: 0 },
     { source: 'call' as const, score: 2 },
@@ -495,7 +526,8 @@ describe('unified call report normalization', () => {
     }, { totalScore: 70, transcript: [{ role: 'manager', text: quote }] });
 
     expect(report?.keyFindings).toEqual([]);
-    expect(report?.dialog[0]).toMatchObject({ mark: null, comment: null, betterExample: null });
+    expect(report?.dialog[0]).toMatchObject({ mark: null, betterExample: null });
+    expect(report?.dialog[0].comment).toContain('распознан ненадёжно');
   });
 
   it('does not mark every repeated identical manager phrase as a negative finding', () => {

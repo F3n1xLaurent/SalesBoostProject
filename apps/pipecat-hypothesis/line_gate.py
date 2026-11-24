@@ -25,6 +25,12 @@ def greeting_only(text):
     return bool(re.fullmatch(r'(?:алло|здравствуйте|добрый день|доброе утро|добрый вечер|слушаю|да слушаю|hello|hi|good morning|good afternoon|good evening)',value))
 
 
+def name_question_only(text):
+    value=re.sub(r'[^а-яё\s]',' ',normalized(text));value=' '.join(value.split())
+    prefix=r'(?:(?:алло|здравствуйте|добрый день|добрый вечер|вас не слышно|подскажите|пожалуйста|у меня)\s+)*'
+    return bool(re.fullmatch(prefix+r'(?:как (?:я )?(?:могу )?к вам (?:по имени )?обращаться|как вас зовут|назовите (?:пожалуйста )?ваше имя)',value))
+
+
 def local_type(text):
     value=normalized(text)
     if not value:return 'uncertain'
@@ -35,7 +41,7 @@ def local_type(text):
     if NOISE.search(value):return 'noise'
     if re.search(r'вы позвонили|вас приветствует|добро пожаловать|ваш звонок',value):return 'recording'
     if re.search(r'ассистент|помощник',value):return None
-    if LIVE.search(value) or greeting_only(value):return 'human'
+    if LIVE.search(value) or greeting_only(value) or name_question_only(value):return 'human'
     return None
 
 
@@ -46,6 +52,14 @@ def explicit_hold(text):
         # Keep the reported/conditional check on the whole sentence first.
         for part in re.split(r'[,;]\s*',clause):
             if re.match(r'\s*(?:(?:да|хорошо|пожалуйста)\s+)*(?:подождите|ожидайте|дождитесь|оставайтесь|(?:я\s+)?(?:сейчас\s+)?(?:соединю|соединяю|соединяем|соединим|переведу|перевожу))\b',part,re.I):return True
+    return False
+
+
+def announces_transfer(text):
+    """A prerequisite answer may mute output only with an actual transfer cue."""
+    for clause in re.split(r'(?<=[.!?])\s+',text):
+        if re.search(r'\b(?:если|сказал\w*|цитир\w*)\b|не\s+(?:буду\s+)?(?:соедин|перев|переключ)',clause,re.I):continue
+        if re.search(r'\b(?:соединю|соединяю|соединим|соединяем|переведу|переведём|переведем|перевожу|переключу|переключаю)\b',clause,re.I):return True
     return False
 
 

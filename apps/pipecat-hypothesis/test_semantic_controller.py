@@ -24,6 +24,97 @@ def meaning(**kwargs):
 
 
 class SemanticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_vehicle_year_and_tradein_mileage_use_separate_known_sources(self):
+        self.c.started=True
+        self.s.context={'subjectTitle':'Toyota Land Cruiser Prado', 'subjectDescription':'Год выпуска: 2022. Пробег: 60005 км.',
+            'customerNeed':'Могу сдать Весту 2018 года с пробегом 130000 км.'}
+        await self.run_turn('Какой год автомобиля? У нас их несколько.',subject=True)
+        self.assertTrue(self.c.last_meaning['other_questions'])
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertIn('2022',state['buyer_information']['selected_subject']['subjectDescription'])
+        self.assertIn('130000',state['buyer_information']['provided_need'])
+        self.c.player.queue_frame.assert_not_awaited()
+        await self.run_turn('А какой пробег у вашей машины в trade-in?',other_questions=True)
+        self.assertIn('trade-in',self.c.latest_input)
+        self.assertIn('про неё',self.c.fallback_goal)
+
+    async def test_day_choice_inside_opening_hours_is_answered_with_a_proposal_not_a_counterquestion(self):
+        self.c.started=True
+        class Afternoon(datetime):
+            @classmethod
+            def now(cls,tz=None):return cls(2026,11,24,14,30,tzinfo=tz)
+        with patch('semantic_controller.datetime',Afternoon),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Мы работаем с восьми до восьми. Вы подъедете сегодня или завтра?',
+                visit='offer',visit_request='details',transfer_reply=True)
+        self.assertFalse(self.c.last_meaning['transfer_reply'])
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Могу подъехать сегодня, в 15:00. Подойдёт?')
+        self.assertFalse(self.c.visit_confirmed)
+
+    async def test_open_beneficiary_question_is_not_a_yes_no_confirmation(self):
+        self.c.started=True
+        await self.run_turn('Алло, для кого выбираете автомобиль?',confirmation_request=True)
+        self.assertFalse(self.c.last_meaning['confirmation_request'])
+        self.assertTrue(self.c.last_meaning['other_questions'])
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertFalse(state['confirmation_requested'])
+    async def test_initial_name_question_uses_prepared_voice_without_two_model_roundtrips(self):
+        self.c.opening_sent=False;self.c.started=False
+        with patch('semantic_controller.interpret',new=AsyncMock()) as interpret_name:
+            await self.c.handle('Алло, вас не слышно. Подскажите, пожалуйста, как я могу к вам обращаться?',1,self.c.epoch)
+        interpret_name.assert_not_awaited()
+        self.assertIn('Меня зовут Андрей',self.c.player.queue_frame.call_args.args[0].text)
+        self.assertFalse(self.c.opening_sent)
+        self.assertNotIn('интересует',self.c.player.queue_frame.call_args.args[0].text)
+    async def test_false_transfer_cannot_mute_ordinary_status_payment_or_visit_questions(self):
+        self.c.started=True
+        for text in ('Как физическое лицо или от организации?', 'Покупку планируете в кредит или за наличные?'):
+            await self.run_turn(text,transfer_reply=True,other_questions=True)
+            self.assertFalse(self.c.last_meaning['transfer_reply'])
+            self.assertNotEqual(self.c.pending_after_native[0],'wait_transfer')
+            self.assertTrue(self.c.line.can_speak)
+
+    async def test_confirmed_visit_with_payment_question_does_not_reenter_transfer_or_booking(self):
+        self.c.answers={key:{} for key in self.keys};await self.offer()
+        await self.run_turn('Ждём вас завтра в три часа дня. Покупку планируете в кредит или за наличные?',
+            visit='accept',acceptance_scope='explicit_visit',other_questions=True,transfer_reply=True)
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertFalse(self.c.last_meaning['transfer_reply'])
+        self.assertNotEqual(self.c.pending_after_native[0],'wait_transfer')
+        self.c.llm.spoken_text['payment']='Планирую покупку в кредит.'
+        ledger=self.s.evidence.delivery
+        ledger.response('payment').update(generated_done=True,tts_done=True)
+        ledger.segment('payment-tag','payment');ledger.ack('payment-tag')
+        await self.c.fallback_done('payment');await asyncio.sleep(.05)
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertTrue(all('Могу подъехать' not in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+
+    async def test_native_question_remains_buffered_until_answer_is_phone_confirmed(self):
+        self.c.started=True
+        self.c.inputs.add('В какой срок планируете покупку?',1)
+        batch=self.c.inputs.snapshot()
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(other_questions=True))):
+            self.c.receive_batch(batch)
+            await self.c.task
+        self.assertEqual(self.c.inputs.snapshot(),batch)
+        self.c.llm.spoken_text['native']='Планирую в течение недели.'
+        ledger=self.s.evidence.delivery
+        ledger.response('native').update(generated_done=True,tts_done=True)
+        ledger.segment('native-tag','native')
+        await self.c.fallback_done('native');await asyncio.sleep(.03)
+        self.assertEqual(self.c.inputs.snapshot(),batch)
+        ledger.ack('native-tag');await asyncio.sleep(.05)
+        self.assertEqual(self.c.inputs.snapshot(),[])
+
+    async def test_afternoon_opening_hours_allow_a_future_visit_instead_of_past_clock_error(self):
+        self.c.started=True;self.c.visit.update('Сегодня.',1)
+        self.c.visit=self.c.candidate('Как вам удобно, мы работаем с восьми до восьми.',2)
+        class Afternoon(datetime):
+            @classmethod
+            def now(cls,tz=None):return cls(2026,11,24,14,30,tzinfo=tz)
+        with patch('semantic_controller.datetime',Afternoon):
+            self.assertTrue(self.c.future_visit())
+        self.assertEqual(self.c.visit.time['value'],'в 15:00')
+
     async def asyncSetUp(self):
         name=patch('semantic_controller.choose_name',return_value='Андрей');name.start();self.addCleanup(name.stop)
         self.s=SimpleNamespace(prompt=PROMPT,context={'subjectTitle':'Тестовый объект'},backchannel=True,
@@ -247,7 +338,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.c.native_resume_context={'response_id':identifier,'text':answer,'epoch':self.c.epoch}
         await self.c.perform('open','',self.c.epoch)
         frame=self.c.player.queue_frame.call_args.args[0]
-        self.assertIn('авто из объявления',frame.text)
+        self.assertIn('автомобиль',frame.text)
         self.assertNotIn('Здравствуйте',frame.text)
         self.assertEqual(self.c.last_question['topic'],'availability')
 

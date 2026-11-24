@@ -21,6 +21,7 @@ import type { BehaviorSignal } from '../logic/behaviorClassifier';
 import type { EvaluationChecklistItemDefinition } from '../checklists/checklistManagement';
 import { findManagerClientNameRequest, isClientNameCriterion } from '../logic/conversationFacts';
 import { collectTranscriptionUncertainties, isUncertainFactClaim } from '../logic/transcriptionUncertainty';
+import { reviewTranscriptReliability } from '../voice/reviewTranscriptReliability';
 import { clientAction, confirmedTimeInDialog, criterionAllowsNa, reportCriterionCode, REPORT_MARK_RUBRIC } from '../voice/reportAssessment';
 import { creditConsultationRequested, isCreditExplanationCriterion } from '../logic/creditApplicability';
 import { REPORT_EVIDENCE_RULES } from '../voice/reportQualityRules';
@@ -36,6 +37,7 @@ export interface EvaluatorInput {
   behaviorSignals?: BehaviorSignal[];
   scenarioContext?: string;
   transcriptionAlternatives?: Array<{ turnIndex: number; original: string; reviewed: string }>;
+  reviewUncertainAsr?: boolean;
   evaluationChecklist?: {
     id: string;
     name: string;
@@ -301,6 +303,7 @@ export function productPresentationContradiction(input: EvaluatorInput, classifi
 export async function evaluateSessionV2(input: EvaluatorInput): Promise<EvaluatorOutput> {
   updateAuditAnalyticsStage('evaluation');
   const transcriptionUncertainties = collectTranscriptionUncertainties(input.dialogHistory, input.car.year, input.transcriptionAlternatives);
+  if (input.reviewUncertainAsr) transcriptionUncertainties.push(...await reviewTranscriptReliability(input.dialogHistory));
   const customChecklist = input.evaluationChecklist?.items?.length ? input.evaluationChecklist : null;
   const expectedCodes = customChecklist ? customChecklist.items.map((item) => item.id) : CHECKLIST_CODE;
   const historyStr = input.dialogHistory
@@ -408,6 +411,11 @@ ${REPORT_EVIDENCE_RULES}
       partial = null;
       if (parsed.checklist.some((item) => isUncertainFactClaim(String(item.comment ?? ''), transcriptionUncertainties))) {
         throw new Error('Uncertain ASR was classified as a confirmed manager error');
+      }
+      if (parsed.checklist.some(item => ['YES', 'PARTIAL'].includes(item.status)
+        && item.evidence?.length && item.evidence.every(quote => transcriptionUncertainties.some(hint =>
+          hint.token === input.dialogHistory[hint.turnIndex]?.content && hint.quote.includes(quote.replace(/^Менеджер:\s*/iu, '').trim()))))) {
+        throw new Error('Uncertain ASR cannot be the only evidence of a completed manager action');
       }
       if (parsed.extra_signals?.misinformation && !input.state.fact_context?.misinformation_detected
         && !(parsed.extra_signals.misinformation_evidence ?? []).some((quote) => typeof quote === 'string' && quote.trim().length >= 8

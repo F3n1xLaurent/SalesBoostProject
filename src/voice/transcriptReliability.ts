@@ -32,6 +32,10 @@ export function isConnectionCheckTurn(transcript: readonly TranscriptTurn[], ind
 export function isUnreliableManagerUtterance(text: string): boolean {
   const normalized = text.trim();
   if (!normalized) return true;
+  if (/[\p{Script=Arabic}\p{Script=Han}\p{Script=Devanagari}]/u.test(normalized)) return true;
+  // Isolated foreign STT fragments in a Russian call aren't reliable coaching
+  // evidence. Keep acronyms/model codes such as BMW or TANK 300 intact.
+  if (/^(?:one|two|three|four|five|six|seven|eight|nine|ten|but|and|the)[.!?…]*$/iu.test(normalized)) return true;
   if (/[¿�]|[а-яёa-z][-–—]{2,}|[-–—]{2,}[а-яёa-z]/iu.test(normalized)) return true;
   // A short phrase ending in an unfinished adjective is not reliable evidence
   // that the manager avoided a question or used a poor tone.

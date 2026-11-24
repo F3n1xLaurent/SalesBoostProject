@@ -1,5 +1,15 @@
 import type { TranscriptTurn } from './callHistory';
 
+/** Streaming ASR may split one manager reply into several adjacent turns.
+ * Include that entire reply, stopping before any later customer disclosure. */
+export function managerReplyContext(transcript: readonly TranscriptTurn[], index: number): TranscriptTurn[] {
+  if (transcript[index]?.role !== 'manager') return transcript.slice(0, index + 1);
+  let first = index, last = index;
+  while (first > 0 && transcript[first - 1].role === 'manager') first--;
+  while (last + 1 < transcript.length && transcript[last + 1].role === 'manager') last++;
+  return [...transcript.slice(0, first), { role: 'manager', text: transcript.slice(first, last + 1).map(turn => turn.text).join(' ') }];
+}
+
 const TOPICS = [
   /тест[ -]?драйв/iu,
   /пробег|километр/iu,
@@ -29,6 +39,12 @@ export function hasGroundedProductAnswer(index: number, transcript: readonly Tra
  * employee discussed a topic which only appears in a later employee reply.
  * Absence-based criticism and interpretation of a short «да» stay intact. */
 export function groundReportTurnComment(value: string, index: number, transcript: readonly TranscriptTurn[]): string {
+  if (/(?:выяснил|установил|определил)\s+срок/iu.test(value)) {
+    const reply = transcript.slice(index + 1).find(turn => turn.role === 'client')?.text ?? '';
+    if (!/сегодня|завтра|послезавтра|недел|месяц|в\s+течени|через\s+\d|ближайш.{0,15}дн|пока\s+не\s+(?:решил|определил)/iu.test(reply)) {
+      value = value.replace(/(?:выяснил|установил|определил)\s+срок(?:и)?(?:\s+покупки)?/giu, 'спросил о сроке покупки (ответ клиента о сроке не зафиксирован)');
+    }
+  }
   if (index < 0 || !value) return value;
   const own = transcript[index]?.text ?? '';
   const affirmative = /^(?:да|нет|конечно|верно|хорошо|договорились|жд[её]м)[,.!\s]*$/iu.test(own.trim());

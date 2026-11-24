@@ -1370,6 +1370,12 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AudioTests(unittest.TestCase):
+    def test_business_hours_without_ampm_end_in_the_evening(self):
+        for text,end in [('Мы работаем с восьми до восьми.',1200),('С девяти до девяти.',1260),('С 10 до 8.',1200)]:
+            with self.subTest(text=text):
+                v=VisitProposal();v.update(text,1)
+                self.assertEqual(v.time['interval_end'],end)
+                self.assertEqual(v.time['source'],'client_choice_from_manager_interval')
     def test_custom_question_preserves_conditions_and_numbers(self):
         question='Будет ли скидка 7 процентов при оплате наличными?'
         self.assertIn(question.casefold(),spoken_question(question).casefold())

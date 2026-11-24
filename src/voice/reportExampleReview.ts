@@ -56,7 +56,7 @@ export function localExampleIssues(task: ReportExampleTask): string[] {
       return compact(name).length >= 3 ? [compact(name)] : [];
     });
     const hasKnownCompany = introducedCompanies.some(name => compact(task.example).includes(name));
-    if (!hasKnownCompany && !/(?:компани[яию]|автоцентр|автосалон|центр[а-яё]*\s+[«"]|(?:ООО|АО|ПАО|ИП)\s*[«"][^»"\n]{2,}[»"]|(?:в|из)\s+[«"„“][^»"“”\n]{2,}[»"“”])/iu.test(task.example)) issues.push('В примере не названа компания.');
+    if (!hasKnownCompany && !/(?:компани[яию]|автоцентр|автосалон|(?:салон|центр)[а-яё]*\s+[«"]|(?:ООО|АО|ПАО|ИП)\s*[«"][^»"\n]{2,}[»"]|(?:в|из)\s+[«"„“][^»"“”\n]{2,}[»"“”])/iu.test(task.example)) issues.push('В примере не названа компания.');
   }
   const clientRequest = [...task.knownDialog.slice(0, -1)].reverse().find((turn) => turn.role === 'client')?.text ?? '';
   const conditions = [

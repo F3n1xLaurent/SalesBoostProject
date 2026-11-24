@@ -395,7 +395,7 @@ class DialogueController:
             try:
                 self.input_reference=reference
                 await self.handle(text,turn,epoch)
-                if batch and epoch==self.epoch:self.inputs.consume(batch)
+                if batch and epoch==self.epoch and getattr(self,'native_input_epoch',None)!=epoch:self.inputs.consume(batch)
             except asyncio.CancelledError:pass
             except Exception as exc:
                 self.s.evidence.event("controller_error",error_type=type(exc).__name__)
