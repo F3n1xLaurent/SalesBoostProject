@@ -19,7 +19,7 @@ from controller_preparation import prepare_questions,derive_scenario_topics
 from controller_input import ControllerInput
 from native_questions import NativeQuestionGate
 from thinking_pause import ThinkingPause
-from plan_context import plan_need,subject_scope,call_purpose
+from plan_context import plan_need,subject_scope,call_purpose,spoken_subject,shorten_subject_mentions
 
 
 def normalized(text):
@@ -91,7 +91,7 @@ class DialogueController:
         questions=memory.topics.required
         derived=False
         if not questions and getattr(self.s,'dialogue_mode',None)=='semantic':
-            questions=await derive_scenario_topics(self.s)
+            questions=await derive_scenario_topics(self.s,self.http)
             memory.topics.required=questions;derived=True
         if not 1<=len(questions)<=12:raise ValueError("Controller requires 1–12 marked mandatory questions")
         self.opening_topic='availability'
@@ -110,10 +110,10 @@ class DialogueController:
             "bc_listen":"Мгм.","think_reply_0":"Хм…","think_reply_1":"Секунду…",
             "think_visit_0":"Дайте подумать…","think_visit_1":"Сейчас прикину…"}
         self.texts.update({r['key']:r['question'] for r in questions} if derived else await prepare_questions(self.s,questions,self.http))
-        subject=re.sub(r'\([^)]*\)|\b[IVX]+\b','',context_string(self.s,'subjectTitle') or getattr(self.s,'prepared_subject',None) or '').strip(' ,')
-        subject=' '.join(subject.replace(',',' ').split())
+        self.texts={key:shorten_subject_mentions(self.s,text) for key,text in self.texts.items()}
+        subject=spoken_subject(self.s)
         if subject:
-            self.texts['subject']='По '+subject+' из объявления.'
+            self.texts['subject']='Меня интересует '+subject+' из объявления.'
             self.texts['opening']='Здравствуйте! Меня интересует '+subject+'. Машина ещё продаётся?'
         elif plan_need(self.s):
             # Reuse the already prepared availability question, including its
@@ -130,7 +130,7 @@ class DialogueController:
             first=re.sub(r'^(?:здравствуйте|добрый (?:день|вечер)|привет)[!.,\s]*','',first,flags=re.I)
             self.texts['opening']='Здравствуйте! '+first
             self.texts['visit']='Когда можно записаться на обслуживание?' if call_purpose(self.s)=='service' else 'Когда можно подъехать по моему вопросу?'
-            if subject:self.texts['subject']=('Звоню по обслуживанию '+subject+'.') if call_purpose(self.s)=='service' else 'Звоню по вопросу '+subject+'.'
+            if subject:self.texts['subject']=('Звоню по обслуживанию. Автомобиль — '+subject+'.') if call_purpose(self.s)=='service' else 'Автомобиль — '+subject+'.'
         # A mandatory topic may be an affirmative request, not a punctuated
         # question. Keep its service/other purpose and ask a neutral clarification.
         if not re.findall(r'[^.!?]*\?',self.texts['opening']):

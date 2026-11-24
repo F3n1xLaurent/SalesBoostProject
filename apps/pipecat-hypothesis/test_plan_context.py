@@ -69,6 +69,16 @@ class PlanContextTests(unittest.TestCase):
         s.context['subjectTitle']='Другая явно выбранная модель'
         self.assertEqual(subject_scope(s)['subject'],'Другая явно выбранная модель')
 
+    def test_speech_label_does_not_remove_internal_modification(self):
+        full='BMW 5-series 520i 2.0 AT Luxury'
+        s=SimpleNamespace(context={'subjectTitle':full,'subjectDescription':'Бензин, автомат'},prompt='',
+            prepared_subject=full,prepared_spoken_subject='BMW 5-series',
+            evidence=SimpleNamespace(memory=SimpleNamespace(topics=SimpleNamespace(required=[]))))
+        scope=subject_scope(s)
+        self.assertEqual(scope['subject'],full)
+        self.assertEqual(scope['selection']['subjectDescription'],'Бензин, автомат')
+        self.assertEqual(scope['spoken_subject'],'BMW 5-series')
+
     def test_a_subject_must_be_a_literal_source_quote_not_a_new_preference(self):
         sources={'selection':{},'need':'Цвет чёрный, покупка в кредит.',
             'script_references':['Toyota RAV4 2018года ещё в продаже?']}

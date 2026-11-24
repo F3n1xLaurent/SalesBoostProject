@@ -33,7 +33,7 @@ def plan_need(session):
 
 def selected_subject(session):
     return {key:value.strip() for key in ('subjectTitle','subjectDescription')
-            if isinstance(value:=session.context.get(key),str) and value.strip()}
+            if isinstance(value:=getattr(session,'context',{}).get(key),str) and value.strip()}
 
 
 def subject_sources(session,questions=None):
@@ -51,10 +51,28 @@ def subject_sources(session,questions=None):
 def subject_scope(session):
     sources=subject_sources(session)
     title=sources['selection'].get('subjectTitle') or getattr(session,'prepared_subject',None)
-    return {**sources,'subject':title,'purpose':call_purpose(session),
+    return {**sources,'subject':title,'spoken_subject':spoken_subject(session),'purpose':call_purpose(session),
             # A verified short subject replaces the question list. On wording
             # failure keep the quoted references as a factual fallback only.
             'script_references':[] if title else sources['script_references'][:1]}
+
+
+def spoken_subject(session):
+    """The feed title stays intact for reasoning; speech uses a verified label."""
+    return getattr(session,'prepared_spoken_subject',None) or (
+        ('авто' if call_purpose(session)=='service' else 'авто из объявления')
+        if selected_subject(session).get('subjectTitle') or getattr(session,'prepared_subject',None) else '')
+
+
+def shorten_subject_mentions(session,text):
+    # Embedded questions may require a different grammatical case. Keep their
+    # invariant catalogue model; the opening and native replies use spoken_name.
+    short=getattr(session,'prepared_subject_model',None) or spoken_subject(session)
+    if not short:return text
+    titles={selected_subject(session).get('subjectTitle'),getattr(session,'prepared_subject',None)}-{None,''}
+    for title in sorted(titles,key=len,reverse=True):
+        text=re.sub(r'(?<!\w)'+re.escape(title)+r'(?!\w)',lambda _:short,text,flags=re.I)
+    return text
 
 
 def grounded_subject(value,sources):

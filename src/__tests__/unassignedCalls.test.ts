@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PrismaClient } from '@prisma/client';
 import type { Request, Response } from 'express';
 import { prisma } from '../db';
 import { attributeCallToIntroducedManager } from '../voice/callManagerAttribution';
@@ -41,6 +45,42 @@ describe('unassigned calls RBAC and attribution', () => {
     const ownCalls = { manager: { accountId: 'actor' } };
     expect(withUnassignedCallsReadScope(account('manager'), ownCalls)).toEqual(ownCalls);
     expect(withUnassignedCallsReadScope(account('manager', ['unassigned_calls.assign']), ownCalls)).toEqual(ownCalls);
+  });
+  it('preserves unrestricted superadmin report and playback access for assigned calls', () => {
+    const unrestricted = {};
+    const superadmin = account('platform_superadmin');
+    expect(unassignedCallsAccess(superadmin).view).toBe(true);
+    expect(withUnassignedCallsReadScope(superadmin, unrestricted)).toBe(unrestricted);
+  });
+  it('loads assigned and unassigned call records with the real Prisma superadmin scope', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'audit-report-scope-'));
+    const db = new PrismaClient({ datasources: { db: { url: `file:${join(directory, 'test.db')}` } } });
+    try {
+      await db.$executeRawUnsafe('CREATE TABLE dealerships (id TEXT PRIMARY KEY)');
+      await db.$executeRawUnsafe(`CREATE TABLE voice_call_sessions (
+        id INTEGER PRIMARY KEY, managerId TEXT, dealershipId TEXT, endedAt INTEGER,
+        source TEXT, attributionType TEXT, phoneNumberOwnership TEXT
+      )`);
+      await db.$executeRawUnsafe("INSERT INTO dealerships (id) VALUES ('branch')");
+      await db.$executeRawUnsafe(`INSERT INTO voice_call_sessions VALUES
+        (1468, 'manager', 'branch', 1, 'scheduled', 'manager', 'user'),
+        (1471, 'manager', 'branch', 1, 'scheduled', 'manager', 'user'),
+        (1472, NULL, 'branch', 1, 'scheduled', 'dealership', 'dealership')`);
+      const actor = account('platform_superadmin');
+      const where = withUnassignedCallsReadScope(actor, {});
+      for (const id of [1468, 1471, 1472]) {
+        expect(await db.voiceCallSession.findFirst({ where: { AND: [{ id }, where] }, select: { id: true } })).toEqual({ id });
+      }
+    } finally {
+      await db.$disconnect();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it('does not turn a restricted active role into unrestricted access for a superadmin', () => {
+    const restricted = { manager: { accountId: 'actor' } };
+    const scope = withUnassignedCallsReadScope(account('platform_superadmin'), restricted);
+    expect(scope).toEqual({ OR: [restricted, expect.objectContaining({ AND: expect.any(Array) })] });
+    expect(scope).not.toEqual({});
   });
   it('denies both listing and assignment without access', async () => {
     const req = request(account('manager')), res = response();

@@ -108,11 +108,52 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_supplied_subject_is_preserved_in_prepared_opening(self):
         self.s.context={'subjectTitle':'  Toyota Camry (седан) VII  ','subjectDescription':'Описание'}
+        self.s.prepared_spoken_subject='Toyota Camry'
         wording={r['key']:spoken_question(r['question']) for r in self.s.evidence.memory.topics.required}
         with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
             await self.c.prepare()
         self.assertEqual(self.c.texts['opening'],'Здравствуйте! Меня интересует Toyota Camry. Машина ещё продаётся?')
         self.assertIn('Описание: Описание',controller_prompt(self.s))
+
+    async def test_feed_modification_stays_out_of_all_cached_subject_clips(self):
+        full='BMW 5-series 520i 2.0 AT Luxury 2024'
+        self.s.context={'subjectTitle':full,'subjectDescription':'Бензин, автомат'}
+        self.s.prepared_subject=full;self.s.prepared_spoken_subject='BMW 5-series'
+        wording={r['key']:spoken_question(r['question']) for r in self.s.evidence.memory.topics.required}
+        wording['availability']=full+' ещё в продаже?'
+        wording[self.s.evidence.memory.topics.required[0]['key']]=full+' ещё в продаже?'
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+            await self.c.prepare()
+        for key in ('opening','subject','availability','named_opening','name_then_first'):
+            with self.subTest(key=key):
+                self.assertIn('BMW 5-series',self.c.texts[key])
+                for detail in ('520i','2.0','AT','Luxury','2024'):
+                    self.assertNotIn(detail,self.c.texts[key])
+        self.assertIn(full,controller_prompt(self.s))
+        self.assertEqual(self.s.context['subjectTitle'],full)
+
+    async def test_colloquial_opening_uses_nominative_without_wrong_case_after_po(self):
+        self.s.context={'subjectTitle':'BMW 5-series 520i'}
+        self.s.prepared_subject='BMW 5-series 520i'
+        self.s.prepared_subject_model='BMW 5-series';self.s.prepared_spoken_subject='бэха-пятёрка'
+        wording={r['key']:spoken_question(r['question']) for r in self.s.evidence.memory.topics.required}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+            await self.c.prepare()
+        self.assertEqual(self.c.texts['opening'],'Здравствуйте! Меня интересует бэха-пятёрка. Машина ещё продаётся?')
+        self.assertEqual(self.c.texts['subject'],'Меня интересует бэха-пятёрка из объявления.')
+        self.assertNotIn('520i',self.c.texts['opening'])
+
+    async def test_opening_identifies_selected_car_by_colour_and_short_engine(self):
+        full='BMW 5-series 520i Luxury'
+        self.s.context={'subjectTitle':full,'subjectDescription':'Чёрный, 2.0 л, бензин'}
+        self.s.prepared_subject=full;self.s.prepared_subject_model='BMW 5-series'
+        self.s.prepared_spoken_subject='чёрная бэха-пятёрка, двухлитровая бензиновая'
+        wording={r['key']:spoken_question(r['question']) for r in self.s.evidence.memory.topics.required}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=wording)):
+            await self.c.prepare()
+        self.assertEqual(self.c.texts['opening'],'Здравствуйте! Меня интересует чёрная бэха-пятёрка, двухлитровая бензиновая. Машина ещё продаётся?')
+        self.assertNotIn('520i',self.c.texts['opening']);self.assertNotIn('Luxury',self.c.texts['opening'])
+        self.assertEqual(self.s.context['subjectTitle'],full)
 
     def test_customer_name_request_variants_and_other_people(self):
         from dialogue_topics import requests_customer_name

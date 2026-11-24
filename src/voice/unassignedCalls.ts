@@ -44,6 +44,9 @@ export function withUnassignedCallsReadScope(
   account: Account | null | undefined,
   existingScope: Prisma.VoiceCallSessionWhereInput,
 ): Prisma.VoiceCallSessionWhereInput {
+  // An empty scope already permits every call. Prisma ignores {} inside OR,
+  // so wrapping it would restrict superadmins to the unassigned branch only.
+  if (Object.keys(existingScope).length === 0) return existingScope;
   if (!account || !unassignedCallsAccess(account).view) return existingScope;
   return { OR: [existingScope, { AND: [unassignedCallWhere, { dealership: unassignedCallsScope(account) }] }] };
 }

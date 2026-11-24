@@ -137,26 +137,29 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.s.context={'subjectTitle':None,'subjectDescription':None}
         async def prepared(*args,**kwargs):
             self.s.prepared_subject='Toyota RAV4 2018'
+            self.s.prepared_spoken_subject='Toyota RAV4'
             return {r['key']:r['question'] for r in self.s.evidence.memory.topics.required}
         with patch('dialogue_controller.prepare_questions',new=AsyncMock(side_effect=prepared)),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
             await self.c.prepare()
-        self.assertIn('Toyota RAV4 2018',self.c.texts['opening'])
-        self.assertIn('Toyota RAV4 2018',self.c.texts['subject'])
+        self.assertIn('Toyota RAV4',self.c.texts['opening'])
+        self.assertIn('Toyota RAV4',self.c.texts['subject'])
+        self.assertNotIn('2018',self.c.texts['opening'])
 
     async def test_1361_verified_title_subject_is_named_when_operator_asks_model(self):
         self.s.context={}
         self.s.prompt='Название скрипта (справочный источник): "Москвич 3, 2024 года"\nПотребность клиента: Покупка для жены, наличные.'
         async def prepared(*args,**kwargs):
             self.s.prepared_subject='Москвич 3, 2024 года'
+            self.s.prepared_spoken_subject='Москвич 3'
             return {r['key']:r['question'] for r in self.s.evidence.memory.topics.required}
         with patch('dialogue_controller.prepare_questions',new=AsyncMock(side_effect=prepared)),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
             await self.c.prepare()
         self.assertIn('Москвич 3',self.c.texts['opening'])
-        self.assertIn('2024 года',self.c.texts['opening'])
+        self.assertNotIn('2024 года',self.c.texts['opening'])
         await self.run_turn('Какую марку и модель рассматриваете?',subject=True)
         answer=self.c.player.queue_frame.call_args.args[0].text
         self.assertIn('Москвич 3',answer)
-        self.assertIn('2024 года',answer)
+        self.assertNotIn('2024 года',answer)
 
     async def test_named_sale_question_opens_with_the_model_even_without_extraction(self):
         self.s.prompt='Потребность клиента: Покупка в кредит\n\n1. Toyota RAV4 2018года ещё в продаже? [обязательная тема]'
@@ -244,7 +247,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.c.native_resume_context={'response_id':identifier,'text':answer,'epoch':self.c.epoch}
         await self.c.perform('open','',self.c.epoch)
         frame=self.c.player.queue_frame.call_args.args[0]
-        self.assertIn('Тестовый объект',frame.text)
+        self.assertIn('авто из объявления',frame.text)
         self.assertNotIn('Здравствуйте',frame.text)
         self.assertEqual(self.c.last_question['topic'],'availability')
 

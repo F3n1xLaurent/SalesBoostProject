@@ -1,10 +1,120 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock,patch
-from controller_preparation import prepare_questions,valid_shape,varied_fallback,_last
+from controller_preparation import prepare_questions,derive_scenario_topics,valid_shape,varied_fallback,_last
 from policy import Evidence
 
 class BankTests(unittest.IsolatedAsyncioTestCase):
+    async def test_colour_and_engine_from_selected_feed_can_enrich_spoken_name(self):
+        full='BMW 5-series 520i Luxury'
+        rows=[{'key':'availability','question':full+' ещё в продаже?'}]
+        safe={'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}}
+        cases=[('Цвет: чёрный. Двигатель: 2.0 л, бензин.','чёрная бэха-пятёрка, двухлитровая бензиновая',True),
+               ('Цвет: чёрный.','чёрная бэха-пятёрка',True),
+               ('Двигатель: 2.0 л.','бэха-пятёрка, двухлитровая',True),
+               ('Топливо: дизель.','БМВ пятой серии, дизельная',True),
+               ('','БМВ пятой серии',True),
+               ('Цвет: белый.','чёрная бэха-пятёрка',False),
+               ('','бэха-пятёрка, двухлитровая бензиновая',False)]
+        for description,name,approved in cases:
+            with self.subTest(description=description,name=name):
+                self.s.context={'subjectTitle':full,'subjectDescription':description}
+                self.s.prompt='Покупка автомобиля. Нынешняя машина клиента красная, с мотором 3.0 л.'
+                async def generate(*args,**kwargs):
+                    self.assertEqual(kwargs['subject_data']['selection'].get('subjectDescription',''),description)
+                    kwargs['subject_result'].update(value=full,spoken='BMW 5-series',spoken_name=name,purpose='purchase')
+                    return {'availability':full+' ещё в продаже?'}
+                verdict={key:safe for key in ('__scenario_subject__','__spoken_subject__','__call_purpose__')}
+                verdict['__spoken_name__']=safe if approved else {'choice':'unsafe','probabilities':{'safe':.01,'unsafe':.99}}
+                with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)) as verify:
+                    await prepare_questions(self.s,rows,None)
+                self.assertEqual(verify.await_args.kwargs['subject_data']['selection']['subjectTitle'],full)
+                self.assertEqual(self.s.prepared_spoken_subject,name if approved else 'BMW 5-series')
+                self.assertEqual(self.s.prepared_subject_model,'BMW 5-series')
+                self.assertEqual(self.s.context['subjectDescription'],description)
+
+    async def test_colloquial_name_is_separately_verified_against_exact_model(self):
+        full='BMW 5-series 520i 2.0 AT Luxury'
+        self.s.context={'subjectTitle':full};self.s.prompt='Покупка автомобиля. Манера клиента: неформальная.'
+        rows=[{'key':'availability','question':full+' ещё в продаже?'}]
+        safe={'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}}
+        for name,approved in [('бэха-пятёрка',True),('БМВ пятой серии',True),('бэха',False),
+                              ('БМВ с двухлитровым мотором',False),('БМВ седьмой серии',False)]:
+            with self.subTest(name=name):
+                async def generate(*args,**kwargs):
+                    kwargs['subject_result'].update(value=full,spoken='BMW 5-series',spoken_name=name,purpose='purchase')
+                    return {'availability':'Подскажите, '+full+' ещё в продаже?'}
+                verdict={key:safe for key in ('availability','__scenario_subject__','__spoken_subject__','__call_purpose__')}
+                verdict['__spoken_name__']=safe if approved else {'choice':'unsafe','probabilities':{'safe':.01,'unsafe':.99}}
+                with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)) as verify:
+                    result=await prepare_questions(self.s,rows,None)
+                self.assertEqual(verify.await_args.kwargs['spoken_name'],name)
+                self.assertEqual(self.s.prepared_spoken_subject,name if approved else 'BMW 5-series')
+                self.assertEqual(self.s.prepared_subject_model,'BMW 5-series')
+                self.assertEqual(self.s.prepared_subject,full)
+                self.assertIn('BMW 5-series',result['availability'])
+                self.assertNotIn('520i',result['availability'])
+
+    async def test_colloquial_name_cannot_bypass_failed_model_verification(self):
+        self.s.context={'subjectTitle':'BMW 5-series 520i'};self.s.prompt='Покупка автомобиля'
+        async def generate(*args,**kwargs):
+            kwargs['subject_result'].update(value='BMW 5-series 520i',spoken='BMW 5-series',spoken_name='бэха-пятёрка')
+            return {'availability':'BMW 5-series 520i ещё в продаже?'}
+        safe={'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}}
+        with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value={'__scenario_subject__':safe,'__spoken_name__':safe})):
+            await prepare_questions(self.s,[{'key':'availability','question':'BMW 5-series 520i ещё в продаже?'}],None)
+        self.assertIsNone(self.s.prepared_spoken_subject)
+        self.assertIsNone(self.s.prepared_subject_model)
+
+    async def test_spoken_brand_model_is_verified_and_full_feed_is_preserved(self):
+        for full,short in [('BMW 5-series 520i 2.0 AT Luxury 2024','BMW 5-series'),
+                           ('Land Rover Range Rover Sport 3.0 AT HSE','Land Rover Range Rover Sport'),
+                           ('TANK 300 Premium','TANK 300')]:
+            with self.subTest(full=full):
+                self.s.context={'subjectTitle':full,'subjectDescription':'Бензин, автомат'};self.s.prompt='Покупка автомобиля'
+                rows=[{'key':'availability','question':full+' ещё в продаже?'}]
+                async def generate(*args,**kwargs):
+                    kwargs['subject_result'].update(value=full,spoken=short,purpose='purchase')
+                    return {'availability':'Подскажите, '+full+' ещё в продаже?'}
+                safe={'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}}
+                verdict={key:safe for key in ('availability','__scenario_subject__','__spoken_subject__','__call_purpose__')}
+                with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)):
+                    result=await prepare_questions(self.s,rows,None)
+                self.assertEqual(self.s.prepared_subject,full)
+                self.assertEqual(self.s.context['subjectTitle'],full)
+                self.assertEqual(self.s.context['subjectDescription'],'Бензин, автомат')
+                self.assertEqual(self.s.prepared_spoken_subject,short)
+                self.assertIn(short,result['availability']);self.assertNotIn(full,result['availability'])
+
+    async def test_unverified_or_invented_spoken_name_never_leaks_long_feed_into_speech(self):
+        full='BMW 5-series 520i 2.0 AT Luxury'
+        self.s.context={'subjectTitle':full};self.s.prompt='Покупка автомобиля'
+        rows=[{'key':'availability','question':full+' ещё в продаже?'}]
+        for short,approved in [('BMW 5-series',False),('BMW 7-series',True),(full,False)]:
+            async def generate(*args,**kwargs):
+                kwargs['subject_result'].update(value=full,spoken=short)
+                return {'availability':'Подскажите, '+full+' ещё в продаже?'}
+            safe={'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}}
+            verdict={'__scenario_subject__':safe,'__spoken_subject__':safe if approved else {}}
+            with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)),patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)):
+                result=await prepare_questions(self.s,rows,None)
+            self.assertIsNone(self.s.prepared_spoken_subject)
+            self.assertNotIn(full,result['availability'])
+            self.assertNotIn('BMW 7-series',result['availability'])
+
+    async def test_derived_scenario_prepares_short_subject_without_second_generation(self):
+        self.s.context={'subjectTitle':'TANK 300 Premium'};self.s.prompt='Покупка автомобиля'
+        async def generate(*args,**kwargs):
+            kwargs['subject_result'].update(value='TANK 300 Premium',spoken='TANK 300',purpose='purchase')
+            return {'topic0':'TANK 300 Premium ещё в продаже?','topic1':'Есть скидка при оплате наличными?'}
+        safe={'choice':'safe','probabilities':{'safe':.99,'unsafe':.01}}
+        verdict={key:safe for key in ('__scenario_subject__','__spoken_subject__','__call_purpose__')}
+        with patch('controller_preparation.generate_questions',new=AsyncMock(side_effect=generate)) as gen,patch('controller_preparation.verify_questions',new=AsyncMock(return_value=verdict)):
+            rows=await derive_scenario_topics(self.s,None)
+        gen.assert_awaited_once()
+        self.assertEqual(self.s.prepared_spoken_subject,'TANK 300')
+        self.assertNotIn('Premium',rows[0]['question'])
+
     async def test_subject_from_script_title_requires_both_literal_quote_and_semantic_approval(self):
         self.s.context={}
         self.s.prompt='Название скрипта (справочный источник): "Москвич 3, 2024 года — наличные"\nПотребность клиента: Для жены.'
