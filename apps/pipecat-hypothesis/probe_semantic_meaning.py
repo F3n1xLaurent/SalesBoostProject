@@ -14,6 +14,16 @@ from turn_meaning import interpret,MODEL
 
 PROMPT='Ты Андрей, мужчина.\nДоставляете по области? [обязательная тема]\nРаботаете по выходным? [обязательная тема]'
 CASES=[
+    ('linking_word_pause','Значит.',{'control':'fragment','next_question':False}),
+    ('linking_phrase_pause','Так, получается...',{'control':'fragment','next_question':False}),
+    ('explicit_plan_permission','Что ещё хотели бы узнать?',{'plan_permission':True,'next_question':True}),
+    ('information_sufficiency','Я рассказал про оснащение. Этой информации вам достаточно?',{'acknowledgment_request':True,'other_questions':True,'next_question':False}),
+    ('bring_documents_ack','Не забудьте взять паспорт и водительское удостоверение, хорошо?',{'acknowledgment_request':True,'other_questions':True,'next_question':False}),
+    ('model_familiarity','Вы уже знакомы с этой моделью?',{'confirmation_request':False,'other_questions':True}),
+    ('transfer_legal_status','Я соединю вас с отделом. Скажите, вы частное лицо или представляете организацию?',{'transfer_reply':True}),
+    ('transfer_real_hold','Подождите, пожалуйста, соединяю вас с коллегой, хорошо?',{'transfer_reply':False,'control':'wait'}),
+    ('location_controlled','Вы звоните в город Омск?',{'location_only':True}),
+    ('buyer_prior_contact_addressed','Андрей, приятно познакомиться. Раньше с нашими менеджерами общались?',{'name':False,'other_questions':True}),
     ('buyer_first_contact_compound','Автомобиль стоит на нашей площадке. По этой машине впервые обратились в нашу компанию, Андрей.',{'reply_routed':True,'next_question':False}),
     ('confirm_distorted_model','Тайота карола интересует.',{'reply_routed':True,'next_question':False}),
     ('buyer_first_contact_without_question_mark','Это ваше первое обращение по этой машине.',{'other_questions':True,'next_question':False}),

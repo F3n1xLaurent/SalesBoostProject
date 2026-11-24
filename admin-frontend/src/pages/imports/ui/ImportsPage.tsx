@@ -1282,6 +1282,7 @@ export function ImportsPage() {
       await runImportSource(id, { signal: controller.signal });
       await loadList();
       await loadDataItems();
+      await loadTags();
       showToast({ type: 'success', title: 'Данные обновлены' });
     } catch (runError) {
       if (runError instanceof DOMException && runError.name === 'AbortError') return;
@@ -1314,6 +1315,7 @@ export function ImportsPage() {
   function handleImportSaved(item: ImportSourceItem) {
     setItems((current) => current.map((entry) => (entry.id === item.id ? item : entry)));
     void loadList();
+    void loadTags();
   }
 
   function handleImportDeleted(importId: string) {
@@ -1321,6 +1323,7 @@ export function ImportsPage() {
     setSelectedImportIds((current) => current.filter((id) => id !== importId));
     void loadList();
     void loadDataItems();
+    void loadTags();
   }
 
   async function openImportInfo(item: ImportSourceItem) {

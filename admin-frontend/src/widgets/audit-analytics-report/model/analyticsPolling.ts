@@ -1,8 +1,18 @@
 import type { AuditDetailItem } from '../../../shared/api/adminPanel';
 
 export function needsAnalyticsRefresh(detail: AuditDetailItem): boolean {
-  return !detail.unifiedReport
-    && !['failed', 'unavailable', 'ready'].includes(detail.analyticsProgress?.status ?? 'waiting');
+  const reportPending = !detail.unifiedReport
+    && !['failed', 'unavailable'].includes(detail.analyticsProgress?.status ?? 'waiting');
+  const recordingPending = detail.type === 'call'
+    && ['pending', 'processing'].includes(detail.recordingStatus ?? '');
+  return reportPending || recordingPending;
+}
+
+/** A report and its recording finish independently. Keep a parent's completed
+ * report while accepting the latest recording state from polling. */
+export function mergeAuditRefresh(provided: AuditDetailItem, refreshed: AuditDetailItem | null): AuditDetailItem {
+  if (!refreshed || refreshed.id !== provided.id) return provided;
+  return { ...refreshed, unifiedReport: provided.unifiedReport ?? refreshed.unifiedReport };
 }
 
 /** One request at a time; stop on completion, terminal status, dismissal or navigation. */

@@ -8,6 +8,11 @@ const context = new AsyncLocalStorage<{ controller: AbortController; deadline: n
 const traceContext = new AsyncLocalStorage<(stage: string, result: unknown) => Promise<void>>();
 export function withReportTrace<T>(sink: (stage: string, result: unknown) => Promise<void>, task: () => Promise<T>): Promise<T> { return traceContext.run(sink, task); }
 export const REPORT_GENERATION_TIMEOUT_MS = 300_000;
+/** Long calls require more independently checked examples, not weaker checks. */
+export function reportGenerationBudgetMs(turnCount: number): number {
+  const extraTurns = Number.isFinite(turnCount) ? Math.max(0, Math.floor(turnCount) - 40) : 0;
+  return Math.min(900_000, REPORT_GENERATION_TIMEOUT_MS + extraTurns * 5000);
+}
 export function assertReportGenerationActive(): void { context.getStore()?.controller.signal.throwIfAborted(); }
 
 /** Nested generators share a deadline. Cancellation reaches the actual HTTP

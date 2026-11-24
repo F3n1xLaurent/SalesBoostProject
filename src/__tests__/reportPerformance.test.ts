@@ -1,12 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openai } from '../lib/openaiClient';
-import { createReportCompletion, mapReportBatches, withReportGenerationBudget } from '../voice/reportExecution';
+import { createReportCompletion, mapReportBatches, withReportGenerationBudget, reportGenerationBudgetMs } from '../voice/reportExecution';
 import { ensureFindingBetterExamples, normalizeUnifiedCallReport } from '../voice/unifiedCallReport';
 import { clarificationRequestIssues, reportExampleHash, reviewReportExamples } from '../voice/reportExampleReview';
 import { DEFAULT_CALL_REPORT_PROBLEMS } from '../voice/problemCatalog';
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 const completion = (content: unknown) => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(content) } }] }) as any;
+
+it('finishes independently checked batches of a long call past the short-call deadline', async () => {
+  vi.useFakeTimers();
+  const create = vi.spyOn(openai.chat.completions, 'create').mockImplementation((() =>
+    new Promise(resolve => setTimeout(() => resolve(completion({ checked: true })), 60_000))) as any);
+  const task = withReportGenerationBudget(async () => {
+    for (let batch = 0; batch < 6; batch++) {
+      await createReportCompletion({ model: 'test', messages: [] }, 'exampleReview');
+    }
+    return 'all batches checked';
+  }, reportGenerationBudgetMs(114));
+  await vi.advanceTimersByTimeAsync(360_000);
+  await expect(task).resolves.toBe('all batches checked');
+  expect(create).toHaveBeenCalledTimes(6);
+  expect(reportGenerationBudgetMs(20)).toBe(300_000);
+  expect(reportGenerationBudgetMs(10000)).toBe(900_000);
+});
 
 describe('bounded report execution', () => {
   it('runs independent groups concurrently with a fixed bound and stable result order', async () => {

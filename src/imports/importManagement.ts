@@ -801,9 +801,10 @@ async function applyAiAutotagsToImportedItems(importSourceId: string, itemIds: s
 
     const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
     const results = normalizeAiAutotagResult(parsed, allowedTags, allowedItemIds);
+    const deterministicTags = new Map(items.map(item => [item.id, safeJsonParse<string[]>(item.tagsJson, [])]));
     await Promise.all(results.map((result) => prisma.importedItem.update({
       where: { id: result.itemId },
-      data: { tagsJson: JSON.stringify(result.tags) },
+      data: { tagsJson: JSON.stringify(uniqStrings([...(deterministicTags.get(result.itemId) ?? []), ...result.tags])) },
     })));
     console.info(`[${requestId}] OpenAI request completed in ${Date.now() - startedAt}ms: import autotagging`, {
       updatedItems: results.length,
@@ -1239,19 +1240,30 @@ export async function handleListImportedItems(req: Request, res: Response): Prom
 }
 
 export async function handleListImportedTags(req: Request, res: Response): Promise<void> {
-  const holdingId = await getRequestedHoldingFilter(req);
-  if (!holdingId) {
-    res.json({ tags: [] });
-    return;
+  const sourceWhere = await buildImportSourceWhereForRequest(req);
+  const sources = await prisma.importSource.findMany({ where: sourceWhere, select: { tagRulesJson: true } });
+  const tags = new Set(sources.flatMap(source => normalizeTagRules(safeJsonParse(source.tagRulesJson, []))
+    .filter(rule => rule.enabled).map(rule => rule.name)));
+  // Rules are available before the next run. Existing item tags also remain
+  // selectable, including historical tags whose rule has since been disabled.
+  let cursor: string | undefined;
+  for (;;) {
+    const items = await prisma.importedItem.findMany({
+      where: { importSource: sourceWhere },
+      select: { id: true, tagsJson: true },
+      orderBy: { id: 'asc' }, take: 1000,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    for (const item of items) {
+      const values = safeJsonParse<unknown>(item.tagsJson, []);
+      if (Array.isArray(values)) for (const value of values) {
+        if (typeof value === 'string' && value.trim()) tags.add(value.trim());
+      }
+    }
+    if (items.length < 1000) break;
+    cursor = items[items.length - 1].id;
   }
-  const items = await prisma.importedItem.findMany({
-    where: { importSource: { holdingId } },
-    select: { tagsJson: true },
-    take: 5000,
-  });
-  const tags = Array.from(new Set(items.flatMap((item) => safeJsonParse<string[]>(item.tagsJson, []))))
-    .sort((a, b) => a.localeCompare(b, 'ru'));
-  res.json({ tags });
+  res.json({ tags: [...tags].sort((a, b) => a.localeCompare(b, 'ru')) });
 }
 
 export async function handleGetImport(req: Request, res: Response): Promise<void> {

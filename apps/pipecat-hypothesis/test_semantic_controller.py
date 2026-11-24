@@ -293,7 +293,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
     async def test_inconclusive_binding_is_audible_without_invented_conditions(self):
         self.c.answers={key:{} for key in self.keys};await self.offer()
         await self.run_turn('Требуется разъяснение.',visit='unclear')
-        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_pending'])
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['receipt_0'])
         self.assertFalse(self.c.visit_confirmed);self.assertFalse(self.s.playback.finish_requested)
         self.assertFalse(hasattr(self.c.llm,'request_reason'))
 
@@ -489,6 +489,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
         for scope,other in [('plan_only',False),('both',True)]:
             answers['other_questions']={'choice':scope,'probabilities':{scope:.95,'no':.05}}
+            answers['plan_permission']={'choice':'yes','probabilities':{'yes':.99,'no':.01}}
             with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,'Текст')
             self.assertEqual(result['other_questions'],other);self.assertTrue(result['next_question'])
 
@@ -718,6 +719,112 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.visit_offer_response_id,identifier)
         self.assertFalse(any('Мне подойдёт' in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
         self.assertNotIn('visit_day',self.s.evidence.memory.facts)
+
+    async def test_same_clock_spoken_differently_does_not_replace_active_proposal(self):
+        await self.offer();self.s.evidence.turn=2
+        original=self.c.visit_offer_response_id
+        with patch('semantic_controller.review_acceptance',new=AsyncMock(return_value=False)) as review:
+            await self.run_turn('Завтра в три часа дня я вас ожидаю.',visit='offer')
+        review.assert_awaited_once()
+        self.assertEqual(self.c.visit_offer_response_id,original)
+        self.assertFalse(self.c.visit_confirmed)
+        self.assertFalse(any('По времени пока не определились' in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+
+    async def test_confirmed_visit_cannot_be_described_as_undetermined(self):
+        await self.offer();self.s.evidence.turn=2
+        await self.run_turn('Да, удобно.',visit='accept',acceptance_scope='direct_reply')
+        self.assertTrue(self.c.visit_confirmed)
+        self.s.playback.finish_requested=False
+        self.c.player.queue_frame.reset_mock()
+        await self.c.perform('acceptance_unresolved','Как передать адрес?',self.c.epoch)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_ack'])
+        self.assertTrue(self.c.visit_confirmed)
+
+    async def test_legal_status_before_transfer_is_answered_then_hold_waits_for_phone_ack(self):
+        self.c.started=True
+        self.c.line.classify=AsyncMock(return_value=('hold',None,False))
+        await self.run_turn('Я соединю вас с менеджером. Вы как частное лицо или от организации?',
+            control='wait',transfer_reply=True)
+        self.assertTrue(self.c.line.can_speak)
+        self.assertEqual(self.c.pending_after_native[0],'wait_transfer')
+        self.c.llm.spoken_text['native']='Как частное лицо.'
+        ledger=self.s.evidence.delivery
+        ledger.response('native').update(generated_done=True,tts_done=True)
+        ledger.segment('native-tag','native')
+        await self.c.fallback_done('native');await asyncio.sleep(.03)
+        self.assertTrue(self.c.line.can_speak)
+        ledger.ack('native-tag');await asyncio.sleep(.05)
+        self.assertFalse(self.c.line.can_speak)
+        self.assertEqual(self.c.line.state,'waiting_operator')
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_location_only_uses_known_branch_city_instead_of_free_generation(self):
+        self.c.started=True
+        self.c.texts['target_city']='Я обращаюсь в город Омск.'
+        self.c.clips['target_city']=self.c.clips['name']
+        await self.run_turn('Вы обращаетесь в Омск?',location_only=True,other_questions=True)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Я обращаюсь в город Омск.')
+        self.c.llm.send_client_event.reset_mock();self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Так в какой город обращаетесь?',location_only=True,other_questions=True)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Я обращаюсь в город Омск.')
+        # Mirroring the cached clip is permitted; no native response is created.
+        self.assertFalse(any(type(call.args[0]).__name__=='ResponseCreateEvent' for call in self.c.llm.send_client_event.call_args_list))
+
+    async def test_repeated_explicit_connection_checks_receive_audible_answers(self):
+        self.c.started=True
+        await self.run_turn('Алло, вы меня слышите?',control='attention')
+        self.s.evidence.turn=2
+        await self.run_turn('Вы ещё на связи?',control='attention')
+        self.assertEqual(self.c.player.queue_frame.await_count,2)
+        self.assertTrue(all(call.args[0].text==self.c.texts['resume'] for call in self.c.player.queue_frame.call_args_list))
+
+    async def test_identity_question_does_not_replay_interrupted_intro(self):
+        self.c.started=True
+        await self.c.speak('opening')
+        original=self.c.last_question['response_id']
+        self.s.evidence.delivery.response(original)['interrupted']=True
+        self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Как вас зовут?',name=True)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['name'])
+        self.assertEqual(self.c.last_question['response_id'],original)
+
+    async def test_plain_acknowledgment_does_not_automatically_replay_documents(self):
+        topic,original=await self.interrupted_plan()
+        await self.run_turn('Угу.')
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertEqual(self.c.last_question['response_id'],original)
+        self.assertNotIn('plan:'+topic,self.c.auto_replayed_questions)
+
+    async def test_incomplete_linking_word_cannot_authorize_document_replay(self):
+        topic,original=await self.interrupted_plan()
+        body=payload(self.c,'Значит.')
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        for key in ('name','subject','visit_accepted'):
+            answers[key]={'choice':'no','probabilities':{'no':.99}}
+        answers['visit_request']={'choice':'none','probabilities':{'none':.99}}
+        answers['other_questions']={'choice':'plan_only','probabilities':{'plan_only':.99,'no':.01}}
+        answers['plan_permission']={'choice':'wait','probabilities':{'wait':.99,'no':.01}}
+        for key in answers:
+            if key.startswith('coverage:'):answers[key]={'choice':'unanswered','probabilities':{'unanswered':.99}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,'Значит.')
+        self.assertEqual(result['control'],'fragment')
+        self.assertFalse(result['next_question'])
+        await self.run_turn('Значит.',**result)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertEqual(self.c.last_question['response_id'],original)
+        self.assertNotIn('plan:'+topic,self.c.auto_replayed_questions)
+
+    async def test_acknowledgment_request_cannot_become_plan_navigation(self):
+        body=payload(self.c,'Этого объяснения достаточно?')
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        answers['acknowledgment_request']={'choice':'yes','probabilities':{'yes':.95,'no':.05}}
+        answers['other_questions']={'choice':'plan_only','probabilities':{'plan_only':.95,'no':.05}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,'Этого объяснения достаточно?')
+        self.assertTrue(result['other_questions'])
+        self.assertFalse(result['next_question'])
 
     async def test_duplicate_proposal_does_not_paraphrase_the_same_time(self):
         await self.offer()

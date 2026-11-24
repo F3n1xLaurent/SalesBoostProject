@@ -8,7 +8,7 @@ import { enrichDialogExamples } from '../model/dialogExamples';
 import { TranscriptionReviewNotice } from './TranscriptionReviewNotice';
 import { ExampleReviewNotice } from './ExampleReviewNotice';
 import { AnalyticsProgress } from './AnalyticsProgress';
-import { needsAnalyticsRefresh, pollAuditAnalytics } from '../model/analyticsPolling';
+import { mergeAuditRefresh, needsAnalyticsRefresh, pollAuditAnalytics } from '../model/analyticsPolling';
 import { CallError } from '../../call-error/ui/CallError';
 
 type UnifiedReport = NonNullable<AuditDetailItem['unifiedReport']>;
@@ -443,7 +443,7 @@ export function AuditAnalyticsReport({
   const retryLock = useRef(false);
   const currentId = useRef(providedDetail.id);
   currentId.current = providedDetail.id;
-  const detail = refreshed?.id === providedDetail.id && !providedDetail.unifiedReport ? refreshed : providedDetail;
+  const detail = mergeAuditRefresh(providedDetail, refreshed);
   useEffect(() => {
     if (auth.status !== 'authenticated' || !needsAnalyticsRefresh(detail)) return;
     return pollAuditAnalytics({
@@ -451,7 +451,7 @@ export function AuditAnalyticsReport({
       onDetail: (next) => { setRefreshed(next); setConnectionErrorId(null); },
       onError: () => setConnectionErrorId(providedDetail.id),
     });
-  }, [providedDetail.id, providedDetail.unifiedReport, auth.status, retryVersion]);
+  }, [providedDetail.id, providedDetail.unifiedReport, providedDetail.recordingStatus, auth.status, retryVersion]);
   const retryReport = async () => {
     if (retryLock.current) return;
     const id = detail.id;

@@ -9,7 +9,7 @@ import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { isConnectionCheckTurn, isUnreliableManagerUtterance } from './transcriptReliability';
 import { groundReportTurnComment, hasGroundedProductAnswer } from './reportTurnGrounding';
-import { createReportCompletion, mapReportBatches, withReportGenerationBudget } from './reportExecution';
+import { createReportCompletion, mapReportBatches, withReportGenerationBudget, reportGenerationBudgetMs } from './reportExecution';
 import { isReportCheckpointError, rememberReportRejection, savedReportDraft, savedReportRejections, saveReportDraft, withReportCheckpoint } from './reportCheckpoint';
 import { buildEvaluationHighlights, normalizeManagerNarrationGender } from '../logic/evaluationHighlights';
 import { findManagerClientNameRequest, isClientNameRequest } from '../logic/conversationFacts';
@@ -1309,7 +1309,7 @@ export async function generateUnifiedCallReport(input: Parameters<typeof generat
   return withReportCheckpoint(input, effective => withReportGenerationBudget(() => {
     const draft = savedReportDraft();
     return draft ? completeGeneratedUnifiedCallReport(draft, effective) : generateUnifiedCallReportWithinBudget(effective);
-  }));
+  }, reportGenerationBudgetMs(effective.transcript.length)));
 }
 
 async function generateUnifiedCallReportWithinBudget(input: {
@@ -1450,7 +1450,7 @@ export async function completeGeneratedUnifiedCallReport(parsed: unknown, input:
     const checked = await ensureReportExampleQuality(annotated, input.transcript, input.scenarioContext);
     await saveReportDraft(checked);
     return finalizeGeneratedReport(requireCompleteReportExamples(checked));
-  }));
+  }, reportGenerationBudgetMs(effective.transcript.length)));
 }
 
 export async function generateUnifiedTrainerReport(input: {

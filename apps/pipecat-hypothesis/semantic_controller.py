@@ -20,7 +20,7 @@ from breath import BreathCue
 from policy import is_introductory_greeting
 from plan_context import plan_need,selected_subject,subject_scope,target_location,call_purpose
 
-SEMANTIC_VERSION='semantic-21'
+SEMANTIC_VERSION='semantic-22'
 
 
 class SemanticController(DialogueController):
@@ -48,6 +48,10 @@ class SemanticController(DialogueController):
         # Default visit choices should not start a slow TTS request mid-call.
         # This caches preferences only; manager availability still needs consent.
         from dialogue_controller import voice_clip
+        city=target_location(self.s).get('city')
+        if city:
+            self.texts['target_city']='Я обращаюсь в город '+city+'.'
+            self.clips['target_city']=await voice_clip(self.s,self.texts['target_city'])
         now=datetime.now(ZoneInfo('Europe/Moscow'))
         choices=[('завтра','в 10:00')]
         future=now+timedelta(hours=1)
@@ -470,7 +474,15 @@ class SemanticController(DialogueController):
             await self.failed_interpretation(exc,epoch);return
         if epoch!=self.epoch or self.unavailable():
             self.s.evidence.event('semantic_stale_discarded',source_turn=turn);return
-        if route=='human_hold':meaning['control']='wait'
+        if meaning.get('transfer_reply'):
+            # A transfer may depend on an answer other than the caller's name.
+            # Resume output for that answer, then wait after telephone playback.
+            if not self.line.can_speak:
+                self.line.state='live';self.line.cancel()
+                await self.serializer.send({'customEvent':'control','action':'set_output_enabled','enabled':True})
+            meaning['control']='continue';meaning['other_questions']=True
+            self.s.evidence.event('semantic_transfer_reply_required',source_turn=turn)
+        elif route=='human_hold':meaning['control']='wait'
         elif meaning['name'] and meaning['control']=='wait' and self.line.can_speak:
             # A transfer announced in the same sentence must wait for our name.
             meaning['control']='continue'
@@ -593,7 +605,11 @@ class SemanticController(DialogueController):
                 self.visit_confirmed=False;m.facts.pop('visit_day',None);m.facts.pop('visit_time',None)
                 # A changed day does not imply yesterday's time still works.
                 if v.day and v.day.get('turn')==turn and (not v.time or v.time.get('turn')!=turn):v.time=None
-            if fresh:
+            if relation=='offer' and self.visit.offered and not self.changed_slot(v,self.visit.offered,turn):
+                # Repeating our own day/hour is not a new proposal, even if
+                # ASR writes the clock differently (10:00 / десять часов).
+                action='resolve_acceptance'
+            elif fresh:
                 self.visit=v;m.visit_pending=True;action='propose'
             else:
                 if relation=='offer' and self.visit.offered:
@@ -631,7 +647,7 @@ class SemanticController(DialogueController):
             self.s.evidence.event('controller_wait',reason='semantic_'+control);return
         if control=='attention' and self.started:
             if not self.needs_opening() and not self.unfinished_question() and not (recall or meaning['name'] or meaning.get('name_confirmation') or supplied or response_seen or meaning['next_question'] or meaning['other_questions']):
-                await self.speak('resume');return
+                await self.speak('resume',repeat_reason='requested_connection_check');return
             if supplied or response_seen:self.pending_answer_keys.insert(0,'receipt_0')
         if control=='audio_repair' and not recall:
             if self.needs_opening():
@@ -649,6 +665,14 @@ class SemanticController(DialogueController):
             return
         if control in ('callback','decline') or control=='goodbye' and not recall:action='close_'+control
         unfinished=self.unfinished_question()
+        if (unfinished and unfinished['topic']==self.opening_topic and meaning['name']
+                and self.opening_sent and control=='continue'
+                and not (meaning['subject'] or meaning['other_questions'] or meaning['next_question'] or recall)):
+            # Answer identity without automatically repeating the whole intro
+            # to the same operator. The pending question keeps its identity.
+            keys=self.pending_answer_keys;self.pending_answer_keys=[]
+            await self.prepared(keys)
+            return
         if (unfinished and meaning.get('listening_ready') and control=='continue'
                 and not (action or recall or supplied or response_seen or meaning['other_questions'])):
             # An explicit invitation authorizes restoring the interrupted need,
@@ -665,6 +689,13 @@ class SemanticController(DialogueController):
             # Answer the interruption, then restore the existing question ID.
             # A queued/cancelled opening must not turn into permanent silence.
             action='advance'
+        if meaning.get('transfer_reply'):
+            await self.native_answer(text,'wait_transfer',epoch)
+            return
+        if meaning.get('location_only') and 'target_city' in self.texts:
+            self.pending_answer_keys=[];self.requested_answers={}
+            await self.speak('target_city',repeat_reason='requested_target_location')
+            return
         if meaning['other_questions']:
             if action=='clarify_visit':
                 # One answer plus at most one clarification in the same
@@ -722,6 +753,10 @@ class SemanticController(DialogueController):
             visit_confirmed=self.visit_confirmed,unasked_required=self.unasked())
         keys=self.pending_answer_keys;self.pending_answer_keys=[]
         m=self.s.evidence.memory
+        if action=='wait_transfer':
+            self.line.history=[text];self.line.state='waiting_operator';self.line.arm_wait()
+            await self.line.silence('transfer_prerequisite_answered')
+            return
         if action=='open':
             if self.needs_opening():
                 self.current=self.opening_topic
@@ -773,9 +808,12 @@ class SemanticController(DialogueController):
                 return
             action='propose'
         if action=='acceptance_unresolved':
-            await self.prepared(keys+['visit_pending']);self.waiting=True
+            await self.prepared(keys+['visit_ack' if self.visit_confirmed else 'receipt_0' if self.visit.offered else 'visit_pending']);self.waiting=True
             return
         if action=='resolve_acceptance':
+            if self.visit_confirmed:
+                await self.prepared(keys+['visit_ack']);self.waiting=True
+                return
             accepted=False
             try:accepted=await review_acceptance(self,text)
             except Exception as exc:
@@ -790,7 +828,7 @@ class SemanticController(DialogueController):
                 self.pending_answer_keys=keys
                 await self.perform('advance',text,epoch)
             else:
-                await self.prepared(keys+['visit_pending'])
+                await self.prepared(keys+['receipt_0' if self.visit.offered else 'visit_pending'])
                 self.waiting=True
                 self.s.evidence.event('controller_wait',reason='semantic_acceptance_unresolved')
             return
@@ -814,6 +852,16 @@ class SemanticController(DialogueController):
             if self.visit_confirmed or not m.visit_pending:
                 unfinished=self.unfinished_question()
                 if unfinished:
+                    intent=self.last_meaning or {}
+                    authorized=(not self.last_meaning or self.visit_confirmed
+                        or intent.get('control') in ('attention','audio_repair')
+                        or any(intent.get(key) for key in ('listening_ready','name','subject','other_questions','question_recall'))
+                        or intent.get('next_question') and intent.get('plan_permission',True))
+                    if not authorized:
+                        if keys:await self.prepared(keys)
+                        self.waiting=True;self.thinking.cancel('interrupted_question_waits_for_manager');await self.stop_backchannel()
+                        self.s.evidence.event('controller_wait',reason='interrupted_question_waits_for_manager',question_id=unfinished['id'])
+                        return
                     if unfinished['id'] in self.auto_replayed_questions:
                         # The retry can be interrupted too. A bounded replay
                         # budget must not count its unheard tail as completed.
@@ -913,8 +961,11 @@ class SemanticController(DialogueController):
             '- Если факта нет, отвечай как человек: что ещё не решил или предпочитаешь пока обсудить саму покупку. Не говори «я не указал», «я не сообщал», «этой информации у меня нет».\n'
             '- Ты вымышленный клиент тестового звонка. Если личная деталь ещё не задана в потребности или chosen_personal_statements, выбери правдоподобную деталь по контексту и голосу, ответь от первого лица. Не объясняй, что составляешь легенду.\n'
             '- Назови конкретное значение запрошенного личного свойства, а не общую категорию: например, на вопрос о текущем автомобиле нужны марка и модель, а не просто «какой-то седан». Если раньше назвал только категорию, можешь уточнить её без противоречия.\n'
+            '- Если спрашивают, какие варианты сравнивал и где изучал предложения, не ограничивайся словами «характеристики и условия». Назови конкретные альтернативы и источник изучения в пределах цели SCENARIO_SCOPE. Это может быть правдоподобной личной легендой, если она ещё не задана; не придумывай реальные цены, акции, обещания других компаний и посещения тест-драйвов. Если раньше уже сказал, что конкретные варианты не сравнивал, сохрани это и явно отличай будущие планы сравнения от прошлого опыта.\n'
             '- Выбранные личные детали сохраняй: не меняй имя, текущую машину, способ оплаты и другие ответы при повторном вопросе. Заданные сведения потребности имеют приоритет. Не придумывай точные контакты, адреса, документы, факты о товаре, компании или сотруднике.\n'
+            '- Не пересказывай уже сообщённую биографию по собственной инициативе. На новое свойство той же темы ответь только этим свойством: не добавляй заново текущую машину и её судьбу к вопросу о том, для кого покупается новая. Повторяй прежнюю деталь лишь по прямому повторному запросу.\n'
             '- При confirmation_requested сначала прямо подтверди или поправь понимание сотрудника: предмет, направление, город/точку обращения или прошлый контакт. Не заменяй «да/нет» собственным вопросом или простым «понял». Город и объект сверяй с target_location и SCENARIO_SCOPE; если сотрудник ошибся, поправь его. Отсутствие вопросительного знака в распознанном тексте не отменяет уточнение.\n'
+            '- Если сотрудник проверяет, достаточно ли объяснил, ответь на достаточность информации. Если просит взять документы, прямо подтверди, что возьмёшь их. Не заменяй такую реакцию повтором модели, своего вопроса или времени визита.\n'
             '- География клиента не является свободной легендой: если target_location.city задан, клиент находится в этом городе и обращается в эту точку. На вопрос «где вы территориально?» назови этот город. Не подменяй его городом из описания холдинга, другого филиала, реплики продавца или ранее ошибочно созданной легенды. Не придумывай район, личный адрес, переезд, командировку или поездку из другого города. Если целевой город не задан, не выдумывай его.\n'
             '- Легенда разрешает биографию клиента, но НЕ новые ограничения приезда, занятость или удобные часы. Не выбирай время, не отказывайся от предложенного слота и не говори «вечером удобнее»: это решает только контроллер.\n'
             '- Адрес нужного салона бери из target_location.address, город и название — из той же target_location. Это известные данные целевой точки, их можно назвать по запросу сотрудника, в том числе для перевода в отдел продаж. Не заменяй их адресом другого филиала или личным адресом клиента. Если оператор предлагает назвать номер объявления ИЛИ адрес, достаточно известного адреса; номер объявления не выдумывай. Если адреса нет ни в target_location, ни в recent_manager_quotes, попроси его назвать. Не перечисляй адрес без запроса.\n'

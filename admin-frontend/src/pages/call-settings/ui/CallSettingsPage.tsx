@@ -1166,7 +1166,7 @@ function ScriptEditor(props: {
   useEffect(() => {
     setForm((current) => ({
       ...current,
-      dataCondition: { holdingId: props.holdingId, tags: current.dataCondition.tags },
+      dataCondition: { holdingId: props.holdingId, tags: current.dataCondition.holdingId === props.holdingId ? current.dataCondition.tags : [] },
     }));
   }, [props.holdingId]);
 
@@ -1181,13 +1181,6 @@ function ScriptEditor(props: {
       .then((items) => {
         if (cancelled) return;
         setTags(items);
-        setForm((current) => ({
-          ...current,
-          dataCondition: {
-            ...current.dataCondition,
-            tags: current.dataCondition.tags.filter((tag) => items.includes(tag)),
-          },
-        }));
       })
       .catch(() => {
         if (!cancelled) setTags([]);
@@ -1225,16 +1218,17 @@ function ScriptEditor(props: {
   }, [form.dataCondition.holdingId, form.dataCondition.tags]);
 
   const selectedTags = form.dataCondition.tags;
+  const availableTags = useMemo(() => [...new Set([...tags, ...selectedTags])], [tags, selectedTags]);
   const filteredTags = useMemo(() => {
     const query = tagSearch.trim().toLowerCase();
-    const orderedTags = [...tags].sort((a, b) => {
+    const orderedTags = [...availableTags].sort((a, b) => {
       const aSelected = selectedTags.includes(a) ? 0 : 1;
       const bSelected = selectedTags.includes(b) ? 0 : 1;
       return aSelected - bSelected || a.localeCompare(b, 'ru');
     });
     if (!query) return orderedTags;
     return orderedTags.filter((tag) => tag.toLowerCase().includes(query));
-  }, [tagSearch, tags, selectedTags]);
+  }, [tagSearch, availableTags, selectedTags]);
 
   function updateForm(patch: Partial<CallScriptForm>) {
     setForm((current) => ({ ...current, ...patch }));
@@ -1458,13 +1452,13 @@ function ScriptEditor(props: {
           <div style={{ display: 'grid', gap: 8 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <span>Теги</span>
-              <span className="sa-meta">Выбрано: {selectedTags.length} из {tags.length}</span>
+              <span className="sa-meta">Выбрано: {selectedTags.length} из {availableTags.length}</span>
             </div>
             {!form.dataCondition.holdingId ? (
               <div className="sa-meta">Выберите компанию, чтобы увидеть теги из данных.</div>
             ) : tagsLoading ? (
               <div className="sa-meta">Загружаем теги...</div>
-            ) : tags.length === 0 ? (
+            ) : availableTags.length === 0 ? (
               <div className="sa-meta">У выбранной компании пока нет тегов.</div>
             ) : (
               <div style={{ border: '1px solid var(--sa-divider)', borderRadius: 14, overflow: 'hidden', background: '#fff' }}>
