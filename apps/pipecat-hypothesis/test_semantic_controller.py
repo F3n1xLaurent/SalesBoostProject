@@ -24,6 +24,84 @@ def meaning(**kwargs):
 
 
 class SemanticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_visit_only_focus_suppresses_unrelated_confirmation_before_proposal(self):
+        self.c.started=True
+        self.c.llm.send_client_event.reset_mock()
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Удобнее завтра или в выходные?',reply_focus='visit_only',
+                confirmation_request=True,acknowledgment_request=True,other_questions=True,
+                visit='offer',visit_request='details',buyer_question_parts=[])
+        self.assertFalse(self.c.last_meaning['confirmation_request'])
+        self.assertEqual(self.c.llm.request_turns,[])
+        self.assertEqual(len(self.c.player.queue_frame.call_args_list),1)
+        self.assertIn('Могу подъехать завтра',self.c.player.queue_frame.call_args.args[0].text)
+
+    async def test_nonvisit_question_is_not_suppressed_by_conflicting_visit_focus(self):
+        self.c.started=True
+        self.c.llm.send_client_event.reset_mock()
+        await self.run_turn('На чём ездите? Подъедете завтра?',reply_focus='visit_only',
+            other_questions=True,visit='offer',visit_request='details',buyer_question_parts=['На чём ездите?'])
+        self.assertTrue(self.c.last_meaning['other_questions'])
+        self.assertTrue(self.c.llm.request_turns)
+
+    async def test_model_familiarity_and_own_car_do_not_confirm_selected_subject(self):
+        self.c.started=True
+        for focus,text in [('familiarity','С моделью уже знакомы? Для себя выбираете?'),
+                           ('own_vehicle','Свою нынешнюю машину планируете менять?')]:
+            await self.run_turn(text,reply_focus=focus,confirmation_request=True,
+                name_confirmation=True,subject=True,other_questions=True)
+            self.assertFalse(self.c.last_meaning['subject'])
+            self.assertFalse(self.c.last_meaning['confirmation_request'])
+            self.assertNotIn('subject',self.c.pending_answer_keys)
+            self.assertIn('СЕЙЧАС',self.c.fallback_goal)
+
+    async def test_fragment_does_not_save_spurious_subject_or_name_request(self):
+        self.c.started=True
+        await self.run_turn('Не была. Что',control='fragment',subject=True,name=True)
+        self.assertNotIn('subject',self.c.pending_answer_keys)
+        self.assertNotIn('name',self.c.pending_answer_keys)
+        self.assertEqual(self.c.fragment_input_epoch,self.c.epoch)
+        await self.run_turn('ДТП не было. Машина проверена.',coverage={self.keys[0]:'answered'})
+        self.assertIsNone(self.c.fragment_input_epoch)
+        self.assertTrue(all('интересует' not in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+
+    async def test_incomplete_tail_waits_even_when_previous_answer_is_complete(self):
+        text='Состояние отличное. ДТП автомобиль'
+        body=payload(self.c,text)
+        answers={key:{'choice':next(iter(q['criteria'])),'probabilities':{next(iter(q['criteria'])):.99}} for key,q in body['questions'].items()}
+        answers['control']={'choice':'continue','probabilities':{'continue':.99}}
+        answers['turn_tail']={'choice':'fragment','probabilities':{'fragment':.99}}
+        answers['coverage:'+self.keys[0]]={'choice':'answered','probabilities':{'answered':.99}}
+        self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,json=lambda:{'answers':answers}))
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}):result=await interpret(self.c,text)
+        self.assertEqual(result['control'],'fragment')
+        self.assertEqual(result['coverage'][self.keys[0]],'answered')
+
+    async def test_fragment_batch_survives_until_manager_finishes(self):
+        self.c.started=True
+        self.c.inputs.add('Состояние отличное. ДТП автомобиль',1)
+        batch=self.c.inputs.snapshot()
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(control='fragment'))):
+            self.c.receive_batch(batch)
+            await self.c.task
+        self.assertEqual(self.c.inputs.snapshot(),batch)
+        self.c.inputs.add('в авариях не участвовал.',2)
+        combined=self.c.inputs.snapshot()
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning())) as model:
+            self.c.receive_batch(combined)
+            await self.c.task
+        self.assertIn('ДТП автомобиль в авариях не участвовал.',model.call_args.args[1])
+        self.assertEqual(self.c.inputs.snapshot(),[])
+
+    async def test_explicit_unsolicited_answer_removes_future_question(self):
+        self.c.started=True
+        topic=self.keys[-1]
+        self.assertNotIn(topic,self.c.asked)
+        await self.run_turn('Мы работаем и по выходным.',coverage={topic:'answered'})
+        self.assertEqual(self.c.answers[topic]['status'],'answered')
+        self.assertNotIn(topic,[row['key'] for row in self.c.unasked()])
+        self.assertTrue(all(self.c.texts[topic] not in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+
     async def test_vehicle_year_and_tradein_mileage_use_separate_known_sources(self):
         self.c.started=True
         self.s.context={'subjectTitle':'Toyota Land Cruiser Prado', 'subjectDescription':'Год выпуска: 2022. Пробег: 60005 км.',
@@ -710,10 +788,12 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('plan:'+topic,self.c.auto_replayed_questions)
         self.assertFalse(self.s.playback.finish_requested)
 
-    async def test_connection_check_after_exhausted_retry_receives_acknowledgment(self):
+    async def test_connection_check_after_exhausted_retry_restores_the_interrupted_question(self):
         topic=await self.exhausted_question()
         await self.run_turn('Слышно меня?',control='attention')
-        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['resume'])
+        text=self.c.player.queue_frame.call_args.args[0].text
+        self.assertIn(self.c.texts['resume'],text)
+        self.assertIn(self.c.texts[topic],text)
         self.assertIn('plan:'+topic,self.c.auto_replayed_questions)
         self.assertNotIn(topic,self.c.answers)
 
@@ -962,7 +1042,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('предпочтение покупателя',state['buyer_information']['default_condition_preference'])
         self.assertIn('не утверждая, что товар продавца действительно новый',self.c.fallback_goal)
         await self.run_turn('Не общались ранее с менеджером по автомобилю?',other_questions=True)
-        self.assertIn('Не заменяй ответ «да/нет» повтором марки',self.c.fallback_goal)
+        self.assertIn('О прошлом общении с менеджером отвечай ТОЛЬКО на прямой вопрос',self.c.fallback_goal)
 
     async def interrupted_preamble(self):
         topic=self.keys[-1]

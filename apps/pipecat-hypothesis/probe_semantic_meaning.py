@@ -14,6 +14,15 @@ from turn_meaning import interpret,MODEL
 
 PROMPT='Ты Андрей, мужчина.\nДоставляете по области? [обязательная тема]\nРаботаете по выходным? [обязательная тема]'
 CASES=[
+    ('focus_visit_day','Для оценки вашей машины выберем время. Удобнее завтра или в субботу?',{'reply_focus':'visit_only','visit_request':'details'}),
+    ('focus_familiarity','Машину выбираете для себя? С автомобилем уже знакомы?',{'reply_focus':'familiarity','other_questions':True}),
+    ('focus_familiarity_distorted','Для себя подбираете? Сафтомобили уже знакомы?',{'reply_focus':'familiarity','other_questions':True}),
+    ('focus_prior_contact','Вы уже звонили нашим менеджерам на прошлой неделе?',{'reply_focus':'prior_contact'}),
+    ('focus_own_vehicle','Отлично, будем ждать вас завтра. Нынешнюю Шкоду планируете продать?',{'reply_focus':'own_vehicle','other_questions':True}),
+    ('focus_mixed_visit','Подъедете в субботу? Какой пробег вашей машины?',{'reply_focus':'other','other_questions':True}),
+    ('tail_after_answer','Кузов в хорошем состоянии. В авариях машина',{'control':'fragment'}),
+    ('tail_complete_answer','Кузов в хорошем состоянии. Аварий не было.',{'control':'continue'}),
+    ('unasked_damage_coverage','Автомобиль не участвовал в ДТП, кузов целый.',{'current_covered':True}),
     ('linking_word_pause','Значит.',{'control':'fragment','next_question':False}),
     ('linking_phrase_pause','Так, получается...',{'control':'fragment','next_question':False}),
     ('explicit_plan_permission','Что ещё хотели бы узнать?',{'plan_permission':True,'next_question':True}),
@@ -96,7 +105,8 @@ async def main():
     async def run(case):
         name,text,expected=case
         async with limit:
-            prompt='Как долго последний владелец владел автомобилем? [обязательная тема]' if name=='recall_owner' else PROMPT
+            prompt=('Машина не битая? [обязательная тема]' if name=='unasked_damage_coverage' else
+                'Как долго последний владелец владел автомобилем? [обязательная тема]' if name=='recall_owner' else PROMPT)
             s=SimpleNamespace(prompt=prompt,context={},backchannel=False,finalized=False,
                 evidence=Evidence(),playback=Playback(),dialogue_mode='semantic')
             s.evidence.memory=ConversationMemory(prompt);s.evidence.memory.semantic_mode=True
@@ -147,6 +157,7 @@ async def main():
             try:
                 result=await interpret(c,text)
                 actual={**result,'closing_acknowledged':result.get('closing_intent')=='acknowledgment',
+                    'current_covered':result['coverage'].get(c.current)=='answered',
                     'reply_routed':bool(result.get('other_questions') or result.get('contextual_reply')),
                     'both_covered':all(result['coverage'].get(r['key'])=='answered' for r in s.evidence.memory.topics.required),
                     'accept':result.get('visit_request')!='details' and result['visit']=='accept' and c.accept_active(text,2,result)}

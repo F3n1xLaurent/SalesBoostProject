@@ -10,7 +10,7 @@ import type { ReportExampleReview, ReportExampleTask } from './reportExampleRevi
 
 // Bump when structural validation changes incompatibly; prompt changes are
 // additionally covered by the rules hash below.
-const VERSION = 1;
+const VERSION = 2;
 type Rejected = Array<{ text: string; issues: string[] }>;
 type State = {
   version: number; inputHash: string; caseContextHash: string; attemptId: string;

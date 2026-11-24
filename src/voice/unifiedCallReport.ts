@@ -8,7 +8,7 @@ import { reportGenerationIssues, requestReportJson } from './reportGeneration';
 import type { TranscriptTurn } from './callHistory';
 import { prepareTranscriptForAnalysis } from './analysisTranscript';
 import { isConnectionCheckTurn, isUnreliableManagerUtterance } from './transcriptReliability';
-import { groundReportTurnComment, hasGroundedProductAnswer, managerReplyContext } from './reportTurnGrounding';
+import { groundReportTurnComment, hasGroundedProductAnswer, managerReplyContext, managerReplyEndIndex } from './reportTurnGrounding';
 import { createReportCompletion, mapReportBatches, withReportGenerationBudget, reportGenerationBudgetMs } from './reportExecution';
 import { isReportCheckpointError, rememberReportRejection, savedReportDraft, savedReportRejections, saveReportDraft, withReportCheckpoint } from './reportCheckpoint';
 import { buildEvaluationHighlights, normalizeManagerNarrationGender } from '../logic/evaluationHighlights';
@@ -366,8 +366,9 @@ function sanitizeBetterExample(
   const addedMeaning = [...exampleStems].some((word) => !quoteStems.has(word));
   if (!addedMeaning) return reject('Пример не добавляет содержательного исправления исходной реплики.');
 
-  const knownBefore = contentStems(`${reportKnownScenarioFacts(knownFactsText)} ${transcript.slice(0, quoteIndex + 1).map((turn) => turn.text).join(' ')}`);
-  const futureClient = contentStems(transcript.slice(quoteIndex + 1)
+  const replyEnd = managerReplyEndIndex(transcript, quoteIndex);
+  const knownBefore = contentStems(`${reportKnownScenarioFacts(knownFactsText)} ${transcript.slice(0, replyEnd + 1).map((turn) => turn.text).join(' ')}`);
+  const futureClient = contentStems(transcript.slice(replyEnd + 1)
     .filter((turn) => turn.role === 'client')
     .map((turn) => turn.text)
     .join(' '));

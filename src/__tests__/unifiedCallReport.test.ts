@@ -13,6 +13,23 @@ afterEach(() => {
 });
 
 describe('unified call report normalization', () => {
+  it('uses the whole manager reply for future-fact validation, stopping before the client', () => {
+    const quote = 'Будем ждать вас завтра утром.';
+    const sms = 'Адрес отправлю в СМС. Удобно получить на этот номер?';
+    const example = 'Будем ждать вас завтра утром. Адрес отправлю в СМС. Удобно получить на этот номер?';
+    const transcript = [
+      { role: 'manager' as const, text: quote },
+      { role: 'manager' as const, text: sms },
+      { role: 'client' as const, text: 'Да, удобно получить на этот номер. Приеду с дочерью.' },
+    ];
+    const normalize = (betterExample: string) => normalizeUnifiedCallReport({
+      totalScore: 80, categories: [], keyFindings: [], recommendations: [],
+      dialog: [{ role: 'manager', text: quote, mark: 'normal', comment: 'Уточните способ отправки.', betterExample }],
+    }, { totalScore: 80, transcript });
+    expect(normalize(example)?.dialog[0].betterExample).toBe(example);
+    expect(normalize(`${example} Приезжайте с дочерью.`)?.dialog[0].betterExample).toBeNull();
+  });
+
   it('removes a stored positive mark and approved coaching example from corrupt ASR on read', () => {
     const quote = 'зовут أولى';
     const example = 'Меня зовут [имя], компания «Тест».';

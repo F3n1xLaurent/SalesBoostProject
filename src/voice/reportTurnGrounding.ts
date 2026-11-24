@@ -1,12 +1,18 @@
 import type { TranscriptTurn } from './callHistory';
 
+export function managerReplyEndIndex(transcript: readonly TranscriptTurn[], index: number): number {
+  if (transcript[index]?.role !== 'manager') return index;
+  while (index + 1 < transcript.length && transcript[index + 1].role === 'manager') index++;
+  return index;
+}
+
 /** Streaming ASR may split one manager reply into several adjacent turns.
  * Include that entire reply, stopping before any later customer disclosure. */
 export function managerReplyContext(transcript: readonly TranscriptTurn[], index: number): TranscriptTurn[] {
   if (transcript[index]?.role !== 'manager') return transcript.slice(0, index + 1);
-  let first = index, last = index;
+  let first = index;
+  const last = managerReplyEndIndex(transcript, index);
   while (first > 0 && transcript[first - 1].role === 'manager') first--;
-  while (last + 1 < transcript.length && transcript[last + 1].role === 'manager') last++;
   return [...transcript.slice(0, first), { role: 'manager', text: transcript.slice(first, last + 1).map(turn => turn.text).join(' ') }];
 }
 

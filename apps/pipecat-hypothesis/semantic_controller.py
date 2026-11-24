@@ -20,7 +20,7 @@ from breath import BreathCue
 from policy import is_introductory_greeting
 from plan_context import plan_need,selected_subject,subject_scope,target_location,call_purpose
 
-SEMANTIC_VERSION='semantic-26'
+SEMANTIC_VERSION='semantic-27'
 
 
 class SemanticController(DialogueController):
@@ -254,6 +254,7 @@ class SemanticController(DialogueController):
         return 'CONTROLLER_STATE\n'+json.dumps({'CURRENT_TASK':self.fallback_goal,
             'requested_answers':self.requested_answers,'manager_utterance':self.latest_input,
             'confirmation_requested':bool((self.last_meaning or {}).get('confirmation_request')),
+            'reply_focus':(self.last_meaning or {}).get('reply_focus','other'),
             'manager_questions':(self.last_meaning or {}).get('buyer_question_parts',[]),
             'SCENARIO_SCOPE':subject_scope(self.s),
             'target_location':target_location(self.s),
@@ -432,6 +433,7 @@ class SemanticController(DialogueController):
 
     async def handle(self,text,turn,epoch):
         if self.unavailable() or epoch!=self.epoch:return
+        self.fragment_input_epoch=None
         batch=self.active_batch or []
         current=batch[-1]['text'] if batch and batch[-1]['turn']==turn else text
         was_live=self.line.can_speak
@@ -478,6 +480,19 @@ class SemanticController(DialogueController):
             await self.failed_interpretation(exc,epoch);return
         if epoch!=self.epoch or self.unavailable():
             self.s.evidence.event('semantic_stale_discarded',source_turn=turn);return
+        focus=meaning.get('reply_focus')
+        if focus=='visit_only' and meaning.get('buyer_question_parts'):
+            # A separately extracted non-visit question still needs its answer.
+            focus=meaning['reply_focus']='other'
+        if focus=='visit_only' and not meaning.get('buyer_question_parts'):
+            for key in ('other_questions','confirmation_request','acknowledgment_request','name','name_confirmation','subject'):
+                meaning[key]=False
+            meaning['visit_request']='details'
+            self.s.evidence.event('semantic_visit_only_reply',source_turn=turn)
+        elif focus in ('familiarity','own_vehicle'):
+            for key in ('confirmation_request','name_confirmation','subject'):
+                meaning[key]=False
+            meaning['other_questions']=True
         if meaning.get('transfer_reply') and not announces_transfer(text):
             meaning['transfer_reply']=False
             self.s.evidence.event('semantic_transfer_reply_blocked',reason='no_transfer_announced',source_turn=turn)
@@ -568,7 +583,8 @@ class SemanticController(DialogueController):
             if self.asked.get(key) and meaning['coverage'].get(key)=='unanswered':
                 self.s.evidence.event('semantic_response_unverified',topic=key,evidence=text,
                     scope='navigation only; answer coverage not approved')
-        if meaning['name'] or meaning.get('name_confirmation'):
+        complete_request=meaning['control'] not in ('fragment','wait')
+        if complete_request and (meaning['name'] or meaning.get('name_confirmation')):
             introduced='identity:customer_name' in self.speech.queued or 'identity:customer_name' in self.speech.reserved
             # Asking for the value again is itself permission to repeat it.
             # Only an explicit check of the already supplied value gets an ACK.
@@ -577,7 +593,7 @@ class SemanticController(DialogueController):
         self.name_repeat_requested=bool(meaning.get('name_repeat') or meaning['name'] and
             ('identity:customer_name' in self.speech.queued or 'identity:customer_name' in self.speech.reserved))
         self.identity_confirmation_requested=meaning.get('name_confirmation',False)
-        if meaning['subject'] and not meaning['next_question'] and 'subject' in self.texts and 'subject' not in self.pending_answer_keys:self.pending_answer_keys.append('subject')
+        if complete_request and meaning['subject'] and not meaning['next_question'] and 'subject' in self.texts and 'subject' not in self.pending_answer_keys:self.pending_answer_keys.append('subject')
         if meaning['subject'] and re.search(r'год|пробег|двигател|мотор|комплектац|несколько',text,re.I):
             meaning['other_questions']=True
         if meaning['subject'] and 'subject' not in self.texts:
@@ -651,6 +667,7 @@ class SemanticController(DialogueController):
             covered_topics=[k for k,v in meaning['coverage'].items() if v!='unanswered'],
             requested_answers=list(self.requested_answers),unasked_required=self.unasked())
         if control in ('wait','fragment'):
+            if control=='fragment':self.fragment_input_epoch=epoch
             if control=='wait' and self.line.can_speak:
                 # Semantic hold is authoritative too, including imperfect ASR
                 # that did not match the conservative local transfer grammar.
@@ -696,7 +713,10 @@ class SemanticController(DialogueController):
             return
         if (unfinished and control=='attention' and unfinished['id'] in self.auto_replayed_questions
                 and not (action or recall or supplied or response_seen or self.pending_answer_keys or meaning['other_questions'])):
-            await self.speak('resume',repeat_reason='explicit_connection_check')
+            # An actual connection check authorizes restoring the unheard
+            # question even when its one automatic retry was interrupted too.
+            await self.replay_question(unfinished['id'],['resume'],explicit=True)
+            self.s.evidence.event('controller_question_resumed_on_connection_check',question_id=unfinished['id'])
             return
         if not action and self.unfinished_question() and (self.pending_answer_keys or control=='attention' or meaning['other_questions']):
             # Answer the interruption, then restore the existing question ID.
@@ -970,18 +990,19 @@ class SemanticController(DialogueController):
             '- На открытый вопрос «для кого выбираете?» прямо ответь «Для себя»; на вопрос о сроке назови срок. Не начинай такие ответы с «Да, всё верно»: подтверждение подходит только к вопросу с проверяемым предположением. Не озвучивай управление диалогом: «ждём подтверждения», «время не зафиксировано», «контроллер» и подобные статусы.\n'
             '- SCENARIO_SCOPE.spoken_subject — разговорное название для речи. Используй его, склоняя по месту: «бэха-пятёрка» → «по поводу бэхи-пятёрки». Допускаются привычные однозначные разговорные названия по манере клиента; не выдумывай прозвища и не теряй модель или серию. Не переходи к чтению полного каталожного названия.\n'
             'Ответь от первого лица на ВСЕ дополнительные вопросы менеджера из manager_utterance и manager_questions. Не повторяй уже данный ответ вместо ответа на новый вопрос. Краткость не должна исключать часть вопроса.\n'
-            '- На общее приглашение представиться или рассказать о цели звонка назови только предмет обращения одной короткой фразой. Не перечисляй весь контекст, цену и условия, если их не спрашивали.\n'
-            '- Имя и объект бери из requested_answers и buyer_information; сохраняй заданную потребность. Новые личные детали добавляй только по правилам легенды ниже.\n'
+            '- Ответь коротко на каждый актуальный вопрос. Не пересказывай сценарий: модель, город, название салона и прошлое общение называй ТОЛЬКО если сейчас спрашивают именно об этом. На вопрос об имени нужно имя, на вопрос о причине звонка — краткий предмет обращения. Не перечисляй весь контекст.\n'
+            '- requested_answers и buyer_information — источники для нужного ответа, а не список сведений, которые надо произнести. Сохраняй заданную потребность. Новые личные детали добавляй только по правилам легенды ниже.\n'
             '- Для понимания предмета обращения используй selected_subject и provided_need; полная модификация остаётся внутренними данными. При первом описании автомобиля используй SCENARIO_SCOPE.spoken_subject: разговорную марку/модель, цвет и короткое обозначение двигателя (объём и/или топливо), только если они явно есть у выбранного автомобиля в selected_subject. Например «по поводу чёрной бэхи-пятёрки, двухлитровой бензиновой». Неизвестные цвет или двигатель пропускай. При повторном упоминании достаточно марки/модели или цвета, не повторяй всё описание каждый раз. Если spoken_subject не выделен, сформулируй такое короткое описание по явным данным. Не читай полное название фида, год, поколение, коробку, привод, мощность и комплектацию. При уточнении менеджера ответь коротким запрошенным признаком из данных, например «автомат»; на несколько явных вопросов кратко ответь на каждый. Не расшифровывай индекс вроде 520i в объём двигателя или топливо без явных данных. Не путай предмет покупки с нынешней машиной клиента из легенды. Если предмет не задан нигде, попроси уточнить без выдуманной модели.\n'
             '- SCENARIO_SCOPE имеет приоритет над chosen_personal_statements и предпосылками вопросов менеджера. Предмет из subject или script_references уже выбран. Если они не содержат конкретного предмета, проверь script_title: используй только явно названную там марку и модель, без служебных слов и без замены заданного предмета. Не отвечай «модель не выбрал» и не проси выбрать её вместо заданной. Если менеджер спрашивает «новый?», ответь по данным о состоянии; если состояние не задано, на вопрос «новый или с пробегом» прямо назови предпочтение из buyer_information.default_condition_preference («Рассматриваю новый автомобиль»), не утверждая, что товар продавца действительно новый. Не отвечай «состояние пока не уточнял» и не уходи от выбора повтором модели. Не превращай уточняющие вопросы менеджера в новые желания клиента.\n'
-            '- На вопрос, общались ли раньше с менеджером, ответь прямо о предыдущем контакте: по истории текущего звонка либо «До этого звонка не общался», если предыдущего контакта не задано. Перевод между сотрудниками в текущем звонке не означает прошлое обращение. Не заменяй ответ «да/нет» повтором марки автомобиля.\n'
+            '- О прошлом общении с менеджером отвечай ТОЛЬКО на прямой вопрос о прежнем контакте (reply_focus=prior_contact). «С автомобилем/моделью уже знакомы?» спрашивает об опыте изучения машины, а не об общении. Ответь об этом опыте, не говори «раньше мы не общались». Перевод между сотрудниками в текущем звонке не означает прошлое обращение.\n'
+            '- Вопрос о нынешней машине и trade-in не требует повторять приобретаемую модель или город. Если уже сказал, что ездишь на своей машине, не говори «сдавать нечего»: при отказе от обмена скажи, что оставишь её/не планируешь сдавать. Условие «машины для trade-in нет» не означает отсутствия любой личной машины.\n'
             '- Если факта нет, отвечай как человек: что ещё не решил или предпочитаешь пока обсудить саму покупку. Не говори «я не указал», «я не сообщал», «этой информации у меня нет».\n'
             '- Ты вымышленный клиент тестового звонка. Если личная деталь ещё не задана в потребности или chosen_personal_statements, выбери правдоподобную деталь по контексту и голосу, ответь от первого лица. Не объясняй, что составляешь легенду.\n'
             '- Назови конкретное значение запрошенного личного свойства, а не общую категорию: например, на вопрос о текущем автомобиле нужны марка и модель, а не просто «какой-то седан». Если раньше назвал только категорию, можешь уточнить её без противоречия.\n'
             '- Если спрашивают, какие варианты сравнивал и где изучал предложения, не ограничивайся словами «характеристики и условия». Назови конкретные альтернативы и источник изучения в пределах цели SCENARIO_SCOPE. Это может быть правдоподобной личной легендой, если она ещё не задана; не придумывай реальные цены, акции, обещания других компаний и посещения тест-драйвов. Если раньше уже сказал, что конкретные варианты не сравнивал, сохрани это и явно отличай будущие планы сравнения от прошлого опыта.\n'
             '- Выбранные личные детали сохраняй: не меняй имя, текущую машину, способ оплаты и другие ответы при повторном вопросе. Заданные сведения потребности имеют приоритет. Не придумывай точные контакты, адреса, документы, факты о товаре, компании или сотруднике.\n'
             '- Не пересказывай уже сообщённую биографию по собственной инициативе. На новое свойство той же темы ответь только этим свойством: не добавляй заново текущую машину и её судьбу к вопросу о том, для кого покупается новая. Повторяй прежнюю деталь лишь по прямому повторному запросу.\n'
-            '- При confirmation_requested сначала прямо подтверди или поправь понимание сотрудника: предмет, направление, город/точку обращения или прошлый контакт. Не заменяй «да/нет» собственным вопросом или простым «понял». Город и объект сверяй с target_location и SCENARIO_SCOPE; если сотрудник ошибся, поправь его. Отсутствие вопросительного знака в распознанном тексте не отменяет уточнение.\n'
+            '- При confirmation_requested подтвердить надо ТОЛЬКО конкретное предположение из manager_utterance/manager_questions. Это не просьба одновременно подтвердить модель, город, салон и прошлое общение. Не добавляй «да, всё верно» перед ответом на другой вопрос. Отсутствие вопросительного знака в ASR не отменяет явного уточнения.\n'
             '- Если сотрудник проверяет, достаточно ли объяснил, ответь на достаточность информации. Если просит взять документы, прямо подтверди, что возьмёшь их. Не заменяй такую реакцию повтором модели, своего вопроса или времени визита.\n'
             '- География клиента не является свободной легендой: если target_location.city задан, клиент находится в этом городе и обращается в эту точку. На вопрос «где вы территориально?» назови этот город. Не подменяй его городом из описания холдинга, другого филиала, реплики продавца или ранее ошибочно созданной легенды. Не придумывай район, личный адрес, переезд, командировку или поездку из другого города. Если целевой город не задан, не выдумывай его.\n'
             '- Легенда разрешает биографию клиента, но НЕ новые ограничения приезда, занятость или удобные часы. Не выбирай время, не отказывайся от предложенного слота и не говори «вечером удобнее»: это решает только контроллер.\n'
@@ -1000,9 +1021,14 @@ class SemanticController(DialogueController):
         if (self.last_meaning or {}).get('contextual_reply'):
             self.fallback_goal+=('\nВ текущей реплике могло остаться нераспознанное уточнение. '
                 'Прочитай manager_utterance целиком: прежде чем реагировать на сообщённые сведения, '
-                'ответь на обращённые к тебе уточнения, включая проверку предыдущего контакта и предмета обращения. '
+                'ответь только на актуальные обращённые к тебе уточнения. Не добавляй ответы о предыдущем контакте, городе или модели, если их сейчас не спрашивают. '
                 'Искажённое название сверяй с SCENARIO_SCOPE. Если смысл не удаётся восстановить, '
                 'коротко попроси повторить, не выдумывай ответ и не заменяй его простым «понял».')
+        focus=(self.last_meaning or {}).get('reply_focus')
+        if focus=='familiarity':
+            self.fallback_goal+='\nСЕЙЧАС спрашивают о знакомстве с автомобилем/моделью. Ответь, изучал ли её или видел вживую; если также спросили, для кого выбираешь, ответь и на это. Это НЕ вопрос о прошлом общении с менеджером. Не повторяй название салона/город/предмет звонка.'
+        elif focus=='own_vehicle':
+            self.fallback_goal+='\nСЕЙЧАС вопрос о твоей нынешней машине/её замене или trade-in. Дай только запрошенный ответ о ней, по легенде и потребности. Не подтверждай приобретаемую модель, город или прошлое обращение.'
         self.native_input_epoch=epoch
         self.pending_after_native=(after,text,epoch,list(self.active_batch or []))
         self.s.evidence.event('semantic_native_requested',after_playback=after,requested_answers=list(self.requested_answers))
