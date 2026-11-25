@@ -24,6 +24,68 @@ def meaning(**kwargs):
 
 
 class SemanticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_answer_continuation_does_not_acknowledge_itself(self):
+        self.c.started=True
+        self.s.context={'subjectTitle':'Jetour Dashing, I 1.5 AMT Люкс'}
+        self.c.native_resume_context={'response_id':'answer','epoch':self.c.epoch,'text':'Для себя.'}
+        ledger=self.s.evidence.delivery
+        ledger.response('answer').update(generated_done=True,tts_done=True)
+        ledger.segment('answer-tag','answer');ledger.ack('answer-tag')
+        await self.run_turn('Машина в наличии. Для кого выбираете?',other_questions=True,coverage={'availability':'answered'})
+        # The native answer has just played; do not prepend a receipt to the next question.
+        await self.c.perform('advance','',self.c.epoch)
+        text=self.c.player.queue_frame.call_args.args[0].text
+        self.assertFalse(any(text.startswith(self.c.texts[key]) for key in ('receipt_0','receipt_1','receipt_2')))
+
+    async def test_fresh_native_subject_answer_resumes_only_availability_question(self):
+        self.c.started=True;self.s.context={'subjectTitle':'Jetour Dashing, I 1.5 AMT Люкс'}
+        self.c.texts['opening_body']='Меня интересует Jetour Dashing. Машина ещё продаётся?'
+        await self.c.speak('opening')
+        self.s.evidence.delivery.response(self.c.last_question['response_id'])['interrupted']=True
+        ledger=self.s.evidence.delivery
+        ledger.response('subject-answer').update(generated_done=True,tts_done=True)
+        ledger.segment('subject-tag','subject-answer');ledger.ack('subject-tag')
+        self.c.native_resume_context={'response_id':'subject-answer','text':'Интересует Jetour Dashing.','epoch':self.c.epoch}
+        await self.c.replay_question('plan:availability',explicit=False)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['opening_followup'])
+
+    async def test_standalone_listening_invitation_recovers_after_misclassified_fragment(self):
+        topic,_=await self.interrupted_plan()
+        self.c.active_batch=[{'text':'Незаконченная вводная.','turn':1},{'text':'Я вас слушаю.','turn':1}]
+        await self.run_turn('Незаконченная вводная. Я вас слушаю.',control='fragment',contextual_reply=True)
+        self.assertIn(self.c.texts[topic],self.c.player.queue_frame.call_args.args[0].text)
+        self.assertEqual(self.c.llm.request_turns,[])
+
+    async def test_connection_check_cannot_leave_buffered_buyer_question_in_fragment_wait(self):
+        self.c.started=True
+        self.c.active_batch=[{'text':'Какой автомобиль у вас сейчас?','turn':1},{'text':'Вас не слышно.','turn':1}]
+        await self.run_turn('Какой автомобиль у вас сейчас? Вас не слышно.',control='fragment',other_questions=True,reply_focus='own_vehicle')
+        self.assertEqual(self.c.last_meaning['control'],'continue')
+        self.assertTrue(self.c.llm.request_turns)
+
+    async def test_beneficiary_focus_answers_only_the_actual_question(self):
+        self.c.started=True
+        await self.run_turn('Для кого выбираете машину?',reply_focus='beneficiary',name_confirmation=True)
+        self.assertFalse(self.c.last_meaning['name_confirmation'])
+        self.assertIn('Не рассказывай об изучении модели',self.c.fallback_goal)
+
+    async def test_incomplete_prompt_after_an_answer_cannot_invent_a_buyer_question(self):
+        self.c.started=True
+        self.c.active_batch=[{'text':'При обмене есть скидка.','turn':1},{'text':'Подскажите, пожалуйста.','turn':1}]
+        await self.run_turn('При обмене есть скидка. Подскажите, пожалуйста.',other_questions=True,reply_focus='none')
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertEqual(self.c.llm.request_turns,[])
+        self.assertEqual(self.c.last_meaning['control'],'fragment')
+
+    async def test_connection_check_repairs_an_unintelligible_pending_question(self):
+        self.c.started=True
+        self.c.active_batch=[{'text':'Неразборчивая часть.','turn':1},{'text':'Вас не слышно.','turn':1}]
+        await self.run_turn('Неразборчивая часть. Вас не слышно.',control='fragment',other_questions=True,reply_focus='other')
+        text=self.c.player.queue_frame.call_args.args[0].text
+        self.assertIn(self.c.texts['resume'],text)
+        self.assertIn(self.c.texts['stt_repair'],text)
+        self.assertEqual(self.c.llm.request_turns,[])
+
     async def test_visit_only_focus_suppresses_unrelated_confirmation_before_proposal(self):
         self.c.started=True
         self.c.llm.send_client_event.reset_mock()
@@ -1341,7 +1403,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(c.player.queue_frame.call_args.args[0].text,c.texts['think_reply_0'])
         self.assertIsNone(c.last_clip)
 
-    async def test_filler_handoff_finishes_sending_without_clearing_media_or_waiting_for_phone_end(self):
+    async def test_filler_handoff_waits_for_phone_end_after_sending_finishes(self):
         c=self.c;c.output_transport=SimpleNamespace()
         c.playing_id='filler';c.playing_kind='backchannel'
         c.s.evidence.delivery.segment('tag-filler','filler')
@@ -1353,6 +1415,8 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         task=asyncio.create_task(c.thinking.finish(job))
         await asyncio.sleep(.02);self.assertFalse(task.done())
         c.s.playback.sealed.add('tag-filler')
+        await asyncio.sleep(.02);self.assertFalse(task.done())
+        c.s.evidence.delivery.ack('tag-filler')
         await asyncio.wait_for(task,.2)
         c.stop_backchannel.assert_not_awaited()
         self.assertIn('tag-filler',c.s.playback.pending)

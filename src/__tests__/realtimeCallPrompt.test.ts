@@ -19,6 +19,16 @@ const profile = {
 };
 
 describe('buildRealtimeCallPrompt', () => {
+  it('keeps the catalogue title as facts without instructing the buyer to read its generation aloud', () => {
+    const title = 'Jetour Dashing, I 1.5 AMT Люкс';
+    const prompt = buildRealtimeCallPrompt({ script, profile: null,
+      importedItem: { id: 'selected', title, description: 'Год: 2023. Цвет: серый.' },
+      holding: { name: 'Тестовый холдинг', description: '' } });
+    expect(prompt).toContain(`Предмет обращения: ${title}`);
+    expect(prompt).not.toContain(`назови «${title}»`);
+    expect(prompt).toContain('не зачитывай поколение, римский индекс');
+  });
+
   it('preserves a vehicle mentioned in the script title when no sample is selected', () => {
     const prompt = buildRealtimeCallPrompt({ script: { ...script, name: 'Москвич 3, 2024 года — наличные',
       context: 'Пробег 29 650 км. Покупка для жены.' }, profile: null, importedItem: null,

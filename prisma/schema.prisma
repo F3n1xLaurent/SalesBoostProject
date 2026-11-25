@@ -189,6 +189,7 @@ model ImportedItem {
   normalizedDataJson String
   tagsJson       String   @default("[]")
   contentHash    String
+  isActive       Boolean  @default(true)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -197,6 +198,7 @@ model ImportedItem {
   @@unique([importSourceId, contentHash])
   @@index([importSourceId])
   @@index([externalId])
+  @@index([importSourceId, isActive])
   @@map("imported_items")
 }
 

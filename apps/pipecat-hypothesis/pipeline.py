@@ -1526,10 +1526,18 @@ class OutputEvidence(FrameProcessor):
                         e.latency("tts_first_audio_ms", "tts_requested", turn=output_turn)
                 if isinstance(frame, OutputAudioRawFrame):
                     response_id = e.delivery.contexts.get(getattr(frame, "context_id", None))
+                    if response_id and e.delivery.response(response_id)['interrupted']:
+                        return
                     if response_id and response_id not in e.response_audio_seen and response_id in e.response_text_at:
                         kind=e.delivery.responses.get(response_id,{}).get("kind")
                         controller=getattr(self.session,'controller',None)
-                        if controller and kind!='backchannel':await controller.thinking.main_audio_ready(response_id)
+                        if controller and kind!='backchannel':
+                            epoch=controller.epoch
+                            await controller.thinking.main_audio_ready(response_id)
+                            if epoch!=controller.epoch or e.delivery.response(response_id)['interrupted']:
+                                e.delivery.response(response_id)['interrupted']=True
+                                e.event('tts_audio_discarded_after_handoff',response_id=response_id,reason='interrupted_while_waiting')
+                                return
                         e.response_audio_seen.add(response_id)
                         e.event("backchannel_first_frame_ms" if kind=="backchannel" else "cached_first_frame_ms" if kind=="cached" else "response_tts_first_audio_ms", response_id=response_id, context_id=getattr(frame, "context_id", None),
                                 turn=e.messages.get(response_id, {}).get("turn", output_turn),

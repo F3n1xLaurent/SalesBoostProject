@@ -18,9 +18,9 @@ from customer_legend import choose_name
 from line_gate import LineGate,greeting_only,announces_transfer,name_question_only
 from breath import BreathCue
 from policy import is_introductory_greeting
-from plan_context import plan_need,selected_subject,subject_scope,target_location,call_purpose
+from plan_context import plan_need,selected_subject,subject_scope,target_location,call_purpose,spoken_subject,catalogue_subject_fallback,omit_spoken_generation
 
-SEMANTIC_VERSION='semantic-27'
+SEMANTIC_VERSION='semantic-28'
 
 
 class SemanticController(DialogueController):
@@ -110,6 +110,16 @@ class SemanticController(DialogueController):
         return next((r for r in self.question_history() if r['topic'] and r['interrupted']
             and not r['answered']),None)
 
+    def fresh_native_answer(self):
+        native=getattr(self,'native_resume_context',None)
+        return native if (native and native.get('epoch')==self.epoch
+            and self.s.evidence.delivery.complete(native['response_id'])) else None
+
+    def native_introduced_subject(self):
+        native=self.fresh_native_answer()
+        labels=(getattr(self.s,'prepared_subject_model',None),spoken_subject(self.s),catalogue_subject_fallback(self.s))
+        return bool(native and any(label and len(label.split())>=2 and fingerprint(label) in fingerprint(native['text']) for label in labels))
+
     async def replay_question(self,identity,keys=(),explicit=True):
         row=next((r for r in self.question_history() if r['id']==identity),None)
         if not row or identity in self.question_replay_inflight:return
@@ -121,6 +131,7 @@ class SemanticController(DialogueController):
             prefix=[k for k in keys if self.speech.available(self.texts[k]) or k=='name' and self.name_repeat_requested
                     or k=='identity_ack' and self.identity_confirmation_requested]
             clip_key=('opening_body' if row['topic']==self.opening_topic and row['interrupted'] else row['topic'])
+            if row['topic']==self.opening_topic and self.native_introduced_subject():clip_key='opening_followup'
             question=self.texts.get(clip_key,row['text']);shortened=False
             # After answering an interruption, resume the question without
             # restating a personal preamble the listener has just heard.
@@ -175,6 +186,7 @@ class SemanticController(DialogueController):
         if not self.line.can_speak:
             self.s.evidence.event('line_speech_blocked',source='native',response_id=response_id)
             return ''
+        text=omit_spoken_generation(self.s,text)
         value=fingerprint(text)
         if len(value.split())>=8 and value in fingerprint(self.latest_input):
             self.s.evidence.event('native_echo_blocked',response_id=response_id,text=text)
@@ -480,6 +492,22 @@ class SemanticController(DialogueController):
             await self.failed_interpretation(exc,epoch);return
         if epoch!=self.epoch or self.unavailable():
             self.s.evidence.event('semantic_stale_discarded',source_turn=turn);return
+        cue=normalized(current)
+        ready=bool(re.fullmatch(r'(?:(?:да|алло|пожалуйста) )*(?:я )?(?:вас )?(?:внимательно )?слушаю(?: вас)?|(?:да )?говорите(?: пожалуйста)?',cue))
+        connection=bool(re.fullmatch(r'(?:алло|вас не слышно|вы меня слышите|слышно меня)',cue))
+        if ready:
+            meaning['listening_ready']=True;meaning['contextual_reply']=False
+            if meaning['control']=='fragment':meaning['control']='continue'
+        elif connection and meaning['control']=='fragment':
+            if meaning.get('reply_focus')=='other' and not meaning.get('buyer_question_parts'):
+                # An unintelligible buffered question followed by a connection
+                # check needs an audible repair, not another silent fragment wait.
+                self.last_meaning=meaning
+                await self.prepared(['resume','stt_repair'])
+                return
+            meaning['control']='continue' if meaning['other_questions'] else 'attention'
+        if re.fullmatch(r'(?:подскажите|скажите|уточните)(?: пожалуйста)?',cue):
+            meaning['control']='fragment'
         focus=meaning.get('reply_focus')
         if focus=='visit_only' and meaning.get('buyer_question_parts'):
             # A separately extracted non-visit question still needs its answer.
@@ -489,7 +517,7 @@ class SemanticController(DialogueController):
                 meaning[key]=False
             meaning['visit_request']='details'
             self.s.evidence.event('semantic_visit_only_reply',source_turn=turn)
-        elif focus in ('familiarity','own_vehicle'):
+        elif focus in ('familiarity','own_vehicle','beneficiary','selected_subject'):
             for key in ('confirmation_request','name_confirmation','subject'):
                 meaning[key]=False
             meaning['other_questions']=True
@@ -921,7 +949,7 @@ class SemanticController(DialogueController):
                 self.waiting=True
                 self.s.evidence.event('controller_wait',reason='active_visit_awaits_confirmation')
                 return
-            if (self.s.backchannel and remaining and not keys and time.monotonic()-self.last_receipt_at>=20
+            if (self.s.backchannel and remaining and not keys and not self.fresh_native_answer() and time.monotonic()-self.last_receipt_at>=20
                     and any(row.get('turn')==self.s.evidence.turn and row.get('status')=='answered' for row in self.answers.values())):
                 available=[key for key in ('receipt_0','receipt_2','receipt_1') if self.speech.available(self.texts[key])]
                 if available:
@@ -1029,6 +1057,10 @@ class SemanticController(DialogueController):
             self.fallback_goal+='\nСЕЙЧАС спрашивают о знакомстве с автомобилем/моделью. Ответь, изучал ли её или видел вживую; если также спросили, для кого выбираешь, ответь и на это. Это НЕ вопрос о прошлом общении с менеджером. Не повторяй название салона/город/предмет звонка.'
         elif focus=='own_vehicle':
             self.fallback_goal+='\nСЕЙЧАС вопрос о твоей нынешней машине/её замене или trade-in. Дай только запрошенный ответ о ней, по легенде и потребности. Не подтверждай приобретаемую модель, город или прошлое обращение.'
+        elif focus=='beneficiary':
+            self.fallback_goal+='\nСЕЙЧАС спрашивают только ДЛЯ КОГО выбираешь машину. Ответь только на это. Не рассказывай об изучении модели, фотографиях или прошлом общении.'
+        elif focus=='selected_subject':
+            self.fallback_goal+='\nСЕЙЧАС уточняют выбранную марку/модель или характеристику. Назови только запрошенное, используя краткое название из SCENARIO_SCOPE.spoken_subject. Не читай римское поколение вроде «, I».'
         self.native_input_epoch=epoch
         self.pending_after_native=(after,text,epoch,list(self.active_batch or []))
         self.s.evidence.event('semantic_native_requested',after_playback=after,requested_answers=list(self.requested_answers))

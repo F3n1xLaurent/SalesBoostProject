@@ -758,7 +758,7 @@ async function pickTrainerImportedSampleForScript(script: Prisma.CallScriptGetPa
   const dataCondition = safeJsonParseLocal<{ tags?: string[] }>(script.dataConditionJson, { tags: [] });
   const tags = Array.isArray(dataCondition.tags) ? dataCondition.tags.map(String).filter(Boolean) : [];
   const candidates = await prisma.importedItem.findMany({
-    where: { importSource: { holdingId: script.holdingId } },
+    where: { isActive: true, importSource: { holdingId: script.holdingId } },
     orderBy: { updatedAt: 'desc' },
     take: 500,
   });

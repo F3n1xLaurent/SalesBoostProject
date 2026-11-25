@@ -109,6 +109,39 @@ async def preflight_websocket(provider, uri, **kwargs):
         await socket.close()
 
 
+async def probe_elevenlabs_synthesis(options):
+    result = {"synthesisProbed": False, "checks": []}
+    query = urlencode({"model_id": options.ttsModel, "output_format": "pcm_16000", "sync_alignment": "true", "language_code": "ru"})
+    async with preflight_websocket("ElevenLabs TTS", "wss://api.elevenlabs.io/v1/text-to-dialogue/multi-stream-input?" + query,
+        additional_headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]}, open_timeout=15,
+        **({"proxy": elevenlabs_proxy()} if elevenlabs_proxy() else {})) as ws:
+        await ws.send(json.dumps({"context_id": "probe", "voices": [options.voiceId], "voice_settings": {"stability": 0.5}}))
+        start = time.monotonic()
+        # Match Pipecat's first turn: explicitly start it, then flush the text
+        # in a separate control frame. A connected but silent socket is not ready.
+        await ws.send(json.dumps({"context_id": "probe", "inputs": [{"text": "Здравствуйте. Проверяем качество голоса и задержку ответа.", "voice_id": options.voiceId, "new_turn": True}]}))
+        await ws.send(json.dumps({"context_id": "probe", "flush": True}))
+        async with asyncio.timeout(30):
+            async for raw in ws:
+                event = json.loads(raw)
+                if event.get("error") or event.get("message"):
+                    raise HTTPException(503, "ElevenLabs synthesis rejected")
+                if event.get("audio"):
+                    import base64
+                    audio = base64.b64decode(event["audio"], validate=True)
+                    if len(audio) % 2 or not audio:
+                        raise HTTPException(503, "Invalid PCM16 from ElevenLabs")
+                    result["synthesisProbed"] = True
+                    result["ttsFirstAudioMs"] = round((time.monotonic() - start) * 1000, 2)
+                    result["checks"].append("elevenlabs_ttd_pcm16000_first_audio")
+                    break
+                if event.get("is_final") and event.get("context_id") == "probe":
+                    raise HTTPException(503, "ElevenLabs TTS: контекст завершён без аудио.")
+    if not result["synthesisProbed"]:
+        raise HTTPException(503, "ElevenLabs closed the stream before sending audio")
+    return result
+
+
 async def check_compatibility(options, synthesize=False, provider_check=True):
     """No automatic substitutions; API access errors are evidence, not success."""
     validate(options, provider_check=provider_check)
@@ -189,29 +222,9 @@ async def check_compatibility(options, synthesize=False, provider_check=True):
         if "openai_realtime_text_only_vad_disabled" not in result["checks"]:
             raise HTTPException(503, "OpenAI closed before confirming session settings")
     if synthesize:
-        query = urlencode({"model_id": options.ttsModel, "output_format": "pcm_16000", "sync_alignment": "true"})
-        async with preflight_websocket("ElevenLabs TTS", "wss://api.elevenlabs.io/v1/text-to-dialogue/multi-stream-input?" + query,
-            additional_headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]}, open_timeout=15,
-            **({"proxy": elevenlabs_proxy()} if elevenlabs_proxy() else {})) as ws:
-            await ws.send(json.dumps({"context_id": "probe", "voices": [options.voiceId]}))
-            start = time.monotonic()
-            await ws.send(json.dumps({"context_id": "probe", "inputs": [{"text": "Здравствуйте. Проверяем качество голоса и задержку ответа.", "voice_id": options.voiceId}], "flush": True}))
-            async with asyncio.timeout(30):
-                async for raw in ws:
-                    event = json.loads(raw)
-                    if event.get("error") or event.get("message"):
-                        raise HTTPException(503, "ElevenLabs synthesis rejected")
-                    if event.get("audio"):
-                        import base64
-                        audio = base64.b64decode(event["audio"], validate=True)
-                        if len(audio) % 2 or not audio:
-                            raise HTTPException(503, "Invalid PCM16 from ElevenLabs")
-                        result["synthesisProbed"] = True
-                        result["ttsFirstAudioMs"] = round((time.monotonic() - start) * 1000, 2)
-                        result["checks"].append("elevenlabs_ttd_pcm16000_first_audio")
-                        break
-    if synthesize and not result["synthesisProbed"]:
-        raise HTTPException(503, "ElevenLabs closed the stream before sending audio")
+        synthesis = await probe_elevenlabs_synthesis(options)
+        result["checks"].extend(synthesis.pop("checks"))
+        result.update(synthesis)
     result["scope"] = "full_preflight" if provider_check else "tts_only"
     return result
 

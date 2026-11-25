@@ -273,6 +273,29 @@ function sanitizeXml(xml: string): string {
     .trim();
 }
 
+// The item extractor can recover complete records from a truncated XML body.
+// Such a prefix is useful for preview, but cannot retire missing inventory.
+function isCompleteXmlDocument(text: string): boolean {
+  const xml = sanitizeXml(text).replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+  const tags = /<\/?([A-Za-z_][\w:.-]*)(?:\s+(?:"[^"]*"|'[^']*'|[^'"<>])*)?\s*\/?>/g;
+  const stack: string[] = [];
+  let cursor = 0;
+  let roots = 0;
+  for (const match of xml.matchAll(tags)) {
+    const between = xml.slice(cursor, match.index);
+    if (between.includes('<') || (!stack.length && between.trim())) return false;
+    const token = match[0];
+    if (token.startsWith('</')) {
+      if (stack.pop() !== match[1]) return false;
+    } else {
+      if (!stack.length) roots++;
+      if (!token.endsWith('/>')) stack.push(match[1]);
+    }
+    cursor = match.index! + token.length;
+  }
+  return roots === 1 && stack.length === 0 && !xml.slice(cursor).trim();
+}
+
 function parseXmlNode(xml: string): unknown {
   const trimmed = sanitizeXml(xml);
   const rootMatch = trimmed.match(/^<([\w:.-]+)(?:\s[^>]*)?>([\s\S]*)<\/\1>$/);
@@ -932,6 +955,7 @@ function normalizeImportedItem(item: Prisma.ImportedItemGetPayload<{}>) {
     normalizedData: safeJsonParse(item.normalizedDataJson, {}),
     tags: safeJsonParse<string[]>(item.tagsJson, []),
     contentHash: item.contentHash,
+    isActive: item.isActive,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   };
@@ -1175,7 +1199,7 @@ export async function handleListImports(req: Request, res: Response): Promise<vo
   const items = await prisma.importSource.findMany({
     where,
     include: {
-      _count: { select: { items: true } },
+      _count: { select: { items: { where: { isActive: true } } } },
       holding: { select: { name: true } },
       runs: { where: { status: 'running', finishedAt: null }, orderBy: { startedAt: 'desc' }, take: 1 },
     },
@@ -1192,7 +1216,7 @@ export async function handleListImportedItems(req: Request, res: Response): Prom
   const sourceWhere = await buildImportSourceWhereForRequest(req);
   const search = parseString(req.query.search);
   const tagFilters = parseTagFilters(req.query.tags);
-  const where: Prisma.ImportedItemWhereInput = {};
+  const where: Prisma.ImportedItemWhereInput = { isActive: true };
   if (sourceIds.length > 0) {
     where.importSourceId = { in: sourceIds };
   } else if (sourceId) {
@@ -1249,7 +1273,7 @@ export async function handleListImportedTags(req: Request, res: Response): Promi
   let cursor: string | undefined;
   for (;;) {
     const items = await prisma.importedItem.findMany({
-      where: { importSource: sourceWhere },
+      where: { isActive: true, importSource: sourceWhere },
       select: { id: true, tagsJson: true },
       orderBy: { id: 'asc' }, take: 1000,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -1277,7 +1301,7 @@ export async function handleGetImport(req: Request, res: Response): Promise<void
   const source = await prisma.importSource.findUnique({
     where: { id },
     include: {
-      _count: { select: { items: true } },
+      _count: { select: { items: { where: { isActive: true } } } },
       holding: { select: { name: true } },
       runs: { where: { status: 'running', finishedAt: null }, orderBy: { startedAt: 'desc' }, take: 1 },
     },
@@ -1287,7 +1311,7 @@ export async function handleGetImport(req: Request, res: Response): Promise<void
     return;
   }
   const [items, runs] = await Promise.all([
-    prisma.importedItem.findMany({ where: { importSourceId: id }, orderBy: { updatedAt: 'desc' }, take: 30 }),
+    prisma.importedItem.findMany({ where: { importSourceId: id, isActive: true }, orderBy: { updatedAt: 'desc' }, take: 30 }),
     prisma.importRun.findMany({ where: { importSourceId: id }, orderBy: { startedAt: 'desc' }, take: 20 }),
   ]);
   res.json({
@@ -1340,12 +1364,12 @@ export async function handleCreateImport(req: Request, res: Response): Promise<v
       aiConfigJson: JSON.stringify(aiConfig),
       tagRulesJson: JSON.stringify(tagRules),
     },
-    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
+    include: { _count: { select: { items: { where: { isActive: true } } } }, holding: { select: { name: true } } },
   });
   await runImport(created.id);
   const createdWithItems = await prisma.importSource.findUnique({
     where: { id: created.id },
-    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
+    include: { _count: { select: { items: { where: { isActive: true } } } }, holding: { select: { name: true } } },
   });
   res.status(201).json({ item: normalizeImportSource(createdWithItems || created) });
 }
@@ -1401,7 +1425,7 @@ export async function handleUpdateImport(req: Request, res: Response): Promise<v
   const updated = await prisma.importSource.update({
     where: { id },
     data,
-    include: { _count: { select: { items: true } }, holding: { select: { name: true } } },
+    include: { _count: { select: { items: { where: { isActive: true } } } }, holding: { select: { name: true } } },
   });
   res.json({ item: normalizeImportSource(updated) });
 }
@@ -1435,9 +1459,11 @@ export async function runImport(importSourceId: string) {
     const text = await fetchSourceText(source.url);
     await assertNotCancelled();
     const format = source.format as ImportFormat;
+    if (format === 'xml' && !isCompleteXmlDocument(text)) throw new Error('XML импорта повреждён или загружен не полностью. Предыдущая выборка сохранена.');
     const xmlItems = format === 'xml' ? extractXmlItemsByPath(text, source.itemsPath, MAX_RUN_ITEMS) : null;
     const parsed = xmlItems ? null : parseSource(text, format);
     const rawItems = xmlItems ? xmlItems.items : getByPath(parsed, source.itemsPath);
+    if (!Array.isArray(rawItems)) throw new Error('По указанному пути импорта не найден массив записей. Предыдущая выборка сохранена.');
     const totalRawItems = xmlItems?.totalItems ?? (Array.isArray(rawItems) ? rawItems.length : 0);
     const items = Array.isArray(rawItems) ? rawItems.slice(0, MAX_RUN_ITEMS) : [];
     const config = safeJsonParse<ImportAIConfig>(source.aiConfigJson, normalizeConfig(null, []));
@@ -1445,6 +1471,7 @@ export async function runImport(importSourceId: string) {
     let createdItems = 0;
     let updatedItems = 0;
     const processedItemIds: string[] = [];
+    const seenItemIds: string[] = [];
     for (const item of items) {
       await assertNotCancelled();
       const normalizedData = flattenObject(item);
@@ -1470,9 +1497,11 @@ export async function runImport(importSourceId: string) {
             normalizedDataJson: JSON.stringify(normalizedData),
             tagsJson: JSON.stringify(tags),
             contentHash,
+            isActive: true,
           },
         });
         if (processedItemIds.length < MAX_AI_AUTOTAG_ITEMS) processedItemIds.push(updated.id);
+        seenItemIds.push(updated.id);
         updatedItems += 1;
       } else {
         const created = await prisma.importedItem.create({
@@ -1488,22 +1517,35 @@ export async function runImport(importSourceId: string) {
           },
         });
         if (processedItemIds.length < MAX_AI_AUTOTAG_ITEMS) processedItemIds.push(created.id);
+        seenItemIds.push(created.id);
         createdItems += 1;
       }
     }
     await assertNotCancelled();
     await applyAiAutotagsToImportedItems(importSourceId, processedItemIds, rules);
     await assertNotCancelled();
-    const finished = await prisma.importRun.update({
-      where: { id: run.id },
-      data: {
-        status: 'success',
-        finishedAt: new Date(),
-        totalItems: items.length,
-        createdItems,
-        updatedItems,
-        skippedItems: Math.max(0, totalRawItems - items.length),
-      },
+    const finished = await prisma.$transaction(async (tx) => {
+      const current = await tx.importRun.findUnique({ where: { id: run.id }, select: { status: true } });
+      if (current?.status === 'cancelled') throw new Error('IMPORT_RUN_CANCELLED');
+      // Only a complete successful snapshot proves an old row disappeared.
+      // Keep historical rows for existing call references; exclude them from new selections.
+      if (totalRawItems === items.length) {
+        await tx.importedItem.updateMany({
+          where: { importSourceId, isActive: true, id: { notIn: seenItemIds } },
+          data: { isActive: false },
+        });
+      }
+      return tx.importRun.update({
+        where: { id: run.id },
+        data: {
+          status: 'success',
+          finishedAt: new Date(),
+          totalItems: items.length,
+          createdItems,
+          updatedItems,
+          skippedItems: Math.max(0, totalRawItems - items.length),
+        },
+      });
     });
     await prisma.importSource.update({
       where: { id: importSourceId },

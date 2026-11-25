@@ -1,7 +1,9 @@
 import asyncio
 import json
 import os
+import base64
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -9,7 +11,8 @@ from unittest.mock import AsyncMock, patch
 from conversation import ConversationMemory, DeliveryLedger, adapt_prompt
 from policy import Evidence, Playback
 from readiness import WarmSocket
-from pipeline import GatedRealtime, Turn, DialogueTTS, call_context, OutputEvidence
+from pipeline import GatedRealtime, Turn, DialogueTTS, call_context, OutputEvidence, VoxSerializer
+from thinking_pause import ThinkingPause
 from pipecat.frames.frames import OutputAudioRawFrame, InputAudioRawFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.openai.realtime import events
@@ -76,6 +79,75 @@ class ConversationTests(unittest.TestCase):
 
 
 class RealtimeStabilityTests(unittest.IsolatedAsyncioTestCase):
+    def handoff(self):
+        s=SimpleNamespace(evidence=Evidence(),playback=Playback())
+        e=s.evidence;e.turn=e.output_turn=6;e.memory.semantic_mode=True
+        c=s.controller=SimpleNamespace(s=s,epoch=0,playing_id='filler',playing_kind='backchannel',
+            output_transport=SimpleNamespace(),unavailable=lambda:False,stop_backchannel=AsyncMock())
+        c.thinking=ThinkingPause(c)
+        c.thinking.current={'epoch':0,'turn':6,'source':'native_reply','started':time.monotonic(),
+            'emitted':True,'response_id':'filler'}
+        tag=s.playback.begin();s.playback.seal()
+        e.delivery.segment(tag,'filler')
+        e.delivery.response('filler').update(kind='backchannel',generated_done=True,tts_done=True)
+        e.assistant('main','Это целый ответ.',turn=6)
+        e.response_text_at['main']=e.clock();e.delivery.contexts['context-main']='main'
+        serializer=VoxSerializer(s,SimpleNamespace(send_text=AsyncMock()))
+        serializer.tag_responses[tag]='filler';serializer.tag_turns[tag]=6
+        tap=OutputEvidence(s,serializer,'tts')
+        return c,serializer,tap,tag
+
+    async def test_first_native_pcm_is_held_until_filler_phone_end_and_kept_byte_for_byte(self):
+        c,serializer,tap,tag=self.handoff()
+        payloads=[]
+        serializer._resample_audio_out=AsyncMock(side_effect=lambda frame:frame.audio)
+        async def send(frame,direction):
+            payloads.append(json.loads(await serializer.serialize(frame)))
+        tap.push_frame=send
+        prefix=OutputAudioRawFrame(b'\x11\x11'*320,16000,1);prefix.context_id='context-main'
+        tail=OutputAudioRawFrame(b'\x22\x22'*320,16000,1);tail.context_id='context-main'
+        task=asyncio.create_task(tap.process_frame(prefix,FrameDirection.DOWNSTREAM))
+        await asyncio.sleep(.03)
+        self.assertFalse(task.done());self.assertEqual(payloads,[])
+        self.assertEqual(serializer.websocket.send_text.await_count,0)
+        # A different old tag ending cannot authorize switching this filler.
+        await serializer.deserialize(json.dumps({'customEvent':'playback','action':'ended','tag':'pc-old'}))
+        await asyncio.sleep(.02);self.assertFalse(task.done())
+        await serializer.deserialize(json.dumps({'customEvent':'playback','action':'ended','tag':tag}))
+        await asyncio.wait_for(task,.3)
+        await tap.process_frame(tail,FrameDirection.DOWNSTREAM)
+        self.assertEqual(b''.join(base64.b64decode(row['media']['payload']) for row in payloads),prefix.audio+tail.audio)
+        c.stop_backchannel.assert_not_awaited()
+        self.assertFalse(any('clear_media' in call.args[0] for call in serializer.websocket.send_text.call_args_list))
+        self.assertTrue(next(e for e in c.s.evidence.events if e['event']=='thinking_pause_handoff')['phone_confirmed'])
+
+    async def test_barge_in_while_waiting_for_filler_does_not_release_stale_main_pcm(self):
+        c,serializer,tap,tag=self.handoff()
+        tap.push_frame=AsyncMock()
+        frame=OutputAudioRawFrame(b'\x11\x11'*320,16000,1);frame.context_id='context-main'
+        task=asyncio.create_task(tap.process_frame(frame,FrameDirection.DOWNSTREAM))
+        await asyncio.sleep(.02)
+        c.epoch+=1
+        await asyncio.wait_for(task,.3)
+        tail=OutputAudioRawFrame(b'\x22\x22'*320,16000,1);tail.context_id='context-main'
+        await tap.process_frame(tail,FrameDirection.DOWNSTREAM)
+        tap.push_frame.assert_not_awaited()
+        self.assertNotIn('main',c.s.evidence.response_audio_seen)
+        self.assertTrue(any(e['event']=='tts_audio_discarded_after_handoff' for e in c.s.evidence.events))
+
+    async def test_missing_filler_ack_has_a_bounded_recovery_before_main_pcm_is_released(self):
+        c,serializer,tap,tag=self.handoff()
+        order=[]
+        async def stop():order.append('clear_previous')
+        async def forward(frame,direction):order.append('main_pcm')
+        c.stop_backchannel=stop;tap.push_frame=forward
+        frame=OutputAudioRawFrame(b'\x11\x11'*320,16000,1);frame.context_id='context-main'
+        timeout=asyncio.timeout
+        with patch('thinking_pause.asyncio.timeout',side_effect=lambda seconds:timeout(.02)):
+            await tap.process_frame(frame,FrameDirection.DOWNSTREAM)
+        self.assertEqual(order,['clear_previous','main_pcm'])
+        self.assertTrue(any(e['event']=='thinking_pause_handoff_timeout' for e in c.s.evidence.events))
+
     def create_llm(self, **kwargs):
         self.s = SimpleNamespace(evidence=Evidence(), playback=Playback())
         return GatedRealtime(self.s, SimpleNamespace(turn=Turn(False, number=1)), api_key="test", **kwargs)

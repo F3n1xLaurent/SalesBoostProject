@@ -4,6 +4,18 @@ from plan_context import plan_need,selected_subject,subject_scope,grounded_subje
 
 
 class PlanContextTests(unittest.TestCase):
+    def test_comma_generation_is_not_a_spoken_model_or_an_english_pronoun(self):
+        from plan_context import omit_spoken_generation
+        for title,expected in [('Jetour Dashing, I 1.5 AMT Люкс','Jetour Dashing'),
+                               ('Exeed VX, I 2.0 AMT President','Exeed VX'),
+                               ('Toyota Land Cruiser, 200 Series Рестайлинг 1 4.5 AT','Toyota Land Cruiser')]:
+            s=SimpleNamespace(context={'subjectTitle':title})
+            self.assertEqual(spoken_subject(s),expected)
+        s=SimpleNamespace(context={'subjectTitle':'Exeed VX, I 2.0 AMT President'},prepared_spoken_subject='Exeed VX, I')
+        self.assertEqual(spoken_subject(s),'Exeed VX')
+        self.assertEqual(omit_spoken_generation(s,'Интересует Exeed VX, I, две тысячи двадцать третьего года.'),
+            'Интересует Exeed VX, две тысячи двадцать третьего года.')
+
     def test_failed_short_name_validation_keeps_a_literal_model_before_technical_suffix(self):
         s=SimpleNamespace(context={'subjectTitle':'Toyota Land Cruiser Prado 150 Series Рестайлинг 3 4.0 AT 4WD TXL'},prepared_spoken_subject=None)
         self.assertEqual(spoken_subject(s),'Toyota Land Cruiser Prado')

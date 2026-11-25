@@ -949,7 +949,7 @@ export async function pickImportedSampleForScript(script: Prisma.CallScriptGetPa
   // The editor shows zero selected records when no tags are chosen. Do not
   // inject a random company item into an otherwise need-based scenario.
   if (tags.length === 0) return null;
-  const where: Prisma.ImportedItemWhereInput = { importSource: { holdingId: script.holdingId } };
+  const where: Prisma.ImportedItemWhereInput = { isActive: true, importSource: { holdingId: script.holdingId } };
   const pageSize = 500;
   let offset = 0;
 

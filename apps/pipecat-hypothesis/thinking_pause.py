@@ -91,15 +91,17 @@ class ThinkingPause:
         c=self.c
         if job['emitted'] and getattr(c.s.evidence.memory,'semantic_mode',False):
             identifier=job.get('response_id') or c.playing_id
-            # Finish sending this short prepared clip, then let the normal
-            # output FIFO play the main reply. Clearing media here would cut
-            # the filler (and can flush audio belonging to the main response).
+            # A sealed segment is only sent, not finished on the phone. Starting
+            # another tag while Vox is still playing the filler switches the
+            # destination too early. Hold the first main PCM frame until the
+            # filler has a phone ACK; never clear media on the normal handoff.
+            waiting_at=time.monotonic()
             try:
                 if getattr(c,'output_transport',None):
-                    async with asyncio.timeout(2):
+                    async with asyncio.timeout(4):
                         while job['epoch']==c.epoch and not c.unavailable():
                             row=c.s.evidence.delivery.response(identifier)
-                            if row['interrupted'] or row['tags'] and row['tags']<=c.s.playback.sealed|row['confirmed']:break
+                            if row['interrupted'] or row['tags'] and row['tags']<=row['confirmed']:break
                             await asyncio.sleep(.01)
             except TimeoutError:
                 c.s.evidence.event('thinking_pause_handoff_timeout',response_id=identifier)
@@ -107,7 +109,10 @@ class ThinkingPause:
             if self.current is not job or job['epoch']!=c.epoch:return
             self.cancel(reason)
             if c.playing_id==identifier:c.playing_id=None;c.playing_kind=None
-            c.s.evidence.event('thinking_pause_handoff',response_id=identifier,clear_audio=False)
+            row=c.s.evidence.delivery.response(identifier)
+            c.s.evidence.event('thinking_pause_handoff',response_id=identifier,clear_audio=False,
+                phone_confirmed=bool(row['tags'] and row['tags']<=row['confirmed']),
+                wait_ms=round((time.monotonic()-waiting_at)*1000,2))
             return
         self.cancel(reason)
         # Output-only cancellation: never cancel the native LLM/TTS context.

@@ -59,8 +59,20 @@ def subject_scope(session):
 
 def spoken_subject(session):
     """The feed title stays intact for reasoning; speech uses a verified label."""
-    return getattr(session,'prepared_spoken_subject',None) or catalogue_subject_fallback(session) or (
+    return trim_catalogue_generation(getattr(session,'prepared_spoken_subject',None) or '') or catalogue_subject_fallback(session) or (
         'автомобиль' if selected_subject(session).get('subjectTitle') or getattr(session,'prepared_subject',None) else '')
+
+
+def trim_catalogue_generation(value):
+    return re.split(r',\s*(?:[IVX]+\b|\d+\s+Series\b)',value,maxsplit=1,flags=re.I)[0].strip(' ,;')
+
+
+def omit_spoken_generation(session,text):
+    title=selected_subject(session).get('subjectTitle') or getattr(session,'prepared_subject',None) or ''
+    generation=re.match(r'(.+?,\s*(?:[IVX]+\b|\d+\s+Series\b))',title,re.I)
+    if generation:
+        text=re.sub(re.escape(generation[1])+r'(?!\w)',lambda _:trim_catalogue_generation(generation[1]),text,flags=re.I)
+    return text
 
 
 def catalogue_subject_fallback(session):
@@ -70,7 +82,7 @@ def catalogue_subject_fallback(session):
     A decimal displacement, restyling or standalone transmission code ends it.
     """
     title=selected_subject(session).get('subjectTitle') or getattr(session,'prepared_subject',None) or ''
-    suffix=re.search(r'\b(?:рестайлинг|поколени[ея]|\d+\s+Series\b|(?:19|20)\d{2}\s*(?:года?\b|г\.)|\d[.,]\d\b|AT\b|MT\b|CVT\b|DSG\b)',title,re.I)
+    suffix=re.search(r',\s*(?:[IVX]+\b|\d+\s+Series\b)|\b(?:рестайлинг|поколени[ея]|\d+\s+Series\b|(?:19|20)\d{2}\s*(?:года?\b|г\.)|\d[.,]\d\b|AT\b|AMT\b|MT\b|CVT\b|DSG\b)',title,re.I)
     if not suffix:return ''
     prefix=title[:suffix.start()].strip(' ,;()—-')
     return prefix if 2<=len(prefix.split())<=8 and 3<=len(prefix)<=80 else ''
@@ -79,9 +91,12 @@ def catalogue_subject_fallback(session):
 def shorten_subject_mentions(session,text):
     # Embedded questions may require a different grammatical case. Keep their
     # invariant catalogue model; the opening and native replies use spoken_name.
-    short=getattr(session,'prepared_subject_model',None) or spoken_subject(session)
+    short=trim_catalogue_generation(getattr(session,'prepared_subject_model',None) or '') or spoken_subject(session)
     if not short:return text
     titles={selected_subject(session).get('subjectTitle'),getattr(session,'prepared_subject',None)}-{None,''}
+    for title in list(titles):
+        generation=re.match(r'(.+?,\s*(?:[IVX]+\b|\d+\s+Series\b))',title,re.I)
+        if generation:titles.add(generation[1])
     for title in sorted(titles,key=len,reverse=True):
         text=re.sub(r'(?<!\w)'+re.escape(title)+r'(?!\w)',lambda _:short,text,flags=re.I)
     return text

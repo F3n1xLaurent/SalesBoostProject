@@ -23,7 +23,7 @@ describe('import tag catalogue shared by data filters and call scripts', () => {
     await handleListImportedTags(request('own'), res);
     expect(res.json).toHaveBeenCalledWith({ tags: ['Авто', 'Дополнительный', 'Исторический'] });
     expect(prisma.importSource.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { holdingId: 'own' } }));
-    expect(prisma.importedItem.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { importSource: { holdingId: 'own' } } }));
+    expect(prisma.importedItem.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { isActive: true, importSource: { holdingId: 'own' } } }));
   });
 
   it('includes tags beyond the previous 5000-item limit without loading every item at once', async () => {
@@ -48,7 +48,7 @@ describe('import tag catalogue shared by data filters and call scripts', () => {
     const res = response();
     await handleListImportedTags(request(), res);
     expect(res.json.mock.calls[0][0].tags).toContain('Тег своей компании');
-    expect(find).toHaveBeenCalledWith(expect.objectContaining({ where: { importSource: { holdingId: { in: ['own'] } } } }));
+    expect(find).toHaveBeenCalledWith(expect.objectContaining({ where: { isActive: true, importSource: { holdingId: { in: ['own'] } } } }));
   });
 
   it('does not read another company when its ID is supplied explicitly', async () => {
@@ -71,6 +71,8 @@ describe('import rule tags survive supplementary AI tagging', () => {
     vi.spyOn(prisma.importRun, 'update').mockImplementation(async ({ data }: any) => ({ id: 'run', ...data }) as any);
     vi.spyOn(prisma.importSource, 'update').mockResolvedValue({} as any);
     vi.spyOn(prisma.importedItem, 'findFirst').mockResolvedValue(null);
+    vi.spyOn(prisma, '$transaction').mockImplementation(async (fn: any) => fn(prisma));
+    vi.spyOn(prisma.importedItem, 'updateMany').mockResolvedValue({ count: 0 });
     let imported: any;
     vi.spyOn(prisma.importedItem, 'create').mockImplementation(async ({ data }: any) => (imported = { id: 'item', ...data }) as any);
     vi.spyOn(prisma.importedItem, 'findMany').mockImplementation(async () => [imported] as any);

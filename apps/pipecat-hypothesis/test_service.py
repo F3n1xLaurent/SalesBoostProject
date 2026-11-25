@@ -79,6 +79,58 @@ class ServiceTests(unittest.TestCase):
 
 
 class DialTests(unittest.IsolatedAsyncioTestCase):
+    async def test_synthesis_probe_starts_and_flushes_the_selected_voice_like_runtime(self):
+        from urllib.parse import urlparse,parse_qs
+        sent=[]
+        class Socket:
+            close=AsyncMock()
+            async def send(self,raw):sent.append(json.loads(raw))
+            async def responses(self):
+                self_test.assertEqual(len(sent),3)
+                self_test.assertTrue(sent[1]['inputs'][0]['new_turn'])
+                self_test.assertNotIn('flush',sent[1])
+                self_test.assertEqual(sent[2],{'context_id':'probe','flush':True})
+                yield json.dumps({'context_id':'probe','audio':'AQACAAMA'})
+            def __aiter__(self):return self.responses()
+        self_test=self
+        with patch.dict(os.environ,{'ELEVENLABS_API_KEY':'synthetic-key'}), \
+             patch('service.elevenlabs_proxy',return_value='socks5://proxy.test:1080'), \
+             patch('service.connect',new=AsyncMock(return_value=Socket())) as opener:
+            result=await service.probe_elevenlabs_synthesis(service.Options(voiceId='synthetic-voice',ttsModel='eleven_v4_turbo'))
+        self.assertEqual(parse_qs(urlparse(opener.call_args.args[0]).query),{
+            'model_id':['eleven_v4_turbo'],'output_format':['pcm_16000'],'sync_alignment':['true'],'language_code':['ru']})
+        self.assertEqual(opener.call_args.kwargs['proxy'],'socks5://proxy.test:1080')
+        self.assertEqual(sent[0]['voices'],['synthetic-voice'])
+        self.assertEqual(sent[0]['voice_settings'],{'stability':0.5})
+        self.assertEqual(sent[1]['inputs'][0]['voice_id'],'synthetic-voice')
+        self.assertTrue(result['synthesisProbed'])
+        self.assertGreaterEqual(result['ttsFirstAudioMs'],0)
+
+    async def test_synthesis_probe_rejects_final_context_without_audio_immediately(self):
+        class Socket:
+            close=AsyncMock();send=AsyncMock()
+            async def responses(self):
+                yield json.dumps({'context_id':'probe','is_final':True})
+                raise AssertionError('Must not wait on a context that is already closed')
+            def __aiter__(self):return self.responses()
+        with patch.dict(os.environ,{'ELEVENLABS_API_KEY':'synthetic-key'}), \
+             patch('service.connect',new=AsyncMock(return_value=Socket())):
+            with self.assertRaises(HTTPException) as result:
+                await service.probe_elevenlabs_synthesis(service.Options(voiceId='synthetic-voice'))
+        self.assertIn('без аудио',result.exception.detail)
+
+    async def test_synthesis_probe_never_treats_an_open_socket_or_malformed_audio_as_success(self):
+        for event in (None,{'audio':'AQ=='},{'error':'quota_exceeded'}):
+            class Socket:
+                close=AsyncMock();send=AsyncMock()
+                async def responses(self):
+                    if event is not None:yield json.dumps(event)
+                def __aiter__(self):return self.responses()
+            with self.subTest(event=event),patch.dict(os.environ,{'ELEVENLABS_API_KEY':'synthetic-key'}), \
+                 patch('service.connect',new=AsyncMock(return_value=Socket())):
+                with self.assertRaises(HTTPException):
+                    await service.probe_elevenlabs_synthesis(service.Options(voiceId='synthetic-voice'))
+
     async def test_production_dial_requests_recording_and_preserves_start_scenarios_session_id(self):
         for payload,expected in [
             ({'result':1,'call_session_history_id':123},123),

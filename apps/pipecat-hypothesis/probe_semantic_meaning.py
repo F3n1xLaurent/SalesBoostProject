@@ -14,9 +14,12 @@ from turn_meaning import interpret,MODEL
 
 PROMPT='Ты Андрей, мужчина.\nДоставляете по области? [обязательная тема]\nРаботаете по выходным? [обязательная тема]'
 CASES=[
+    ('focus_beneficiary','Машину подбираете себе или кому-то из семьи?',{'reply_focus':'beneficiary'}),
+    ('focus_beneficiary_distorted','Для кого сейчас я подбираю себе автомобиль?',{'reply_focus':'beneficiary'}),
+    ('focus_selected_model','Какая марка и модель вам нужна?',{'reply_focus':'selected_subject'}),
     ('focus_visit_day','Для оценки вашей машины выберем время. Удобнее завтра или в субботу?',{'reply_focus':'visit_only','visit_request':'details'}),
-    ('focus_familiarity','Машину выбираете для себя? С автомобилем уже знакомы?',{'reply_focus':'familiarity','other_questions':True}),
-    ('focus_familiarity_distorted','Для себя подбираете? Сафтомобили уже знакомы?',{'reply_focus':'familiarity','other_questions':True}),
+    ('focus_familiarity','Машину выбираете для себя? С автомобилем уже знакомы?',{'reply_focus':'other','other_questions':True}),
+    ('focus_familiarity_distorted','Для себя подбираете? Сафтомобили уже знакомы?',{'reply_focus':'other','other_questions':True}),
     ('focus_prior_contact','Вы уже звонили нашим менеджерам на прошлой неделе?',{'reply_focus':'prior_contact'}),
     ('focus_own_vehicle','Отлично, будем ждать вас завтра. Нынешнюю Шкоду планируете продать?',{'reply_focus':'own_vehicle','other_questions':True}),
     ('focus_mixed_visit','Подъедете в субботу? Какой пробег вашей машины?',{'reply_focus':'other','other_questions':True}),
