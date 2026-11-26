@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type OpenAI from 'openai';
 import { openai } from '../lib/openaiClient';
 import { currentCostContext, withCostContext } from '../economics/costContext';
+import { currentAuditAnalyticsKey } from '../logic/auditAnalyticsProgress';
 
 type ReportStage = 'generation' | 'findingCoverage' | 'dialogCoverage' | 'exampleRepair' | 'exampleReview';
 const context = new AsyncLocalStorage<{ controller: AbortController; deadline: number }>();
@@ -45,17 +46,18 @@ export async function createReportCompletion(params: OpenAI.Chat.Completions.Cha
   const options = { timeout: Math.min(stage === 'exampleReview' ? 90_000 : 120_000, remaining), maxRetries: 0,
     ...(current ? { signal: current.controller.signal } : {}) };
   const cost = currentCostContext();
+  const identity = { key: currentAuditAnalyticsKey() ?? null, entityType: cost?.entityType ?? null, entityId: cost?.entityId ?? null };
   const started = performance.now();
   try {
     const response = await withCostContext({ entityType: cost?.entityType ?? 'report_generation', entityId: cost?.entityId ?? 'unattributed',
       ...cost, stage: `report_${stage}` }, () => openai.chat.completions.create(params, options));
     await traceContext.getStore()?.(stage, { content: response.choices[0]?.message?.content, finishReason: response.choices[0]?.finish_reason });
-    console.info('[report/stage]', { stage, ms: Math.round(performance.now() - started),
+    console.info('[report/stage]', { ...identity, stage, ms: Math.round(performance.now() - started),
       inputTokens: response.usage?.prompt_tokens, outputTokens: response.usage?.completion_tokens,
       reasoningTokens: response.usage?.completion_tokens_details?.reasoning_tokens, finishReason: response.choices[0]?.finish_reason });
     return response;
   } catch (error) {
-    console.warn('[report/stage]', { stage, ms: Math.round(performance.now() - started), status: 'failed' });
+    console.warn('[report/stage]', { ...identity, stage, ms: Math.round(performance.now() - started), status: 'failed' });
     throw error;
   }
 }

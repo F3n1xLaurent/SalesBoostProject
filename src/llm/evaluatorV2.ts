@@ -25,6 +25,7 @@ import { reviewTranscriptReliability } from '../voice/reviewTranscriptReliabilit
 import { clientAction, confirmedTimeInDialog, criterionAllowsNa, reportCriterionCode, REPORT_MARK_RUBRIC } from '../voice/reportAssessment';
 import { creditConsultationRequested, isCreditExplanationCriterion } from '../logic/creditApplicability';
 import { REPORT_EVIDENCE_RULES } from '../voice/reportQualityRules';
+import { EVALUATION_TIMEOUT_MS, EVALUATION_REQUEST_TIMEOUT_MS, withAnalysisStageDeadline } from '../logic/analysisExecution';
 
 // ── Types ──
 
@@ -301,9 +302,15 @@ export function productPresentationContradiction(input: EvaluatorInput, classifi
 // ── Main evaluator function ──
 
 export async function evaluateSessionV2(input: EvaluatorInput): Promise<EvaluatorOutput> {
+  return withAnalysisStageDeadline('evaluation', EVALUATION_TIMEOUT_MS, signal => evaluateWithinDeadline(input, signal));
+}
+
+async function evaluateWithinDeadline(input: EvaluatorInput, signal: AbortSignal): Promise<EvaluatorOutput> {
+  signal.throwIfAborted();
   updateAuditAnalyticsStage('evaluation');
   const transcriptionUncertainties = collectTranscriptionUncertainties(input.dialogHistory, input.car.year, input.transcriptionAlternatives);
-  if (input.reviewUncertainAsr) transcriptionUncertainties.push(...await reviewTranscriptReliability(input.dialogHistory));
+  if (input.reviewUncertainAsr) transcriptionUncertainties.push(...await reviewTranscriptReliability(input.dialogHistory, signal));
+  signal.throwIfAborted();
   const customChecklist = input.evaluationChecklist?.items?.length ? input.evaluationChecklist : null;
   const expectedCodes = customChecklist ? customChecklist.items.map((item) => item.id) : CHECKLIST_CODE;
   const historyStr = input.dialogHistory
@@ -370,6 +377,8 @@ ${REPORT_EVIDENCE_RULES}
   let partial: Partial<LLMClassification> | null = null;
 
   for (let attempt = 1; attempt <= 2 && !classification; attempt += 1) {
+    signal.throwIfAborted();
+    let receivedResponse = false;
     try {
       const response = await openai.chat.completions.create({
         model: config.openaiChatModel,
@@ -391,7 +400,9 @@ ${REPORT_EVIDENCE_RULES}
         ...compatibleChatTemperature(config.openaiChatModel, attempt === 1 ? 0.2 : 0.1),
         ...compatibleChatMaxTokens(config.openaiChatModel, attempt === 1 ? 8000 : 12000),
         ...compatibleReportReasoning(config.openaiChatModel, 'evaluation'),
-      });
+      }, { timeout: EVALUATION_REQUEST_TIMEOUT_MS, maxRetries: 0, signal });
+      receivedResponse = true;
+      signal.throwIfAborted();
 
       const text = response.choices[0]?.message?.content?.trim();
       if (response.choices[0]?.finish_reason === 'length') throw new Error('Evaluator token limit reached');
@@ -438,6 +449,7 @@ ${REPORT_EVIDENCE_RULES}
       }
       classification = parsed;
     } catch (err) {
+      signal.throwIfAborted();
       // Retrying invalid credentials or exhausted billing cannot repair a
       // checklist. Preserve the actual provider error for the caller/UI.
       const status = Number((err as { status?: unknown })?.status);
@@ -445,6 +457,9 @@ ${REPORT_EVIDENCE_RULES}
       validationIssue = err instanceof Error ? err.message : String(err);
       lastFailure = err;
       console.warn(`[evaluatorV2] attempt=${attempt} failed:`, err instanceof Error ? err.message : err);
+      // A validation repair can complete a checklist; replaying a failed
+      // network request cannot repair model output that never arrived.
+      if (!receivedResponse) break;
     }
   }
 

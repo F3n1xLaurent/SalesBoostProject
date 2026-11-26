@@ -3,7 +3,7 @@ import { evaluateSessionV2 } from '../llm/evaluatorV2';
 import { openai } from '../lib/openaiClient';
 import { getDefaultState } from '../state/defaultState';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 const input = () => ({ dialogHistory: [{ role: 'manager' as const, content: 'Здравствуйте.' }],
   car: {} as any, state: getDefaultState(), earlyFail: false,
   evaluationChecklist: { id: 'test', name: 'Тест', items: [
@@ -47,8 +47,23 @@ describe('evaluator failure diagnostics', () => {
   });
   it('distinguishes a provider failure from incomplete classification and retains its cause', async () => {
     const failure = new Error('Connection error');
-    vi.spyOn(openai.chat.completions, 'create').mockRejectedValue(failure);
+    const create = vi.spyOn(openai.chat.completions, 'create').mockRejectedValue(failure);
     await expect(evaluateSessionV2(input())).rejects.toMatchObject({ message: 'EVALUATOR_UNAVAILABLE: Connection error', cause: failure });
+    expect(create).toHaveBeenCalledOnce();
+    expect(create.mock.calls[0][1]).toMatchObject({ timeout: 120_000, maxRetries: 0, signal: expect.any(AbortSignal) });
+  });
+  it('releases an evaluation that ignores cancellation and never starts a late repair', async () => {
+    vi.useFakeTimers();
+    let release!: (value: unknown) => void;
+    const create = vi.spyOn(openai.chat.completions, 'create').mockImplementation((() => new Promise(resolve => { release = resolve; })) as any);
+    const pending = evaluateSessionV2(input());
+    const settled = pending.then(() => 'ready', error => error.message);
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(await Promise.race([settled, Promise.resolve('still blocked')])).toContain('ANALYSIS_STAGE_TIMEOUT: evaluation');
+    expect(create.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    release({ choices: [{ message: { content: '{"checklist":[]}' } }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(create).toHaveBeenCalledOnce();
   });
   it('does not retry invalid provider credentials', async () => {
     const failure = Object.assign(new Error('Invalid credentials'), { status: 401 });

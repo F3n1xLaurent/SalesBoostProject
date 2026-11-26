@@ -8,7 +8,7 @@ import { recordVoiceCallConnected } from './voiceCallSession';
 
 export const PIPECAT_PROFILE = Object.freeze({ provider: 'openai', model: 'gpt-realtime-2.1',
   ttsModel: 'eleven_v4_turbo', dialogueMode: 'semantic', backchannel: true,
-  reasoningEffort: 'low', trimIdleAudio: false });
+  reasoningEffort: 'low', trimIdleAudio: true });
 export const PIPECAT_STATE_ROOT = path.resolve('storage/voice-pipecat');
 const validId = (id: string) => /^[0-9a-f]{8}-[0-9a-f-]{27}$/iu.test(id);
 const terminal = new Set(['disconnected', 'failed', 'busy', 'no_answer', 'cancelled']);
@@ -61,7 +61,8 @@ export async function prepareProductionPipecatCall(callId: string, phone: string
     callId, to: '+' + phone.replace(/\D/g, ''), voiceId, prompt: plan.prompt,
     context: { planId: plan.planId, planName: plan.planName, subjectTitle: plan.subjectTitle,
       subjectDescription: plan.subjectDescription, customerNeed: plan.customerNeed ?? null, companyName: plan.companyName ?? null,
-      ...(plan.targetLocation ? { targetLocation: plan.targetLocation } : {}) },
+      ...(plan.targetLocation ? { targetLocation: plan.targetLocation } : {}),
+      ...(plan.visitSchedule ? { visitSchedule: plan.visitSchedule } : {}) },
   });
   if (prepared.callId !== callId || prepared.status !== 'prepared') throw new Error('Pipecat не подтвердил подготовку нового звонка.');
   await savePipecatState(prepared);

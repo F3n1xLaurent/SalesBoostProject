@@ -3,6 +3,7 @@ import { APIConnectionError } from 'openai';
 import { openai } from '../lib/openaiClient';
 import { config } from '../config';
 import type { TranscriptTurn } from './callHistory';
+import { RETRANSCRIPTION_TIMEOUT_MS, withAnalysisStageDeadline } from '../logic/analysisExecution';
 
 export const CALL_RETRANSCRIPTION_MODEL = config.aiApiProvider === 'proxyapi'
   ? 'openai/gpt-4o-transcribe-diarize' : 'gpt-4o-transcribe-diarize';
@@ -99,24 +100,34 @@ export async function retranscribeCallRecording(
   filepath: string,
   original: readonly TranscriptTurn[],
 ): Promise<TranscriptTurn[] | null> {
+  return withAnalysisStageDeadline('retranscription', RETRANSCRIPTION_TIMEOUT_MS, signal => retranscribeWithinDeadline(filepath, original, signal));
+}
+
+async function retranscribeWithinDeadline(filepath: string, original: readonly TranscriptTurn[], signal: AbortSignal): Promise<TranscriptTurn[] | null> {
   const stat = await fs.promises.stat(filepath);
+  signal.throwIfAborted();
   if (stat.size <= 0 || stat.size > MAX_TRANSCRIPTION_BYTES) return null;
-  const deadline = Date.now() + 90_000;
+  const deadline = Date.now() + RETRANSCRIPTION_TIMEOUT_MS;
   for (let attempt = 0; attempt < 2; attempt++) {
+    signal.throwIfAborted();
     // Multipart upload bodies are streams. A network retry must reopen the
     // file, rather than ask the SDK to reuse an already consumed body.
     const file = fs.createReadStream(filepath);
+    const abortUpload = () => file.destroy();
+    signal.addEventListener('abort', abortUpload, { once: true });
     try {
       const result = await openai.audio.transcriptions.create({ file,
         model: CALL_RETRANSCRIPTION_MODEL, response_format: 'diarized_json', chunking_strategy: 'auto',
-      } as any, { timeout: Math.max(1, deadline - Date.now()), maxRetries: 0 }) as unknown as { segments?: DiarizedSegment[] };
+      } as any, { timeout: Math.max(1, deadline - Date.now()), maxRetries: 0, signal }) as unknown as { segments?: DiarizedSegment[] };
+      signal.throwIfAborted();
       return Array.isArray(result.segments) ? mergeCallRetranscription(original, result.segments) : null;
     } catch (error) {
+      signal.throwIfAborted();
       const failure = error as { name?: string; status?: number };
       const transient = error instanceof APIConnectionError
         || [408, 429].includes(failure.status ?? 0) || (failure.status ?? 0) >= 500;
       if (attempt || !transient || deadline - Date.now() < 2000) throw error;
-    } finally { file.destroy(); }
+    } finally { signal.removeEventListener('abort', abortUpload); file.destroy(); }
     await new Promise(resolve => setTimeout(resolve, 750));
   }
   return null;

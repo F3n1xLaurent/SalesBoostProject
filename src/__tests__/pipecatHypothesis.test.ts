@@ -81,6 +81,13 @@ describe('isolated Pipecat hypothesis', () => {
     const result = await invoke('/preflight', { provider: 'gemini', ttsModel: 'eleven_v4', planId: 'plan' });
     expect(result.request).toHaveBeenCalledWith('/preflight', { provider: 'gemini', ttsModel: 'eleven_v4', voiceId: 'profile-voice' });
   });
+  it('forwards the branch schedule to the test controller', async () => {
+    const visitSchedule = { workingHoursFrom: '11:30', workingHoursTo: '20:00', timezoneOffsetMinutes: 240 };
+    const result = await invoke('/calls', { provider: 'openai', ttsModel: 'eleven_v4_turbo', planId: 'plan', to: '+79991234567' },
+      { resolvePlan: vi.fn().mockResolvedValue({ ...plan, visitSchedule }) });
+    expect(result.status).toBe(200);
+    expect(result.request).toHaveBeenCalledWith('/sessions', expect.objectContaining({ context: expect.objectContaining({ visitSchedule }) }));
+  });
   it('keeps Gemini ProxyAPI as an explicit provider rather than substituting direct Google', async () => {
     const result = await invoke('/calls', { provider: 'gemini_proxyapi', ttsModel: 'eleven_v4_turbo', planId: 'plan', to: '+79991234567' });
     expect(result.status).toBe(200);

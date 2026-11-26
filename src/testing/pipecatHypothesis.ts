@@ -7,7 +7,8 @@ const TTS_MODELS = new Set(['eleven_v3', 'eleven_v4', 'eleven_v4_turbo']);
 
 type Plan = { planId: string; planName: string; prompt: string; elevenLabsVoiceId: string | null;
   subjectTitle: string | null; subjectDescription: string | null; customerNeed?: string | null; companyName?: string | null;
-  targetLocation?: { name: string | null; city: string | null; address: string | null } | null };
+  targetLocation?: { name: string | null; city: string | null; address: string | null } | null;
+  visitSchedule?: { workingHoursFrom: string; workingHoursTo: string; timezoneOffsetMinutes: number } | null };
 type Dependencies = {
   resolvePlan: (req: Request, id: string) => Promise<Plan>;
   request: (path: string, body?: unknown) => Promise<unknown>;
@@ -75,7 +76,8 @@ export function createPipecatHypothesisRouter(overrides: Partial<Dependencies> =
         res.json(await deps.request(action === 'calls' ? '/sessions' : '/preflight', action === 'calls'
           ? { ...options, to, prompt: plan.prompt, context: { planId: plan.planId, planName: plan.planName,
             subjectTitle: plan.subjectTitle, subjectDescription: plan.subjectDescription, customerNeed: plan.customerNeed ?? null, companyName: plan.companyName ?? null,
-            ...(plan.targetLocation ? { targetLocation: plan.targetLocation } : {}) } }
+            ...(plan.targetLocation ? { targetLocation: plan.targetLocation } : {}),
+            ...(plan.visitSchedule ? { visitSchedule: plan.visitSchedule } : {}) } }
           : options));
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Ошибка отдельного прототипа.';

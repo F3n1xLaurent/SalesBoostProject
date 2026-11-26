@@ -1150,6 +1150,9 @@ export async function ensureFindingBetterExamples(
     problems: indices.length ? indices.map((index) => ({ problemTitle: report.keyFindings[index].problemTitle, comment: report.keyFindings[index].comment }))
       : [{ problemTitle: 'Замечание к реплике', comment: dialog[quoteIndex].comment }],
     quote: transcript[quoteIndex].text,
+    // The semantic reviewer checks the entire manager reply, including ASR
+    // fragments. Give the repair model that same preservation boundary.
+    originalReply: managerReplyContext(transcript, quoteIndex).at(-1)?.text ?? transcript[quoteIndex].text,
     knownDialog: managerReplyContext(transcript, quoteIndex)
       .map((turn) => `${turn.role === 'manager' ? 'Менеджер' : 'Клиент'}: ${turn.text}`)
       .join('\n'),
@@ -1205,6 +1208,7 @@ export async function ensureFindingBetterExamples(
                 content: [
                   'Для каждой группы problems создай ОДИН полный вариант «Как лучше» для всей исходной реплики менеджера.',
                   'Он должен одновременно устранить ВСЕ замечания problems, а не только первое. Сохрани все правильные ответы и факты исходной реплики; добавь недостающее, не заменяй весь ответ уточняющим вопросом. Числа сохраняй цифрами.',
+                  'quote может быть только фрагментом ASR. originalReply — вся заменяемая реплика, включая соседние фрагменты менеджера. Сохрани все её корректные сведения и действия: проверка preserves-facts оценивает весь originalReply, а не только quote. Перед возвратом сверь каждое такое сведение с готовым betterExample. Не переноси ошибочные или ненадёжно распознанные утверждения как подтверждённые факты.',
                   REPORT_QUALITY_RULES,
                   REPORT_EXAMPLE_ACCEPTANCE_RULES,
                   'Используй только сведения из knownDialog и подтверждённые сведения о товаре/компании из scenarioFacts. Нельзя использовать факты, которые клиент сообщил позднее.',

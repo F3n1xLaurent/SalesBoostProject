@@ -3,6 +3,13 @@ from policy import Playback, Evidence, is_backchannel, TTS_MODELS
 
 
 class PolicyTests(unittest.TestCase):
+    def test_unsupported_transcript_script_preserves_short_answers_and_vehicle_names(self):
+        from policy import unsupported_transcript_script
+        for text in ('学校','学校。','你好！','確認','いい','这个','مرحبا','नमस्ते'):
+            with self.subTest(text=text):self.assertTrue(unsupported_transcript_script(text))
+        for text in ('Да.','Нет','Алло.','4','BMW','Volga K50','Toyota 凯美瑞','comes самом начале','的 твоей',''):
+            with self.subTest(text=text):self.assertFalse(unsupported_transcript_script(text))
+
     def test_introductory_greeting_is_bounded_and_not_a_real_interruption(self):
         from policy import is_introductory_greeting
         for text in ('Алло.', 'Здрасьте', 'Здравствуйте, Дмитрий.', 'Добрый день'):

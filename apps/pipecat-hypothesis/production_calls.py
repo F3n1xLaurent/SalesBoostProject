@@ -8,7 +8,7 @@ from fastapi import HTTPException,Depends
 from pydantic import BaseModel,Field
 
 PROFILE={'provider':'openai','ttsModel':'eleven_v4_turbo','dialogueMode':'semantic',
-         'backchannel':True,'reasoningEffort':'low','trimIdleAudio':False}
+         'backchannel':True,'reasoningEffort':'low','trimIdleAudio':True}
 TERMINAL={'disconnected','failed','busy','no_answer','cancelled'}
 
 
@@ -82,7 +82,7 @@ def register(service):
             call=service.Call(**PROFILE,to=options.to,voiceId=options.voiceId,prompt=options.prompt,context=options.context)
             # Reserve capacity before awaiting any upstream provider.
             s=service.Session(identifier,call.provider,call.ttsModel,call.voiceId,call.prompt,call.context,call.to,
-                reasoning_effort='low',dialogue_mode='semantic',backchannel=True,production=True)
+                reasoning_effort='low',trim_idle_audio=call.trimIdleAudio,dialogue_mode='semantic',backchannel=True,production=True)
             service.sessions[identifier]=s
             stage='preflight'
             try:

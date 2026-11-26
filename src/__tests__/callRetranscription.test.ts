@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import fs from 'node:fs';
 import { APIConnectionError } from 'openai';
 import { openai } from '../lib/openaiClient';
 import { mergeCallRetranscription, retranscribeCallRecording } from '../voice/callRetranscription';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 const original = [
   { role: 'manager' as const, text: 'Добрый день, меня зовут Никита. Чем могу помочь?' },
@@ -23,6 +24,26 @@ const segments = [
 ];
 
 describe('call recording second-pass transcription', () => {
+  it('aborts a stalled upload within its shared deadline and never retries its late response', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'asr-upload-deadline-'));
+    const filepath = join(directory, 'synthetic.wav');
+    await writeFile(filepath, 'synthetic upload bytes');
+    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: 22 } as any);
+    vi.useFakeTimers();
+    let release!: (value: unknown) => void;
+    const create = vi.spyOn(openai.audio.transcriptions, 'create').mockImplementation((() => new Promise(resolve => { release = resolve; })) as any);
+    const pending = retranscribeCallRecording(filepath, original);
+    const rejected = expect(pending).rejects.toThrow('ANALYSIS_STAGE_TIMEOUT: retranscription');
+    try {
+      await vi.advanceTimersByTimeAsync(90_000);await rejected;
+      const request = create.mock.calls[0];
+      expect(request[1]).toMatchObject({ maxRetries: 0 });
+      expect(request[1]?.signal?.aborted).toBe(true);
+      expect((request[0].file as fs.ReadStream).destroyed).toBe(true);
+      release({ segments });await vi.advanceTimersByTimeAsync(0);
+      expect(create).toHaveBeenCalledOnce();
+    } finally { release?.({ segments });vi.useRealTimers();await rm(directory, { recursive: true, force: true }); }
+  });
   it('reopens and replays the complete upload after a connection failure', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'asr-upload-retry-'));
     const filepath = join(directory, 'synthetic.wav');

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   voiceFind: vi.fn(), voiceUpdate: vi.fn(), voiceUpsert: vi.fn(), planFind: vi.fn(), planUpdate: vi.fn(),
   scriptFind: vi.fn(), evaluate: vi.fn(), bundle: vi.fn(), criteria: vi.fn(), recording: vi.fn(), retranscribe: vi.fn(),
@@ -90,6 +90,7 @@ beforeEach(() => {
   mocks.criteria.mockResolvedValue({ choices: [{ message: { content: JSON.stringify({ items: [{ expectedAnswer: '2250000 рублей', maxScore: 100, score: 100, status: 'YES' }], totalScore: 100, maxScore: 100, percent: 100 }) } }] });
 });
 const finalEvent = { call_id: 'call-production', event: 'disconnected', ts: '2026-10-29T10:02:00Z' };
+afterEach(() => { vi.useRealTimers(); });
 describe('production hypothesis 2 through the existing recording and report pipeline', () => {
   it('processes durable Pipecat output through recording, evaluation and the same plan report without duplicate analysis', async () => {
     session.scenario = 'pipecat';
@@ -178,6 +179,48 @@ describe('production hypothesis 2 through the existing recording and report pipe
     expect(mocks.recording).toHaveBeenCalledTimes(1);
     expect(mocks.bundle).toHaveBeenCalledTimes(1);
   });
+  it('does not keep analytics blocked by a recording download and does not rewrite a report when it finishes late', async () => {
+    vi.useFakeTimers();
+    let finishRecording!: () => void;
+    mocks.recording.mockImplementationOnce(() => {
+      session.recordingStatus = 'processing';
+      return new Promise<void>(resolve => { finishRecording = () => { session.recordingStatus = 'ready'; resolve(); }; });
+    });
+    const pending = finalizeVoiceCallSession({ ...finalEvent, recording_started: true });
+    const settled = pending.then(() => true);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.recording).toHaveBeenCalledOnce();expect(mocks.evaluate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await Promise.race([settled, Promise.resolve(false)])).toBe(true);
+      expect(mocks.evaluate).toHaveBeenCalledOnce();expect(mocks.retranscribe).not.toHaveBeenCalled();
+      expect(mocks.evaluate).toHaveBeenCalledWith(expect.objectContaining({ reviewUncertainAsr: true }));
+      expect(JSON.parse(session.retranscriptionJson)).toMatchObject({ status: 'skipped', reason: 'recording_wait_timeout' });
+      const report = session.evaluationJson;
+      finishRecording();await vi.advanceTimersByTimeAsync(0);await pending;
+      expect(session.recordingStatus).toBe('ready');expect(session.evaluationJson).toBe(report);
+      expect(session.originalTranscriptJson).toBeNull();
+      expect(mocks.evaluate).toHaveBeenCalledOnce();
+    } finally { finishRecording?.();await vi.advanceTimersByTimeAsync(0);await pending; }
+  });
+  it('continues to the report when plan criteria time out without inventing their score', async () => {
+    vi.useFakeTimers();
+    let finishCriteria!: () => void;
+    mocks.criteria.mockImplementationOnce(() => new Promise(resolve => { finishCriteria = () => resolve({ choices: [{ message: { content: '{}' } }] }); }));
+    const pending = finalizeVoiceCallSession(finalEvent);
+    const settled = pending.then(() => true);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await Promise.race([settled, Promise.resolve(false)])).toBe(true);
+      expect(mocks.criteria.mock.calls[0][1]).toMatchObject({ timeout: 60_000, maxRetries: 0 });
+      expect(mocks.criteria.mock.calls[0][1].signal.aborted).toBe(true);
+      expect(JSON.parse(session.evaluationJson)).toMatchObject({ plan_criteria: null, unified_call_report: { verdict: 'success' } });
+      expect(mocks.jobs.get('call-production').status).toBe('done');
+      const report = session.evaluationJson;
+      finishCriteria();await vi.advanceTimersByTimeAsync(0);
+      expect(session.evaluationJson).toBe(report);
+    } finally { finishCriteria?.();await vi.advanceTimersByTimeAsync(0);await pending; }
+  });
   it('repairs a missing plan report after successful evaluation without evaluating again', async () => {
     await finalizeVoiceCallSession(finalEvent);
     planCall.evaluationJson = null; planCall.transcriptJson = null;
@@ -195,6 +238,16 @@ describe('production hypothesis 2 through the existing recording and report pipe
     expect(planCall.failureReason).toBe(session.failureReason);
     expect(mocks.jobs.get('call-production').status).toBe('failed');
     expect(mocks.criteria).toHaveBeenCalledOnce();
+  });
+  it('persists an evaluation deadline as a failed job without publishing invented scores or a report', async () => {
+    mocks.evaluate.mockRejectedValueOnce(new Error('ANALYSIS_STAGE_TIMEOUT: evaluation'));
+    await expect(finalizeVoiceCallSession(finalEvent)).rejects.toThrow('ANALYSIS_STAGE_TIMEOUT: evaluation');
+    expect(session.failureReason).toBe('ANALYSIS_STAGE_TIMEOUT: evaluation');
+    expect(planCall.failureReason).toBe(session.failureReason);
+    expect(session.totalScore ?? null).toBeNull();
+    expect(session.evaluationJson ?? null).toBeNull();
+    expect(mocks.bundle).not.toHaveBeenCalled();expect(mocks.criteria).not.toHaveBeenCalled();
+    expect(mocks.jobs.get('call-production').status).toBe('failed');
   });
   it('does not treat an empty unified report as successful processing', async () => {
     mocks.bundle.mockResolvedValueOnce({ callSummary: null, replyImprovements: null, unifiedCallReport: null });

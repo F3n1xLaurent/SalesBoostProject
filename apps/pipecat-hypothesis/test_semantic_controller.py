@@ -24,6 +24,52 @@ def meaning(**kwargs):
 
 
 class SemanticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_asr_repair_repeats_an_unanswered_question_even_if_playback_was_not_interrupted(self):
+        self.c.started=True;await self.c.speak(self.keys[0])
+        original=self.c.last_question['response_id']
+        self.c.asr_repair_wait=.01;self.c.asr_close_wait=100
+        self.c.player.queue_frame.reset_mock()
+        await self.c.on_asr_unresolved(self.monitor.turn,'verification_unavailable')
+        await asyncio.sleep(.04)
+        texts=[call.args[0].text for call in self.c.player.queue_frame.call_args_list]
+        self.assertEqual(texts[0],self.c.texts['repeat'])
+        self.assertIn(self.c.texts[self.keys[0]],texts[-1])
+        self.assertEqual(self.c.question_ledger['plan:'+self.keys[0]]['retry_of'],original)
+        self.assertFalse(self.s.evidence.memory.facts)
+
+    async def test_uncertain_asr_asks_once_then_recovers_and_closes_without_inventing_facts(self):
+        self.c.started=True;await self.c.speak('visit')
+        self.c.asr_repair_wait=.01;self.c.asr_close_wait=.02
+        self.c.player.queue_frame.reset_mock()
+        await self.c.on_asr_unresolved(self.monitor.turn,'transcript_disagreement')
+        await self.c.on_asr_unresolved(self.monitor.turn,'transcript_disagreement')
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['repeat'])
+        await asyncio.sleep(.06)
+        self.assertTrue(self.s.playback.finish_requested)
+        self.assertEqual(self.s.evidence.memory.closing_reason,'audio_unavailable')
+        self.assertFalse(self.s.evidence.memory.facts)
+        self.assertFalse(self.s.evidence.memory.users)
+
+    async def test_real_answer_cancels_asr_repair_deadline(self):
+        self.c.started=True;await self.c.speak('visit')
+        self.c.asr_repair_wait=.01;self.c.asr_close_wait=.02
+        await self.c.on_asr_unresolved(self.monitor.turn,'verification_unavailable')
+        await self.run_identity_turn('Как вас зовут?')
+        await asyncio.sleep(.06)
+        self.assertFalse(self.s.playback.finish_requested)
+        self.assertNotEqual(self.s.evidence.memory.closing_reason,'audio_unavailable')
+        self.assertIsNone(self.c.asr_repair_task)
+
+    async def test_asr_repair_never_speaks_over_physical_speech_or_for_an_old_turn(self):
+        self.c.started=True;self.monitor.segment_start=time.monotonic()
+        await self.c.on_asr_unresolved(self.monitor.turn,'verification_unavailable')
+        self.c.player.queue_frame.assert_not_awaited()
+        self.monitor.segment_start=None
+        self.monitor.turn=Turn(False,number=2)
+        await self.c.on_asr_unresolved(Turn(False,number=1),'verification_unavailable')
+        self.c.player.queue_frame.assert_not_awaited()
+
     async def test_native_answer_continuation_does_not_acknowledge_itself(self):
         self.c.started=True
         self.s.context={'subjectTitle':'Jetour Dashing, I 1.5 AMT Люкс'}
@@ -68,6 +114,50 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         await self.run_turn('Для кого выбираете машину?',reply_focus='beneficiary',name_confirmation=True)
         self.assertFalse(self.c.last_meaning['name_confirmation'])
         self.assertIn('Не рассказывай об изучении модели',self.c.fallback_goal)
+
+    async def test_selected_subject_focus_preserves_permission_to_answer_a_repeated_model_question(self):
+        self.c.started=True
+        self.s.context={'subjectTitle':'Toyota Corolla, 1.6 AT'}
+        self.c.texts['subject']='Меня интересует Тойота Королла.'
+        await self.c.speak('subject')
+        self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Какая машина вас заинтересовала?',reply_focus='selected_subject',subject=True)
+        self.assertTrue(self.c.last_meaning['subject'])
+        self.assertEqual(self.c.approve_speech_sentence(self.c.texts['subject'],'model-answer'),self.c.texts['subject'])
+
+    async def test_model_question_takes_priority_over_conflicting_plan_navigation(self):
+        self.c.started=True
+        await self.run_turn('Какая машина вас заинтересовала?',reply_focus='selected_subject',subject=True,next_question=True)
+        self.assertFalse(self.c.last_meaning['next_question'])
+        self.assertTrue(self.c.last_meaning['other_questions'])
+        self.assertTrue(self.c.llm.request_turns)
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_repeated_model_answer_can_differ_from_prepared_wording_without_repeating_name(self):
+        self.c.started=True
+        self.s.context={'subjectTitle':'Toyota Corolla, 1.6 AT'}
+        self.c.approve_speech_sentence('Тойота Королла.','previous-answer')
+        self.c.approve_speech_sentence('Меня зовут Андрей.','previous-name')
+        await self.run_turn('Какая машина вас заинтересовала?',reply_focus='selected_subject')
+        self.assertEqual(self.c.approve_speech_sentence('Тойота Королла.','model-answer'),'Тойота Королла.')
+        self.assertEqual(self.c.approve_speech_sentence('Меня зовут Андрей.','model-answer'),'')
+
+    async def test_prior_contact_focus_requires_an_answer_even_if_generic_request_intent_is_missed(self):
+        self.c.started=True
+        await self.run_turn('Раньше с нашими менеджерами общались?',reply_focus='prior_contact',next_question=True)
+        self.assertTrue(self.c.last_meaning['other_questions'])
+        self.assertFalse(self.c.last_meaning['next_question'])
+        self.assertTrue(self.c.llm.request_turns)
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_desired_options_do_not_become_a_request_to_repeat_selected_model(self):
+        self.c.started=True
+        await self.run_turn('Либо скажите, какие опции важны, и тогда я вам помогу подобрать автомобиль.',
+            reply_focus='preferences',subject=True,next_question=True)
+        self.assertFalse(self.c.last_meaning['subject'])
+        self.assertFalse(self.c.last_meaning['next_question'])
+        self.assertTrue(self.c.llm.request_turns)
+        self.c.player.queue_frame.assert_not_awaited()
 
     async def test_incomplete_prompt_after_an_answer_cannot_invent_a_buyer_question(self):
         self.c.started=True
@@ -190,6 +280,83 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Могу подъехать сегодня, в 15:00. Подойдёт?')
         self.assertFalse(self.c.visit_confirmed)
 
+    async def test_free_invitation_after_visit_question_selects_a_slot_within_hours(self):
+        self.c.started=True;await self.c.speak('visit');self.c.player.queue_frame.reset_mock()
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,25,18,39,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.run_turn('В удобное для вас время, мы работаем ежедневно с девяти до девяти.',visit='offer')
+        offer=self.c.visit.offered
+        self.assertIsNotNone(offer)
+        self.assertEqual(offer['day']['value'],'завтра')
+        self.assertEqual(offer['time']['value'],'в 10:00')
+        self.assertFalse(self.c.visit_confirmed);self.assertFalse(self.s.evidence.memory.facts)
+        self.assertIn('Подойдёт?',self.c.player.queue_frame.call_args.args[0].text)
+
+    async def test_partial_day_offer_selects_time_without_asking_manager_to_choose(self):
+        self.c.started=True;await self.c.speak('visit')
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,25,18,39,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.run_turn('Можете подъехать сегодня, в любое удобное время. До 21:00 работаем.',visit='offer',visit_request='details')
+        self.assertIsNotNone(self.c.visit.offered)
+        self.assertEqual(self.c.visit.offered['day']['value'],'сегодня')
+        self.assertEqual(self.c.visit.offered['time']['value'],'в 19:00')
+
+    async def test_configured_timezone_and_hours_limit_customer_preference(self):
+        self.s.context['visitSchedule']={'timezoneOffsetMinutes':240,'workingHoursFrom':'11:30','workingHoursTo':'20:00'}
+        instant=datetime(2026,11,25,15,39,tzinfo=ZoneInfo('UTC'))
+        with patch('semantic_controller.datetime') as clock:
+            clock.now.side_effect=lambda tz:instant.astimezone(tz)
+            v=self.c.choose_visit_preference(self.c.candidate('Сегодня или завтра?',2),2)
+        self.assertEqual(v.day['value'],'завтра')
+        self.assertEqual(v.time['value'],'в 11:30')
+
+    async def test_options_preserve_opening_window_when_today_has_ended(self):
+        self.c.started=True;await self.c.speak('visit')
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,25,20,39,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.run_turn('Сегодня или завтра, как удобно. Мы работаем с одиннадцати до восьми.',visit='offer',visit_request='details')
+        self.assertIsNotNone(self.c.visit.offered)
+        self.assertEqual(self.c.visit.offered['day']['value'],'завтра')
+        self.assertEqual(self.c.visit.offered['time']['value'],'в 11:00')
+
+    async def test_unparsed_restriction_does_not_become_unrestricted_default(self):
+        self.c.started=True;await self.c.speak('visit')
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Завтра только после обеда, но не раньше четырёх.',visit='offer',visit_request='details')
+        self.assertIsNone(self.c.visit.offered)
+        self.assertFalse(self.c.visit_confirmed)
+
+    async def test_same_day_without_time_left_does_not_propose_outside_hours(self):
+        self.c.started=True;await self.c.speak('visit')
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,25,20,39,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.run_turn('Сегодня в удобное время, работаем с девяти до девяти.',visit='offer',visit_request='details')
+        self.assertIsNone(self.c.visit.offered)
+        self.assertFalse(self.c.visit_confirmed)
+
+    async def test_rollover_uses_tomorrows_own_window_instead_of_todays(self):
+        self.c.started=True;await self.c.speak('visit')
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,25,19,39,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.run_turn('Сегодня с шестнадцати до восемнадцати или завтра с девяти до двенадцати.',visit='offer',visit_request='details')
+        self.assertIsNotNone(self.c.visit.offered)
+        self.assertEqual(self.c.visit.offered['day']['value'].casefold(),'завтра')
+        self.assertEqual(self.c.visit.offered['time']['value'],'в 9:00')
+
+    async def test_exhausted_today_does_not_roll_over_to_negated_tomorrow(self):
+        self.c.started=True;await self.c.speak('visit')
+        with patch('semantic_controller.datetime') as clock,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            clock.now.return_value=datetime(2026,11,25,20,39,tzinfo=ZoneInfo('Europe/Moscow'))
+            await self.run_turn('Сегодня с девяти до девятнадцати или завтра нельзя.',visit='offer',visit_request='details')
+        self.assertIsNone(self.c.visit.offered)
+
+    async def test_extra_restriction_cannot_be_lost_behind_general_opening_hours(self):
+        self.c.started=True;await self.c.speak('visit')
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Завтра работаем с девяти до девяти, но приехать можно только после четырёх.',visit='offer',visit_request='details')
+        self.assertIsNone(self.c.visit.offered)
+        self.assertFalse(self.c.visit_confirmed)
+
     async def test_open_beneficiary_question_is_not_a_yes_no_confirmation(self):
         self.c.started=True
         await self.run_turn('Алло, для кого выбираете автомобиль?',confirmation_request=True)
@@ -205,6 +372,39 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Меня зовут Андрей',self.c.player.queue_frame.call_args.args[0].text)
         self.assertFalse(self.c.opening_sent)
         self.assertNotIn('интересует',self.c.player.queue_frame.call_args.args[0].text)
+
+    async def test_midcall_name_question_uses_cached_audio_without_semantic_request(self):
+        self.c.started=True
+        previous=self.c.last_question
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(name=True))) as model,\
+             patch('dialogue_controller.voice_clip',new=AsyncMock()) as synthesize:
+            await self.c.handle('Как я могу к вам обращаться?',1,self.c.epoch)
+        model.assert_not_awaited();synthesize.assert_not_awaited()
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['name'])
+        self.assertEqual(self.c.last_question,previous)
+        self.assertEqual(self.c.llm.request_turns,[])
+        self.assertIsNone(self.c.thinking.current)
+
+    async def test_repeated_name_question_replays_only_name_without_semantic_request(self):
+        self.c.started=True
+        self.c.approve_speech_sentence(self.c.texts['name'],'previous-name')
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(name=True))) as model:
+            await self.c.handle('Скажи, пожалуйста, как я могу к вам обращаться?',1,self.c.epoch)
+        model.assert_not_awaited()
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Меня зовут Андрей.')
+        self.assertFalse(any(e['event']=='thinking_pause_emitted' for e in self.s.evidence.events))
+
+    async def test_compound_identity_request_does_not_skip_its_other_question(self):
+        self.c.started=True
+        await self.run_turn('Как к вам обращаться и для кого подбираете машину?',name=True,other_questions=True)
+        self.assertTrue(self.c.llm.request_turns)
+        self.assertIn('name',self.c.requested_answers)
+
+    async def test_closing_identity_request_keeps_semantic_closing_decision(self):
+        self.c.started=True;self.s.evidence.memory.phase='closing'
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(name=True))) as model:
+            await self.c.handle('Как вас зовут?',1,self.c.epoch)
+        model.assert_awaited_once()
     async def test_false_transfer_cannot_mute_ordinary_status_payment_or_visit_questions(self):
         self.c.started=True
         for text in ('Как физическое лицо или от организации?', 'Покупку планируете в кредит или за наличные?'):
@@ -244,6 +444,182 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.inputs.snapshot(),batch)
         ledger.ack('native-tag');await asyncio.sleep(.05)
         self.assertEqual(self.c.inputs.snapshot(),[])
+
+    async def pending_answer(self):
+        self.c.started=True
+        await self.run_turn('Машина в наличии. Для кого подбираете?',other_questions=True,
+            coverage={'availability':'answered'})
+        self.c.llm.spoken_text['native']='Для себя.'
+        ledger=self.s.evidence.delivery
+        ledger.response('native').update(generated_done=True,tts_done=True)
+        ledger.segment('native-tag','native')
+        await self.c.fallback_done('native')
+        return ledger
+
+    async def test_ignored_backchannel_restores_continuation_after_phone_confirmed_answer(self):
+        ledger=await self.pending_answer()
+        await self.c.new_input()
+        self.s.evidence.turn=2;self.monitor.turn=Turn(True,300,number=2)
+        await self.c.on_ignored_input(self.monitor.turn)
+        self.c.player.queue_frame.assert_not_awaited()
+        ledger.ack('native-tag');await asyncio.sleep(.05)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertIn(self.c.texts[self.keys[0]],self.c.player.queue_frame.call_args.args[0].text)
+
+    async def test_actually_interrupted_answer_cannot_resume_on_late_ack(self):
+        ledger=await self.pending_answer()
+        await self.c.new_input()
+        self.s.evidence.turn=2;self.monitor.turn=Turn(True,1200,interrupted=True,number=2)
+        ledger.response('native')['interrupted']=True
+        await self.c.on_ignored_input(self.monitor.turn)
+        ledger.ack('native-tag');await asyncio.sleep(.04)
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_ignored_old_turn_cannot_restore_a_continuation_during_new_input(self):
+        ledger=await self.pending_answer()
+        await self.c.new_input()
+        self.s.evidence.turn=2;self.monitor.turn=Turn(False,number=2)
+        await self.c.on_ignored_input(Turn(True,200,number=1))
+        ledger.ack('native-tag');await asyncio.sleep(.04)
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_backchannel_cannot_resume_old_plan_with_a_new_question_buffered(self):
+        ledger=await self.pending_answer()
+        await self.c.new_input()
+        self.s.evidence.turn=2;self.monitor.turn=Turn(False,number=2)
+        self.c.inputs.add('Какие опции важны?',2)
+        await self.c.on_ignored_input(self.monitor.turn)
+        ledger.ack('native-tag');await asyncio.sleep(.04)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertEqual(self.c.inputs.snapshot()[0]['text'],'Какие опции важны?')
+
+    async def test_backchannel_restores_pending_answer_without_losing_its_original_input(self):
+        self.c.inputs.add('Машина в наличии. Для кого подбираете?',1)
+        self.c.active_batch=self.c.inputs.snapshot()
+        ledger=await self.pending_answer()
+        await self.c.new_input()
+        self.s.evidence.turn=2;self.monitor.turn=Turn(True,200,number=2)
+        await self.c.on_ignored_input(self.monitor.turn)
+        self.assertTrue(self.c.inputs.snapshot())
+        ledger.ack('native-tag');await asyncio.sleep(.04)
+        self.assertEqual(self.c.inputs.snapshot(),[])
+        self.assertIsNone(self.c.native_input_epoch)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+
+    async def test_original_input_is_not_dispatched_again_after_ignored_backchannel(self):
+        self.c.inputs.add('Машина в наличии. Для кого подбираете?',1)
+        self.c.active_batch=self.c.inputs.snapshot()
+        await self.pending_answer()
+        await self.c.new_input()
+        self.s.evidence.turn=2;self.monitor.turn=Turn(True,200,number=2)
+        await self.c.on_ignored_input(self.monitor.turn)
+        gate=GatedRealtime(self.s,self.monitor,api_key='test')
+        self.s.playback.generated=True
+        gate._handle_interruption=AsyncMock()
+        gate.broadcast_frame=AsyncMock(side_effect=lambda *args:self.c.serializer.queue_cleared_event.set())
+        with patch.object(self.c,'receive_batch') as receive:
+            await gate.dispatch_controller_input()
+        receive.assert_not_called()
+        gate._handle_interruption.assert_not_awaited()
+
+    async def test_ignored_backchannel_before_generation_done_keeps_native_completion(self):
+        self.c.started=True
+        self.c.inputs.add('Машина в наличии. Для кого подбираете?',1)
+        self.c.active_batch=self.c.inputs.snapshot()
+        await self.run_turn('Машина в наличии. Для кого подбираете?',other_questions=True,coverage={'availability':'answered'})
+        await self.c.new_input()
+        self.s.evidence.turn=2;self.monitor.turn=Turn(True,200,number=2)
+        await self.c.on_ignored_input(self.monitor.turn)
+        request={'reason':'controller_fallback','turn':1}
+        self.assertTrue(self.c.accepts_native_completion('native',request))
+        self.assertFalse(self.c.accepts_native_completion('native',{'reason':'controller_fallback','turn':0}))
+        self.c.llm.spoken_text['native']='Для себя.'
+        ledger=self.s.evidence.delivery
+        ledger.response('native').update(generated_done=True,tts_done=True)
+        ledger.segment('native-tag','native');ledger.ack('native-tag')
+        await self.c.fallback_done('native');await asyncio.sleep(.04)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.inputs.snapshot(),[])
+
+    async def test_transport_discarded_native_request_does_not_block_retained_input(self):
+        self.c.started=True
+        self.c.inputs.add('Для кого подбираете?',1)
+        batch=self.c.inputs.snapshot();self.c.active_batch=batch
+        await self.run_turn('Для кого подбираете?',other_questions=True)
+        self.c.llm.deferred_response=None
+        self.assertFalse(self.c.awaiting_answer_for(batch))
+        self.c.llm.wire_pending={'request_id':'pending'}
+        self.assertTrue(self.c.awaiting_answer_for(batch))
+
+    async def test_continuation_waits_for_vad_speech_that_precedes_logical_turn(self):
+        ledger=await self.pending_answer()
+        self.monitor.segment_start=time.monotonic()
+        ledger.ack('native-tag');await asyncio.sleep(.03)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.monitor.segment_start=None
+        await asyncio.sleep(.04)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+
+    async def test_name_answer_resumes_interrupted_plan_only_after_name_playback(self):
+        topic,original=await self.interrupted_plan()
+        await self.run_identity_turn('Как вас зовут?')
+        frame=self.c.player.queue_frame.call_args.args[0]
+        self.assertEqual(frame.text,self.c.texts['name'])
+        ledger=self.s.evidence.delivery
+        ledger.response(frame.response_id)['tts_done']=True
+        ledger.segment('name-tag',frame.response_id)
+        await asyncio.sleep(.03)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        ledger.ack('name-tag');await asyncio.sleep(.05)
+        self.assertEqual(self.c.player.queue_frame.await_count,2)
+        self.assertIn(self.c.texts[topic],self.c.player.queue_frame.call_args.args[0].text)
+        self.assertEqual(self.c.asked[topic],1)
+        self.assertEqual(self.c.question_ledger['plan:'+topic]['retry_of'],original)
+
+    async def test_completed_meaning_cannot_start_an_answer_during_new_vad_speech(self):
+        self.c.started=True
+        async def understand(*args):
+            self.monitor.segment_start=time.monotonic()
+            return meaning(other_questions=True)
+        with patch('semantic_controller.interpret',new=AsyncMock(side_effect=understand)):
+            await self.c.handle('Для кого подбираете?',1,self.c.epoch)
+        self.assertEqual(self.c.llm.request_turns,[])
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertEqual(self.c.fragment_input_epoch,self.c.epoch)
+
+    async def test_prepared_audio_is_not_queued_if_manager_starts_during_synthesis(self):
+        async def synthesize(*args):
+            self.monitor.segment_start=time.monotonic()
+            return b'\x01\x00'*1600
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(side_effect=synthesize)):
+            result=await self.c.speak(text='Для личных поездок.')
+        self.assertIsNone(result)
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_prepared_audio_is_not_queued_if_manager_starts_during_context_mirroring(self):
+        async def mirror(event):
+            if event.type=='conversation.item.create':self.monitor.segment_start=time.monotonic()
+        self.c.llm.send_client_event=AsyncMock(side_effect=mirror)
+        result=await self.c.speak('name')
+        self.assertIsNone(result)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertTrue(any(call.args[0].type=='conversation.item.delete' for call in self.c.llm.send_client_event.call_args_list))
+
+    async def test_continuation_deferred_during_context_mirroring_resumes_after_vad_silence(self):
+        ledger=await self.pending_answer()
+        deferred=False
+        async def mirror(event):
+            nonlocal deferred
+            if event.type=='conversation.item.create' and not deferred:
+                deferred=True;self.monitor.segment_start=time.monotonic()
+        self.c.llm.send_client_event=AsyncMock(side_effect=mirror)
+        ledger.ack('native-tag');await asyncio.sleep(.03)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertIsNotNone(self.c.pending_continuation)
+        self.monitor.segment_start=None
+        await asyncio.sleep(.05)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.asked[self.keys[0]],1)
 
     async def test_afternoon_opening_hours_allow_a_future_visit_instead_of_past_clock_error(self):
         self.c.started=True;self.c.visit.update('Сегодня.',1)
@@ -557,7 +933,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_name_value_requested_again_is_spoken_again_not_replaced_by_ack(self):
         self.c.started=True
-        for _ in range(3):await self.run_turn('Как к вам обращаться?',name=True)
+        for _ in range(3):await self.run_identity_turn('Как к вам обращаться?')
         replies=[c.args[0].text for c in self.c.player.queue_frame.call_args_list]
         self.assertEqual(replies,[self.c.texts['name']]*3)
         self.assertEqual(sum(e['event']=='speech_repeat_authorized' for e in self.s.evidence.events),2)
@@ -732,6 +1108,12 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(**kwargs))) as model:
             await self.c.handle(text,self.s.evidence.turn,self.c.epoch)
         model.assert_awaited_once()
+
+    async def run_identity_turn(self,text):
+        self.s.evidence.memory.user(text,self.s.evidence.turn)
+        with patch('semantic_controller.interpret',new=AsyncMock()) as model:
+            await self.c.handle(text,self.s.evidence.turn,self.c.epoch)
+        model.assert_not_awaited()
 
     async def offer(self):
         self.c.started=True;self.c.visit.update('Завтра после обеда.',1)
@@ -1020,7 +1402,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         original=self.c.last_question['response_id']
         self.s.evidence.delivery.response(original)['interrupted']=True
         self.c.player.queue_frame.reset_mock()
-        await self.run_turn('Как вас зовут?',name=True)
+        await self.run_identity_turn('Как вас зовут?')
         self.assertEqual(self.c.player.queue_frame.await_count,1)
         self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['name'])
         self.assertEqual(self.c.last_question['response_id'],original)
@@ -1072,6 +1454,9 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         topic=await self.exhausted_question()
         await self.run_turn('Проверю информацию.',control='wait',listening_ready=True)
         self.c.player.queue_frame.assert_not_awaited()
+        # This test exercises dialogue after the operator resumes. Line
+        # recognition has its own tests and must not make a real API request.
+        self.c.line.cancel();self.c.line.state='live'
         await self.run_turn('Да, работаем.',listening_ready=True,coverage={topic:'answered'})
         self.assertIn(topic,self.c.answers)
         self.assertFalse(any(call.args[0].text==self.c.texts[topic] for call in self.c.player.queue_frame.call_args_list))
@@ -1122,7 +1507,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         topic=await self.interrupted_preamble()
         self.c.http.post=AsyncMock(return_value=SimpleNamespace(raise_for_status=lambda:None,
             json=lambda:{'answers':{'shorten':{'choice':'short','probabilities':{'short':.99,'full':.01}}}}))
-        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)) as synthesize:
+        with patch.dict(os.environ,{'PROXYAPI_API_KEY':'test'}),patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)) as synthesize:
             await self.c.replay_question('plan:'+topic,explicit=False)
         self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Машина просторная?')
         synthesize.assert_awaited_once_with(self.s,'Машина просторная?')
@@ -1227,7 +1612,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
             clock.now.return_value=datetime(2026,11,18,19,14,tzinfo=ZoneInfo('Europe/Moscow'))
             await self.c.propose([])
         self.assertIsNone(self.c.visit.offered)
-        self.assertIn('уже прошло',self.c.player.queue_frame.call_args.args[0].text)
+        self.assertIn('другой день',self.c.player.queue_frame.call_args.args[0].text)
 
     async def test_direct_acceptance_followed_by_documents_preserves_booking(self):
         await self.offer()
@@ -1394,14 +1779,25 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         await self.run_turn('Да, подождите.',control='wait',coverage={self.keys[0]:'answered'})
         self.c.player.queue_frame.assert_not_awaited()
 
-    async def test_neutral_wait_voice_can_cover_slow_meaning_without_agreement(self):
+    async def test_semantic_interpretation_cannot_emit_hesitation_before_meaning(self):
         c=self.c;c.started=True;c.current=self.keys[0]
         c.last_question={'topic':self.keys[0],'text':self.c.texts[self.keys[0]]}
         c.latest_input='В объявлении пробег указан верно.'
         c.thinking.delay_ms=c.thinking.semantic_delay_ms=1
         c.thinking.arm('semantic_interpretation');await asyncio.sleep(.02)
-        self.assertEqual(c.player.queue_frame.call_args.args[0].text,c.texts['think_reply_0'])
+        c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(any(e['event']=='thinking_pause_emitted' for e in self.s.evidence.events))
         self.assertIsNone(c.last_clip)
+
+    async def test_semantic_generation_gets_its_own_wait_deadline_after_interpretation(self):
+        c=self.c;c.started=True
+        old=c.thinking.arm('semantic_interpretation')
+        old['started']=time.monotonic()-10
+        job=c.thinking.arm('native_reply')
+        self.assertIsNot(job,old)
+        self.assertEqual(job['source'],'native_reply')
+        self.assertLess(time.monotonic()-job['started'],1)
+        self.assertFalse(job['emitted'])
 
     async def test_filler_handoff_waits_for_phone_end_after_sending_finishes(self):
         c=self.c;c.output_transport=SimpleNamespace()

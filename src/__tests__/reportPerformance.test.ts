@@ -4,6 +4,8 @@ import { createReportCompletion, mapReportBatches, withReportGenerationBudget, r
 import { ensureFindingBetterExamples, normalizeUnifiedCallReport } from '../voice/unifiedCallReport';
 import { clarificationRequestIssues, reportExampleHash, reviewReportExamples } from '../voice/reportExampleReview';
 import { DEFAULT_CALL_REPORT_PROBLEMS } from '../voice/problemCatalog';
+import { withCostContext } from '../economics/costContext';
+import { withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
 
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 const completion = (content: unknown) => ({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(content) } }] }) as any;
@@ -26,6 +28,19 @@ it('finishes independently checked batches of a long call past the short-call de
 });
 
 describe('bounded report execution', () => {
+  it('identifies both successful and failed report requests when several calls are being analysed', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failure = new Error('test provider failure');
+    vi.spyOn(openai.chat.completions, 'create').mockResolvedValueOnce(completion({})).mockRejectedValueOnce(failure);
+    await withAuditAnalyticsProgress('voice:call-log-test', 'report', () => withCostContext({ entityType: 'voice_call', entityId: 'call-log-test' }, async () => {
+      await createReportCompletion({ model: 'test', messages: [] }, 'generation');
+      await expect(createReportCompletion({ model: 'test', messages: [] }, 'exampleRepair')).rejects.toBe(failure);
+    }));
+    for (const log of [info, warn]) expect(log).toHaveBeenCalledWith('[report/stage]', expect.objectContaining({
+      key: 'voice:call-log-test', entityType: 'voice_call', entityId: 'call-log-test',
+    }));
+  });
   it('runs independent groups concurrently with a fixed bound and stable result order', async () => {
     let active = 0, maximum = 0;
     const releases: Array<() => void> = [];
@@ -81,6 +96,29 @@ describe('bounded report execution', () => {
 });
 
 describe('compact drafts keep the same quality gates', () => {
+  it('repairs the complete fragmented manager reply against the same facts that the reviewer checks', async () => {
+    const transcript = [
+      { role: 'client' as const, text: 'Могу подъехать сегодня в 19:00. Какое состояние машины?' },
+      { role: 'manager' as const, text: 'Да, будем ждать вас сегодня в 19:00.' },
+      { role: 'manager' as const, text: 'Машина в отличном состоянии, ДТП не было, пороги не гнилые.' },
+      { role: 'client' as const, text: 'Позднее раскрытая личная потребность.' },
+    ];
+    const report = normalizeUnifiedCallReport({ dialog: [{}, { mark: 'normal', comment: 'Подтвердил визит, но не уточнил приоритеты клиента.' },
+      { mark: 'positive', comment: 'Сообщил состояние автомобиля.' }, {}] }, { totalScore: 80, transcript })!;
+    const example = transcript[1].text + ' ' + transcript[2].text + ' Что для вас важнее при выборе машины?';
+    const create = vi.spyOn(openai.chat.completions, 'create').mockImplementation((async (params: any) => {
+      const text = params.messages.at(-1).content;
+      const { items } = JSON.parse(text.slice(text.indexOf('{\n  "items":'), text.lastIndexOf('\nВерни JSON')));
+      expect(items).toHaveLength(1);
+      expect(items[0].quote).toBe(transcript[1].text);
+      expect(items[0].originalReply).toBe(transcript[1].text + ' ' + transcript[2].text);
+      expect(items[0].knownDialog).not.toContain(transcript[3].text);
+      return completion({ items: items.map((item: any) => ({ index: item.index, betterExample: example })) });
+    }) as any);
+    const repaired = await ensureFindingBetterExamples(report, transcript);
+    expect(create).toHaveBeenCalledOnce();
+    expect(repaired.dialog[1].betterExample).toBe(example);
+  });
   it('repairs a long dialogue in bounded batches and retries only the truncated batch', async () => {
     const transcript = Array.from({ length: 10 }, () => [
       { role: 'client' as const, text: 'Автомобиль есть в наличии?' }, { role: 'manager' as const, text: 'Не знаю.' },

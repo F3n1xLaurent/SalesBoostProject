@@ -2,7 +2,6 @@
 import asyncio
 import os
 import time
-from line_gate import local_type
 
 
 class ThinkingPause:
@@ -29,17 +28,19 @@ class ThinkingPause:
     def arm(self, source):
         c=self.c
         if getattr(c,'line',None) and not c.line.can_speak:return None
+        semantic=getattr(c.s.evidence.memory,'semantic_mode',False)
+        generation_stages=('native_reply','reply_tts','visit_tts')
         if (self.current and self.current['epoch']==c.epoch and self.current['turn']==c.s.evidence.turn
                 and not c.unavailable()):
-            self.current['stage']=source
-            c.s.evidence.event('thinking_pause_stage',source=self.current['source'],stage=source)
-            if not (self.task and self.task.done() and not self.current['emitted']):return self.current
+            if not (semantic and source in generation_stages and self.current['stage'] not in generation_stages):
+                self.current['stage']=source
+                c.s.evidence.event('thinking_pause_stage',source=self.current['source'],stage=source)
+                if not (self.task and self.task.done() and not self.current['emitted']):return self.current
         self.cancel('replaced')
         if not c.s.backchannel or not self.delay_ms or c.unavailable():
             return None
         started=time.monotonic()
         if source=='turn_wait':started=c.s.evidence.turn_marks.get((c.s.evidence.turn,'speech_end'),started)
-        semantic=getattr(c.s.evidence.memory,'semantic_mode',False)
         threshold=max(self.delay_ms,self.semantic_delay_ms) if semantic else self.delay_ms
         job = {'source': source, 'epoch': c.epoch, 'turn': c.s.evidence.turn,
                'started': started, 'stage':source, 'emitted': False}
@@ -56,15 +57,14 @@ class ThinkingPause:
                 elif c.s.playback.pending or c.s.playback.finish_requested:reason='audio_already_playing'
                 elif c.bc_turn == job['turn'] or time.monotonic()-c.last_bc < (max(self.cooldown,60) if semantic else self.cooldown):reason='rate_limit'
                 stage=job['stage']
-                meaning_pending=(stage=='semantic_interpretation' and bool(c.latest_input.strip())
-                    and bool(c.last_question) and local_type(c.latest_input) not in ('hold','terminal','ivr')
-                    and not any(word in c.latest_input.casefold() for word in ('проверю','посмотрю','секунду')))
-                if semantic and stage not in ('native_reply','reply_tts','visit_tts') and not meaning_pending:reason=reason or 'meaning_not_ready'
+                # A classification delay is not buyer deliberation. Emit a
+                # waiting cue only for an actual answer/audio generation.
+                if semantic and stage not in generation_stages:reason=reason or 'meaning_not_ready'
                 if semantic and len(self.used_keys)>=2:reason=reason or 'call_budget'
                 # Waiting is not agreement or a judgment about an unparsed
                 # utterance. Listening acknowledgments have a separate path.
                 pool=(['think_visit_0','think_visit_1'] if stage=='visit_tts' else
-                      ['think_reply_0'] if semantic and meaning_pending else ['think_reply_1'])
+                      ['think_reply_1'])
                 keys=[key for key in pool if key in c.clips and 0 < len(c.clips[key])/32000 <= 2]
                 if semantic:keys=[key for key in keys if key not in self.used_keys]
                 if not keys:reason=reason or 'no_short_prepared_clip'

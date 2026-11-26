@@ -11,6 +11,22 @@ _HOUR_FORMS=(('один одного одному час часу',1),('два �
     ('восемнадцать восемнадцати',18),('девятнадцать девятнадцати',19),('двадцать двадцати',20))
 _HOUR_VALUES={word:value for forms,value in _HOUR_FORMS for word in forms.split()}
 _DAYS=r'послезавтра|завтра|сегодня|понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье'
+_INTERVAL_HOUR=r'(?:(?:2[0-3]|1\d|[0-9])(?::[0-5]\d)?|'+HOURS+r'|одного|двух|тр[её]х|четыр[её]х)'
+
+
+def visit_window(text):
+    """Read an explicit window independently of day alternatives/clauses."""
+    interval=re.search(r'\bс(?:о)?\s+(?P<first>'+_INTERVAL_HOUR+r')\s+до\s+(?P<last>'+_INTERVAL_HOUR+r')(?![\w:])',text,re.I)
+    interval=interval or re.search(r'(?<![\w:])(?P<first>'+_INTERVAL_HOUR+r')\s*[-–—]\s*(?P<last>'+_INTERVAL_HOUR+r')(?![\w:])',text,re.I)
+    if interval:
+        start=clock_minutes(interval['first']);end=clock_minutes(interval['last'])
+        if start is not None and end is not None and start<720 and end<=start:end+=720
+        if start is not None and end is not None and start<end:return start,end
+    # A closing hour is not an appointment at that hour.
+    if re.search(r'работа\w*|открыт\w*',text,re.I):
+        end=re.search(r'\bдо\s+('+_INTERVAL_HOUR+r')(?![\w:])',text,re.I)
+        minute=clock_minutes(end[1]) if end else None
+        if minute is not None and minute>=720:return 0,minute
 
 
 def clock_minutes(phrase):

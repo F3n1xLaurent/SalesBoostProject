@@ -41,7 +41,9 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(prepared['profile']['ttsModel'],'eleven_v4_turbo')
         self.assertEqual(prepared['profile']['dialogueMode'],'semantic')
         self.assertEqual(prepared['profile']['voiceId'],'plan-voice')
-        self.assertTrue(prepared['profile']['backchannel']);self.assertFalse(prepared['profile']['trimIdleAudio'])
+        self.assertTrue(prepared['profile']['backchannel']);self.assertTrue(prepared['profile']['trimIdleAudio'])
+        self.assertTrue(service.sessions[self.identifier].trim_idle_audio)
+        self.assertTrue(self.preflight.call_args.args[0].trimIdleAudio)
         self.dial.assert_not_awaited()
         self.prepare();self.preflight.assert_awaited_once()
 

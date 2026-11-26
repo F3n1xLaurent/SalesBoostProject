@@ -27,8 +27,13 @@ def greeting_only(text):
 
 def name_question_only(text):
     value=re.sub(r'[^а-яё\s]',' ',normalized(text));value=' '.join(value.split())
-    prefix=r'(?:(?:алло|здравствуйте|добрый день|добрый вечер|вас не слышно|подскажите|пожалуйста|у меня)\s+)*'
-    return bool(re.fullmatch(prefix+r'(?:как (?:я )?(?:могу )?к вам (?:по имени )?обращаться|как вас зовут|назовите (?:пожалуйста )?ваше имя)',value))
+    # Match the whole utterance: another question, hold/transfer, third-party
+    # identity or quoted/negated request must still pass through semantics.
+    prefix=r'(?:(?:алло|здравствуйте|добрый день|доброе утро|добрый вечер|вас не слышно|подскажите|подскажи|скажите|скажи|повторите|повтори|пожалуйста|еще раз|у меня)\s+)*'
+    request=(r'(?:как (?:я )?(?:могу |можно )?к (?:вам|тебе) (?:можно |могу )?(?:по имени )?обращаться'
+             r'|как (?:вас|тебя) зовут|(?:вас|тебя) как зовут'
+             r'|(?:назовите|назови|скажите|скажи) (?:пожалуйста )?(?:ваше |свое )?имя)')
+    return bool(re.fullmatch(prefix+request+r'(?: пожалуйста)?',value))
 
 
 def local_type(text):

@@ -41,7 +41,8 @@ from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
-from policy import OPENAI_PROVIDERS, PROVIDERS, SUSTAINED_MS, is_backchannel, is_overlap_fragment, REALTIME_TRANSCRIPTION_MODEL, realtime_transcription_config
+from policy import OPENAI_PROVIDERS, PROVIDERS, SUSTAINED_MS, is_backchannel, is_overlap_fragment, REALTIME_TRANSCRIPTION_MODEL, realtime_transcription_config, unsupported_transcript_script
+from input_quality import TurnAudio,InputQuality,suspicion
 from network import elevenlabs_proxy
 from gemini_provider import GEMINI_PROVIDERS, STT_INSTRUCTION, create_gemini_service
 from conversation import adapt_prompt, continuation_prefix
@@ -513,6 +514,10 @@ class GatedRealtime(OpenAIRealtimeLLMService):
         self.context_watch = None
         self.startup_audio = deque()
         self.startup_audio_ms = 0
+        self.turn_audio=TurnAudio();self.input_quality=InputQuality(require_audio=bool(getattr(session,'production',False)))
+        self.quality_tasks={};self.reviewed_items=set()
+        self.pending_quality_result=None;self.latest_accepted_turn=-1
+        self.input_quality_closing=False
 
     def cancel_stt_watch(self,turn=None):
         keys=list(self.stt_tasks) if turn is None else [turn]
@@ -549,6 +554,10 @@ class GatedRealtime(OpenAIRealtimeLLMService):
             # Rebuild only the provider connection. Local dialogue, question
             # ledger, verified fragments, facts, and the phone stay alive.
             await self._disconnect()
+            quality=list(self.quality_tasks.values())
+            for task in quality:task.cancel()
+            if quality:await asyncio.gather(*quality,return_exceptions=True)
+            self.quality_tasks.clear();self.turn_audio.clear();self.reviewed_items.clear();self.pending_quality_result=None
             self.pending.clear();self.items.clear();self.partial_transcripts.clear()
             self.provider_items.clear();self.pending_repairs.clear();self.repaired_items.clear()
             self.wire_active=self.wire_pending=self.deferred_response=None
@@ -572,6 +581,7 @@ class GatedRealtime(OpenAIRealtimeLLMService):
 
     async def _send_user_audio(self,frame):
         if self.connection_failed:return
+        self.turn_audio.append(frame.audio,frame.sample_rate,frame.num_channels)
         if self.stt_recovering or self.wait_for_user and not self.context_ready.is_set():
             duration=len(frame.audio)*1000/(frame.sample_rate*frame.num_channels*2)
             self.startup_audio.append(frame)
@@ -682,6 +692,7 @@ class GatedRealtime(OpenAIRealtimeLLMService):
 
     async def _handle_user_started_speaking(self, frame):
         self.user_speaking = True
+        self.turn_audio.begin(self.monitor.turn.number)
         if self.stt_discard_until_stop is not None:self.stt_discard_until_stop=self.monitor.turn.number
         if self.continuation_task:
             self.continuation_task.cancel()
@@ -1157,12 +1168,15 @@ class GatedRealtime(OpenAIRealtimeLLMService):
         await self.flush_response()
         await self.recover_first_greeting()
         controller=getattr(self.session,"controller",None)
-        if controller and request.get("reason")=="controller_fallback" and request.get("turn")==self.monitor.turn.number:
+        if (controller and request.get("reason")=="controller_fallback"
+                and (request.get("turn")==self.monitor.turn.number
+                    or hasattr(controller,'accepts_native_completion') and controller.accepts_native_completion(response_id,request))):
             await controller.fallback_done(response_id)
 
     async def _handle_user_stopped_speaking(self, frame):
         self.user_speaking = False
         turn = self.monitor.turn
+        self.turn_audio.commit(turn.number)
         if self.connection_failed or getattr(self.session,'media_disconnected',False):return
         if self.wait_for_user:
             try:await asyncio.wait_for(self.context_ready.wait(),timeout=self.context_timeout)
@@ -1201,7 +1215,7 @@ class GatedRealtime(OpenAIRealtimeLLMService):
     async def _handle_evt_conversation_item_added(self, evt):
         if evt.item.role == "assistant" and evt.item.type == "message" and self.response_id:
             self.response_items.setdefault(self.response_id, set()).add(evt.item.id)
-        if evt.item.type == "message" and evt.item.role == "user" and self.pending:
+        if evt.item.type == "message" and evt.item.role == "user" and self.pending and evt.item.id not in self.reviewed_items:
             self.items[evt.item.id] = self.pending.popleft()
         self.provider_items[evt.item.id] = evt.item.model_dump(exclude_none=True)
         self.session.evidence.event("provider_item_created", item=self.provider_items[evt.item.id], response_id=self.response_id)
@@ -1224,12 +1238,18 @@ class GatedRealtime(OpenAIRealtimeLLMService):
                                     turn=self.items.get(evt.item_id, (self.monitor.turn, False))[0].number)
 
     async def dispatch_controller_input(self):
+        if (self.quality_tasks or self.stt_recovering or self.connection_failed or self.input_quality_closing
+                or getattr(self.session,'media_disconnected',False)):return
+        await self.resolve_quality_result()
         controller=getattr(self.session,"controller",None)
         # No extra silence window: SmartTurn has already committed the audio.
         # Wait only for real outstanding audio/transcription work.
-        if not controller or self.stt_recovering or self.user_speaking or self.stt_tasks or self.pending or self.items:return
+        if (not controller or self.stt_recovering or self.user_speaking
+                or getattr(self.monitor,'segment_start',None) is not None
+                or self.stt_tasks or self.pending or self.items):return
         batch=controller.inputs.snapshot()
         if not batch:return
+        if hasattr(controller,'awaiting_answer_for') and controller.awaiting_answer_for(batch):return
         turn=self.monitor.turn
         if turn.overlap and not turn.interrupted and self.session.playback.busy:
             turn.interrupted=True
@@ -1237,11 +1257,34 @@ class GatedRealtime(OpenAIRealtimeLLMService):
             await self._handle_interruption()
             await self.broadcast_frame(InterruptionFrame)
             await asyncio.wait_for(controller.serializer.queue_cleared_event.wait(),2)
+        # Queue clearing awaits the transport. Another speech segment or turn
+        # can begin during that await; retain the fragments for its final STT.
+        if (self.user_speaking or getattr(self.monitor,'segment_start',None) is not None
+                or self.monitor.turn.number!=turn.number or self.stt_tasks or self.pending or self.items):return
         controller.receive_batch(batch)
+
+    async def resolve_quality_result(self):
+        pending=self.pending_quality_result
+        if not pending or self.quality_tasks:return
+        if (self.user_speaking or getattr(self.monitor,'segment_start',None) is not None
+                or self.stt_tasks or self.pending or self.items):return
+        self.pending_quality_result=None
+        turn,status,reason=pending
+        if (turn.number!=self.monitor.turn.number or turn.number<=self.latest_accepted_turn
+                or self.connection_failed or getattr(self.session,'media_disconnected',False)):return
+        controller=getattr(self.session,'controller',None)
+        if status=='noise' and not turn.interrupted and hasattr(controller,'on_ignored_input'):await controller.on_ignored_input(turn)
+        elif hasattr(controller,'on_asr_unresolved'):await controller.on_asr_unresolved(turn,reason)
+        elif hasattr(controller,'on_ignored_input'):await controller.on_ignored_input(turn)
+
+    def retain_quality_result(self,turn,status,reason):
+        old=self.pending_quality_result
+        if turn.number>self.latest_accepted_turn and (not old or turn.number>=old[0].number):
+            self.pending_quality_result=(turn,status,reason)
 
     async def handle_evt_input_audio_transcription_completed(self, evt):
         self.partial_transcripts.pop(evt.item_id, None)
-        if self.connection_failed or getattr(self.session,'media_disconnected',False):
+        if self.connection_failed or getattr(self.session,'media_disconnected',False) or getattr(self.session,'failure_reason',None):
             return
         if getattr(self.session,'controller',None) and evt.item_id not in self.items:
             self.session.evidence.event('stt_unmatched_discarded',item_id=evt.item_id,reason='no_active_audio_item')
@@ -1252,6 +1295,55 @@ class GatedRealtime(OpenAIRealtimeLLMService):
             self.provider_items[evt.item_id]["final_transcript"] = evt.transcript
         self.session.evidence.event("stt_completed", item_id=evt.item_id, text=evt.transcript, turn=turn.number)
         self.session.evidence.latency("stt_ms", "speech_end", turn=turn.number)
+        controller=getattr(self.session,'controller',None)
+        window=self.turn_audio.pop(turn.number)
+        if controller and evt.transcript.strip():
+            known=json.dumps(getattr(self.session,'context',{}),ensure_ascii=False)
+            reasons,features=suspicion(evt.transcript,window,turn.duration_ms,known)
+            if self.input_quality.require_audio and not window:reasons.append('audio_unavailable')
+            self.session.evidence.event('stt_quality',turn=turn.number,reasons=reasons,features=features)
+            if reasons:
+                task=asyncio.create_task(self.review_transcript(evt,turn,waiting,window,known))
+                self.quality_tasks[turn.number]=task
+                return
+        await self.accept_transcript(evt,turn,waiting)
+
+    async def review_transcript(self,evt,turn,waiting,window,known):
+        controller=getattr(self.session,'controller',None)
+        try:
+            result=await self.input_quality.assess(evt.transcript,window,turn.duration_ms,known)
+            if (self.connection_failed or getattr(self.session,'media_disconnected',False) or getattr(self.session,'failure_reason',None) or getattr(self.session,'finalized',False)
+                    or getattr(self.session,'status','') in {'ending','disconnected','failed'}):return
+            self.session.evidence.event('stt_quality_decision',turn=turn.number,status=result.status,
+                reason=result.reason,features=result.features,reviewed_text=result.text)
+            # Both accepted replacements and rejected audio are removed from
+            # provider history. Only a validated text item may reach generation.
+            await self.send_client_event(events.ConversationItemDeleteEvent(item_id=evt.item_id))
+            if result.status=='accepted':
+                item=events.ConversationItem(type='message',role='user',content=[events.ItemContent(type='input_text',text=result.text)])
+                self.reviewed_items.add(item.id);self._messages_added_manually[item.id]=True
+                await self.send_client_event(events.ConversationItemCreateEvent(item=item))
+                evt.transcript=result.text
+                await self.accept_transcript(evt,turn,waiting)
+                self.quality_tasks.pop(turn.number,None)
+            else:
+                self.quality_tasks.pop(turn.number,None)
+                self.session.evidence.event('stt_transcript_rejected',turn=turn.number,item_id=evt.item_id,
+                    text=evt.transcript,reason=result.reason,speech_duration_ms=turn.duration_ms)
+                self.retain_quality_result(turn,result.status,result.reason)
+        except asyncio.CancelledError:raise
+        except Exception as exc:
+            self.session.evidence.event('stt_quality_failed',turn=turn.number,error_type=type(exc).__name__)
+            self.quality_tasks.pop(turn.number,None)
+            self.retain_quality_result(turn,'uncertain','verification_failed')
+        finally:
+            self.quality_tasks.pop(turn.number,None)
+            await self.dispatch_controller_input()
+
+    async def accept_transcript(self,evt,turn,waiting):
+        if evt.transcript.strip():
+            self.latest_accepted_turn=max(self.latest_accepted_turn,turn.number)
+            if self.pending_quality_result and self.pending_quality_result[0].number<=turn.number:self.pending_quality_result=None
         if not evt.transcript.strip():
             self.session.evidence.event("user_transcript", text="", turn=turn.number, item_id=evt.item_id,
                 status="ignored_empty", reply_reference=self.session.evidence.reply_references.get(turn.number))
@@ -1342,6 +1434,11 @@ class GatedRealtime(OpenAIRealtimeLLMService):
             await self.send_client_event(events.ResponseCreateEvent())
 
     async def cleanup(self):
+        self.input_quality_closing=True
+        tasks=list(self.quality_tasks.values())
+        for task in tasks:task.cancel()
+        if tasks:await asyncio.gather(*tasks,return_exceptions=True)
+        self.quality_tasks.clear();self.turn_audio.clear();self.reviewed_items.clear()
         if self.context_watch:
             self.context_watch.cancel()
             await asyncio.gather(self.context_watch,return_exceptions=True)

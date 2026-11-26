@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 import re
 import time
+import unicodedata
 from diagnostics import utc_now, redact
 from array import array
 from conversation import ConversationMemory, DeliveryLedger
@@ -15,6 +16,17 @@ SUSTAINED_MS = 850
 
 def realtime_transcription_config(model=REALTIME_TRANSCRIPTION_MODEL):
     return {"model": model, **({"languages": ["ru"]} if model == "gpt-live-transcribe" else {"language": "ru"})}
+
+
+def unsupported_transcript_script(text: str) -> bool:
+    """Quarantine a wholly unsupported script in the Russian ASR channel.
+
+    Keep Latin model names, numbers, short Russian answers and mixed brand
+    names. This is a narrow text guard, not acoustic proof of silence.
+    """
+    letters=[unicodedata.name(char,'') for char in text if char.isalpha()]
+    return bool(letters and not any(name.startswith(('CYRILLIC','LATIN')) for name in letters)
+        and any(name.startswith(('CJK','HIRAGANA','KATAKANA','ARABIC','DEVANAGARI')) for name in letters))
 
 
 def is_backchannel(text: str, duration_ms: float) -> bool:

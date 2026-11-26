@@ -230,6 +230,16 @@ class DialogueController:
     def unavailable(self):
         return self.s.finalized or bool(getattr(self.s,"media_disconnected",False)) or bool(getattr(self.s,"failure_reason",None))
 
+    def manager_speaking(self):
+        return (getattr(self.llm,'user_speaking',False)
+            or getattr(self.monitor,'segment_start',None) is not None)
+
+    def defer_while_manager_speaks(self):
+        if not getattr(self.s.evidence.memory,'semantic_mode',False) or not self.manager_speaking():return False
+        self.fragment_input_epoch=self.epoch
+        self.s.evidence.event('controller_reply_deferred',reason='manager_speaking')
+        return True
+
     def on_incomplete_pause(self):
         # SmartTurn runs inside the upstream user aggregator, before its VAD
         # stop frame reaches TurnMonitor. Include that not-yet-closed segment.
@@ -321,6 +331,7 @@ class DialogueController:
             if self.thinking.current:await self.thinking.finish(self.thinking.current,'prepared_main_ready')
             else:await self.stop_backchannel()
         if epoch!=self.epoch or self.unavailable():return
+        if kind not in ('backchannel','recovery') and self.defer_while_manager_speaks():return
         identifier=("backchannel-" if kind=="backchannel" else "controller-")+uuid4().hex
         self.playing_id=identifier;self.playing_kind=kind
         e=self.s.evidence
@@ -342,6 +353,12 @@ class DialogueController:
             # a model response. Mirrored cached speech is already complete.
             self.llm._messages_added_manually[item.id]=True
             await self.llm.send_client_event(events.ConversationItemCreateEvent(item=item))
+        if kind not in ('backchannel','recovery') and (epoch!=self.epoch or self.unavailable() or self.defer_while_manager_speaks()):
+            e.delivery.response(identifier)['interrupted']=True
+            if self.playing_id==identifier:self.playing_id=None;self.playing_kind=None
+            if getattr(self.s,'finish_response_id',None)==identifier:self.s.playback.finish_requested=False
+            if mirror:await self.llm.send_client_event(events.ConversationItemDeleteEvent(item_id=item.id))
+            return
         if kind=="backchannel":
             frame=BotBackchannelFrame(text);frame.interruptible=True
             frame.metadata.update(prepared_pcm=pcm,diagnostic_response_id=identifier)

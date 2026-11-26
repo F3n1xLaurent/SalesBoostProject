@@ -2,9 +2,10 @@ import asyncio
 import base64
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from conversation import ConversationMemory
+from controller_input import ControllerInput
 from pipeline import GatedRealtime, Turn, validated_tool, call_context
 from policy import Evidence, Playback
 from speech_filter import SpeechFilter
@@ -13,6 +14,85 @@ from pipecat.services.openai.realtime import events
 
 
 class CoordinationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verified_agreement_reaches_memory_and_controller_as_a_text_item(self):
+        from input_quality import AudioWindow
+        from test_input_quality import pcm
+        llm=self.llm();llm.session.evidence.memory=ConversationMemory('1. Вопрос?')
+        llm.session.context={};llm.session.finalized=False
+        controller=SimpleNamespace(inputs=ControllerInput(),receive_batch=Mock(),accepts_short_answer=lambda:False)
+        llm.session.controller=controller
+        llm.monitor.turn=Turn(False,160,number=1)
+        llm.items['original']=(llm.monitor.turn,True)
+        llm.turn_audio.windows[1]=AudioWindow(pcm(.8),16000,-65)
+        text='Да автомобиль в наличии'
+        llm.input_quality.verify=AsyncMock(return_value={'text':text,'logprobs':[{'logprob':-.1}]})
+        with patch.object(GatedRealtime.__bases__[0],'handle_evt_input_audio_transcription_completed',new=AsyncMock()),patch.object(GatedRealtime.__bases__[0],'send_client_event',new=AsyncMock()) as sent:
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='original',transcript=text))
+            await asyncio.gather(*list(llm.quality_tasks.values()))
+        llm.input_quality.verify.assert_awaited_once()
+        self.assertEqual([row['text'] for row in llm.session.evidence.memory.users],[text])
+        self.assertEqual(controller.receive_batch.call_args.args[0][0]['text'],text)
+        self.assertTrue(any(c.args[0].type=='conversation.item.delete' and c.args[0].item_id=='original' for c in sent.call_args_list))
+        inserted=[c.args[0].item for c in sent.call_args_list if c.args[0].type=='conversation.item.create']
+        self.assertEqual(inserted[-1].role,'user');self.assertEqual(inserted[-1].content[0].text,text)
+
+    async def test_reviewed_text_item_does_not_steal_another_audio_turn(self):
+        llm=self.llm();turn=Turn(False,500,number=2);llm.pending.append((turn,True))
+        reviewed=events.ConversationItem(type='message',role='user',content=[events.ItemContent(type='input_text',text='Нет.')])
+        llm.reviewed_items.add(reviewed.id)
+        with patch.object(GatedRealtime.__bases__[0],'_handle_evt_conversation_item_added',new=AsyncMock()):
+            await llm._handle_evt_conversation_item_added(SimpleNamespace(item=reviewed))
+            self.assertEqual(len(llm.pending),1);self.assertNotIn(reviewed.id,llm.items)
+            real=events.ConversationItem(type='message',role='user',content=[])
+            await llm._handle_evt_conversation_item_added(SimpleNamespace(item=real))
+        self.assertEqual(llm.items[real.id],(turn,True));self.assertFalse(llm.pending)
+
+    async def test_slow_verification_does_not_block_new_input_or_promote_an_old_uncertain_result(self):
+        from input_quality import AudioWindow,Admission
+        from test_input_quality import pcm
+        llm=self.llm();llm.session.evidence.memory=ConversationMemory('1. Вопрос?')
+        llm.session.context={};llm.session.finalized=False
+        controller=SimpleNamespace(inputs=ControllerInput(),receive_batch=Mock(),on_asr_unresolved=AsyncMock(),on_ignored_input=AsyncMock(),accepts_short_answer=lambda:False)
+        llm.session.controller=controller
+        release=asyncio.Event()
+        async def check(*args):
+            await release.wait();return Admission('uncertain','','transcript_disagreement')
+        llm.input_quality.assess=check
+        llm.turn_audio.windows[1]=AudioWindow(pcm(),16000,-60)
+        llm.items['suspect']=(Turn(False,600,number=1),True)
+        with patch.object(GatedRealtime.__bases__[0],'handle_evt_input_audio_transcription_completed',new=AsyncMock()),patch.object(GatedRealtime.__bases__[0],'send_client_event',new=AsyncMock()):
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='suspect',transcript='comes самом начале'))
+            self.assertTrue(llm.quality_tasks);self.assertFalse(llm.session.evidence.memory.users)
+            llm.monitor.turn=Turn(False,300,number=2);llm.items['real']=(llm.monitor.turn,True)
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='real',transcript='Нет.'))
+            controller.receive_batch.assert_not_called()
+            tasks=list(llm.quality_tasks.values());release.set();await asyncio.gather(*tasks)
+        controller.on_asr_unresolved.assert_not_awaited()
+        self.assertEqual([row['text'] for row in llm.session.evidence.memory.users],['Нет.'])
+        self.assertEqual(controller.receive_batch.call_args.args[0][0]['text'],'Нет.')
+
+    async def test_unsupported_script_never_enters_manager_memory_or_the_production_transcript(self):
+        from production_calls import snapshot
+        llm=self.llm();llm.session.evidence.memory=ConversationMemory('1. Вопрос?')
+        before=llm.session.evidence.memory.snapshot()
+        turn=Turn(True,160.2,number=8)
+        llm.items['noise']=(turn,True);llm.monitor.turn=turn
+        controller=SimpleNamespace(on_ignored_input=AsyncMock(),inputs=ControllerInput(),receive_batch=Mock())
+        llm.session.controller=controller;llm.dispatch_controller_input=AsyncMock(wraps=llm.dispatch_controller_input)
+        with patch.object(GatedRealtime.__bases__[0],'handle_evt_input_audio_transcription_completed',new=AsyncMock()) as accepted,patch.object(GatedRealtime.__bases__[0],'send_client_event',new=AsyncMock()) as sent:
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='noise',transcript='学校'))
+            await asyncio.gather(*list(llm.quality_tasks.values()))
+        accepted.assert_not_awaited()
+        self.assertEqual(llm.session.evidence.memory.snapshot(),before)
+        self.assertTrue(any(c.args[0].type=='conversation.item.delete' for c in sent.call_args_list))
+        controller.on_ignored_input.assert_awaited_once_with(turn)
+        llm.dispatch_controller_input.assert_awaited_once()
+        self.assertTrue(any(e['event']=='stt_completed' and e.get('text')=='学校' for e in llm.session.evidence.events))
+        self.assertFalse(any(e['event']=='user_transcript' and e.get('text')=='学校' for e in llm.session.evidence.events))
+        llm.session.id='noise-test';llm.session.to='';llm.session.voice_id='test'
+        llm.session.status='connected';llm.session.finalized=False;llm.session.created=0
+        self.assertEqual(snapshot(llm.session)['transcript'],[])
+
     async def test_unknown_tool_argument_returns_correction_without_executing(self):
         callback = AsyncMock()
         llm = self.llm()
@@ -33,6 +113,41 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
     def llm(self):
         session = SimpleNamespace(evidence=Evidence(), playback=Playback())
         return GatedRealtime(session, SimpleNamespace(turn=Turn(False, number=1)), api_key="test")
+
+    async def test_dispatch_waits_for_physical_speech_before_logical_turn_start(self):
+        llm=self.llm();llm.monitor.segment_start=1.
+        controller=SimpleNamespace(inputs=ControllerInput(),receive_batch=Mock())
+        controller.inputs.add('Предыдущая фраза.',1)
+        llm.session.controller=controller
+        await llm.dispatch_controller_input()
+        controller.receive_batch.assert_not_called()
+        self.assertTrue(controller.inputs.snapshot())
+
+    async def test_dispatch_rechecks_new_speech_after_waiting_for_queue_clear(self):
+        llm=self.llm();llm.monitor.segment_start=None;llm.monitor.turn=Turn(True,1000,number=1)
+        controller=SimpleNamespace(inputs=ControllerInput(),receive_batch=Mock(),
+            serializer=SimpleNamespace(queue_cleared_event=asyncio.Event()))
+        controller.inputs.add('Предыдущая фраза.',1)
+        llm.session.controller=controller;llm.session.playback.generated=True
+        llm._handle_interruption=AsyncMock()
+        async def clear(*args):
+            llm.monitor.turn=Turn(False,number=2);llm.user_speaking=True
+            controller.serializer.queue_cleared_event.set()
+        llm.broadcast_frame=AsyncMock(side_effect=clear)
+        await llm.dispatch_controller_input()
+        controller.receive_batch.assert_not_called()
+        self.assertTrue(controller.inputs.snapshot())
+
+    async def test_old_native_completion_requires_controller_approval_after_ignored_turn(self):
+        for accepted in (True,False):
+            llm=self.llm();llm.monitor.turn=Turn(False,number=2)
+            controller=SimpleNamespace(accepts_native_completion=Mock(return_value=accepted),fallback_done=AsyncMock())
+            llm.session.controller=controller
+            llm.audit_responses['native']={'reason':'controller_fallback','turn':1}
+            llm.release_speech=AsyncMock()
+            await self.finish(llm,'native')
+            controller.accepts_native_completion.assert_called_once_with('native',llm.audit_responses['native'])
+            self.assertEqual(controller.fallback_done.await_count,int(accepted))
 
     async def finish(self, llm, identifier):
         response = SimpleNamespace(id=identifier, output=[], status="completed", model_dump=lambda **kw: {"id": identifier})
@@ -108,6 +223,26 @@ class CoordinationTests(unittest.IsolatedAsyncioTestCase):
             await llm._send_user_audio(InputAudioRawFrame(new, 24000, 1))
             await llm._replay_user_audio_preroll()
             self.assertEqual(base64.b64decode(sent.call_args.args[0].audio), new)
+
+    async def test_idle_trim_discards_long_pause_but_keeps_speech_onset_and_never_replays_committed_audio(self):
+        llm=self.llm();llm.trim_idle_audio=True;llm._api_session_ready=True
+        llm._is_turn_detection_disabled=lambda:True
+        speech=b'\x22\x22'*7200
+        with patch.object(GatedRealtime.__bases__[0],'send_client_event',new=AsyncMock()) as sent:
+            await llm._send_user_audio(InputAudioRawFrame(b'\x00\x00'*240000+speech,24000,1))
+            sent.reset_mock()
+            await llm._handle_user_started_speaking(None)
+            calls=[c.args[0] for c in sent.call_args_list]
+            self.assertEqual([c.type for c in calls],['input_audio_buffer.clear','input_audio_buffer.append'])
+            kept=base64.b64decode(calls[-1].audio)
+            self.assertTrue(kept.endswith(speech));self.assertLessEqual(len(kept),72000)
+            self.assertLess(len(kept),240000*2)
+            await llm.send_client_event(events.InputAudioBufferCommitEvent())
+            llm.monitor.turn=Turn(False,number=2)
+            fresh=b'\x33\x33'*2400
+            await llm._send_user_audio(InputAudioRawFrame(fresh,24000,1))
+            await llm._handle_user_started_speaking(None)
+            self.assertEqual(base64.b64decode(sent.call_args.args[0].audio),fresh)
 
     async def test_empty_greeting_recovery_is_once_and_not_for_ivr(self):
         llm = self.llm()

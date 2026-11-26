@@ -880,6 +880,7 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
     dealershipName: string;
     dealershipCity: string | null;
     dealershipAddress: string | null;
+    visitSchedule: VisitSchedule;
   }> = [];
   if (scope === 'employees' || scope === 'all') {
     const employeeTypeId = plan.employeePhoneNumberTypeId ?? plan.phoneNumberTypeId;
@@ -916,6 +917,7 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
           dealershipName: employee.dealership.name,
           dealershipCity: employee.dealership.city,
           dealershipAddress: employee.dealership.address,
+          visitSchedule: dealershipVisitSchedule(employee.dealership),
         });
       }
     }
@@ -936,6 +938,7 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
           dealershipName: dealership.name,
           dealershipCity: dealership.city,
           dealershipAddress: dealership.address,
+          visitSchedule: dealershipVisitSchedule(dealership),
         });
       }
     }
@@ -943,9 +946,28 @@ async function buildCallPlanTargets(plan: Prisma.CallPlanGetPayload<{}>) {
   return targets;
 }
 
+type CallScriptDataSelection = Pick<Prisma.CallScriptGetPayload<{}>, 'dataConditionJson'>;
+
+function callScriptSelectionTags(script: CallScriptDataSelection): string[] {
+  const condition = safeJsonParse<{ tags?: unknown } | null>(script.dataConditionJson, null);
+  if (!condition || typeof condition !== 'object' || Array.isArray(condition)
+    || (condition.tags !== undefined && (!Array.isArray(condition.tags)
+      || condition.tags.some(tag => typeof tag !== 'string' || !tag.trim())))) {
+    throw new Error('Некорректные условия выборки скрипта. Сохраните теги выборки заново.');
+  }
+  return Array.isArray(condition.tags) ? [...new Set(condition.tags.map(tag => tag.trim()))] : [];
+}
+
+/** A configured selection must never silently become a need-only call. */
+export function assertCallScriptDataSelection(script: CallScriptDataSelection, importedItemId: string | null): void {
+  const tags = callScriptSelectionTags(script);
+  if (tags.length && !importedItemId) {
+    throw new Error(`Для тегов выборки «${tags.join('», «')}» не выбран объект. Проверьте фид и пересоздайте задание звонка.`);
+  }
+}
+
 export async function pickImportedSampleForScript(script: Prisma.CallScriptGetPayload<{}>) {
-  const dataCondition = safeJsonParse<{ holdingId?: string | null; tags?: string[] }>(script.dataConditionJson, { holdingId: script.holdingId, tags: [] });
-  const tags = Array.isArray(dataCondition.tags) ? dataCondition.tags.map(String).filter(Boolean) : [];
+  const tags = callScriptSelectionTags(script);
   // The editor shows zero selected records when no tags are chosen. Do not
   // inject a random company item into an otherwise need-based scenario.
   if (tags.length === 0) return null;
@@ -963,15 +985,15 @@ export async function pickImportedSampleForScript(script: Prisma.CallScriptGetPa
     if (candidates.length === 0) break;
 
     const matched = candidates.filter((item) => {
-      const itemTags = safeJsonParse<string[]>(item.tagsJson, []);
-      return tags.every((tag) => itemTags.includes(tag));
+      const itemTags = safeJsonParse<unknown>(item.tagsJson, []);
+      return Array.isArray(itemTags) && tags.every((tag) => itemTags.includes(tag));
     });
     if (matched.length > 0) return pickRandom(matched);
     if (candidates.length < pageSize) break;
     offset += pageSize;
   }
 
-  return null;
+  throw new Error(`Не найден активный объект со всеми тегами: «${tags.join('», «')}». Звонок без выбранного объекта не запускается.`);
 }
 
 export type RealtimeCallPromptProfile = Pick<
@@ -1536,12 +1558,21 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
       });
       return;
     }
+    // Previously queued jobs may have been built without inventory. Keep
+    // valid saved prompts intact, but reject a missing configured selection
+    // before allocating audio or preparing any telephone call.
+    const script = await prisma.callScript.findFirst({
+      where: { id: call.scriptId, holdingId: call.plan.holdingId },
+      select: { dataConditionJson: true },
+    });
+    if (!script) throw new Error('Скрипт задания звонка не найден. Пересоздайте задание.');
+    assertCallScriptDataSelection(script, call.importedItemId);
     const [phoneNumberSource, targetDealership] = await Promise.all([
       resolvePhoneNumberSourceSnapshot(call.phone, call.phoneNumberTypeId),
       call.dealershipId
         ? prisma.dealership.findUnique({
           where: { id: call.dealershipId },
-          select: { name: true, city: true, address: true },
+          select: { name: true, city: true, address: true, workingHoursFrom: true, workingHoursTo: true, timezoneOffsetMinutes: true },
         })
         : Promise.resolve(null),
     ]);
@@ -1560,6 +1591,7 @@ async function launchScheduledPlanCall(call: Prisma.CallPlanCallGetPayload<{ inc
       companyName: targetDealership?.name ?? call.dealershipName,
       targetLocation: { name: targetDealership?.name ?? call.dealershipName,
         city: targetDealership?.city ?? null, address: targetDealership?.address ?? null },
+      visitSchedule: targetDealership ? dealershipVisitSchedule(targetDealership) : null,
       // Scheduled calls keep their saved prompt even if the imported listing
       // was edited later. Never inject a different vehicle into entity guards.
       subjectTitle: subject?.title && prompt.includes(subject.title) ? subject.title : null,
@@ -1685,14 +1717,20 @@ async function runCallPlanScheduleChecker(): Promise<void> {
       },
     });
     for (const plan of plans) {
-      const created = await ensureCallPlanScheduleForDate(plan, today);
-      if (created > 0) {
-        console.log('[call-plan-scheduler] schedule created', {
-          planId: plan.id,
-          planName: plan.name,
-          date: dateKey(today),
-          created,
-        });
+      try {
+        const created = await ensureCallPlanScheduleForDate(plan, today);
+        if (created > 0) {
+          console.log('[call-plan-scheduler] schedule created', {
+            planId: plan.id,
+            planName: plan.name,
+            date: dateKey(today),
+            created,
+          });
+        }
+      } catch (error) {
+        // A plan with an empty configured selection must not prevent other
+        // companies' plans from getting their schedules prepared.
+        reportError(error, { task: '[call-plan-scheduler] schedule preparation failed', entityId: plan.id });
       }
     }
   } catch (error) {
@@ -1761,6 +1799,7 @@ async function launchManualPlanTarget(
     planId: plan.id, planName: plan.name, prompt, elevenLabsVoiceId,
     companyName: target.dealershipName,
     targetLocation: { name: target.dealershipName, city: target.dealershipCity, address: target.dealershipAddress },
+    visitSchedule: target.visitSchedule,
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title ?? null,
     subjectDescription: context.importedItem?.description ?? null,
@@ -1949,6 +1988,13 @@ export async function handlePreviewCallPlanPrompt(req: Request, res: Response): 
   }
 }
 
+type VisitSchedule = { workingHoursFrom: string; workingHoursTo: string; timezoneOffsetMinutes: number };
+
+function dealershipVisitSchedule(dealership: VisitSchedule): VisitSchedule {
+  return { workingHoursFrom: dealership.workingHoursFrom, workingHoursTo: dealership.workingHoursTo,
+    timezoneOffsetMinutes: dealership.timezoneOffsetMinutes };
+}
+
 export type RealtimeTestPlanConfiguration = {
   planId: string;
   planName: string;
@@ -1960,6 +2006,7 @@ export type RealtimeTestPlanConfiguration = {
   customerNeed?: string | null;
   companyName?: string | null;
   targetLocation?: { name: string | null; city: string | null; address: string | null } | null;
+  visitSchedule?: VisitSchedule | null;
 };
 
 /**
@@ -1998,6 +2045,7 @@ export async function resolveRealtimeTestPlanConfiguration(
     companyName: previewTarget?.dealershipName ?? null,
     targetLocation: previewTarget ? { name: previewTarget.dealershipName,
       city: previewTarget.dealershipCity, address: previewTarget.dealershipAddress } : null,
+    visitSchedule: previewTarget?.visitSchedule ?? null,
     customerVoiceId: customerVoice?.id ?? profile?.voiceId ?? null,
     subjectTitle: context.importedItem?.title?.trim() || null,
     subjectDescription: context.importedItem?.description?.trim() || null,

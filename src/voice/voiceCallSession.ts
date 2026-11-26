@@ -36,6 +36,7 @@ import { finishProductionCallPlanTelephony } from './callPlanTelephony';
 import { readPipecatState } from './productionPipecat';
 import { assertAuditAnalyticsCurrent, updateAuditAnalyticsStage, withAuditAnalyticsProgress } from '../logic/auditAnalyticsProgress';
 import { saveCallAnalysisJob, runCallAnalysisJob } from './callAnalysisJobs';
+import { AnalysisStageTimeoutError, RECORDING_WAIT_TIMEOUT_MS, PLAN_CRITERIA_TIMEOUT_MS, withAnalysisStageDeadline } from '../logic/analysisExecution';
 
 const TRANSCRIPT_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 
@@ -252,14 +253,14 @@ export async function evaluatePlanCriteria(callId: string, transcript: Transcrip
     `Диалог:\n${transcript.map((turn) => `${turn.role === 'manager' ? 'Сотрудник' : 'Клиент'}: ${turn.text}`).join('\n')}`,
   ].join('\n');
   try {
-    const response = await openai.chat.completions.create({
+    const response = await withAnalysisStageDeadline('plan_criteria', PLAN_CRITERIA_TIMEOUT_MS, signal => openai.chat.completions.create({
       model: config.openaiChatModel,
       ...compatibleChatTemperature(config.openaiChatModel, 0.1),
       messages: [
         { role: 'system', content: 'Ты строгий оценщик продаж. Отвечай только валидным JSON.' },
         { role: 'user', content: prompt },
       ],
-    });
+    }, { timeout: PLAN_CRITERIA_TIMEOUT_MS, maxRetries: 0, signal }));
     const content = response.choices[0]?.message?.content || '';
     const jsonText = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
     return normalizePlanCriteriaEvaluation(JSON.parse(jsonText), meaningfulCriteria);
@@ -678,7 +679,19 @@ async function finalizeVoiceCallSessionOnce(payload: VoxWebhookPayload, options:
   // The Vox webhook arrives before the stereo recording has finished uploading.
   // Wait in this background finalizer, never in the HTTP response, before scoring.
   if (!existingSession?.originalTranscriptJson && transcript.length >= 2) {
-    if (recordingTask) await recordingTask;
+    if (recordingTask) {
+      try {
+        await withAnalysisStageDeadline('recording_wait', RECORDING_WAIT_TIMEOUT_MS, () => recordingTask!);
+      } catch (error) {
+        if (!(error instanceof AnalysisStageTimeoutError)) throw error;
+        assertAuditAnalyticsCurrent();
+        // Recording download continues independently. Keep the original ASR
+        // and its reliability review; a late file must not rewrite this report.
+        await prisma.voiceCallSession.update({ where: { callId }, data: {
+          retranscriptionJson: JSON.stringify({ status: 'skipped', model: CALL_RETRANSCRIPTION_MODEL, reason: 'recording_wait_timeout' }),
+        } });
+      }
+    }
     const recording = await prisma.voiceCallSession.findUnique({
       where: { callId }, select: { recordingStatus: true },
     });

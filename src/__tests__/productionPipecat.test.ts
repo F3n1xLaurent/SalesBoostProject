@@ -57,9 +57,11 @@ describe('production Pipecat integration', () => {
     await prepareProductionPipecatCall(id, '+79990000000', { planId: 'p', planName: 'План', prompt: 'Сценарий',
       elevenLabsVoiceId: 'v', customerVoiceId: null, subjectTitle: null, subjectDescription: null,
       customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.',
+      visitSchedule: { workingHoursFrom: '11:30', workingHoursTo: '20:00', timezoneOffsetMinutes: 240 },
       targetLocation: { name: 'Тестовый салон', city: 'Москва', address: 'ш. Энтузиастов, д. 12А' } });
     expect(JSON.parse(request.mock.calls[0][1].body).context).toMatchObject({ subjectTitle: null,
       subjectDescription: null, customerNeed: 'Нужен семейный автомобиль.\nVolkswagen Touareg 2019.',
+      visitSchedule: { workingHoursFrom: '11:30', workingHoursTo: '20:00', timezoneOffsetMinutes: 240 },
       targetLocation: { name: 'Тестовый салон', city: 'Москва', address: 'ш. Энтузиастов, д. 12А' } });
   });
   it('recovers a terminal call from the database queue and forwards actual transcript and recording evidence', async () => {
