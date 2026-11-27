@@ -43,6 +43,14 @@ def is_introductory_greeting(text: str, duration_ms: float, name: str = '') -> b
     return bool(re.fullmatch(r'(?:алло|здравствуйте|здрасьте|добрый день|доброе утро|добрый вечер|hello|hi)'+address,value))
 
 
+def is_courtesy_fragment(text: str) -> bool:
+    """No standalone question or fact: a short filler/courtesy-only fragment."""
+    if '?' in text:return False
+    words=re.findall(r'[\w]+',text.casefold(),flags=re.UNICODE)
+    return bool(0<len(words)<=5 and all(word in {'а','ну','э','эм','как','давайте','пожалуйста'}
+        or re.fullmatch(r'[ауоэы]{1,4}',word) for word in words))
+
+
 def is_overlap_fragment(text: str, duration_ms: float) -> bool:
     """A short grammatical prefix alone cannot justify clearing agent audio.
 

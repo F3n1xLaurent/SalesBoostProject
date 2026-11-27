@@ -11,8 +11,12 @@ from unittest.mock import AsyncMock,Mock,patch
 from conversation import ConversationMemory
 from dialogue_controller import DialogueController
 from semantic_controller import SemanticController
-from pipeline import Turn,GatedRealtime
-from policy import Evidence,Playback
+from pipeline import Turn,TurnMonitor,GatedRealtime
+from pipecat.frames.frames import UserStartedSpeakingFrame
+from pipecat.processors.frame_processor import FrameDirection
+from policy import Evidence,Playback,is_courtesy_fragment
+from input_quality import AudioWindow
+from diagnostics import transcript
 from turn_meaning import interpret,payload,pick,acceptance_scope
 
 PROMPT='1. Возможна доставка по области? [обязательная тема]\n2. Работаете в выходные? [обязательная тема]'
@@ -24,6 +28,149 @@ def meaning(**kwargs):
 
 
 class SemanticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_call_1562_confirmed_visit_cannot_restart_an_unrecorded_opening(self):
+        self.confirmed_booking();self.c.opening_sent=False
+        await self.run_turn('Алло.',control='attention')
+        spoken=[call.args[0].text for call in self.c.player.queue_frame.call_args_list]
+        self.assertNotIn(self.c.texts['opening'],spoken)
+        self.assertEqual(spoken[0],self.c.texts['resume'])
+        self.assertNotIn(self.c.opening_topic,self.c.answers)
+
+    async def test_confirmed_visit_retires_an_old_interrupted_opening_without_inventing_availability(self):
+        self.c.opening_sent=False
+        await self.c.speak('opening');opening=self.c.last_question['response_id']
+        self.s.evidence.delivery.response(opening)['interrupted']=True
+        self.s.playback.generated=False;self.s.playback.synthesizing=False
+        self.confirmed_booking()
+        for key in self.keys:self.c.answers[key]={'status':'answered'}
+        self.c.player.queue_frame.reset_mock()
+        await self.c.perform('advance','Будем ждать.',self.c.epoch)
+        self.assertIsNone(self.c.unfinished_question())
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_farewell'])
+        self.assertNotIn(self.c.opening_topic,self.c.answers)
+
+    async def test_changing_a_confirmed_visit_does_not_reactivate_the_opening(self):
+        self.c.started=True;self.c.opening_sent=False
+        self.c.visit.update('Завтра в 10:00.',1);self.c.visit.offered=self.c.visit.proposal()
+        self.c.visit_offer_response_id='offer'
+        self.c.last_question={'response_id':'offer','topic':None,'kind':'visit_offer','text':'Завтра в 10 подойдёт?'}
+        self.c.last_clip={'response_id':'offer','text':'Завтра в 10 подойдёт?'}
+        self.assertTrue(self.c.accept_active('Да, будем ждать.',2,{'acceptance_scope':'direct_reply'}))
+        self.c.visit_confirmed=False
+        self.assertFalse(self.c.needs_opening())
+
+    async def test_booking_does_not_ask_a_never_queued_availability_question(self):
+        self.confirmed_booking();self.c.opening_sent=False
+        self.s.evidence.memory.topics.required=[{'key':'availability','question':'Машина ещё продаётся?'}]
+        self.assertFalse(self.c.unasked())
+        await self.c.perform('advance','До встречи.',self.c.epoch)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_farewell'])
+        self.assertNotIn('availability',self.c.answers)
+
+    async def test_explicit_subject_request_after_booking_still_gets_the_selected_car(self):
+        self.confirmed_booking();self.c.opening_sent=False
+        for key in self.keys:self.c.answers[key]={'status':'answered'}
+        await self.run_turn('Напомните, какой автомобиль вас интересует?',subject=True,other_questions=True)
+        self.assertTrue(self.c.llm.request_turns)
+        self.assertIn('subject',self.c.requested_answers)
+        self.assertEqual(self.c.pending_after_native[0],'advance')
+        self.c.player.queue_frame.assert_not_awaited()
+    async def test_call_1547_permission_request_preserves_booking_and_yields_the_floor(self):
+        self.c.started=True;self.c.visit.update('Завтра в 10:00.',1)
+        self.c.visit.offered=self.c.visit.proposal();self.c.visit_offer_response_id='offer'
+        self.c.last_question={'response_id':'offer','text':'Завтра в 10 подойдёт?','topic':None,'kind':'visit_offer','turn':1}
+        self.c.last_clip={'response_id':'offer','text':'Завтра в 10 подойдёт?'}
+        self.s.evidence.turn=2
+        await self.run_turn('Да, отлично, будем вас ждать завтра в 10. Сергей, можно я задам вам несколько вопросов?',
+            visit='accept',acceptance_scope='direct_reply',seller_permission='ask',reply_focus='visit_only',
+            other_questions=True,next_question=True,plan_permission=True)
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,'Да, конечно, задавайте.')
+        self.assertFalse(self.c.asked)
+        self.assertIsNone(self.c.pending_continuation)
+        self.assertFalse(self.c.llm.request_turns)
+
+    async def test_permission_and_actual_question_are_answered_without_advancing_plan(self):
+        self.c.started=True
+        await self.run_turn('Можно уточнить несколько вопросов? Покупку планируете в кредит или за наличные?',
+            seller_permission='mixed',other_questions=True)
+        self.assertIsNone(self.c.pending_after_native[0])
+        self.assertEqual(self.c.native_question_policy,'answer_only')
+        self.assertIn('разрешени',self.c.fallback_goal)
+        self.assertFalse(self.c.asked)
+
+    async def test_repeated_explicit_permission_request_gets_an_audible_ack(self):
+        self.c.started=True
+        for turn in (1,2):
+            self.s.evidence.turn=turn
+            await self.run_turn('Можно я задам несколько вопросов?',seller_permission='ask')
+        self.assertEqual(self.c.player.queue_frame.await_count,2)
+        self.assertTrue(all(call.args[0].text=='Да, конечно, задавайте.' for call in self.c.player.queue_frame.call_args_list))
+
+    async def test_delivered_but_unanswered_question_gets_one_clarification_before_next_topic(self):
+        self.c.started=True;topic=self.keys[0]
+        await self.c.speak(topic);self.phone_complete(self.c.last_question['response_id'])
+        self.c.player.queue_frame.reset_mock();self.s.evidence.turn=2
+        await self.run_turn('Вы лучше приезжайте, на месте обсудим.',coverage={topic:'unanswered'})
+        first=self.c.player.queue_frame.call_args.args[0].text
+        self.assertIn(self.c.texts[topic],first)
+        self.assertNotIn(self.c.texts[self.keys[1]],first)
+        self.assertNotIn(topic,self.c.answers)
+        self.phone_complete(self.c.last_question['response_id']);self.s.evidence.turn=3
+        await self.run_turn('Давайте обсудим при встрече.',coverage={topic:'unanswered'})
+        self.assertIn(self.c.texts[self.keys[1]],self.c.player.queue_frame.call_args.args[0].text)
+        self.assertNotIn(topic,self.c.answers)
+
+    async def test_focused_coverage_prevents_repeating_an_answer_missed_by_broad_decision(self):
+        self.c.started=True;topic=self.keys[0]
+        await self.c.speak(topic);self.phone_complete(self.c.last_question['response_id'])
+        self.c.player.queue_frame.reset_mock();self.s.evidence.turn=2
+        with patch('semantic_controller.review_answer_coverage',new=AsyncMock(return_value='answered')) as review:
+            await self.run_turn('По области доставляем бесплатно.',coverage={topic:'unanswered'})
+        review.assert_awaited_once()
+        self.assertEqual(self.c.answers[topic]['status'],'answered')
+        self.assertIn(self.c.texts[self.keys[1]],self.c.player.queue_frame.call_args.args[0].text)
+
+    async def test_answered_or_explicitly_unknown_topic_is_never_clarified(self):
+        self.c.started=True;topic=self.keys[0]
+        await self.c.speak(topic);self.phone_complete(self.c.last_question['response_id'])
+        self.s.evidence.turn=2
+        await self.run_turn('Такой информации у меня нет.',coverage={topic:'unknown'})
+        self.assertEqual(self.c.answers[topic]['status'],'unknown')
+        self.assertFalse(self.c.unanswered_clarifications)
+
+    async def test_permission_yields_the_floor_even_with_a_delivered_unanswered_topic(self):
+        self.c.started=True;await self.c.speak(self.keys[0])
+        self.phone_complete(self.c.last_question['response_id'])
+        self.s.evidence.turn=2;self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Можно я задам вам несколько вопросов?',seller_permission='ask')
+        self.phone_complete(self.c.playing_id);await asyncio.sleep(.03)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertFalse(self.c.unanswered_clarifications)
+        self.assertIsNone(self.c.pending_continuation)
+
+    async def test_unanswered_question_waits_for_manager_wait_or_unfinished_sentence(self):
+        self.c.started=True;await self.c.speak(self.keys[0])
+        self.phone_complete(self.c.last_question['response_id']);self.s.evidence.turn=2
+        self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Секунду, проверю.',control='wait')
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(self.c.unanswered_clarifications)
+
+    async def test_unanswered_clarification_waits_until_our_answer_to_manager_is_heard(self):
+        self.c.started=True;topic=self.keys[0]
+        await self.c.speak(topic);self.phone_complete(self.c.last_question['response_id'])
+        self.s.evidence.turn=2;self.c.player.queue_frame.reset_mock()
+        await self.run_turn('Машину подбираете для себя?',other_questions=True,reply_focus='beneficiary')
+        self.c.player.queue_frame.assert_not_awaited()
+        self.c.llm.spoken_text['personal-answer']='Для себя.'
+        await self.c.fallback_done('personal-answer');await asyncio.sleep(.03)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.phone_complete('personal-answer');await asyncio.sleep(.04)
+        self.assertIn(self.c.texts[topic],self.c.player.queue_frame.call_args.args[0].text)
+        self.assertIn('plan:'+topic,self.c.unanswered_clarifications)
+
+
     async def test_existing_visit_slot_must_be_inside_hours_even_when_in_the_future(self):
         self.s.context['visitSchedule']={'workingHoursFrom':'09:00','workingHoursTo':'21:00','timezoneOffsetMinutes':240}
         for day,clock,allowed in [('Сегодня','20:59',True),('Сегодня','21:00',False),
@@ -493,6 +640,86 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.c.opening_sent)
         self.assertNotIn('интересует',self.c.player.queue_frame.call_args.args[0].text)
 
+    async def test_call_1550_short_company_greeting_opens_without_fragment_wait(self):
+        self.c.opening_sent=False;self.c.started=False
+        self.c.line.state='awaiting_person';self.c.line.ever_human=False
+        self.c.line.history=['Здравствуйте, вас приветствует автохолдинг Динамика Калининград.',
+            'В целях контроля качества обслуживания разговор может быть записан.']
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(control='fragment',name=True))) as model:
+            await self.c.handle('Добрый день  динами',4,self.c.epoch)
+        model.assert_not_awaited()
+        self.assertTrue(self.c.line.can_speak)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['opening'])
+        self.assertIsNone(self.c.fragment_input_epoch)
+
+    async def test_call_1565_reviewed_first_name_request_uses_prepared_identity(self):
+        self.c.opening_sent=False;self.c.started=False
+        self.c.line.state='awaiting_person';self.c.line.ever_human=False
+        self.c.first_contact=SimpleNamespace(recover=AsyncMock(return_value={
+            'intent':'name','text':'Компания Первый километр, как я могу к вам обращаться?'}),clear=Mock())
+        self.c.line.classify=AsyncMock(return_value=('uncertain',None,False))
+        damaged='первый километр меня забусили прощаться'
+        self.s.evidence.memory.user(damaged,1)
+        with patch('semantic_controller.interpret',new=AsyncMock()) as model:
+            await self.c.handle(damaged,1,self.c.epoch)
+        model.assert_not_awaited()
+        self.assertTrue(self.c.line.can_speak)
+        self.assertIn('Меня зовут Андрей',self.c.player.queue_frame.call_args.args[0].text)
+        self.assertNotIn(damaged,[row['text'] for row in self.s.evidence.memory.users])
+
+    async def test_first_contact_audio_survives_the_stt_handler_until_line_recovery(self):
+        self.c.opening_sent=False;self.c.started=False
+        self.c.line.state='awaiting_person';self.c.line.ever_human=False
+        self.s.context['targetLocation']={'name':'Первый километр','city':'Самара'}
+        llm=GatedRealtime(self.s,self.monitor,api_key='test');self.c.llm=llm
+        llm.send_client_event=AsyncMock()
+        llm.input_quality.verify=AsyncMock(return_value={
+            'text':'Компания Первый километр, как я могу к вам обращаться?',
+            'logprobs':[{'logprob':-.02}]})
+        turn=self.monitor.turn;turn.duration_ms=3618
+        llm.items['first-audio']=(turn,True)
+        llm.turn_audio.windows[turn.number]=AudioWindow(b'\xb8\x0b'*32000,16000,-65)
+        self.c.line.classify=AsyncMock(return_value=('uncertain',None,False))
+        damaged='первый километр меня забусили прощаться'
+        with patch.object(GatedRealtime.__bases__[0],'handle_evt_input_audio_transcription_completed',new=AsyncMock()),\
+             patch('semantic_controller.interpret',new=AsyncMock()) as model:
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='first-audio',transcript=damaged))
+            await self.c.task
+        model.assert_not_awaited()
+        llm.input_quality.verify.assert_awaited_once()
+        self.assertTrue(self.c.line.can_speak)
+        self.assertIn('Меня зовут Андрей',self.c.player.queue_frame.call_args.args[0].text)
+        self.assertIsNone(self.c.first_contact.record)
+        displayed=[row for row in transcript(self.s.evidence.events) if row['itemId']=='first-audio']
+        self.assertEqual(len(displayed),1)
+        self.assertEqual(displayed[0]['text'],'Компания Первый километр, как я могу к вам обращаться?')
+        self.assertEqual(displayed[0]['status'],'completed')
+
+    async def test_known_branch_greeting_opens_without_interpreting_a_question(self):
+        self.c.opening_sent=False;self.c.started=False
+        self.s.context['targetLocation']={'name':'Первый километр','city':'Самара'}
+        with patch('semantic_controller.interpret',new=AsyncMock(return_value=meaning(control='fragment'))) as model:
+            await self.c.handle('Добрый день, компания Первый километр.',1,self.c.epoch)
+        model.assert_not_awaited()
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['opening'])
+
+    async def test_company_greeting_with_a_question_keeps_semantic_processing(self):
+        self.c.opening_sent=False;self.c.started=False
+        self.s.context['targetLocation']={'name':'Первый километр'}
+        await self.run_turn('Добрый день, компания Первый километр, какой автомобиль вас интересует?',subject=True)
+        self.assertFalse(any(e['event']=='semantic_opening_fast_path' for e in self.s.evidence.events))
+
+    async def test_recorded_company_greeting_cannot_start_the_opening(self):
+        self.c.opening_sent=False;self.c.started=False
+        self.c.line.state='awaiting_person';self.c.line.ever_human=False
+        self.c.line.history=['Вас приветствует автохолдинг Динамика Калининград.']
+        with patch.object(self.c.line,'classify',new=AsyncMock(return_value=('recording',None,False))),\
+             patch('semantic_controller.interpret',new=AsyncMock()) as model:
+            await self.c.handle('Добрый день, вас приветствует автохолдинг Динамика Калининград.',1,self.c.epoch)
+        model.assert_not_awaited()
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(self.c.line.can_speak)
+
     async def test_midcall_name_question_uses_cached_audio_without_semantic_request(self):
         self.c.started=True
         previous=self.c.last_question
@@ -770,6 +997,8 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         answer_review.start();self.addCleanup(answer_review.stop)
         fragment_review=patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='clarify'))
         fragment_review.start();self.addCleanup(fragment_review.stop)
+        location_review=patch('semantic_controller.review_location_request',new=AsyncMock(return_value='location_only'))
+        location_review.start();self.addCleanup(location_review.stop)
         self.s.controller=self.c
         self.c.continuation_quiet_seconds=0.
         self.c.llm=SimpleNamespace(response_id=None,response_items={},spoken_text={},wire_active=None,wire_pending=None,
@@ -781,6 +1010,29 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
             await self.c.prepare()
 
     async def asyncTearDown(self):await self.c.close()
+
+    async def test_female_profile_prepares_feminine_repair_and_receipt_before_tts(self):
+        self.s.prompt='Голос клиента: Женский.\n'+PROMPT
+        texts={r['key']:r['question'] for r in self.s.evidence.memory.topics.required}
+        with patch('dialogue_controller.prepare_questions',new=AsyncMock(return_value=texts)),\
+             patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)) as voice:
+            await self.c.prepare()
+        self.assertEqual(self.c.texts['receipt_0'],'Поняла.')
+        self.assertIn('не расслышала',self.c.texts['repeat'])
+        self.assertIn('не расслышала',self.c.texts['stt_repair'])
+        spoken=[call.args[1] for call in voice.call_args_list]
+        self.assertIn('Последнюю часть не расслышала. Повторите, пожалуйста.',spoken)
+        self.assertFalse(any('не расслышал.' in text or text=='Понял.' for text in spoken))
+
+    async def test_generated_first_person_grammar_matches_female_profile(self):
+        self.s.prompt='Голос клиента: Женский.\n'+PROMPT;self.c.started=True
+        spoken=self.c.approve_speech_sentence('Я не расслышал последнюю часть.','generated')
+        self.assertEqual(spoken,'Я не расслышала последнюю часть.')
+
+    async def test_unspecified_gender_uses_neutral_prepared_repair_phrases(self):
+        self.assertEqual(self.c.texts['receipt_0'],'Понятно.')
+        self.assertEqual(self.c.texts['repeat'],'Плохо слышно. Повторите, пожалуйста.')
+        self.assertEqual(self.c.texts['stt_repair'],'Последнюю часть плохо слышно. Повторите, пожалуйста.')
 
     def phone_complete(self,identifier):
         ledger=self.s.evidence.delivery
@@ -931,6 +1183,68 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         recovery.quiet_seconds=.01;recovery.repair_seconds=.04;recovery.max_wait=.12
         self.c.started=True
         return recovery
+
+    async def test_call_1565_repeated_amount_does_not_loop_on_the_retained_unfinished_tail(self):
+        self.quick_fragment_recovery();self.c.started=True;topic=self.keys[0]
+        self.c.texts[topic]='Цену не потеряю, если подумаю недолго?'
+        self.s.evidence.memory.topics.required[0]['question']=self.c.texts[topic]
+        await self.c.speak(topic);self.phone_complete(self.c.last_question['response_id'])
+        self.c.player.queue_frame.reset_mock()
+        self.c.inputs.add('До трёхсот рублей.',2);self.c.inputs.add('Вы когда',3)
+        self.c.active_batch=self.c.inputs.snapshot()
+        self.s.evidence.turn=3;self.monitor.turn=Turn(False,number=3)
+        await self.run_turn('До трёхсот рублей. Вы когда',control='fragment')
+        await asyncio.sleep(.06)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['stt_repair'])
+        self.phone_complete(self.c.playing_id)
+        await self.c.new_input();self.s.evidence.turn=4;self.monitor.turn=Turn(False,number=4)
+        self.c.inputs.add('До трёхсот рублей.',4);self.c.active_batch=self.c.inputs.snapshot()
+        await self.run_turn('До трёхсот рублей. Вы когда До трёхсот рублей.',control='fragment')
+        await asyncio.sleep(.07)
+        spoken=[call.args[0].text for call in self.c.player.queue_frame.call_args_list]
+        self.assertEqual(spoken.count(self.c.texts['stt_repair']),1)
+        self.assertIn(self.c.texts[topic],spoken[-1])
+        self.assertNotIn(topic,self.c.answers)
+        self.assertFalse(self.s.evidence.memory.facts)
+        self.assertFalse(self.c.inputs.snapshot())
+
+    async def test_same_unresolved_fragment_has_one_automatic_repair_without_an_active_question(self):
+        self.quick_fragment_recovery()
+        for turn in (1,2):
+            if turn>1:
+                self.phone_complete(self.c.playing_id);await self.c.new_input()
+            self.s.evidence.turn=turn;self.monitor.turn=Turn(False,number=turn)
+            self.c.inputs.add('Неразборчивое начало',turn);self.c.active_batch=self.c.inputs.snapshot()
+            await self.run_turn(' '.join(row['text'] for row in self.c.active_batch),control='fragment')
+            await asyncio.sleep(.06)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(len(self.c.inputs.snapshot()),2)
+        self.assertFalse(self.c.answers)
+
+    async def test_a_new_logical_fragment_gets_its_own_single_repair_budget(self):
+        self.quick_fragment_recovery()
+        for turn in (1,2):
+            if turn>1:
+                self.phone_complete(self.c.playing_id);await self.c.new_input()
+                self.c.inputs.consume(self.c.inputs.snapshot())
+            self.s.evidence.turn=turn;self.monitor.turn=Turn(False,number=turn)
+            text='Первый обрывок' if turn==1 else 'Новый другой обрывок'
+            self.c.inputs.add(text,turn);self.c.active_batch=self.c.inputs.snapshot()
+            await self.run_turn(text,control='fragment');await asyncio.sleep(.06)
+        self.assertEqual(self.c.player.queue_frame.await_count,2)
+        self.assertEqual(self.c.fragment_recovery.repaired_roots,{1,2})
+
+    async def test_physical_speech_during_focused_answer_review_prevents_clarification(self):
+        self.c.started=True;topic=self.keys[0]
+        await self.c.speak(topic);self.phone_complete(self.c.last_question['response_id'])
+        self.c.player.queue_frame.reset_mock();self.s.evidence.turn=2
+        async def hearing(*args):
+            self.monitor.segment_start=time.monotonic()
+            return 'unanswered'
+        with patch('semantic_controller.review_answer_coverage',new=AsyncMock(side_effect=hearing)):
+            await self.run_turn('Секунду, сейчас продолжу.',coverage={topic:'unanswered'})
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(self.c.unanswered_clarifications)
 
     async def test_call_1526_fragmented_tradein_question_recovers_without_connection_check(self):
         self.quick_fragment_recovery()
@@ -1192,6 +1506,116 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         llm._handle_interruption.assert_not_awaited();llm.broadcast_frame.assert_not_awaited()
         self.assertIn('opening-audio',self.s.playback.pending)
         self.assertTrue(any(e['event']=='opening_greeting_overlap_ignored' for e in self.s.evidence.events))
+
+    async def test_call_1559_short_yes_during_the_opening_does_not_cut_the_car_question(self):
+        await self.c.speak('opening');identifier=self.c.last_question['response_id']
+        self.s.evidence.delivery.segment('opening-audio',identifier)
+        self.s.playback.pending.add('opening-audio')
+        turn=Turn(True,300,number=1,question=dict(self.c.last_question))
+        turn.question_audio_sending=True
+        self.monitor.turn=turn;self.c.receive=Mock()
+        llm=GatedRealtime(self.s,self.monitor,api_key='test');self.c.llm=llm
+        llm.items['short-yes']=(turn,True);llm.send_client_event=AsyncMock()
+        llm._handle_interruption=AsyncMock()
+        llm.broadcast_frame=AsyncMock(side_effect=lambda *args:self.c.serializer.queue_cleared_event.set())
+        with patch.object(GatedRealtime.__bases__[0],'handle_evt_input_audio_transcription_completed',new=AsyncMock()):
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='short-yes',transcript='Да'))
+        llm._handle_interruption.assert_not_awaited();llm.broadcast_frame.assert_not_awaited()
+        self.c.receive.assert_not_called()
+        self.assertIn('opening-audio',self.s.playback.pending)
+        self.assertFalse(self.c.answers)
+
+    async def test_call_1562_short_vowel_fragment_does_not_restart_the_opening(self):
+        await self.c.speak('opening');identifier=self.c.last_question['response_id']
+        self.s.evidence.delivery.segment('opening-audio',identifier)
+        self.s.playback.pending.add('opening-audio')
+        turn=Turn(True,199.84,number=1,question=dict(self.c.last_question),question_audio_sending=True)
+        self.monitor.turn=turn;self.c.receive=Mock()
+        llm=GatedRealtime(self.s,self.monitor,api_key='test');self.c.llm=llm
+        llm.items['vowel']=(turn,True);llm.send_client_event=AsyncMock()
+        llm._handle_interruption=AsyncMock()
+        llm.broadcast_frame=AsyncMock(side_effect=lambda *args:self.c.serializer.queue_cleared_event.set())
+        with patch.object(GatedRealtime.__bases__[0],'handle_evt_input_audio_transcription_completed',new=AsyncMock()):
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='vowel',transcript='Ауа'))
+        llm._handle_interruption.assert_not_awaited();self.c.receive.assert_not_called()
+        self.assertIn('opening-audio',self.s.playback.pending)
+
+    async def test_courtesy_only_fragment_waits_without_asking_to_repeat_on_connection_noise(self):
+        self.quick_fragment_recovery()
+        for turn,text in enumerate(('как','Давайте','Пожалуйста,'),1):self.c.inputs.add(text,turn)
+        self.c.active_batch=self.c.inputs.snapshot();self.s.evidence.turn=3;self.monitor.turn=Turn(False,number=3)
+        await self.run_turn('как Давайте Пожалуйста,',control='fragment')
+        await asyncio.sleep(.07)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(self.c.inputs.snapshot())
+        self.assertFalse(self.c.answers)
+
+    def test_courtesy_fragment_filter_preserves_questions_facts_and_stop_commands(self):
+        for text in ('Ауа','Эээ','как Давайте Пожалуйста,'):
+            self.assertTrue(is_courtesy_fragment(text),text)
+        for text in ('Как?','Нет.','Да.','Стоп.','До трёхсот рублей.',
+                     'Пожалуйста, машину выбираете для себя?','Пожалуйста, машина в наличии.',
+                     'Давайте завтра в десять.'):
+            self.assertFalse(is_courtesy_fragment(text),text)
+
+    async def test_courtesy_word_with_a_recognized_question_is_not_discarded(self):
+        self.quick_fragment_recovery()
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='other')):
+            await self.run_turn('Пожалуйста',control='fragment',other_questions=True)
+            await asyncio.sleep(.06)
+        self.assertTrue(self.c.llm.request_turns)
+        self.assertFalse(any(e['event']=='semantic_courtesy_fragment_ignored' for e in self.s.evidence.events))
+
+    async def test_a_real_manager_question_after_courtesy_noise_starts_with_a_clean_batch(self):
+        self.quick_fragment_recovery();self.c.inputs.add('как Давайте Пожалуйста',1)
+        self.c.active_batch=self.c.inputs.snapshot()
+        await self.run_turn('как Давайте Пожалуйста',control='fragment');await asyncio.sleep(.06)
+        await self.c.new_input();self.s.evidence.turn=2;self.monitor.turn=Turn(False,number=2)
+        text='Какую машину хотите сдать в trade-in?'
+        self.c.inputs.add(text,2);self.c.active_batch=self.c.inputs.snapshot()
+        await self.run_turn(text,other_questions=True,reply_focus='own_vehicle')
+        self.assertEqual(self.c.latest_input,text)
+        self.assertTrue(self.c.llm.request_turns)
+        self.assertFalse(any('как Давайте' in row['text'] for row in self.s.evidence.memory.users))
+
+    async def test_opening_ack_guard_keeps_stop_questions_and_actual_answers_available(self):
+        await self.c.speak('opening')
+        turn=Turn(True,300,number=1,question=dict(self.c.last_question),question_audio_sending=True)
+        self.assertTrue(self.c.ignores_opening_ack('Да.',turn))
+        for text in ('Нет.','Стоп.','Да?','Да, машина продаётся.','Как вас зовут?','Вас не слышно.'):
+            self.assertFalse(self.c.ignores_opening_ack(text,turn),text)
+        turn.question_audio_sending=False
+        self.assertFalse(self.c.ignores_opening_ack('Да.',turn))
+        turn.question_audio_sending=True;turn.duration_ms=1200
+        self.assertFalse(self.c.ignores_opening_ack('Да.',turn))
+        turn.duration_ms=300;turn.interrupted=True
+        self.assertFalse(self.c.ignores_opening_ack('Да.',turn))
+        turn.interrupted=False;turn.question={'topic':self.keys[0],'response_id':'other'}
+        self.assertFalse(self.c.ignores_opening_ack('Да.',turn))
+
+    async def test_question_sending_phase_is_captured_at_speech_start(self):
+        await self.c.speak('opening');identifier=self.c.last_question['response_id']
+        self.s.evidence.delivery.segment('opening-audio',identifier)
+        self.s.playback.pending.add('opening-audio')
+        monitor=TurnMonitor(self.s);monitor.push_frame=AsyncMock()
+        await monitor.process_frame(UserStartedSpeakingFrame(),FrameDirection.DOWNSTREAM)
+        self.assertTrue(monitor.turn.question_audio_sending)
+        self.s.playback.sealed.add('opening-audio')
+        self.assertTrue(monitor.turn.question_audio_sending)
+        await monitor.process_frame(UserStartedSpeakingFrame(),FrameDirection.DOWNSTREAM)
+        self.assertFalse(monitor.turn.question_audio_sending)
+
+    async def test_short_yes_after_the_question_still_reaches_semantic_processing(self):
+        await self.c.speak('opening');self.phone_complete(self.c.last_question['response_id'])
+        turn=Turn(False,300,number=2,question=dict(self.c.last_question),question_audio_sending=False)
+        self.monitor.turn=turn;self.s.evidence.turn=2
+        llm=GatedRealtime(self.s,self.monitor,api_key='test');self.c.llm=llm
+        llm.items['real-answer']=(turn,True);llm.send_client_event=AsyncMock()
+        self.c.receive=Mock()
+        with patch.object(GatedRealtime.__bases__[0],'handle_evt_input_audio_transcription_completed',new=AsyncMock()):
+            await llm.handle_evt_input_audio_transcription_completed(SimpleNamespace(item_id='real-answer',transcript='Да.'))
+        self.c.receive.assert_called_once()
+        self.assertFalse(any(e['event']=='opening_ack_overlap_ignored' for e in self.s.evidence.events))
 
     async def test_verified_script_subject_is_prepared_for_opening_and_direct_replies(self):
         self.s.context={'subjectTitle':None,'subjectDescription':None}
@@ -1841,6 +2265,58 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         # Mirroring the cached clip is permitted; no native response is created.
         self.assertFalse(any(type(call.args[0]).__name__=='ResponseCreateEvent' for call in self.c.llm.send_client_event.call_args_list))
 
+    async def test_call_1544_conflicting_city_label_cannot_erase_the_name_answer(self):
+        self.c.opening_sent=False;self.c.started=False
+        self.c.texts['target_city']='Я обращаюсь в город Самара.'
+        self.c.clips['target_city']=self.c.clips['name']
+        with patch('semantic_controller.review_location_request',new=AsyncMock(return_value='name_only')):
+            await self.run_turn('Компания первый километр меня как я могу к вам обращаться?',
+                name=True,location_only=True,other_questions=True,reply_focus='other')
+        spoken=[call.args[0].text for call in self.c.player.queue_frame.call_args_list]
+        self.assertTrue(any('Меня зовут Андрей' in text for text in spoken),spoken)
+        self.assertFalse(any('Самара' in text for text in spoken),spoken)
+        self.assertFalse(self.c.last_meaning['location_only'])
+        self.assertFalse(self.c.llm.request_turns)
+
+    async def test_name_and_city_request_keeps_both_answers_in_native_context(self):
+        self.c.started=True;self.c.texts['target_city']='Я обращаюсь в город Омск.'
+        self.c.clips['target_city']=self.c.clips['name']
+        self.s.context['targetLocation']={'city':'Омск'}
+        with patch('semantic_controller.review_location_request',new=AsyncMock(return_value='other')):
+            await self.run_turn('Как вас зовут и в какой город обращаетесь?',
+                name=True,location_only=True,other_questions=True)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertTrue(self.c.llm.request_turns)
+        self.assertIn('name',self.c.requested_answers)
+        self.assertFalse(self.c.last_meaning['location_only'])
+        state=json.loads(self.c.context_text().split('\n',1)[1])
+        self.assertEqual(state['target_location']['city'],'Омск')
+
+    async def test_failed_city_review_requests_repetition_without_guessing(self):
+        self.c.texts['target_city']='Я обращаюсь в город Омск.'
+        self.c.clips['target_city']=self.c.clips['name']
+        with patch('semantic_controller.review_location_request',new=AsyncMock(side_effect=TimeoutError)):
+            await self.run_turn('Но в одной компании меня запрещают и могу сама обратиться',
+                location_only=True,other_questions=True)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['stt_repair'])
+        self.assertFalse(self.c.llm.request_turns)
+
+    async def test_unclear_location_review_keeps_waiting_for_a_real_fragment(self):
+        with patch('semantic_controller.review_location_request',new=AsyncMock(return_value='unclear')):
+            await self.run_turn('Компания, а в какой',control='fragment',location_only=True)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertEqual(self.c.last_meaning['control'],'fragment')
+        self.assertEqual(self.c.fragment_input_epoch,self.c.epoch)
+
+    async def test_location_review_cannot_answer_after_a_new_turn_cancels_it(self):
+        async def stale(*args):
+            self.c.epoch+=1
+            return 'name_only'
+        with patch('semantic_controller.review_location_request',new=AsyncMock(side_effect=stale)):
+            await self.run_turn('Компания Первый километр, как к вам обращаться?',name=True,location_only=True)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(self.c.llm.request_turns)
+
     async def test_repeated_explicit_connection_checks_receive_audible_answers(self):
         self.c.started=True
         await self.run_turn('Алло, вы меня слышите?',control='attention')
@@ -2290,13 +2766,13 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         await self.c.bc_task
         self.c.player.queue_frame.assert_not_awaited()
 
-    async def test_receipt_only_after_known_answer_and_not_every_question(self):
+    async def test_known_answers_advance_without_automatic_receipt_prefixes(self):
         self.c.started=True
         await self.run_turn('Первый ответ',coverage={'availability':'answered'})
-        self.assertTrue(self.c.player.queue_frame.call_args.args[0].text.startswith(self.c.texts['receipt_0']))
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[self.keys[0]])
         self.s.evidence.turn+=1
         await self.run_turn('Второй ответ',coverage={self.keys[0]:'answered'})
-        self.assertFalse(self.c.player.queue_frame.call_args.args[0].text.startswith(self.c.texts['receipt_2']))
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[self.keys[1]])
 
     async def test_terminal_line_never_reaches_business_interpretation_or_tts(self):
         self.c.line.state='awaiting_person';self.c.line.ever_human=False

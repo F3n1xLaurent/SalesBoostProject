@@ -148,6 +148,18 @@ class InputQuality:
             response.raise_for_status();result=response.json()
         return result
 
+    async def verify_window(self,window):
+        """Shared bounded verifier; callers decide which evidence it can admit."""
+        if self.lock.locked() or self.calls>=self.limit or time.monotonic()-self.last_call<1:
+            return None,'verification_budget'
+        async with self.lock:
+            self.calls+=1;self.last_call=time.monotonic()
+            try:
+                async with asyncio.timeout(self.timeout):result=await self.verify(window)
+            except asyncio.CancelledError:raise
+            except Exception:return None,'verification_unavailable'
+        return result,None
+
     async def assess(self,text,window,speech_ms,known_words=''):
         reasons,features=suspicion(text,window,speech_ms,known_words)
         if self.require_audio and not window:return Admission('uncertain','','verification_audio_unavailable',features)
@@ -155,14 +167,8 @@ class InputQuality:
         if window and features['rms_db']<-80:return Admission('noise','','digital_silence',features)
         if not window or window.clipped or features['duration_ms']>10000:
             return Admission('uncertain','','verification_audio_unavailable',features)
-        if self.lock.locked() or self.calls>=self.limit or time.monotonic()-self.last_call<1:
-            return Admission('uncertain','','verification_budget',features)
-        async with self.lock:
-            self.calls+=1;self.last_call=time.monotonic()
-            try:
-                async with asyncio.timeout(self.timeout):result=await self.verify(window)
-            except asyncio.CancelledError:raise
-            except Exception:return Admission('uncertain','','verification_unavailable',features)
+        result,error=await self.verify_window(window)
+        if error:return Admission('uncertain','',error,features)
         if not isinstance(result,dict):return Admission('uncertain','','invalid_verification',features)
         reviewed=result.get('text','')
         if not isinstance(reviewed,str):return Admission('uncertain','','invalid_verification',features)

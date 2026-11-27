@@ -1,16 +1,18 @@
 """Bound semantic fragment waits without speaking over audio or pending ASR."""
 import asyncio
 import time
+import re
 from copy import deepcopy
 
 from turn_meaning import review_fragment_question
+from policy import is_courtesy_fragment
 
 
 class FragmentRecovery:
     def __init__(self,controller):
         self.c=controller;self.task=None;self.record=None
         self.quiet_seconds=2.5;self.repair_seconds=5.;self.max_wait=10.
-        self.reviews=0;self.handled=set()
+        self.reviews=0;self.handled=set();self.repaired_roots=set()
 
     def cancel(self,preserve=False):
         if self.task and self.task is not asyncio.current_task():self.task.cancel()
@@ -34,7 +36,8 @@ class FragmentRecovery:
         if speech_end is None:
             speech_end=getattr(self.c.monitor.turn,'speech_end',None) if self.c.monitor.turn.number==turn else None
         record={'text':text,'turn':turn,'epoch':epoch,'meaning':deepcopy(meaning),'batch':list(batch),
-            'speech_end':speech_end or time.monotonic(),'signature':signature}
+            'speech_end':speech_end or time.monotonic(),'signature':signature,
+            'root':batch[0]['turn'] if batch else turn}
         self.record=record;self.task=asyncio.create_task(self.run(record))
         self.c.s.evidence.event('semantic_fragment_recovery_armed',source_turn=turn)
 
@@ -59,6 +62,23 @@ class FragmentRecovery:
         c=self.c;epoch=record['epoch']
         try:
             if not await self.quiet(record,self.quiet_seconds):return
+            meaning=record['meaning']
+            substantive=(any(meaning.get(key) for key in ('name','name_confirmation','subject','other_questions',
+                'next_question','plan_permission','listening_ready','acknowledgment_request','confirmation_request','question_recall'))
+                or meaning.get('seller_permission','none')!='none'
+                or meaning.get('visit') in ('accept','offer','change','cancel','conditional')
+                or any(value in ('answered','unknown') for value in meaning.get('coverage',{}).values()))
+            if is_courtesy_fragment(record['text']) and not substantive:
+                # A handful of courtesy syllables contains nothing to clarify.
+                # Keep raw evidence, discard this empty dialogue batch so it
+                # cannot poison the next employee's actual greeting/question.
+                self.handled.add(record['signature']);self.record=None
+                c.inputs.consume(record['batch']);c.fragment_input_epoch=None;c.waiting=True
+                ignored={row['turn'] for row in record['batch']}|{record['turn']}
+                c.s.evidence.memory.users=[row for row in c.s.evidence.memory.users if row['turn'] not in ignored]
+                c.thinking.cancel('courtesy_fragment')
+                c.s.evidence.event('semantic_courtesy_fragment_ignored',source_turn=record['turn'])
+                return
             verdict='clarify'
             if self.reviews<4:
                 self.reviews+=1
@@ -83,6 +103,26 @@ class FragmentRecovery:
                 c.s.evidence.event('semantic_fragment_question_recovered',source_turn=record['turn'],reply_focus=focus)
                 await c.native_answer(record['text'],'advance',epoch)
                 return
+            if record['root'] in self.repaired_roots:
+                # New ASR turn numbers do not create a new repair budget for
+                # the same retained sentence. A repeated reply may be clear
+                # while an older unfinished tail still poisons interpretation.
+                parts=record['batch']
+                words=lambda value:re.findall(r'\w+',value.casefold().replace('ё','е'))
+                repeated=bool(parts and any(words(row['text'])==words(parts[-1]['text']) for row in parts[:-1]))
+                if repeated:
+                    before=set(c.answers);c.active_batch=list(parts);c.fragment_input_epoch=None
+                    resolved=await c.clarify_required_answer([],record['text'],epoch)
+                    if epoch!=c.epoch or c.unavailable():return
+                    if resolved or set(c.answers)!=before:
+                        self.handled.add(record['signature']);self.record=None
+                        c.s.evidence.event('semantic_repeated_fragment_resolved',source_turn=record['turn'],root=record['root'])
+                        if not resolved:await c.perform('advance',record['text'],epoch)
+                        return
+                self.handled.add(record['signature']);self.record=None
+                c.waiting=True;c.thinking.cancel('fragment_repair_limit')
+                c.s.evidence.event('semantic_fragment_repair_limit',source_turn=record['turn'],root=record['root'])
+                return
             if not await self.quiet(record,self.repair_seconds):return
             # A repair is not the answer to this retained fragment. Keep the
             # original text so a short continuation can still complete it.
@@ -91,6 +131,7 @@ class FragmentRecovery:
             finally:
                 if c.epoch==epoch and c.active_batch is None:c.active_batch=active
             if identifier:
+                self.repaired_roots.add(record['root'])
                 self.handled.add(record['signature']);self.record=None
                 c.s.evidence.event('semantic_fragment_repair_requested',source_turn=record['turn'])
         finally:

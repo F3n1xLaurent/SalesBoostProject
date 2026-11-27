@@ -25,6 +25,33 @@ def greeting_only(text):
     return bool(re.fullmatch(r'(?:алло|здравствуйте|добрый день|доброе утро|добрый вечер|слушаю|да слушаю|hello|hi|good morning|good afternoon|good evening)',value))
 
 
+def company_greeting_only(text,names=(),announcements=()):
+    """A greeting plus a known company, including its truncated final word.
+
+    References come from the dialled branch or an earlier recorded introduction.
+    Arbitrary words after a greeting may be an unfinished question instead.
+    This shortcut never promotes an announcement/hold/menu to a live person.
+    """
+    if local_type(text)!='human':return False
+    match=re.fullmatch(r'(?:алло|здравствуйте|добрый день|доброе утро|добрый вечер)[\s,.!…]+([^?!;:]+)[.!…]?',normalized(text))
+    if not match:return False
+    def words(value):
+        value=re.sub(r'^(?:(?:компания|автохолдинг|автосалон)\s+)+','',normalized(value))
+        return re.findall(r'[^\W_]+',value)
+    tail=words(match[1])
+    if not tail or len(tail)>6:return False
+    references=list(names)
+    for announcement in announcements:
+        intro=re.search(r'вас приветствует\s+([^.!?;\n]+)',normalized(announcement))
+        if intro:references.append(intro[1])
+    for reference in references:
+        candidate=words(reference)
+        if len(tail)>len(candidate) or tail[:-1]!=candidate[:len(tail)-1]:continue
+        last=candidate[len(tail)-1]
+        if tail[-1]==last or len(tail[-1])>=5 and last.startswith(tail[-1]):return True
+    return False
+
+
 def name_question_only(text):
     value=re.sub(r'[^а-яё\s]',' ',normalized(text));value=' '.join(value.split())
     # Match the whole utterance: another question, hold/transfer, third-party
@@ -56,7 +83,7 @@ def explicit_hold(text):
         # A transfer commonly follows a thank-you in the same sentence.
         # Keep the reported/conditional check on the whole sentence first.
         for part in re.split(r'[,;]\s*',clause):
-            if re.match(r'\s*(?:(?:да|хорошо|пожалуйста)\s+)*(?:подождите|ожидайте|дождитесь|оставайтесь|(?:я\s+)?(?:сейчас\s+)?(?:соединю|соединяю|соединяем|соединим|переведу|перевожу))\b',part,re.I):return True
+            if re.match(r'\s*(?:(?:да|хорошо|пожалуйста)\s+)*(?:подожди(?:те)?|ожидайте|дождитесь|оставайтесь|(?:я\s+)?(?:сейчас\s+)?(?:соединю|соединяю|соединяем|соединим|переведу|перевожу))\b',part,re.I):return True
     return False
 
 
@@ -208,7 +235,7 @@ class LineGate:
 
     async def route(self,text,turn,epoch):
         """human / human_hold / blocked; no dialogue facts are accepted otherwise."""
-        self.resumed=False
+        self.resumed=False;self.recovered_contact=None
         if self.state=='ended':return 'blocked'
         if self.can_speak:
             if (local_type(text)=='terminal' and re.match(r'\s*(?:(?:здравствуйте|алло|да)[,.!\s]+)*(?:я|это)\s+(?:голосов|виртуальн|автоматическ|телефонн)',text,re.I)):
@@ -251,10 +278,17 @@ class LineGate:
                 self.event('line_classification_failed',error_type=type(exc).__name__);line='uncertain'
         if epoch!=self.c.epoch or self.c.unavailable():return 'blocked'
         if local=='ivr' and line=='human':line='ivr'
+        first_contact=getattr(self.c,'first_contact',None)
+        if line=='uncertain' and local is None and first_contact and not self.ever_human:
+            self.recovered_contact=await first_contact.recover(text,turn,epoch)
+            if epoch!=self.c.epoch or self.c.unavailable():return 'blocked'
+            if self.recovered_contact:line='human'
         if line=='human':
             self.resumed=self.ever_human;self.ever_human=True;self.state='live';self.history=[];self.cancel()
             if self.c.s.evidence.memory.phase=='waiting_for_person':self.c.s.evidence.memory.phase='dialogue'
-            self.c.waiting=False;self.event('line_human_confirmed',source='local' if local=='human' else 'decisions',resumed=self.resumed)
+            if first_contact:first_contact.clear()
+            self.c.waiting=False;self.event('line_human_confirmed',
+                source='audio_review' if self.recovered_contact else 'local' if local=='human' else 'decisions',resumed=self.resumed)
             await self.c.serializer.send({'customEvent':'control','action':'set_output_enabled','enabled':True})
             return 'human'
         if line=='terminal':

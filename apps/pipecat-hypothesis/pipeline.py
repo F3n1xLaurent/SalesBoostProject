@@ -361,6 +361,7 @@ class Turn:
     number: int = 0
     speech_end: float | None = None
     question: dict | None = None
+    question_audio_sending: bool = False
 
 
 class TurnMonitor(FrameProcessor):
@@ -410,10 +411,14 @@ class TurnMonitor(FrameProcessor):
                 e.turn += 1
                 self.turn = Turn(self.session.playback.busy, number=e.turn,
                     question=dict(self.session.controller.last_question) if getattr(self.session,"controller",None) and self.session.controller.last_question else None)
+                identifier=(self.turn.question or {}).get('response_id')
+                tags=e.delivery.responses.get(identifier,{}).get('tags',set())
+                self.turn.question_audio_sending=any(tag in self.session.playback.pending and tag not in self.session.playback.sealed for tag in tags)
                 e.mark("speech_start")
                 e.reply_reference(e.turn)
                 e.event("turn_started", overlap=self.turn.overlap, generated=self.session.playback.generated,
-                        synthesizing=self.session.playback.synthesizing, pending_tags=sorted(self.session.playback.pending))
+                        synthesizing=self.session.playback.synthesizing, pending_tags=sorted(self.session.playback.pending),
+                        question_audio_sending=self.turn.question_audio_sending)
                 # UserStarted may precede the originating VAD frame downstream.
                 if self.turn.overlap:
                     e.event("barge_in_candidate")
@@ -1302,6 +1307,10 @@ class GatedRealtime(OpenAIRealtimeLLMService):
             reasons,features=suspicion(evt.transcript,window,turn.duration_ms,known)
             if self.input_quality.require_audio and not window:reasons.append('audio_unavailable')
             self.session.evidence.event('stt_quality',turn=turn.number,reasons=reasons,features=features)
+            first_contact=getattr(controller,'first_contact',None)
+            if first_contact:
+                if reasons:first_contact.clear()
+                else:first_contact.capture(evt.transcript,turn.number,window,evt.item_id)
             if reasons:
                 task=asyncio.create_task(self.review_transcript(evt,turn,waiting,window,known))
                 self.quality_tasks[turn.number]=task
@@ -1362,6 +1371,19 @@ class GatedRealtime(OpenAIRealtimeLLMService):
                 await self.send_client_event(events.ResponseCreateEvent())
             return
         controller=getattr(self.session,"controller",None)
+        opening_ack=(controller and hasattr(controller,'ignores_opening_ack') and controller.ignores_opening_ack(evt.transcript,turn))
+        opening_fragment=(controller and hasattr(controller,'ignores_opening_fragment') and controller.ignores_opening_fragment(evt.transcript,turn))
+        if opening_ack or opening_fragment:
+            self.session.evidence.event('user_transcript',text=evt.transcript,turn=turn.number,item_id=evt.item_id,
+                status='non_interrupting_opening_ack' if opening_ack else 'non_interrupting_opening_fragment',
+                reply_reference=self.session.evidence.reply_references.get(turn.number))
+            await self.send_client_event(events.ConversationItemDeleteEvent(item_id=evt.item_id))
+            self.session.evidence.event('opening_ack_overlap_ignored' if opening_ack else 'opening_fragment_overlap_ignored',
+                text=evt.transcript,turn=turn.number,speech_duration_ms=turn.duration_ms,
+                scope='short cue while opening audio is being sent; not answer coverage')
+            if hasattr(controller,'on_ignored_input'):await controller.on_ignored_input(turn)
+            await self.dispatch_controller_input()
+            return
         if (controller and hasattr(controller,'ignores_opening_greeting')
                 and controller.ignores_opening_greeting(evt.transcript,turn)):
             self.session.evidence.event('user_transcript',text=evt.transcript,turn=turn.number,item_id=evt.item_id,

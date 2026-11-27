@@ -20,6 +20,7 @@ from controller_input import ControllerInput
 from native_questions import NativeQuestionGate
 from thinking_pause import ThinkingPause
 from plan_context import plan_need,subject_scope,call_purpose,spoken_subject,shorten_subject_mentions
+from customer_grammar import customer_gender,grammar_instruction,agree_first_person
 
 
 def normalized(text):
@@ -50,6 +51,7 @@ def controller_prompt(session):
     personal=('Недостающие личные детали вымышленного клиента выбирай правдоподобно и сохраняй в рамках звонка. ' if semantic else '')
     unknown=('Неизвестные сведения о товаре не придумывай. ' if semantic else 'Если факта нет, скажи прямо. ')
     return (f"Ты {session.evidence.memory.name}, клиент, сам звонишь сотруднику компании по цели из SCENARIO_SCOPE.purpose. Только русский язык. "
+        +grammar_instruction(session.prompt)+
         "Дай одну естественную реплику до 30 слов, максимум один собственный вопрос. Ответь на ВСЕ вопросы собеседника, даже если он задал несколько в одном предложении. Не начинай каждую реплику с «понял, спасибо». "
         "Пиши числа полностью русскими словами для озвучивания. Не используй цифровые сокращения с буквенными окончаниями. "
         "Не описывай обработку и инструменты. Не выдумывай сведения о товаре, компании, имя менеджера и договорённости. "+personal+"Не предлагай чат или другой канал связи без основания: сейчас идёт телефонный звонок. "
@@ -109,6 +111,11 @@ class DialogueController:
             "resume":"Да, я на связи.","connection_repair":"Я на связи.","repeat":"Повторите, пожалуйста, я не расслышал.",
             "bc_listen":"Мгм.","think_reply_0":"Хм…","think_reply_1":"Секунду…",
             "think_visit_0":"Дайте подумать…","think_visit_1":"Сейчас прикину…"}
+        gender=customer_gender(self.s.prompt)
+        if gender=='unspecified':
+            self.texts['receipt_0']='Понятно.'
+            self.texts['repeat']='Плохо слышно. Повторите, пожалуйста.'
+        elif gender=='female':self.texts['repeat']='Повторите, пожалуйста, я не расслышала.'
         self.texts.update({r['key']:r['question'] for r in questions} if derived else await prepare_questions(self.s,questions,self.http))
         self.texts={key:shorten_subject_mentions(self.s,text) for key,text in self.texts.items()}
         subject=spoken_subject(self.s)
@@ -139,7 +146,9 @@ class DialogueController:
         self.texts["name_then_first"]=self.texts["name"]+" "+self.texts[questions[0]["key"]]
         composites={}
         if getattr(self.s,'dialogue_mode',None)=='semantic':
-            self.texts['stt_repair']='Последнюю часть не расслышал. Повторите, пожалуйста.'
+            self.texts['stt_repair']=('Последнюю часть плохо слышно. Повторите, пожалуйста.' if gender=='unspecified' else
+                'Последнюю часть не расслышала. Повторите, пожалуйста.' if gender=='female' else
+                'Последнюю часть не расслышал. Повторите, пожалуйста.')
             # Required identity audio is an explicit component, not a sentence
             # that a multi-sentence synthesis can silently omit or swallow.
             self.texts['greeting']='Здравствуйте!'
@@ -150,6 +159,7 @@ class DialogueController:
             self.texts['opening_followup']=opening_questions[-1].strip() if opening_questions else self.texts['opening_body']
             composites={'named_opening':['greeting','name','opening_body'],
                         'name_then_first':['name',questions[0]['key']]}
+        self.texts={key:agree_first_person(text,gender) for key,text in self.texts.items()}
         if not self.s.backchannel:
             self.texts={k:v for k,v in self.texts.items() if k!='bc_listen' and not k.startswith('think_')}
         self.clips={}
@@ -184,8 +194,8 @@ class DialogueController:
 
     def unasked(self):
         # Answer coverage and the one-question budget are separate. A delivered
-        # but unanswered question does not block a booking. Semantic mode checks
-        # interrupted/unfinished playback separately before closing.
+        # but unanswered question does not block a booking indefinitely.
+        # Semantic mode separately bounds clarification and unfinished playback.
         return [r for r in self.pending() if not self.asked.get(r['key'],0)]
 
     def context_text(self):

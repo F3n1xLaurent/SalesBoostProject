@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import AsyncMock,Mock
 from conversation import ConversationMemory
 from policy import Evidence,Playback
-from line_gate import LineGate,local_type,offered_digits,explicit_hold,name_question_only
+from line_gate import LineGate,local_type,offered_digits,explicit_hold,name_question_only,company_greeting_only
 
 
 class NameQuestionTests(unittest.TestCase):
@@ -25,6 +25,22 @@ from pipecat.frames.frames import OutputAudioRawFrame
 
 
 class LocalLineTests(unittest.TestCase):
+    def test_company_greetings_require_a_known_name_and_no_additional_request(self):
+        names=['Динамика Калининград','Первый километр']
+        for text in ('Добрый день динами','Добрый день, автохолдинг Динамика.',
+                     'Здравствуйте, компания Первый километр.'):
+            self.assertTrue(company_greeting_only(text,names),text)
+        for text in ('Добрый день, неизвестная компания.', 'Добрый день, дина',
+                     'Добрый день, компания.', 'Добрый день, какую машину',
+                     'Добрый день, Динамика. Как вас зовут?',
+                     'Добрый день, вас приветствует Динамика.',
+                     'Добрый день, Динамика, ожидайте соединения.',
+                     'Добрый день, Динамика, нажмите один.',
+                     'Добрый день, Динамика, оставьте сообщение.',
+                     'Но в одной компании первый километр меня запрещают, и могу сама обратиться'):
+            self.assertFalse(company_greeting_only(text,names),text)
+        self.assertFalse(company_greeting_only('Добрый день динами'))
+
     def test_automation_precedes_greetings_and_assistant_questions(self):
         for text in ('Здравствуйте, я голосовой ассистент абонента. Что передать?',
                      'Это автоответчик. Оставьте сообщение.', 'Абонент сейчас недоступен.'):
@@ -44,6 +60,12 @@ class LocalLineTests(unittest.TestCase):
     def test_quoted_hold_is_not_transfer(self):
         self.assertFalse(explicit_hold('Другой менеджер сказал подождите.'))
         self.assertTrue(explicit_hold('Пороги целые. Подождите, соединю с коллегой.'))
+
+    def test_singular_wait_request_is_direct_but_quoted_or_conditional_is_not(self):
+        self.assertTrue(explicit_hold('Подожди секундочку.'))
+        self.assertTrue(explicit_hold('Хорошо, подожди, пожалуйста.'))
+        self.assertFalse(explicit_hold('Менеджер сказал: подожди секундочку.'))
+        self.assertFalse(explicit_hold('Если нет ответа, подожди секундочку.'))
 
     def test_transfer_after_thank_you_and_conditional_or_reported_clauses(self):
         self.assertTrue(explicit_hold('Спасибо за обращение, оставайтесь на линии, соединяем. Хорошего вам дня.'))
@@ -95,6 +117,23 @@ class LineTests(unittest.IsolatedAsyncioTestCase):
         await self.line.route('Обрывок неразборчивой фразы',1,1)
         self.assertFalse(self.line.can_speak)
         self.assertFalse(any(c.args[0].get('enabled') is True for c in self.c.serializer.send.call_args_list))
+
+    async def test_call_1565_singular_hold_mutes_without_waiting_for_a_classifier(self):
+        self.line.state='live';self.line.ever_human=True
+        result=await self.line.route('Подожди секундочку.',5,1)
+        self.assertEqual(result,'human_hold')
+        self.assertEqual(self.line.state,'waiting_operator')
+        self.assertFalse(self.line.can_speak)
+        self.line.classify.assert_not_awaited()
+        self.c.serializer.send.assert_any_await({'customEvent':'control','action':'set_output_enabled','enabled':False})
+        self.assertEqual(await self.line.route('Да, я вас слушаю.',6,1),'human')
+        self.assertTrue(self.line.can_speak)
+
+    async def test_singular_hold_with_name_question_keeps_the_requested_answer_audible(self):
+        self.line.state='live';self.line.ever_human=True
+        result=await self.line.route('Подожди секундочку, сначала скажи, как к тебе обращаться?',5,1)
+        self.assertEqual(result,'human')
+        self.assertTrue(self.line.can_speak)
 
     async def test_stale_terminal_classification_cannot_hang_up_new_turn(self):
         async def old(_):self.c.epoch=2;return ('terminal',None,False)
