@@ -29,6 +29,25 @@ def visit_window(text):
         if minute is not None and minute>=720:return 0,minute
 
 
+def business_hours(text):
+    """Explicit business hours only; a quoted closing clock is not a visit."""
+    if '?' in text or re.search(r'\bесли\b',text,re.I):return
+    if re.search(r'\bработа\w*|\bоткрыт\w*',text,re.I) and not re.search(r'\bне\s+работа\w*',text,re.I):
+        window=visit_window(text)
+        if window:
+            if window[0]==0 and re.search(r'\bдо\b',text,re.I) and not re.search(r'\bс(?:о)?\s',text,re.I):
+                return None,window[1]
+            return window
+    hour=r'(?P<hour>'+_INTERVAL_HOUR+r'(?:\.0{1,2})?)(?:\s+час(?:а|ов)?)?(?:\s+(?P<period>вечера|дня|ночи|утра))?'
+    closing=r'(?:салон\s+)?(?:уже\s+)?(?:закрываемся|закрывается|закрыт)(?!\w)'
+    match=re.search(hour+r'\s+'+closing,text,re.I) or re.search(closing+r'\s+(?:в|с)\s+'+hour,text,re.I)
+    match=match or re.search(r'\b(?:салон\s+)?не\s+работа\w*\s+с\s+'+hour+r'(?![\w:]|\.\d|\s+до\b)',text,re.I)
+    if match:
+        phrase=re.sub(r'\.0{1,2}$',':00',match['hour'])+' '+(match['period'] or '')
+        end=clock_minutes(phrase)
+        if end is not None:return None,end
+
+
 def clock_minutes(phrase):
     number=re.search(r'(?<!\w)(\d{1,2})(?::(\d{2}))?(?![\w:])',phrase)
     minute=0

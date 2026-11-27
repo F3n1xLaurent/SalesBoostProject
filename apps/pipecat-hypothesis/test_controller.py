@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 from conversation import ConversationMemory
 from controller_audio import PreparedAudioPlayer,PreparedSpeechFrame,quiet_clip
-from controller_visit import VisitProposal,affirmative,goodbye
+from controller_visit import VisitProposal,affirmative,goodbye,business_hours
 from speech_filter import SpeechFilter
 from controller_wording import spoken_question
 from dialogue_controller import DialogueController,explicit_polar_answer,controller_prompt
@@ -1370,6 +1370,15 @@ class ControllerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AudioTests(unittest.TestCase):
+    def test_explicit_closing_hours_include_real_asr_clock_format(self):
+        for text in ['В 21:00 салон закрывается.', '21.0 салон закрывается.',
+                'Салон закрывается в двадцать один.', 'Закрываемся в девять вечера.',
+                'К сожалению, салон не работает с 21:00.', 'Салон работает до 21:00.']:
+            with self.subTest(text=text):self.assertEqual(business_hours(text),(None,1260))
+        for text in ['Можете приехать в 21:00.', 'Салон закрывается во сколько?',
+                'Если салон закрывается в 21:00, то не успею.', 'Не работаем с 12:00 до 13:00.']:
+            with self.subTest(text=text):self.assertIsNone(business_hours(text))
+
     def test_business_hours_without_ampm_end_in_the_evening(self):
         for text,end in [('Мы работаем с восьми до восьми.',1200),('С девяти до девяти.',1260),('С 10 до 8.',1200)]:
             with self.subTest(text=text):

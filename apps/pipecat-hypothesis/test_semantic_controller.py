@@ -24,6 +24,126 @@ def meaning(**kwargs):
 
 
 class SemanticTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_visit_slot_must_be_inside_hours_even_when_in_the_future(self):
+        self.s.context['visitSchedule']={'workingHoursFrom':'09:00','workingHoursTo':'21:00','timezoneOffsetMinutes':240}
+        for day,clock,allowed in [('Сегодня','20:59',True),('Сегодня','21:00',False),
+                ('Сегодня','21:01',False),('Завтра','08:59',False),('Завтра','09:00',True),('Завтра','21:00',False)]:
+            with self.subTest(day=day,clock=clock):
+                self.c.visit=self.c.candidate(f'{day} в {clock}.',1)
+                with patch('semantic_controller.datetime') as now:
+                    now.now.return_value=datetime.fromisoformat('2026-11-26T20:21:00+04:00')
+                    self.assertEqual(self.c.future_visit(),allowed)
+
+    async def test_call_1526_closing_refusal_cannot_restate_rejected_hour(self):
+        self.c.started=True
+        self.s.context['visitSchedule']={'workingHoursFrom':'10:00','workingHoursTo':'22:00','timezoneOffsetMinutes':240}
+        self.c.visit.update('Сегодня в 21:00.',1);self.c.visit.offered=self.c.visit.proposal()
+        self.s.evidence.turn=2
+        text='Нет, к сожалению, 21.0 салон закрывается, давайте выберем другое время. Вам удобнее в будни или в выходные дни?'
+        with patch('semantic_controller.datetime') as now,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            now.now.return_value=datetime.fromisoformat('2026-11-26T20:21:00+04:00')
+            await self.run_turn(text,visit='change',visit_request='details')
+        self.assertIsNone(self.c.visit.offered)
+        self.assertFalse(self.c.visit_confirmed)
+        self.assertTrue(self.c.player.queue_frame.call_args_list)
+        self.assertFalse(any('21:00' in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+        # The following turn must not recover the obsolete 22:00 boundary.
+        self.assertEqual(self.c.visit_bounds(self.c.candidate('Например, завтра.',3))[1],1260)
+
+    async def test_refusal_without_replacement_discards_the_old_slot(self):
+        self.c.started=True;self.c.visit.update('Завтра в 15:00.',1)
+        self.c.visit.offered=self.c.visit.proposal();self.s.evidence.turn=2
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Нет, это время не подходит. Давайте выберем другое.',visit='change',visit_request='details')
+        self.assertFalse(any('15:00' in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+        self.assertFalse(self.c.visit_confirmed)
+
+    async def test_manager_hours_survive_next_turn_and_override_configured_hours(self):
+        self.s.context['visitSchedule']={'workingHoursFrom':'10:00','workingHoursTo':'22:00','timezoneOffsetMinutes':240}
+        self.c.started=True
+        await self.run_turn('Наш салон работает с девяти до девяти.')
+        with patch('semantic_controller.datetime') as now:
+            now.now.return_value=datetime.fromisoformat('2026-11-26T20:21:00+04:00')
+            candidate=self.c.choose_visit_preference(self.c.candidate('Сегодня или завтра?',2),2)
+        self.assertEqual(candidate.day['value'].casefold(),'завтра')
+        self.assertEqual(candidate.time['interval_end'],1260)
+
+    async def test_request_to_repeat_a_valid_confirmed_slot_preserves_the_booking(self):
+        await self.offer()
+        await self.run_turn('Да, ждём завтра после обеда.',visit='accept',acceptance_scope='explicit_visit')
+        saved=dict(self.s.evidence.memory.facts)
+        self.s.context['visitSchedule']={'workingHoursFrom':'09:00','workingHoursTo':'21:00','timezoneOffsetMinutes':240}
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Повторите, во сколько вас ждать?',visit_request='details')
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertEqual(self.s.evidence.memory.facts,saved)
+
+    async def test_call_1526_uses_a_different_slot_then_confirms_it(self):
+        self.c.started=True
+        self.s.context['visitSchedule']={'workingHoursFrom':'10:00','workingHoursTo':'22:00','timezoneOffsetMinutes':240}
+        with patch('semantic_controller.datetime') as now,patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            now.now.return_value=datetime.fromisoformat('2026-11-26T20:21:00+04:00')
+            await self.run_turn('Вы подъедете сегодня или завтра?',visit='offer',visit_request='details')
+            self.assertEqual(self.c.visit.offered['time']['value'],'в 21:00')
+            self.s.evidence.turn=2;self.c.player.queue_frame.reset_mock()
+            await self.run_turn('Нет, к сожалению, 21.0 салон закрывается, давайте выберем другое время. Вам удобнее в будни или в выходные дни?',
+                visit='change',visit_request='details')
+            self.s.evidence.turn=3
+            await self.run_turn('Салон не работает с 21:00. Давайте подберём другое время. Например, завтра. В первой или во второй половине дня?',
+                visit='offer',visit_request='details')
+            self.assertEqual(self.c.visit.offered['day']['value'].casefold(),'завтра')
+            self.assertEqual(self.c.visit.offered['time']['value'],'в 10:00')
+            self.assertEqual(self.c.visit.offered['time']['interval_end'],1260)
+            self.assertFalse(any('21:00' in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+            self.s.evidence.turn=4
+            await self.run_turn('Отлично, будем ждать вас завтра в десять.',visit='accept',acceptance_scope='explicit_visit')
+        self.assertTrue(self.c.visit_confirmed)
+        self.assertEqual(self.s.evidence.memory.facts['visit_time']['value'],'в 10:00')
+
+    async def test_rejected_clock_on_one_day_can_be_offered_on_another_day(self):
+        self.c.started=True;self.c.visit.update('Сегодня в 15:00.',1)
+        self.c.visit.offered=self.c.visit.proposal();self.s.evidence.turn=2
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Нет, сегодня не получится. Давайте завтра в 15:00.',visit='change',visit_request='details')
+        self.assertEqual(self.c.visit.offered['day']['value'].casefold(),'завтра')
+        self.assertEqual(self.c.visit.offered['time']['value'],'в 15:00')
+
+    async def test_closing_statement_does_not_hide_a_later_valid_replacement(self):
+        self.c.started=True;self.c.visit.update('Завтра в 21:00.',1)
+        self.c.visit.offered=self.c.visit.proposal();self.s.evidence.turn=2
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('В 21:00 салон закрывается, приезжайте завтра в 20:00.',visit='change',visit_request='details')
+        self.assertEqual(self.c.visit.offered['time']['value'],'в 20:00')
+        self.assertEqual(self.c.visit_bounds(self.c.candidate('Когда можно приехать?',3))[1],1260)
+
+    async def test_closing_boundary_cannot_be_confirmed_from_an_old_proposal(self):
+        self.c.visit.update('Завтра в 21:00.',1);self.c.visit.offered=self.c.visit.proposal()
+        self.c.visit_offer_response_id='old-slot'
+        self.s.context['visitSchedule']={'workingHoursFrom':'09:00','workingHoursTo':'21:00','timezoneOffsetMinutes':240}
+        self.assertFalse(self.c.accept_active('Да, ждём.',2,{'acceptance_scope':'explicit_visit'}))
+        self.assertEqual(self.c.acceptance_block_reason,'unavailable_slot')
+        self.assertFalse(self.c.visit_confirmed)
+        self.assertFalse(self.s.evidence.memory.facts)
+
+    async def test_corrected_hours_invalidate_an_incompatible_booking_before_repeating_it(self):
+        self.c.started=True;self.c.visit.update('Завтра в 21:00.',1)
+        self.c.visit_confirmed=True
+        self.s.evidence.memory.facts.update({'visit_day':dict(self.c.visit.day),'visit_time':dict(self.c.visit.time)})
+        self.s.context['visitSchedule']={'workingHoursFrom':'10:00','workingHoursTo':'22:00','timezoneOffsetMinutes':240}
+        with patch('dialogue_controller.voice_clip',new=AsyncMock(return_value=b'\x01\x00'*1600)):
+            await self.run_turn('Салон работает до 21:00. Повторите, во сколько вас ждать?',visit_request='details')
+        self.assertFalse(self.c.visit_confirmed)
+        self.assertNotIn('visit_time',self.s.evidence.memory.facts)
+        self.assertEqual(self.c.manager_visit_hours['start'],600)
+        self.assertFalse(any('21:00' in call.args[0].text for call in self.c.player.queue_frame.call_args_list))
+
+    async def test_repeating_a_confirmed_booking_does_not_silently_reschedule_it(self):
+        self.c.visit.update('Сегодня в 15:00.',1);self.c.visit_confirmed=True
+        with patch('semantic_controller.datetime') as now:
+            now.now.return_value=datetime.fromisoformat('2026-11-26T15:01:00+04:00')
+            self.assertTrue(self.c.future_visit())
+        self.assertEqual(self.c.visit.time['value'],'в 15:00')
+
     async def test_asr_repair_repeats_an_unanswered_question_even_if_playback_was_not_interrupted(self):
         self.c.started=True;await self.c.speak(self.keys[0])
         original=self.c.last_question['response_id']
@@ -646,7 +766,12 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         self.c.opening_sent=True
         review=patch('semantic_controller.review_acceptance',new=AsyncMock(return_value=False))
         review.start();self.addCleanup(review.stop)
+        answer_review=patch('semantic_controller.review_answer_coverage',new=AsyncMock(return_value='unanswered'))
+        answer_review.start();self.addCleanup(answer_review.stop)
+        fragment_review=patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='clarify'))
+        fragment_review.start();self.addCleanup(fragment_review.stop)
         self.s.controller=self.c
+        self.c.continuation_quiet_seconds=0.
         self.c.llm=SimpleNamespace(response_id=None,response_items={},spoken_text={},wire_active=None,wire_pending=None,
             request_turns=[],_messages_added_manually={},send_client_event=AsyncMock(),broadcast_frame=AsyncMock(),user_speaking=False)
         self.c.player=SimpleNamespace(queue_frame=AsyncMock())
@@ -656,6 +781,334 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
             await self.c.prepare()
 
     async def asyncTearDown(self):await self.c.close()
+
+    def phone_complete(self,identifier):
+        ledger=self.s.evidence.delivery
+        ledger.response(identifier).update(generated_done=True,tts_done=True)
+        ledger.segment(identifier+'-tag',identifier);ledger.ack(identifier+'-tag')
+        self.s.playback.generated=False;self.s.playback.synthesizing=False
+
+    def confirmed_booking(self):
+        self.c.started=True;self.c.visit.update('Завтра в 10:00.',1);self.c.visit_confirmed=True
+        self.s.evidence.memory.facts.update({'visit_day':dict(self.c.visit.day),'visit_time':dict(self.c.visit.time)})
+        self.s.evidence.memory.visit_pending=False
+
+    async def test_call_1529_payment_answer_card_question_and_farewell_form_one_sequence(self):
+        self.confirmed_booking();self.c.continuation_quiet_seconds=.01
+        card=self.keys[-1];self.c.texts[card]='Оплата картой возможна?'
+        self.s.evidence.memory.topics.required[-1]['question']=self.c.texts[card]
+        self.c.answers[self.keys[0]]={'status':'answered'}
+        await self.run_turn('Покупку планируете в кредит или за наличные?',other_questions=True)
+        self.assertEqual(self.c.pending_after_native[0],'advance')
+        self.c.llm.spoken_text['payment']='За наличные, документы возьму с собой.'
+        ledger=self.s.evidence.delivery;ledger.response('payment').update(generated_done=True,tts_done=True)
+        ledger.segment('payment-tag','payment')
+        await self.c.fallback_done('payment');await asyncio.sleep(.03)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.phone_complete('payment');await asyncio.sleep(.04)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[card])
+        self.assertFalse(self.s.playback.finish_requested)
+        self.phone_complete(self.c.last_clip['response_id']);self.s.evidence.turn=2
+        await self.c.new_input()
+        await self.run_turn('Да, картой оплатить можно.',coverage={card:'answered'})
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_farewell'])
+        self.assertTrue(self.s.playback.finish_requested)
+        self.assertEqual(self.s.evidence.memory.closing_reason,'visit_agreed')
+
+    async def test_connection_confirmation_continues_after_phone_playback(self):
+        self.confirmed_booking();self.c.continuation_quiet_seconds=.01
+        await self.run_turn('Иван, вас не слышно.',control='attention')
+        resume=self.c.last_clip['response_id']
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['resume'])
+        await asyncio.sleep(.03);self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.phone_complete(resume);await asyncio.sleep(.04)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[self.keys[0]])
+
+    async def test_connection_confirmation_can_finish_a_completed_booking(self):
+        self.confirmed_booking();self.c.answers={key:{'status':'answered'} for key in self.keys}
+        await self.run_turn('Алло.',control='attention')
+        self.phone_complete(self.c.last_clip['response_id']);await asyncio.sleep(.03)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['visit_farewell'])
+        self.assertTrue(self.s.playback.finish_requested)
+
+    async def test_new_manager_question_cancels_connection_continuation(self):
+        self.confirmed_booking()
+        await self.run_turn('Вы на связи?',control='attention');resume=self.c.last_clip['response_id']
+        await self.c.new_input();self.s.evidence.turn=2
+        await self.run_turn('Свою машину собираетесь продавать?',other_questions=True,reply_focus='own_vehicle')
+        self.phone_complete(resume);await asyncio.sleep(.03)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.llm.request_turns,[2])
+        self.assertFalse(self.s.playback.finish_requested)
+
+    async def test_brief_ack_after_interruption_restores_question_once_after_silence(self):
+        self.c.interruption_resume_wait=.02
+        topic,original=await self.interrupted_plan()
+        await self.run_turn('Отлично.')
+        self.c.player.queue_frame.assert_not_awaited()
+        await asyncio.sleep(.06)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.assertEqual(self.c.question_ledger['plan:'+topic]['retry_of'],original)
+        self.assertEqual(self.c.asked[topic],1)
+
+    async def test_delayed_question_resume_waits_for_physical_speech(self):
+        self.c.interruption_resume_wait=.01
+        topic,original=await self.interrupted_plan();await self.run_turn('Угу.')
+        self.monitor.segment_start=time.monotonic();await asyncio.sleep(.04)
+        self.c.player.queue_frame.assert_not_awaited()
+        self.monitor.segment_start=None;await asyncio.sleep(.04)
+        self.assertEqual(self.c.player.queue_frame.await_count,1)
+
+    async def test_explicit_hold_cancels_delayed_interrupted_question_resume(self):
+        self.c.interruption_resume_wait=.02
+        topic,original=await self.interrupted_plan();await self.run_turn('Отлично.')
+        await self.c.new_input()
+        await self.run_turn('Мне нужна небольшая пауза.',control='wait')
+        await asyncio.sleep(.05)
+        self.c.player.queue_frame.assert_not_awaited();self.assertEqual(self.c.line.state,'waiting_operator')
+
+    async def test_accepted_ack_preserves_continuation_after_native_answer(self):
+        ledger=await self.pending_answer()
+        await self.c.new_input();self.s.evidence.turn=2;self.monitor.turn=Turn(False,number=2)
+        await self.run_turn('Отлично.')
+        self.phone_complete('native');await asyncio.sleep(.04)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[self.keys[0]])
+        self.assertEqual(self.c.llm.request_turns,[1])
+
+    async def test_ack_before_native_completion_does_not_answer_the_original_question_twice(self):
+        self.c.started=True
+        self.c.inputs.add('Для кого подбираете?',1);self.c.active_batch=self.c.inputs.snapshot()
+        await self.run_turn('Для кого подбираете?',other_questions=True,coverage={'availability':'answered'})
+        await self.c.new_input();self.s.evidence.turn=2;self.monitor.turn=Turn(False,number=2)
+        self.c.inputs.add('Отлично.',2);self.c.active_batch=self.c.inputs.snapshot()
+        await self.run_turn('Для кого подбираете? Отлично.')
+        self.assertEqual(self.c.latest_input,'Отлично.')
+        self.c.llm.spoken_text['native']='Для себя.'
+        self.phone_complete('native');await self.c.fallback_done('native');await asyncio.sleep(.04)
+        self.assertEqual(self.c.llm.request_turns,[1])
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts[self.keys[0]])
+
+    async def test_scheduled_question_resume_never_repeats_an_answered_topic(self):
+        self.c.interruption_resume_wait=.02
+        topic,original=await self.interrupted_plan();await self.run_turn('Отлично.')
+        await self.c.new_input()
+        await self.run_turn('По выходным работаем.',coverage={topic:'answered'})
+        await asyncio.sleep(.04)
+        self.assertFalse(any(event['event']=='semantic_question_replayed' for event in self.s.evidence.events))
+        self.assertEqual(self.c.answers[topic]['status'],'answered')
+
+    async def test_audio_repair_preserves_question_identity_and_uses_the_new_playback_ack(self):
+        self.confirmed_booking();self.c.answers[self.keys[0]]={'status':'answered'}
+        topic=self.keys[-1];await self.c.speak(topic);original=self.c.last_clip['response_id']
+        await self.run_turn('Последний вопрос не расслышала, повторите.',control='audio_repair')
+        repeated=self.c.question_ledger['plan:'+topic]['response_id']
+        self.assertNotEqual(repeated,original)
+        self.assertEqual(self.c.question_ledger['plan:'+topic]['retry_of'],original)
+        self.assertEqual(self.c.asked[topic],1)
+        self.phone_complete(repeated)
+        await self.run_turn('Поняла.',visit='none')
+        self.assertTrue(self.s.playback.finish_requested)
+
+    async def test_pending_transcription_blocks_progress_after_a_completed_answer(self):
+        self.confirmed_booking()
+        await self.run_turn('Вы на связи?',control='attention');resume=self.c.last_clip['response_id']
+        self.c.llm.quality_tasks={2:object()};self.phone_complete(resume)
+        await asyncio.sleep(.03);self.assertEqual(self.c.player.queue_frame.await_count,1)
+        self.c.llm.quality_tasks={};await asyncio.sleep(.03)
+        self.assertEqual(self.c.player.queue_frame.await_count,2)
+
+    async def test_completed_manager_statement_resumes_interrupted_question_after_our_reply(self):
+        topic,original=await self.interrupted_plan()
+        await self.run_turn('На осмотре можем поднять машину на подъёмнике.',contextual_reply=True)
+        self.assertEqual(self.c.pending_after_native[0],'advance')
+        self.c.llm.spoken_text['receipt']='Хорошо, понял.'
+        self.phone_complete('receipt');await self.c.fallback_done('receipt');await asyncio.sleep(.04)
+        self.assertEqual(self.c.question_ledger['plan:'+topic]['retry_of'],original)
+        self.assertEqual(self.c.asked[topic],1)
+
+    def quick_fragment_recovery(self):
+        recovery=self.c.fragment_recovery
+        recovery.quiet_seconds=.01;recovery.repair_seconds=.04;recovery.max_wait=.12
+        self.c.started=True
+        return recovery
+
+    async def test_call_1526_fragmented_tradein_question_recovers_without_connection_check(self):
+        self.quick_fragment_recovery()
+        self.s.context={'subjectTitle':'Toyota Land Cruiser Prado','customerNeed':'Сдать Весту 2018 года с пробегом 130000 км.'}
+        for turn,text in enumerate(['Да, скидка есть. Какую машину планируете?','Задачи.','Придым.'],1):
+            self.c.inputs.add(text,turn)
+        self.c.active_batch=self.c.inputs.snapshot();self.s.evidence.turn=3;self.monitor.turn=Turn(False,number=3)
+        text=' '.join(row['text'] for row in self.c.active_batch)
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='own_vehicle')) as review:
+            await self.run_turn(text,control='fragment',other_questions=True,reply_focus='selected_subject')
+            self.assertFalse(self.c.llm.request_turns)
+            await asyncio.sleep(.05)
+        review.assert_awaited_once()
+        self.assertEqual(self.c.last_meaning['reply_focus'],'own_vehicle')
+        self.assertEqual(self.c.llm.request_turns,[3])
+        self.assertIn('СЕЙЧАС вопрос о твоей нынешней машине',self.c.fallback_goal)
+        self.assertEqual(len(self.c.pending_after_native[3]),3)
+
+    async def test_real_unfinished_tail_requests_repetition_and_keeps_fragments(self):
+        self.quick_fragment_recovery();self.c.inputs.add('Состояние отличное. ДТП автомобиль',1)
+        self.c.active_batch=self.c.inputs.snapshot()
+        await self.run_turn('Состояние отличное. ДТП автомобиль',control='fragment',coverage={self.keys[0]:'answered'})
+        await asyncio.sleep(.08)
+        self.assertEqual(self.c.llm.request_turns,[])
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['stt_repair'])
+        self.assertEqual(len(self.c.inputs.snapshot()),1)
+        self.assertEqual(self.c.answers[self.keys[0]]['status'],'answered')
+        self.assertFalse(self.s.evidence.memory.facts)
+
+    async def test_fragment_timer_does_not_interrupt_a_short_pause_inside_a_question(self):
+        recovery=self.quick_fragment_recovery();recovery.quiet_seconds=.06
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock()) as review:
+            await self.run_turn('Какую машину вы',control='fragment')
+            await asyncio.sleep(.01)
+            await self.c.new_input();self.monitor.turn=Turn(False,number=2);self.s.evidence.turn=2
+            await self.run_turn('Какую машину вы хотите сдать в трейд-ин?',other_questions=True,reply_focus='own_vehicle')
+            await asyncio.sleep(.08)
+        review.assert_not_awaited();self.assertEqual(self.c.llm.request_turns,[2])
+
+    async def test_pending_asr_prevents_fragment_review_and_speech(self):
+        self.quick_fragment_recovery();self.c.llm.stt_tasks={1:object()};self.c.llm.quality_tasks={1:object()}
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock()) as review:
+            await self.run_turn('Какую машину планируете?',control='fragment')
+            await asyncio.sleep(.06)
+        review.assert_not_awaited();self.c.player.queue_frame.assert_not_awaited()
+        self.assertFalse(self.c.llm.request_turns)
+
+    async def test_physical_speech_blocks_fragment_recovery_even_with_logical_speech_false(self):
+        self.quick_fragment_recovery()
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='own_vehicle')) as review:
+            await self.run_turn('Какую машину планируете?',control='fragment')
+            self.monitor.segment_start=time.monotonic()
+            await asyncio.sleep(.06)
+        review.assert_not_awaited();self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_new_input_during_fragment_review_discards_the_old_result(self):
+        self.quick_fragment_recovery();started=asyncio.Event();release=asyncio.Event()
+        async def slow(*args):
+            started.set();await release.wait();return 'own_vehicle'
+        with patch('fragment_recovery.review_fragment_question',new=slow):
+            await self.run_turn('Какую машину планируете?',control='fragment')
+            await asyncio.wait_for(started.wait(),.2)
+            await self.c.new_input();release.set();await asyncio.sleep(.02)
+        self.assertFalse(self.c.llm.request_turns);self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_ignored_noise_restores_fragment_recovery_without_losing_the_question(self):
+        self.quick_fragment_recovery()
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='own_vehicle')):
+            await self.run_turn('Какую машину планируете?',control='fragment')
+            await self.c.new_input();self.monitor.turn=Turn(False,number=2);self.s.evidence.turn=2
+            await self.c.on_ignored_input(self.monitor.turn);await asyncio.sleep(.05)
+        self.assertEqual(self.c.llm.request_turns,[2])
+        self.assertEqual(self.c.latest_input,'Какую машину планируете?')
+
+    async def test_explicit_semantic_hold_has_no_fragment_deadline(self):
+        self.quick_fragment_recovery()
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock()) as review:
+            await self.run_turn('Мне нужна небольшая пауза.',control='wait')
+            await asyncio.sleep(.06)
+        self.assertEqual(self.c.line.state,'waiting_operator')
+        review.assert_not_awaited();self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_fragment_review_failure_requests_repetition_instead_of_silence(self):
+        self.quick_fragment_recovery()
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock(side_effect=TimeoutError)):
+            await self.run_turn('Какую машину вы',control='fragment')
+            await asyncio.sleep(.08)
+        self.assertEqual(self.c.player.queue_frame.call_args.args[0].text,self.c.texts['stt_repair'])
+        self.assertFalse(self.c.llm.request_turns)
+
+    async def test_focused_fragment_hold_prevents_answer_and_repair(self):
+        self.quick_fragment_recovery()
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='hold')):
+            await self.run_turn('Уточню вопрос у коллеги.',control='fragment')
+            await asyncio.sleep(.07)
+        self.assertEqual(self.c.line.state,'waiting_operator')
+        self.c.player.queue_frame.assert_not_awaited();self.assertFalse(self.c.llm.request_turns)
+
+    async def test_same_fragment_does_not_loop_repair_or_api_requests(self):
+        self.quick_fragment_recovery()
+        with patch('fragment_recovery.review_fragment_question',new=AsyncMock(return_value='clarify')) as review:
+            await self.run_turn('Какую машину вы',control='fragment')
+            await asyncio.sleep(.08)
+            await self.run_turn('Какую машину вы',control='fragment')
+            await asyncio.sleep(.08)
+        review.assert_awaited_once();self.assertEqual(self.c.player.queue_frame.await_count,1)
+
+    async def test_closing_session_cancels_fragment_recovery(self):
+        self.quick_fragment_recovery()
+        await self.run_turn('Какую машину вы',control='fragment')
+        await self.c.close();await asyncio.sleep(.05)
+        self.c.player.queue_frame.assert_not_awaited();self.assertFalse(self.c.llm.request_turns)
+
+    async def test_missed_answer_is_reviewed_before_automatic_question_replay(self):
+        topic,original=await self.interrupted_plan()
+        self.s.evidence.turn=2
+        self.s.evidence.memory.user('По выходным работаем. А вы из какого города?',2)
+        self.c.latest_input='По выходным работаем. А вы из какого города?'
+        self.c.last_meaning=meaning(other_questions=True)
+        with patch('semantic_controller.review_answer_coverage',new=AsyncMock(return_value='answered')) as review:
+            await self.c.perform('advance',self.c.latest_input,self.c.epoch)
+        review.assert_awaited_once()
+        self.assertEqual(self.c.answers[topic]['status'],'answered')
+        self.assertNotIn(topic,[row['key'] for row in self.c.unasked()])
+        self.assertFalse(any(event['event']=='semantic_question_replayed' for event in self.s.evidence.events))
+        self.assertTrue(self.c.player.queue_frame.call_args_list)  # The next plan question proceeds.
+
+    async def test_reviewed_unknown_does_not_become_a_positive_seller_fact(self):
+        topic,original=await self.interrupted_plan();self.s.evidence.turn=2
+        self.s.evidence.memory.user('Не могу сказать, работают ли коллеги по выходным.',2)
+        self.c.latest_input='Не могу сказать, работают ли коллеги по выходным.'
+        with patch('semantic_controller.review_answer_coverage',new=AsyncMock(return_value='unknown')):
+            await self.c.perform('advance',self.c.latest_input,self.c.epoch)
+        self.assertEqual(self.c.answers[topic]['status'],'unknown')
+        self.assertFalse(any(event['event']=='semantic_question_replayed' for event in self.s.evidence.events))
+        self.assertFalse(self.s.evidence.memory.facts)
+
+    async def test_new_input_during_answer_review_cannot_replay_the_old_question(self):
+        topic,original=await self.interrupted_plan();self.s.evidence.turn=2
+        self.s.evidence.memory.user('Ответ на вопрос.',2);self.c.latest_input='Ответ на вопрос.'
+        async def stale(*args):
+            self.c.epoch+=1
+            return 'answered'
+        with patch('semantic_controller.review_answer_coverage',new=stale):
+            await self.c.perform('advance',self.c.latest_input,self.c.epoch)
+        self.assertNotIn(topic,self.c.answers)
+        self.c.player.queue_frame.assert_not_awaited()
+
+    async def test_answer_review_only_uses_accepted_manager_speech_after_the_question(self):
+        self.s.evidence.memory.user('По выходным работаем.',0)
+        topic,original=await self.interrupted_plan();self.s.evidence.turn=2
+        self.s.evidence.memory.user('А вы из какого города?',2)
+        self.c.customer_legend=[{'text':'По выходным я свободен.'}]
+        self.c.latest_input='А вы из какого города?'
+        row=self.c.unfinished_question()
+        with patch('semantic_controller.review_answer_coverage',new=AsyncMock(return_value='unanswered')) as review:
+            await self.c.review_before_replay(row,self.c.epoch)
+        self.assertEqual(review.call_args.args[2],'А вы из какого города?')
+        self.assertNotIn(topic,self.c.answers)
+
+    async def test_answer_review_is_deduplicated_and_has_a_per_call_budget(self):
+        topic,original=await self.interrupted_plan();row=self.c.unfinished_question()
+        with patch('semantic_controller.review_answer_coverage',new=AsyncMock(return_value='unanswered')) as review:
+            for turn in range(2,8):
+                self.s.evidence.turn=turn;self.s.evidence.memory.user('Проверяем вариант '+str(turn),turn)
+                await self.c.review_before_replay(row,self.c.epoch)
+                await self.c.review_before_replay(row,self.c.epoch)
+        self.assertEqual(review.await_count,4)
+        self.assertFalse(self.c.answers)
+
+    async def test_answer_review_failure_does_not_save_facts_or_disable_the_plan(self):
+        topic,original=await self.interrupted_plan();self.s.evidence.turn=2
+        self.s.evidence.memory.user('А вы из какого города?',2);self.c.latest_input='А вы из какого города?'
+        with patch('semantic_controller.review_answer_coverage',new=AsyncMock(side_effect=TimeoutError)):
+            await self.c.perform('advance',self.c.latest_input,self.c.epoch)
+        self.assertNotIn(topic,self.c.answers)
+        self.assertTrue(any(event['event']=='semantic_question_replayed' for event in self.s.evidence.events))
+        self.assertTrue(any(event['event']=='semantic_answer_review_failed' for event in self.s.evidence.events))
 
     async def test_service_context_keeps_owned_vehicle_and_disables_purchase_preference(self):
         self.s.prepared_purpose='service';self.s.context={'subjectTitle':'Zeekr 8X','customerNeed':'Установить защиту заднего двигателя.'}
@@ -1283,7 +1736,7 @@ class SemanticTests(unittest.IsolatedAsyncioTestCase):
         await self.run_turn('В город Омск обращаетесь.',confirmation_request=True,other_questions=True)
         self.c.player.queue_frame.assert_not_awaited()
         self.c.llm.send_client_event.assert_awaited()
-        self.assertIsNone(self.c.pending_after_native[0])
+        self.assertEqual(self.c.pending_after_native[0],'advance')
         state=json.loads(self.c.context_text().split('\n',1)[1])
         self.assertTrue(state['confirmation_requested'])
         self.assertEqual(state['target_location']['city'],'Омск')

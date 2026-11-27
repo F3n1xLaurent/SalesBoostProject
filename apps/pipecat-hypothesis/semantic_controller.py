@@ -11,16 +11,17 @@ from copy import deepcopy
 
 from pipecat.services.openai.realtime import events
 from dialogue_controller import DialogueController,normalized
-from controller_visit import VisitProposal,same_clock,affirmative,confirms_slot,clock_minutes,visit_window
-from turn_meaning import interpret,review_acceptance,MODEL
+from controller_visit import VisitProposal,same_clock,affirmative,confirms_slot,clock_minutes,visit_window,business_hours
+from turn_meaning import interpret,review_acceptance,review_answer_coverage,MODEL
 from speech_ledger import SpeechLedger,fingerprint
 from customer_legend import choose_name
 from line_gate import LineGate,greeting_only,announces_transfer,name_question_only
 from breath import BreathCue
+from fragment_recovery import FragmentRecovery
 from policy import is_introductory_greeting
 from plan_context import plan_need,selected_subject,subject_scope,target_location,call_purpose,spoken_subject,catalogue_subject_fallback,omit_spoken_generation
 
-SEMANTIC_VERSION='semantic-34'
+SEMANTIC_VERSION='semantic-38'
 
 
 class SemanticController(DialogueController):
@@ -41,6 +42,12 @@ class SemanticController(DialogueController):
         self.last_receipt_at=-1000.
         self.native_opening_response=None
         self.asr_repair_task=None;self.asr_repair_key=None;self.asr_repair_wait=8.;self.asr_close_wait=12.
+        self.manager_visit_hours=None;self.rejected_visit_slots=set()
+        self.visit_validation_reason=None
+        self.answer_reviews=set()
+        self.fragment_recovery=FragmentRecovery(self)
+        self.continuation_quiet_seconds=.6;self.interruption_resume_wait=1.
+        self.continuation_resume_epoch=None
         self.s.evidence.memory.semantic_mode=True
         self.s.evidence.event('semantic_configuration',model=MODEL,version=SEMANTIC_VERSION)
 
@@ -78,7 +85,11 @@ class SemanticController(DialogueController):
                 'thinking_delay_ms':max(self.thinking.delay_ms,self.thinking.semantic_delay_ms),
                 'thinking_pause_policy':{'cooldown_seconds':max(self.thinking.cooldown,60),
                     'max_per_call':2,'used_keys':sorted(self.thinking.used_keys)},
-                'customer_legend':self.customer_legend}
+                'customer_legend':self.customer_legend,
+                'manager_visit_hours':self.manager_visit_hours,
+                'rejected_visit_slots':sorted(self.rejected_visit_slots),
+                'answer_review_count':len(self.answer_reviews),
+                'fragment_recovery':{'pending':bool(self.fragment_recovery.record),'reviews':self.fragment_recovery.reviews}}
 
     def needs_opening(self):
         # Starting a native answer is not the same as introducing the purpose
@@ -113,6 +124,27 @@ class SemanticController(DialogueController):
     def unfinished_question(self):
         return next((r for r in self.question_history() if r['topic'] and r['interrupted']
             and not r['answered']),None)
+
+    async def review_before_replay(self,row,epoch):
+        # Only accepted manager speech after this question is evidence. Neither
+        # our generated answer nor a previous question's acknowledgment qualifies.
+        quotes=[r['text'] for r in self.s.evidence.memory.users if r['turn']>row['turn']][-4:]
+        if not quotes:return False
+        text='\n'.join(quotes)[-4000:]
+        key=(row['id'],text)
+        if key in self.answer_reviews or len(self.answer_reviews)>=4:return False
+        self.answer_reviews.add(key)
+        try:status=await review_answer_coverage(self,row,text)
+        except Exception as exc:
+            self.s.evidence.event('semantic_answer_review_failed',question_id=row['id'],error_type=type(exc).__name__)
+            return False
+        if epoch!=self.epoch or self.unavailable():return False
+        if status not in ('answered','unknown'):return False
+        topic=row['topic']
+        if topic not in self.answers:
+            self.answers[topic]={'evidence':text,'turn':self.s.evidence.turn,'status':status,'scope':'focused answer coverage'}
+            self.s.evidence.event('controller_answer_saved',topic=topic,evidence=text,status=status,source='focused_answer_review')
+        return True
 
     def fresh_native_answer(self):
         native=getattr(self,'native_resume_context',None)
@@ -315,35 +347,51 @@ class SemanticController(DialogueController):
             and request.get('reason')=='controller_fallback' and request.get('turn')==self.fallback_turn
             and not self.s.evidence.delivery.response(response_id)['interrupted'])
 
-    def continue_after_playback(self,response_id,after,text,epoch,batch=(),deadline=None,source_epoch=None):
+    def continue_after_playback(self,response_id,after,text,epoch,batch=(),deadline=None,source_epoch=None,
+                                quiet_seconds=None,resume_question=False):
         self.cancel_continuation()
         record={'response_id':response_id,'after':after,'text':text,'epoch':epoch,'batch':list(batch),
             'deadline':deadline if deadline is not None else time.monotonic()+30,
-            'source_epoch':epoch if source_epoch is None else source_epoch}
+            'source_epoch':epoch if source_epoch is None else source_epoch,
+            'quiet_seconds':self.continuation_quiet_seconds if quiet_seconds is None else quiet_seconds,
+            'resume_question':resume_question}
         self.pending_continuation=record
+        def safe():
+            return (self.line.can_speak and not self.manager_speaking()
+                and not self.s.playback.pending and not self.s.playback.synthesizing
+                and (bool(response_id) or not self.s.playback.generated)
+                and not any(getattr(self.llm,key,None) for key in ('stt_tasks','quality_tasks','pending','items'))
+                and not any(row not in record['batch'] for row in self.inputs.snapshot()))
         async def run():
             try:
                 async with asyncio.timeout(max(0,record['deadline']-time.monotonic())):
                     while True:
-                        if epoch!=self.epoch or self.unavailable():return
-                        if self.s.evidence.delivery.response(response_id)['interrupted']:return
-                        if self.s.evidence.delivery.complete(response_id) and not self.manager_speaking():break
+                        if epoch!=self.epoch or self.unavailable() or not self.line.can_speak:return
+                        if response_id and self.s.evidence.delivery.response(response_id)['interrupted']:return
+                        if (not response_id or self.s.evidence.delivery.complete(response_id)) and safe():break
                         await asyncio.sleep(.01)
                 self.inputs.consume(record['batch'])
                 if getattr(self,'native_input_epoch',None)==record['source_epoch']:self.native_input_epoch=None
                 if after:
-                    self.native_resume_context={'response_id':response_id,'text':self.llm.spoken_text.get(response_id,''),'epoch':epoch}
+                    if response_id:
+                        self.native_resume_context={'response_id':response_id,'text':self.llm.spoken_text.get(response_id,''),'epoch':epoch}
                     while True:
+                        quiet_since=None
                         async with asyncio.timeout(max(0,record['deadline']-time.monotonic())):
-                            while self.manager_speaking():
-                                if epoch!=self.epoch or self.unavailable():return
+                            while True:
+                                if epoch!=self.epoch or self.unavailable() or not self.line.can_speak:return
+                                if safe():
+                                    if quiet_since is None:quiet_since=time.monotonic()
+                                    if time.monotonic()-quiet_since>=record['quiet_seconds']:break
+                                else:quiet_since=None
                                 await asyncio.sleep(.01)
-                        if epoch!=self.epoch or self.unavailable():return
                         self.fragment_input_epoch=None
                         self.s.evidence.event('semantic_continuation_ready',response_id=response_id,action=after)
-                        await self.perform(after,text,epoch)
-                        # Speech may start during synthesis/context mirroring.
-                        # Preserve this step until quiet or STT cancels/rebases it.
+                        self.continuation_resume_epoch=epoch if resume_question or after=='advance' and response_id else None
+                        try:await self.perform(after,text,epoch)
+                        finally:self.continuation_resume_epoch=None
+                        # A physical segment can start before logical input and
+                        # defer synthesis. Retain this action until quiet again.
                         if getattr(self,'fragment_input_epoch',None)!=epoch:break
             except TimeoutError:self.s.evidence.event('semantic_continuation_timeout',response_id=response_id)
             finally:
@@ -353,6 +401,7 @@ class SemanticController(DialogueController):
         self.continuation_task=asyncio.create_task(run())
 
     async def new_input(self):
+        self.fragment_recovery.cancel(preserve=True)
         self.breath.cancel_pending()  # Manager speech never stops an already playing breath.
         # Speech onset alone does not prove that audio was interrupted. Retain
         # the continuation until STT distinguishes an acknowledgment from input.
@@ -372,6 +421,7 @@ class SemanticController(DialogueController):
             self.thinking.arm('turn_wait')
 
     async def on_ignored_input(self,turn):
+        if turn.number==self.monitor.turn.number:self.fragment_recovery.restore_after_ignored_input()
         record=self.pending_continuation
         pending=getattr(self,'pending_after_native',None)
         source=record['batch'] if record else pending[3] if pending and len(pending)>3 else []
@@ -383,7 +433,8 @@ class SemanticController(DialogueController):
             if (record['deadline']>time.monotonic()
                     and not self.s.evidence.delivery.response(record['response_id'])['interrupted']):
                 self.continue_after_playback(record['response_id'],record['after'],record['text'],self.epoch,
-                    record['batch'],record['deadline'],record['source_epoch'])
+                    record['batch'],record['deadline'],record['source_epoch'],
+                    quiet_seconds=record['quiet_seconds'],resume_question=record['resume_question'])
                 self.s.evidence.event('semantic_continuation_restored',response_id=record['response_id'],source_turn=turn.number)
             else:self.cancel_continuation()
         elif pending and safe:
@@ -411,6 +462,7 @@ class SemanticController(DialogueController):
         """No unverified text or facts. Ask once, recover, then end safely."""
         if (turn.number!=self.monitor.turn.number or not self.line.can_speak
                 or self.unavailable() or self.s.evidence.memory.phase=='closing'):return
+        self.fragment_recovery.cancel()
         if self.asr_repair_task and not self.asr_repair_task.done():return
         if self.manager_speaking() or getattr(self.llm,'stt_tasks',{}) or getattr(self.llm,'quality_tasks',{}):return
         reference=deepcopy(self.last_question)
@@ -457,6 +509,7 @@ class SemanticController(DialogueController):
 
     async def on_stt_recovery(self,turn):
         await self.new_input()
+        self.fragment_recovery.cancel()
         self.thinking.cancel('transcription_recovery');self.waiting=True
         if self.s.playback.busy:await self.clear_audio()
         if not self.line.can_speak:return
@@ -470,11 +523,13 @@ class SemanticController(DialogueController):
             retained_turns=[r['turn'] for r in self.inputs.snapshot()])
 
     def abort(self):
+        self.fragment_recovery.cancel()
         self.cancel_asr_repair()
         self.breath.cancel_pending()
         self.line.state='ended';self.line.cancel();self.cancel_continuation();super().abort()
 
     async def close(self):
+        await self.fragment_recovery.close()
         task=self.asr_repair_task;self.cancel_asr_repair()
         if task:await asyncio.gather(task,return_exceptions=True)
         await self.breath.stop('session_closed')
@@ -492,7 +547,7 @@ class SemanticController(DialogueController):
         # A rejection of the old slot may precede a positive replacement.
         # Parse complete later clauses independently; do not let the earlier
         # negation erase a replacement or combine its day with an old clock.
-        clauses=re.split(r'(?<=[.!?;])\s+|\b(?:но|давайте|лучше)\b',text,flags=re.I)
+        clauses=re.split(r'(?<=[.!?;,])\s+|\b(?:но|давайте|лучше)\b',text,flags=re.I)
         if len(clauses)>1:
             for clause in clauses:
                 if re.search(r'\bсейчас\b|\bесли\b',clause,re.I):continue
@@ -517,13 +572,43 @@ class SemanticController(DialogueController):
 
     def visit_bounds(self,candidate):
         explicit=visit_window(getattr(candidate,'preference_text',''))
-        if explicit:return explicit
-        if candidate.time and candidate.time.get('interval_end') is not None:
-            return candidate.time.get('interval_start',0),candidate.time['interval_end']
         schedule=(self.s.context or {}).get('visitSchedule') or {}
         start=clock_minutes(str(schedule.get('workingHoursFrom','')))
         end=clock_minutes(str(schedule.get('workingHoursTo','')))
-        return (start,end) if start is not None and end is not None and start<end else (0,1440)
+        bounds=(start,end) if start is not None and end is not None and start<end else (0,1440)
+        if self.manager_visit_hours:
+            bounds=(self.manager_visit_hours['start'],self.manager_visit_hours['end'])
+        # A proposed slot/window can restrict business hours, never widen them.
+        interval=explicit or ((candidate.time.get('interval_start',0),candidate.time['interval_end'])
+            if candidate.time and candidate.time.get('interval_end') is not None else None)
+        if interval:bounds=max(bounds[0],interval[0]),min(bounds[1],interval[1])
+        return bounds
+
+    def observe_visit_hours(self,text,turn):
+        for clause in re.split(r'(?<=[.!?;])\s+|,\s*(?=приезжайте|подъезжайте)',text,flags=re.I):
+            hours=business_hours(clause)
+            if not hours:continue
+            # Day-specific options are checked on their own candidate; do not
+            # turn today's exception into the opening hours for every day.
+            if re.search(r'\b(?:сегодня|завтра|послезавтра)\b',clause,re.I):continue
+            start,end=hours
+            if start is None:start=self.visit_bounds(VisitProposal())[0]
+            self.manager_visit_hours={'start':start,'end':end,'evidence':clause,'turn':turn}
+            self.s.evidence.event('semantic_visit_hours_updated',**self.manager_visit_hours)
+
+    @staticmethod
+    def slot_signature(proposal):
+        if not proposal:return None
+        minute=clock_minutes(proposal['time']['value'])
+        return (normalized(proposal['day']['value']),minute) if minute is not None else None
+
+    def reject_visit(self,proposal,text,turn):
+        signature=self.slot_signature(proposal)
+        if signature:self.rejected_visit_slots.add(signature)
+        self.visit.time=None;self.visit.offered=None;self.visit_confirmed=False
+        self.visit_offer_response_id=None;self.awaiting_confirmation=None
+        self.s.evidence.memory.facts.pop('visit_day',None);self.s.evidence.memory.facts.pop('visit_time',None)
+        self.s.evidence.event('semantic_visit_slot_rejected',proposal=proposal,evidence=text,source_turn=turn)
 
     def choose_visit_preference(self,candidate,turn):
         now=self.visit_now()
@@ -537,15 +622,20 @@ class SemanticController(DialogueController):
         if not candidate.day:candidate.day={'value':'завтра','source':'client_preference','turn':turn}
         if not candidate.time:
             start,end=self.visit_bounds(candidate)
+            if start>=end:
+                candidate.preference_exhausted=True
+                return candidate
             minute=max(600,start)
             if minute>=end:minute=start
             if normalized(candidate.day['value'])=='сегодня':
                 minute=max(minute,(now.hour+1)*60)
-                if minute>=end:
-                    alternative=self.tomorrow_option(candidate,turn)
-                    if alternative:return alternative
-                    candidate.preference_exhausted=True
-                    return candidate
+            while (normalized(candidate.day['value']),minute) in self.rejected_visit_slots:
+                minute=(minute//60+1)*60
+            if minute>=end:
+                alternative=self.tomorrow_option(candidate,turn)
+                if alternative:return alternative
+                candidate.preference_exhausted=True
+                return candidate
             candidate.time={'value':f'в {minute//60}:{minute%60:02d}','source':'client_preference','turn':turn,
                 'interval_start':start,'interval_end':end}
         return candidate
@@ -568,16 +658,31 @@ class SemanticController(DialogueController):
 
     def future_visit(self):
         """Validate inherited clocks too, including the start of opening hours."""
+        self.visit_validation_reason=None
         if getattr(self.visit,'preference_exhausted',False):return False
         if not self.visit.day or not self.visit.time:return True
         now=self.visit_now()
         today=normalized(self.visit.day['value']) in ('сегодня','в '+('понедельник','вторник','среду','четверг','пятницу','субботу','воскресенье')[now.weekday()])
         minute=clock_minutes(self.visit.time['value'])
-        if not today or minute is None or minute>now.hour*60+now.minute:return True
+        start,end=self.visit_bounds(self.visit)
+        reason=('unknown_clock' if minute is None else 'outside_business_hours' if not start<=minute<end else
+            'manager_rejected_slot' if self.slot_signature(self.visit.proposal()) in self.rejected_visit_slots else None)
+        if reason:
+            previous=self.visit.proposal();self.visit.time=None;self.visit.offered=None
+            self.visit_confirmed=False;self.awaiting_confirmation=None;self.visit_offer_response_id=None
+            self.s.evidence.memory.facts.pop('visit_day',None);self.s.evidence.memory.facts.pop('visit_time',None)
+            self.s.evidence.memory.visit_pending=True
+            self.visit_validation_reason=reason
+            self.s.evidence.event('semantic_visit_slot_blocked',reason=reason,proposal=previous,bounds=[start,end])
+            return False
+        # Repeating a valid booking is not permission to move it to a new hour.
+        if self.visit_confirmed or not today or minute>now.hour*60+now.minute:return True
         old=dict(self.visit.time)
         future=(now+timedelta(hours=1)).replace(minute=0,second=0,microsecond=0)
         start,end=self.visit_bounds(self.visit)
         minute=max(future.hour*60,start)
+        while (normalized(self.visit.day['value']),minute) in self.rejected_visit_slots:
+            minute=(minute//60+1)*60
         if future.date()!=now.date() or minute>=end:
             alternative=self.tomorrow_option(self.visit,self.s.evidence.turn)
             if alternative:
@@ -607,6 +712,10 @@ class SemanticController(DialogueController):
         def reject(reason):self.acceptance_block_reason=reason;return False
         offer=self.visit.offered
         if not offer or not self.visit_offer_response_id:return reject('missing_proposal')
+        candidate=VisitProposal();candidate.day=offer['day'];candidate.time=offer['time']
+        minute=clock_minutes(offer['time']['value']);start,end=self.visit_bounds(candidate)
+        if (minute is None or not start<=minute<end
+                or self.slot_signature(offer) in self.rejected_visit_slots):return reject('unavailable_slot')
         scope=meaning['acceptance_scope']
         reference=getattr(self,'input_reference',None) or self.last_question or {}
         if scope=='direct_reply' and (reference.get('response_id')!=self.visit_offer_response_id
@@ -642,10 +751,16 @@ class SemanticController(DialogueController):
     async def handle(self,text,turn,epoch):
         if epoch==self.epoch:self.cancel_asr_repair()
         if self.unavailable() or epoch!=self.epoch:return
+        self.fragment_recovery.cancel()
+        previous_continuation=self.pending_continuation
+        previous_native=getattr(self,'pending_after_native',None)
         self.cancel_continuation()
         self.fragment_input_epoch=None
         batch=self.active_batch or []
         current=batch[-1]['text'] if batch and batch[-1]['turn']==turn else text
+        if previous_native and affirmative(current) and batch:
+            source=previous_native[3] if len(previous_native)>3 else []
+            if source and all(row==batch[-1] or row in source for row in batch):text=current
         was_live=self.line.can_speak
         if not was_live and batch:
             for part in batch[:-1]:
@@ -669,6 +784,7 @@ class SemanticController(DialogueController):
             self.s.evidence.memory.user(text,turn)
         self.latest_input=text;self.waiting=False
         m=self.s.evidence.memory
+        self.observe_visit_hours(text,turn)
         # Save an unambiguous reply to our exact proposal before another ASR
         # fragment cancels the pending interpretation task.
         accepted_directly=self.direct_slot_acceptance(text,turn)
@@ -685,8 +801,8 @@ class SemanticController(DialogueController):
             self.s.evidence.event('semantic_name_fast_path',source_turn=turn,initial=initial,
                 repeated=self.name_repeat_requested)
             identifier=await self.prepared(['greeting','name'] if initial else ['name'])
-            if identifier and self.unfinished_question():
-                self.continue_after_playback(identifier,'advance',text,epoch)
+            if identifier:
+                self.continue_after_playback(identifier,'open' if self.needs_opening() else 'advance',text,epoch,batch)
             return
         if not resumed and greeting_only(text) and self.needs_opening():
             self.started=True;self.current=self.opening_topic
@@ -717,6 +833,9 @@ class SemanticController(DialogueController):
                 await self.prepared(['resume','stt_repair'])
                 return
             meaning['control']='continue' if meaning['other_questions'] else 'attention'
+        elif (connection and meaning['control']=='continue' and not meaning.get('buyer_question_parts')
+                and not any(meaning.get(key) for key in ('other_questions','name','name_confirmation','subject','next_question'))):
+            meaning['control']='attention'
         if re.fullmatch(r'(?:подскажите|скажите|уточните)(?: пожалуйста)?',cue):
             meaning['control']='fragment'
         focus=meaning.get('reply_focus')
@@ -859,6 +978,7 @@ class SemanticController(DialogueController):
             # Confirmation is durable. Unrelated answers and repeated
             # invitations cannot reopen a booking that was already agreed.
             relation='none'
+        if relation=='change' and previous_visit:self.reject_visit(previous_visit,text,turn)
         if relation=='change' and meaning.get('visit_request')=='details':
             self.visit=self.candidate(text,turn);self.visit.offered=None
             self.visit_confirmed=False;m.facts.pop('visit_day',None);m.facts.pop('visit_time',None)
@@ -914,7 +1034,9 @@ class SemanticController(DialogueController):
             covered_topics=[k for k,v in meaning['coverage'].items() if v!='unanswered'],
             requested_answers=list(self.requested_answers),unasked_required=self.unasked())
         if control in ('wait','fragment'):
-            if control=='fragment':self.fragment_input_epoch=epoch
+            if control=='fragment':
+                self.fragment_input_epoch=epoch
+                self.fragment_recovery.arm(text,turn,epoch,meaning)
             if control=='wait' and self.line.can_speak:
                 # Semantic hold is authoritative too, including imperfect ASR
                 # that did not match the conservative local transfer grammar.
@@ -922,9 +1044,33 @@ class SemanticController(DialogueController):
                 await self.line.silence('semantic_requested_hold')
             self.waiting=True;self.thinking.cancel('semantic_'+control);await self.stop_backchannel()
             self.s.evidence.event('controller_wait',reason='semantic_'+control);return
+        passive_ack=(control=='continue' and affirmative(current) and not action and not supplied and not response_seen
+            and not any(meaning.get(key) for key in ('name','name_confirmation','subject','other_questions','next_question','question_recall')))
+        if passive_ack and previous_continuation and previous_continuation['after']:
+            identifier=previous_continuation['response_id']
+            if (previous_continuation['deadline']>time.monotonic()
+                    and (not identifier or not self.s.evidence.delivery.response(identifier)['interrupted'])):
+                retained=list(previous_continuation['batch'])
+                retained.extend(row for row in batch if row not in retained)
+                self.continue_after_playback(identifier,previous_continuation['after'],previous_continuation['text'],epoch,
+                    retained,previous_continuation['deadline'],previous_continuation['source_epoch'],
+                    quiet_seconds=previous_continuation['quiet_seconds'],resume_question=previous_continuation['resume_question'])
+                self.s.evidence.event('semantic_continuation_restored_after_ack',source_turn=turn)
+                return
+        if passive_ack and previous_native and previous_native[0]:
+            identifier=getattr(self.llm,'response_id',None)
+            if not identifier or not self.s.evidence.delivery.response(identifier)['interrupted']:
+                retained=list(previous_native[3]) if len(previous_native)>3 else []
+                retained.extend(row for row in batch if row not in retained)
+                self.pending_after_native=(*previous_native[:2],epoch,retained)
+                self.native_input_epoch=epoch
+                self.s.evidence.event('semantic_native_completion_retained_after_ack',source_turn=turn)
+                return
         if control=='attention' and self.started:
             if not self.needs_opening() and not self.unfinished_question() and not (recall or meaning['name'] or meaning.get('name_confirmation') or supplied or response_seen or meaning['next_question'] or meaning['other_questions']):
-                await self.speak('resume',repeat_reason='requested_connection_check');return
+                identifier=await self.speak('resume',repeat_reason='requested_connection_check')
+                if identifier:self.continue_after_playback(identifier,'advance',text,epoch,batch)
+                return
             if supplied or response_seen:self.pending_answer_keys.insert(0,'receipt_0')
         if control=='audio_repair' and not recall:
             if self.needs_opening():
@@ -932,13 +1078,21 @@ class SemanticController(DialogueController):
                 await self.speak('named_opening' if meaning['name'] else 'opening');return
             if self.pending_answer_keys:
                 keys=self.pending_answer_keys;self.pending_answer_keys=[]
-                await self.speak(text=' '.join(self.texts[k] for k in keys),pcm=b''.join(self.clips[k] for k in keys),
+                identifier=await self.speak(text=' '.join(self.texts[k] for k in keys),pcm=b''.join(self.clips[k] for k in keys),
                     repeat_reason='requested_field_repetition')
+                if identifier:self.continue_after_playback(identifier,'advance',text,epoch,batch)
                 return
             clip=self.last_clip
             if clip:
-                await self.speak(text=clip['text'],pcm=clip.get('pcm'),retry_of=clip['response_id'],repeat_reason='requested_repetition')
-            else:await self.speak('connection_repair')
+                question=next((row for row in self.question_history() if row['response_id']==clip['response_id']),None)
+                if question:
+                    await self.replay_question(question['id'])
+                    return
+                identifier=await self.speak(text=clip['text'],pcm=clip.get('pcm'),retry_of=clip['response_id'],repeat_reason='requested_repetition')
+                if identifier:self.continue_after_playback(identifier,'advance',text,epoch,batch)
+            else:
+                identifier=await self.speak('connection_repair')
+                if identifier:self.continue_after_playback(identifier,'advance',text,epoch,batch)
             return
         if control in ('callback','decline') or control=='goodbye' and not recall:action='close_'+control
         unfinished=self.unfinished_question()
@@ -974,7 +1128,8 @@ class SemanticController(DialogueController):
             return
         if meaning.get('location_only') and 'target_city' in self.texts:
             self.pending_answer_keys=[];self.requested_answers={}
-            await self.speak('target_city',repeat_reason='requested_target_location')
+            identifier=await self.speak('target_city',repeat_reason='requested_target_location')
+            if identifier:self.continue_after_playback(identifier,'open' if self.needs_opening() else 'advance',text,epoch,batch)
             return
         if meaning['other_questions']:
             if action=='clarify_visit':
@@ -982,8 +1137,7 @@ class SemanticController(DialogueController):
                 # generation, instead of another request after phone playback.
                 await self.native_answer(text,None,epoch,clarify=True)
                 return
-            await self.native_answer(text,action or ('advance' if supplied or response_seen or meaning['next_question']
-                or self.visit_confirmed and not self.unasked() else 'open' if self.needs_opening() else None),epoch)
+            await self.native_answer(text,action or ('open' if self.needs_opening() else 'advance'),epoch)
             return
         if action and action.startswith('close_'):
             await self.perform(action,text,epoch);return
@@ -1001,11 +1155,12 @@ class SemanticController(DialogueController):
             self.current=self.opening_topic
             self.pending_answer_keys=[]
             await self.speak('named_opening' if meaning['name'] else 'opening');return
+        if not action and self.visit_confirmed and control=='continue':action='advance'
         if (meaning.get('contextual_reply') and not action and not self.pending_answer_keys
                 and not affirmative(text)):
             self.s.evidence.event('semantic_contextual_reply',source_turn=turn,
-                reason='unclassified_continuation',advance_after_answer=bool(supplied or response_seen))
-            await self.native_answer(text,'advance' if supplied or response_seen else None,epoch)
+                reason='unclassified_continuation',advance_after_answer=bool(supplied or response_seen or self.unfinished_question()))
+            await self.native_answer(text,'advance' if supplied or response_seen or self.unfinished_question() else None,epoch)
             return
         if not action and (supplied or response_seen or meaning['next_question'] or self.visit_confirmed and not self.unasked()):action='advance'
         reference=getattr(self,'input_reference',None) or self.last_question or {}
@@ -1078,6 +1233,9 @@ class SemanticController(DialogueController):
                 await self.propose(keys)
                 return
             if offer:
+                if not self.future_visit():
+                    await self.propose(keys)
+                    return
                 prefix=' '.join(self.texts[key] for key in keys if self.speech.available(self.texts[key]))
                 sentence=(prefix+' ' if prefix else '')+f"Мне удобно {offer['day']['value'].lower()}, {offer['time']['value'].lower()}."
                 identifier=await self.speak(text=sentence,repeat_reason='requested_visit_details')
@@ -1134,14 +1292,25 @@ class SemanticController(DialogueController):
                 if unfinished:
                     intent=self.last_meaning or {}
                     authorized=(not self.last_meaning or self.visit_confirmed
+                        or self.continuation_resume_epoch==epoch
                         or intent.get('control') in ('attention','audio_repair')
                         or any(intent.get(key) for key in ('listening_ready','name','subject','other_questions','question_recall'))
                         or intent.get('next_question') and intent.get('plan_permission',True))
                     if not authorized:
-                        if keys:await self.prepared(keys)
+                        identifier=await self.prepared(keys) if keys else None
                         self.waiting=True;self.thinking.cancel('interrupted_question_waits_for_manager');await self.stop_backchannel()
                         self.s.evidence.event('controller_wait',reason='interrupted_question_waits_for_manager',question_id=unfinished['id'])
+                        if unfinished['id'] not in self.auto_replayed_questions and intent.get('control')=='continue':
+                            self.continue_after_playback(identifier,'advance',text,epoch,list(self.active_batch or []),
+                                quiet_seconds=self.interruption_resume_wait,resume_question=True)
                         return
+                    if await self.review_before_replay(unfinished,epoch):
+                        # Re-enter with the covered question removed, preserving
+                        # any identity/receipt that still needs to be spoken.
+                        self.pending_answer_keys=keys
+                        await self.perform('advance',text,epoch)
+                        return
+                    if epoch!=self.epoch or self.unavailable():return
                     if unfinished['id'] in self.auto_replayed_questions:
                         # The retry can be interrupted too. A bounded replay
                         # budget must not count its unheard tail as completed.
@@ -1204,7 +1373,9 @@ class SemanticController(DialogueController):
 
     async def propose(self,keys):
         if not self.future_visit():
-            await self.speak(text='Сегодня в указанные часы уже не успеваю. На какой другой день можно подъехать?',question_key='visit-future-day')
+            sentence=('В какое другое время можно подъехать в часы работы салона?' if self.visit_validation_reason else
+                'Сегодня в указанные часы уже не успеваю. На какой другой день можно подъехать?')
+            await self.speak(text=sentence,question_key='visit-future-day')
             return
         proposal=self.visit.proposal()
         if proposal and self.visit.offered and all(normalized(proposal[key]['value'])==normalized(self.visit.offered[key]['value']) for key in ('day','time')):
